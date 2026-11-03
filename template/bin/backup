@@ -14,7 +14,9 @@ PROJECT=$(sed -n 's/^project:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p' "$P/.mm-ans
 ROOT=${BACKUP_DIR:-$HOME/.local/share/backups/$NAME}
 D=$ROOT/$(date -u +%Y-%m-%dT%H%MZ)
 mkdir -p "$D"
-PORT=$(sed -n 's/^ *port: *\([0-9]*\).*/\1/p' "$P/control/.beads/dolt-server-config.yaml" | head -1)
+# Dolt's TCP port: where the process manager runs it (.run/services.json), else bd's own config
+PORT=$(sed -n 's/.*"dolt_port": *\([0-9]*\).*/\1/p' "$P/.run/services.json" 2>/dev/null | head -1)
+[ -n "$PORT" ] || PORT=$(sed -n 's/^ *port: *\([0-9]*\).*/\1/p' "$P/control/.beads/dolt-server-config.yaml" | head -1)
 DB=$(sed -n 's/.*"dolt_database": *"\([^"]*\)".*/\1/p' "$P/control/.beads/metadata.json")
 export DOLT_ROOT_PATH="$P/.dolt-root" XDG_CONFIG_HOME="$P/.config" DOLT_CLI_PASSWORD=""
 "$P/tools/dolt" --host 127.0.0.1 --port "$PORT" --no-tls -u root --use-db "$DB" sql -q "CALL dolt_backup('sync-url', 'file://$D/board.dolt')" >/dev/null

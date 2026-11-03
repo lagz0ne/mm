@@ -75,6 +75,8 @@ check "services ready after update" wait_ready 3 60
 check "board serves brotli assets" sh -c "curl -sf --max-time 5 -H 'accept-encoding: br' -D- -o /dev/null http://board.$PROJECT.localhost:1355/ | grep -qi 'content-encoding: br'"
 check "item survived the update" item_there
 out=$(mm update "$REF" 2>&1); grep -q 'already at' <<<"$out" && ok "second update is a no-op" || bad "second update: $out"
+check "backup runs (bin/backup)" sh -c "cd '$ROOT' && timeout 300 bin/backup"
+check "health passes (bin/health)" sh -c "cd '$ROOT' && timeout 120 node bin/health"
 
 step "restart"
 check "mm restart" mm restart "$REF"
@@ -120,6 +122,7 @@ check "update state intact (no-op)" sh -c "mm update '$REF' | grep -q 'already a
 
 step "cleanup"
 mm archive "$REF" >/dev/null 2>&1 && ok "archived again" || bad "final archive"
+rm -rf "$HOME/.local/share/backups/$PROJECT"
 for f in $(ls "$HOME/.local/share/mm/archive"); do grep -qxF "$f" <<<"$ARCH_BEFORE" || rm -f "$HOME/.local/share/mm/archive/$f"; done
 rmdir "$HOME/projects/$CLIENT" 2>/dev/null || true
 check "nothing left" test ! -e "$ROOT"
