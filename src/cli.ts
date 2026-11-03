@@ -3,9 +3,10 @@
 import { Command, Option } from 'commander'
 import { getPath, loadConfig, saveConfig, setPath, unsetPath } from './config'
 import { doctor } from './doctor'
-import { DIRS } from './env'
+import { DIRS, HOME } from './env'
 import { manifest } from './manifest'
 import { onboard } from './onboard'
+import { archive, restore, update } from './lifecycle'
 import { listProjects, namespaceOp, newProject, parseRef, processes, resolve, rootOf, up } from './project'
 import { type Format, print } from './out'
 import pkg from '../package.json'
@@ -99,9 +100,37 @@ for (const [cmd, op] of [['down', 'stop'], ['restart', 'restart']] as const) {
   })
 }
 
-for (const [name, desc] of [['update [project]', 'update a project from the template'], ['archive <project>', 'archive a project'],
-  ['brain <action>', 'brain status|pull|push'], ['client <action>', 'client ls|add']] as const) {
-  program.command(name).description(`${desc} (not yet: step 3)`).action(() => { console.error(`mm ${name.split(' ')[0]}: not built yet (step 3 of the plan)`); process.exit(2) })
+program.command('update [project]').description('bring a project (default: every project) up to the current template; three-way merge, project edits kept')
+  .option('-n, --dry-run', 'show what would change and what would conflict; change nothing')
+  .option('--continue', 'finish an update after resolving its conflicts')
+  .option('--abort', 'undo an update that stopped on conflicts')
+  .option('--adopt', 'once, for a project made before mm update: record the template (MM_TEMPLATE_DIR) as its baseline')
+  .action((ref: string | undefined, opts) => {
+    const o = fmt()
+    const roots = ref ? [rootOf(parseRef(ref).client, parseRef(ref).name)] : listProjects().map((p) => p.root.replace(/^~(?=\/)/, HOME)).filter((r) => r !== '?')
+    let bad = 0
+    for (const root of roots) {
+      const r = update(root, opts)
+      if (!r.ok) bad++
+      if (o.format !== 'table') { console.log(JSON.stringify({ root, ...r }, null, 2)); continue }
+      console.log(`${root.replace(DIRS.projects, '~/projects')}  ${r.from} -> ${r.to}`)
+      print(r.steps, o)
+      if (opts.dryRun && r.changed.length) console.log(r.changed.map((f) => `  ${r.conflicts.includes(f) ? 'C' : 'M'} ${f}`).join('\n'))
+    }
+    process.exit(bad ? 1 : 0)
+  })
+program.command('archive <project>').description('clean removal: stop + unload, drop public routes, archive agents, pack to a tarball, delete')
+  .option('-n, --dry-run', 'show the plan; change nothing')
+  .action((ref: string, opts) => {
+    const o = fmt(), { client, name } = parseRef(ref), r = archive(rootOf(client, name), opts)
+    print(r.steps, o); if (!opts.dryRun && r.ok) console.log(`\narchived: ${r.tarball}\nbring back: mm restore ${r.tarball}`)
+    process.exit(r.ok ? 0 : 1)
+  })
+program.command('restore <tarball>').description('unpack an archived project and start it').action((tb: string) => {
+  const o = fmt(), r = restore(tb); print(r.steps, o); process.exit(r.ok ? 0 : 1)
+})
+for (const [name, desc] of [['brain <action>', 'brain status|pull|push'], ['client <action>', 'client ls|add']] as const) {
+  program.command(name).description(`${desc} (not yet)`).action(() => { console.error(`mm ${name.split(' ')[0]}: not built yet`); process.exit(2) })
 }
 
 // No arguments: onboard on first run, status afterwards.

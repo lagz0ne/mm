@@ -1,12 +1,12 @@
 // Projects: stamp from the template (mm new), load into the machine's process-compose as a namespace (mm up),
 // namespace operations (down/restart), listing and inspection.
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, run, toolPath } from './env'
 import { writeBase } from './pc'
-import template from './template.gen.json'
+import { renderTo, template, templateCommit } from './template'
 import pkg from '../package.json'
 
 export interface Answers { client: string; name: string; project: string; short: string; root: string; template_version: string; created: string }
@@ -47,22 +47,20 @@ export async function newProject(ref: string, short?: string): Promise<{ answers
   if (!/^[a-z]{1,8}$/.test(answers.short)) throw new Error('short (item id prefix) must be 1-8 letters')
 
   // 1. render the template
+  const t = template()
+  answers.template_version = t.version
   const vars: Record<string, string> = { client, name, project: answers.project, short: answers.short, root, home: HOME }
-  const render = (t: string) => t.replace(/\{\{(\w+)\}\}/g, (m, k) => vars[k] ?? m)
-  for (const f of (template as { files: { p: string; m: number; c: string }[] }).files) {
-    const dest = join(root, render(f.p))
-    mkdirSync(dirname(dest), { recursive: true })
-    const buf = Buffer.from(f.c, 'base64'), text = buf.toString('utf8')
-    writeFileSync(dest, text.includes('�') ? buf : render(text))
-    chmodSync(dest, f.m)
-  }
+  renderTo(root, vars, t)
   writeFileSync(join(root, '.mm-answers.yaml'), `# Answers mm new used for this project (mm update renders the template again with these).\n${Bun.YAML.stringify(answers, null, 2)}\n`)
-  step('template', `${(template as { files: unknown[] }).files.length} files, version ${answers.template_version}`)
+  step('template', `${t.files.length} files, version ${answers.template_version}`)
 
   // 2. repos: config (the project root) and product (code/)
   const git = (args: string[], cwd = root) => run(['git', ...args], { cwd })
   must('config repo', git(['init', '-q', '-b', 'main']))
   git(['config', 'user.name', 'mm']); git(['config', 'user.email', `mm@${answers.project}.local`])
+  // the pure render is main's first commit and the mm-template branch: the base for every later `mm update`
+  const base = templateCommit(root, vars, `template ${t.version}`, undefined, t)
+  must('template baseline', git(['reset', '-q', base])); git(['branch', 'mm-template', base])
   mkdirSync(join(root, 'code'), { recursive: true })
   const code = join(root, 'code')
   git(['init', '-q', '-b', 'main'], code); git(['config', 'user.name', 'mm'], code); git(['config', 'user.email', `mm@${answers.project}.local`], code)
