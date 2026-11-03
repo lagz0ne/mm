@@ -24,29 +24,41 @@ machine:
     bind_host: { default: "127.0.0.1" }   # where project HTTP services listen. First machine (domain mode) binds the
                                           # docker bridge gateway so its web proxy can reach them; see notes.domain_mode
 
-  tools:                                      # doctor: present (+ version >= min); onboard: install if `install` given
-    git:        { min: "2.40", tested: "2.52.0", required: true }
-    curl:       { tested: "8.12.1", required: true }
-    node:       { min: "24", tested: "24.21.0", install: nodejs-dist }      # board server + build, wake, bin/ scripts
-    npm:        { tested: "11.19.0", with: node }                         # paseo install, board build, workers' npm ci
-    jq:         { install: system, check: presence }                      # `jq --version` prints "jq-" here: presence only
-    tmux:       { install: system, tested: "next-3.4" }
-    bubblewrap: { install: system, tested: "0.10.0", required: true }      # Claude Code sandbox for workers (failIfUnavailable)
-    socat:      { install: system, tested: "1.7.4.4", required: true }     # sandbox network proxy
-    claude:     { install: claude-install-script, tested: "2.1.317", path: "~/.local/bin/claude" }
-    paseo:      { install: "npm i -g @getpaseo/cli", tested: "0.13.0" }   # lands in the npm global prefix
-    merman-cli: { install: "github-release Latias94/merman v0.9.3 (merman-cli-<arch>-unknown-linux-gnu.tar.xz + .sha256)",
-                  version: "0.9.3", path: "~/.local/share/merman/<version>/, linked as ~/.local/bin/merman-cli",
-                  why: "board renders mermaid server-side (MERMAN_BIN)", licence: "MIT/Apache; prebuilt includes EPL-2.0 ELK layout" }
-    process-compose: { install: "github-release F1bonacc1/process-compose", status: "not installed yet: step 2" }
-    portless:   { status: "not installed yet: step 2" }
-    docker:     { min: "28", tested: "28.5.2", when: "access == domain" }   # domain mode on the first machine goes through
-                                                                            # Dokploy's Traefik (see notes); also headless
-                                                                            # browser screenshots (playwright image)
-    cloudflared: { tested: "2026.10.3", when: "access == domain", optional: true }   # installed, but NOT used by domain
-                                                                                      # mode today (no tunnel): question
-    tailscale:  { install: tailscale-install-script, when: "access == tailscale" }    # not on the first machine
-    python3:    { tested: "3.12.15", needed_by: brain }   # brain's bin/cf and bin/guard are Python; mm needs none
+  tools:   # doctor: present (+ version >= min); onboard: installs what is missing, into ~/.mm (never system-wide
+           # except `system` packages). `tested` = the version on the first machine, 2026-11-03.
+    git:        { required: true, min: "2.40", tested: "2.52.0", version: ["git", "--version"] }
+    curl:       { required: true, tested: "8.12.1", version: ["curl", "--version"] }
+    tar:        { install: { kind: system, packages: { dnf: tar, apt: tar, apk: tar } } }            # unpacks releases
+    xz:         { install: { kind: system, packages: { dnf: xz, apt: xz-utils, apk: xz } } }       # .tar.xz releases
+    jq:         { install: { kind: system, packages: { dnf: jq, apt: jq, apk: jq } } }            # first machine prints "jq-": presence only
+    tmux:       { tested: "next-3.4", install: { kind: system, packages: { dnf: tmux, apt: tmux, apk: tmux } } }
+    bwrap:      { required: true, tested: "0.10.0", version: ["bwrap", "--version"],             # Claude Code sandbox for workers
+                  install: { kind: system, packages: { dnf: bubblewrap, apt: bubblewrap, apk: bubblewrap } } }
+    socat:      { required: true, tested: "1.7.4.4",                                               # sandbox network proxy
+                  install: { kind: system, packages: { dnf: socat, apt: socat, apk: socat } } }
+    node:       { required: true, min: "24", tested: "24.21.0", version: ["node", "--version"],   # board, wake, bin/ scripts
+                  install: { kind: node-dist, version: "24.21.0" } }
+    npm:        { tested: "11.19.0", with: node, version: ["npm", "--version"] }
+    claude:     { required: true, tested: "2.1.317", version: ["claude", "--version"],
+                  install: { kind: script, url: "https://claude.ai/install.sh", note: "installs ~/.local/bin/claude" } }
+    paseo:      { required: true, tested: "0.13.0", version: ["paseo", "--version"],
+                  install: { kind: npm, package: "@getpaseo/cli" } }
+    portless:   { required: true, tested: "0.15.13", version: ["portless", "--version"],         # HTTP names + PORT
+                  install: { kind: npm, package: "portless@0.15.13" } }
+    process-compose: { required: true, version: ["process-compose", "version", "--short"], tested: "1.124.0",
+                  install: { kind: github-release, repo: F1bonacc1/process-compose, tag: v1.124.0,
+                             asset: "process-compose_linux_{goarch}.tar.gz", checksums: process-compose_checksums.txt,
+                             binary: process-compose } }
+    merman-cli: { required: true, version: ["merman-cli", "--version"], tested: "0.9.3",             # board mermaid (MERMAN_BIN)
+                  install: { kind: github-release, repo: Latias94/merman, tag: v0.9.3,
+                             asset: "merman-cli-{rustarch}-unknown-linux-gnu.tar.xz", checksum_suffix: .sha256,
+                             binary: "merman-cli-{rustarch}-unknown-linux-gnu/merman-cli" },
+                  licence: "MIT/Apache; prebuilt includes EPL-2.0 ELK layout" }
+    docker:     { when: "access == domain", min: "28", tested: "28.5.2", version: ["docker", "--version"] }  # Traefik (Dokploy) router
+    cloudflared: { when: "access == domain", optional: true, tested: "2026.10.3", version: ["cloudflared", "--version"] }  # tunnel variant
+    tailscale:  { when: "access == tailscale", version: ["tailscale", "version"],
+                  install: { kind: script, url: "https://tailscale.com/install.sh", root: true } }
+    python3:    { optional: true, tested: "3.12.15", needed_by: brain }   # brain's bin/cf and bin/guard; mm needs none
 
   paths:
     brain:    { path: "~/brain", git: "git@github.com:lagz0ne/mastermind.git" }   # private; no remote configured yet
@@ -59,7 +71,7 @@ machine:
     - { path: "~/brain/.keys/.cf",            used_by: "brain/bin/cf (Cloudflare API token)" }
     - { path: "~/brain/.keys/.telebot",       used_by: "paseo-telegram bridge (Telegram bot token)" }
     - { path: "~/.config/secrets/expose.pass", used_by: "expose --auth (basic auth for protected public services)" }
-    - { path: "~/.claude/.credentials.json",   managed_by: claude }
+    - { path: "~/.config/secrets/claude-oauth.token", used_by: "CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`; shell + paseo service)" }
     - { path: "~/.paseo/daemon-keypair.json",  managed_by: paseo }
     - { path: "~/.paseo/local-credential",     managed_by: paseo }
 
@@ -68,7 +80,7 @@ machine:
     paseo-telegram: { unit: paseo-telegram.service }      # Telegram -> Paseo bridge
     preview-http:   { unit: preview-http.service }        # static review pages (~/.local/share/preview)
     brain-snapshot: { unit: brain-snapshot.timer }
-    process-compose: { status: "step 2: one boot unit, API on ~/.mm/pc.sock, a namespace per project" }
+    mm-pc:          { unit: mm-pc.service, socket: "~/.mm/pc.sock" }   # the one process-compose; a namespace per project
   system:                                     # root-level on the first machine (brain migrations), domain mode only
     - "firewall: 80/443 accepted from Cloudflare ranges only (DOCKER-USER -> BRAIN-CF), refreshed daily"
     - "Dokploy (docker swarm) + Traefik file-provider routes, written by `expose <name> <port> [--auth]`"

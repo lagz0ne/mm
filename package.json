@@ -1,0 +1,21 @@
+{
+  "name": "mm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Set up the stack on a machine and stamp projects from the template.",
+  "bin": {
+    "mm": "src/cli.ts"
+  },
+  "scripts": {
+    "build": "bun build src/cli.ts --compile --outfile dist/mm",
+    "check": "bun x tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^15.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}
