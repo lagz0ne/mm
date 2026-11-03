@@ -1,0 +1,69 @@
+#!/bin/sh
+# mm shim: puts the mm binary for this OS/arch in ~/.mm/bin (once, or when MM_VERSION asks for another), then runs it.
+# Needs only sh, curl and sha256sum/shasum.
+#
+#   curl -fsSL https://raw.githubusercontent.com/lagz0ne/mm/main/bin/mm | sh                  install, then `mm` (first run: onboard)
+#   curl -fsSL https://raw.githubusercontent.com/lagz0ne/mm/main/bin/mm | sh -s -- doctor      install, then any mm command
+#   MM_VERSION=v0.1.0 ... | sh                                                                 a given release (default: latest)
+#
+# Releases carry two builds per platform: mm-<os>-<arch> (ahead-of-time compiled, trimmed) and mm-<os>-<arch>-jit
+# (plain `bun build --compile`). The shim takes the first and falls back to the second if it does not run here.
+set -eu
+REPO=${MM_REPO:-lagz0ne/mm}
+MM_HOME=${MM_HOME:-$HOME/.mm}
+BIN=$MM_HOME/bin/mm
+VERSION=${MM_VERSION:-latest}
+
+say() { printf 'mm: %s\n' "$*" >&2; }
+die() { say "$*"; exit 1; }
+
+case "$(uname -s)" in
+  Linux) os=linux ;;
+  Darwin) os=darwin ;;
+  *) die "unsupported OS: $(uname -s) (Linux and macOS; on Windows use WSL)" ;;
+esac
+case "$(uname -m)" in
+  x86_64 | amd64) arch=x64 ;;
+  aarch64 | arm64) arch=arm64 ;;
+  *) die "unsupported CPU: $(uname -m)" ;;
+esac
+# an x64 shell under Rosetta on Apple silicon: use the native build
+[ "$os" = darwin ] && [ "$arch" = x64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ] && arch=arm64
+
+wanted() {
+  [ -x "$BIN" ] || return 0
+  [ "$VERSION" = latest ] && return 1
+  [ "$("$BIN" --version 2>/dev/null || true)" = "${VERSION#v}" ] && return 1
+  return 0
+}
+
+sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+
+fetch() { # fetch <asset> <dest>: download and verify against <asset>.sha256
+  curl -fsSL "$BASE/$1" -o "$2" || return 1
+  want=$(curl -fsSL "$BASE/$1.sha256" | cut -d' ' -f1) || return 1
+  [ "$(sha "$2")" = "$want" ] || { rm -f "$2"; say "checksum mismatch for $1"; return 1; }
+  chmod 755 "$2"
+}
+
+if wanted; then
+  command -v curl >/dev/null 2>&1 || die "needs curl"
+  if [ "$VERSION" = latest ]; then BASE=https://github.com/$REPO/releases/latest/download
+  else BASE=https://github.com/$REPO/releases/download/$VERSION; fi
+  mkdir -p "$MM_HOME/bin"
+  tmp=$MM_HOME/bin/.mm.download.$$
+  trap 'rm -f "$tmp"' EXIT
+  asset=mm-$os-$arch
+  if ! { fetch "$asset" "$tmp" && "$tmp" --version >/dev/null 2>&1; }; then
+    say "$asset does not run here; trying $asset-jit"
+    asset=$asset-jit
+    fetch "$asset" "$tmp" && "$tmp" --version >/dev/null 2>&1 || die "could not install $asset from $BASE"
+  fi
+  mv -f "$tmp" "$BIN"
+  trap - EXIT
+  say "installed $asset $("$BIN" --version) -> $BIN"
+fi
+
+# Piped in (curl | sh): stdin is this script, so hand mm the terminal when there is one.
+if [ ! -t 0 ] && (: </dev/tty) 2>/dev/null; then exec "$BIN" "$@" </dev/tty; fi
+exec "$BIN" "$@"

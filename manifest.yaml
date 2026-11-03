@@ -78,7 +78,7 @@ machine:
     python3:    { optional: true, tested: "3.12.15", needed_by: brain }   # brain's bin/cf and bin/guard; mm needs none
 
   paths:
-    brain:    { path: "~/brain", git: "git@github.com:lagz0ne/mastermind.git" }   # private; no remote configured yet
+    brain:    { path: "~/brain", synced_to: "lagz0ne/mastermind (private; brain/ subtree, synced by the brain)" }  # no remote by design
     projects: { path: "~/projects" }
     mm:       { path: "~/.mm" }                     # bin/ (mm binary), pc.sock (process-compose API): step 2
     tool_store: { path: "~/.local/share/<tool>/<version>" }     # versioned installs, linked into ~/.local/bin

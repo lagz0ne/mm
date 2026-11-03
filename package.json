@@ -10,7 +10,8 @@
   "scripts": {
     "build": "bun scripts/pack-template.ts && bun build src/cli.ts --compile --outfile dist/mm",
     "check": "bun x tsc --noEmit",
-    "pack": "bun scripts/pack-template.ts"
+    "pack": "bun scripts/pack-template.ts",
+    "build:aot": "bun scripts/pack-template.ts && bun compile --trim src/cli.ts --outfile dist/mm"
   },
   "dependencies": {
     "commander": "^15.0.0"

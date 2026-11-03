@@ -165,7 +165,7 @@ obs.command('slow').description('slowest operations (p95 by span name)').option(
     const rows = await tracesql(`_time:${opts.since}${f} name:* | stats by ("resource_attr:service.name", name) count() as n, quantile(0.95, duration) as p95_ns, max(duration) as max_ns | sort by (p95_ns desc) | limit 25`)
     print(rows.map((r) => ({ service: r['resource_attr:service.name'], op: r.name, n: r.n, p95_ms: Math.round(Number(r.p95_ns) / 1e6), max_ms: Math.round(Number(r.max_ns) / 1e6) })), o)
   })
-obs.command('logs').description('recent log lines (LogsQL filter optional)').argument('[query]', 'LogsQL, e.g. \'project:"tripglobal-create" service:board\'')
+obs.command('logs').description('recent log lines (LogsQL filter optional)').argument('[query]', 'LogsQL, e.g. \'project:"acme-shop" service:board\'')
   .option('--since <dur>', 'window', '15m').option('-n, --lines <n>', 'lines', '50')
   .action(async (q: string | undefined, opts) => {
     const rows = await logsql(`_time:${opts.since}${q ? ` ${q}` : ''} | sort by (_time desc) | limit ${Number(opts.lines)}`)

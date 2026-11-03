@@ -1,0 +1,105 @@
+# CI: every push and PR is checked; a version tag (v*) builds mm natively on each platform and publishes a Release.
+#   Release assets per platform: mm-<os>-<arch> (bun compile --trim: ahead-of-time, unused APIs removed) and
+#   mm-<os>-<arch>-jit (bun build --compile, the fallback), each with a .sha256; plus SHA256SUMS and the bin/mm shim.
+name: ci
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: canary }
+      - run: bun install --frozen-lockfile
+      - name: types (after packing the template the source imports)
+        run: bun scripts/pack-template.ts && bun x tsc --noEmit
+      - name: template engine parses
+        run: |
+          for f in template/bin/*; do
+            [ -f "$f" ] || continue
+            case "$(head -1 "$f")" in *node*) node --check "$f" ;; *sh*) sh -n "$f" ;; esac
+          done
+          for f in template/bin/lib/*.mjs template/site/*.mjs; do node --check "$f"; done
+          sh -n bin/mm
+      - name: no machine paths in the public tree (private names are checked before push, outside this repo)
+        run: |
+          ! git grep -nIE '/home/[a-z_][a-z0-9_-]*/|/Users/[A-Za-z]' -- src template manifest.yaml bin scripts
+      - name: build + smoke
+        run: |
+          bun build src/cli.ts --compile --outfile dist/mm
+          dist/mm --version
+          dist/mm --help >/dev/null
+          MM_HOME=$RUNNER_TEMP/mm dist/mm doctor -o json > doctor.json || true
+          jq -e 'length > 10' doctor.json
+
+  build:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: linux-x64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: macos-15, target: darwin-arm64 }
+          - { os: macos-15-intel, target: darwin-x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: canary }
+      - run: bun install --frozen-lockfile
+      - name: version matches the tag
+        shell: bash
+        run: test "v$(jq -r .version package.json)" = "$GITHUB_REF_NAME"
+      - run: bun scripts/pack-template.ts
+      - name: build (jit, the fallback)
+        shell: bash
+        run: |
+          mkdir -p out
+          bun build src/cli.ts --compile --outfile out/mm-${{ matrix.target }}-jit
+          test "$(out/mm-${{ matrix.target }}-jit --version)" = "${GITHUB_REF_NAME#v}"
+      - name: build (aot + trim); falls back to the jit build if it fails or does not run
+        shell: bash
+        run: |
+          if bun compile --trim src/cli.ts --outfile out/aot && test "$(out/aot --version)" = "${GITHUB_REF_NAME#v}" \
+             && out/aot --help >/dev/null; then
+            mv out/aot out/mm-${{ matrix.target }}
+          else
+            echo "::warning::aot build failed on ${{ matrix.target }}; shipping the jit build under both names"
+            cp out/mm-${{ matrix.target }}-jit out/mm-${{ matrix.target }}
+          fi
+      - name: checksums
+        shell: bash
+        run: |
+          cd out
+          for f in mm-*; do
+            if command -v sha256sum >/dev/null; then sha256sum "$f"; else shasum -a 256 "$f"; fi > "$f.sha256"
+          done
+          ls -la
+      - uses: actions/upload-artifact@v4
+        with: { name: 'mm-${{ matrix.target }}', path: out/* }
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: out, merge-multiple: true }
+      - name: publish
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          cd out && cat mm-*.sha256 | sort -k2 > SHA256SUMS && cp ../bin/mm mm-shim.sh && ls -la
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "mm $GITHUB_REF_NAME" --generate-notes \
+            mm-* SHA256SUMS
