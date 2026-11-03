@@ -4,6 +4,7 @@
 import http from 'node:http'
 import { execFile, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
+import zlib from 'node:zlib'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -97,9 +98,12 @@ function who(req) {
   return typeof email === 'string' && email ? email.split('@')[0] : ACTOR
 }
 
+// JSON responses; gzip when the client accepts it and it is worth it.
 function send(res, code, obj) {
-  res.writeHead(code, { 'content-type': 'application/json' })
-  res.end(JSON.stringify(obj))
+  const body = JSON.stringify(obj)
+  const gz = body.length > 1024 && /\bgzip\b/.test(res.req?.headers['accept-encoding'] || '')
+  res.writeHead(code, { 'content-type': 'application/json', ...(gz ? { 'content-encoding': 'gzip', vary: 'accept-encoding' } : {}) })
+  res.end(gz ? zlib.gzipSync(body) : body)
 }
 
 async function readBody(req) {
@@ -136,28 +140,39 @@ async function proxy(req, res, apiPath, search) {
   up.end(body)
 }
 
-// Leads: the Paseo agent labelled project=<PROJECT> role=<role> (newest first). Cached briefly; `paseo ls` is ~0.3s.
-function paseoLs(role) {
-  const args = ['ls', '-g', '--label', `project=${PROJECT}`, '--label', `role=${role}`, '--json']
-  return new Promise((ok) => execFile(PASEO, args, { timeout: 8000 }, (err, out) => {
-    try { ok(err ? null : JSON.parse(out)) } catch { ok(null) }
-  }))
+// Agents of this project, kept fresh in the background: ONE `paseo ls` every few seconds (each call costs ~0.6 s of
+// CLI start-up), never on a request's path. Roles come from where an agent runs: leads/<role>, setup/, or a worker's
+// worktrees/w-<item>.
+let agents = { at: 0, data: null }
+const HOME_DIR = process.env.HOME || ''
+function pollAgents() {
+  execFile(PASEO, ['ls', '-g', '--json'], { timeout: 15000, maxBuffer: 16 << 20 }, (err, out) => {
+    try {
+      if (!err) {
+        const list = JSON.parse(out)
+        const data = Object.fromEntries([...ROLES, 'setup'].map((r) => [r, null]))
+        data._workers = []
+        const workerRole = ROLE_DEFS.find((r) => r.workers)?.id || 'code'
+        for (const a of list) {
+          const cwd = String(a.cwd || '').replace(/^~(?=\/|$)/, HOME_DIR)
+          if (cwd !== ROOT && !cwd.startsWith(ROOT + '/')) continue
+          const rel = cwd.slice(ROOT.length + 1)
+          const info = { id: a.shortId || a.id, name: a.name, status: a.status, provider: a.provider, thinking: a.thinking, cwd: a.cwd, created: a.created }
+          let m
+          if ((m = /^leads\/([\w-]+)$/.exec(rel)) && m[1] in data && !data[m[1]]) data[m[1]] = info
+          else if (rel === 'setup' && !data.setup) data.setup = info
+          else if ((m = /^worktrees\/w-(.+)$/.exec(rel))) data._workers.push({ id: info.id, role: workerRole, status: a.status, item: m[1] })
+        }
+        agents = { at: Date.now(), data }
+      }
+    } catch {}
+    setTimeout(pollAgents, 4000)
+  })
 }
-let leadCache = { at: 0, data: null }
+pollAgents()
 async function leads() {
-  if (leadCache.data && Date.now() - leadCache.at < 4000) return leadCache.data
-  const AGENTS = [...ROLES, 'setup']
-  const lists = await Promise.all(AGENTS.map(paseoLs))
-  const data = Object.fromEntries(AGENTS.map((r, i) => {
-    const a = (lists[i] || [])[0]
-    return [r, a ? { id: a.shortId || a.id, name: a.name, status: a.status, provider: a.provider, thinking: a.thinking, cwd: a.cwd, created: a.created } : null]
-  }))
-  // Workers of any role that works through them (roles.json `workers: true`), labelled role=<role>-worker.
-  const wroles = ROLE_DEFS.filter((r) => r.workers).map((r) => r.id)
-  const wl = await Promise.all(wroles.map((r) => paseoLs(`${r}-worker`)))
-  data._workers = wroles.flatMap((r, i) => (wl[i] || []).map((a) => ({ id: a.shortId || a.id, role: r, status: a.status, item: (/worker (\S+)$/.exec(a.name) || [])[1] || '' })))
-  leadCache = { at: Date.now(), data }
-  return data
+  for (let i = 0; !agents.data && i < 50; i++) await new Promise((r) => setTimeout(r, 100)) // first poll only
+  return agents.data || Object.fromEntries([...ROLES, 'setup'].map((r) => [r, null]))
 }
 
 // From the Beads event journal: who created each item (bd serve leaves created_by empty) and the last comment.
@@ -330,31 +345,34 @@ function summarise(line) {
   if (tool === 'user') return 'reading new messages'
   return 'working'
 }
+// Presence, also refreshed in the background (every 3 s): for each running agent, its item and its latest activity.
 let presenceCache = { at: 0, data: [] }
-async function sendPresence(res) {
-  if (Date.now() - presenceCache.at < 2500) return send(res, 200, { agents: presenceCache.data })
-  const [l] = await Promise.all([leads(), refreshMeta().catch(() => {})])
-  let wakeState = {}
-  try { wakeState = JSON.parse(fs.readFileSync(path.join(ROOT, '.wake-state.json'), 'utf8')) } catch {}
-  const running = [
-    ...Object.entries(l).filter(([k, a]) => k !== '_workers' && a && a.status === 'running').map(([role, a]) => ({ actor: role, kind: 'lead', id: a.id })),
-    ...(l._workers || []).filter((w) => w.status === 'running').map((w) => ({ actor: `${w.role}/worker`, kind: 'worker', id: w.id, item: w.item })),
-  ]
-  const tail = (id) => new Promise((ok) => execFile(PASEO, ['logs', id], { timeout: 8000, maxBuffer: 16 << 20 }, (e, out) => {
-    const lines = (e ? '' : out).split('\n').filter((x) => x.trim())
-    ok(lines[lines.length - 1] || '')
-  }))
-  const data = await Promise.all(running.map(async (r) => {
-    let item = r.item
-    if (!item) {
-      const w = wakeState[r.actor], act = meta.lastAct[r.actor]
-      item = act && (!w || act.at >= w.at) ? act.item : w?.items?.[0]
+async function pollPresence() {
+  try {
+    const l = agents.data
+    if (l) {
+      await refreshMeta().catch(() => {})
+      let wakeState = {}
+      try { wakeState = JSON.parse(fs.readFileSync(path.join(ROOT, '.wake-state.json'), 'utf8')) } catch {}
+      const running = [
+        ...Object.entries(l).filter(([k, a]) => k !== '_workers' && a && a.status === 'running').map(([role, a]) => ({ actor: role, kind: 'lead', id: a.id })),
+        ...(l._workers || []).filter((w) => w.status === 'running').map((w) => ({ actor: `${w.role}/worker`, kind: 'worker', id: w.id, item: w.item })),
+      ]
+      const tail = (id) => new Promise((ok) => execFile(PASEO, ['logs', id], { timeout: 8000, maxBuffer: 16 << 20 }, (e, out) => {
+        const lines = (e ? '' : out).split('\n').filter((x) => x.trim())
+        ok(lines[lines.length - 1] || '')
+      }))
+      presenceCache = { at: Date.now(), data: await Promise.all(running.map(async (r) => {
+        let item = r.item
+        if (!item) { const w = wakeState[r.actor], act = meta.lastAct[r.actor]; item = act && (!w || act.at >= w.at) ? act.item : w?.items?.[0] }
+        return { ...r, item: item || null, doing: summarise(await tail(r.id)) }
+      })) }
     }
-    return { ...r, item: item || null, doing: summarise(await tail(r.id)) }
-  }))
-  presenceCache = { at: Date.now(), data }
-  send(res, 200, { agents: data })
+  } catch {}
+  setTimeout(pollPresence, 3000)
 }
+pollPresence()
+function sendPresence(res) { send(res, 200, { agents: presenceCache.data }) }
 
 // Links to this project's public services (services.json `public`), using the public URLs the machine assigned.
 function sendLinks(res) {
@@ -449,13 +467,22 @@ function serveFile(res, urlPath) {
   let file = path.join(DIST, path.normalize(urlPath).replace(/^(\.\.[/\\])+/, ''))
   if (!file.startsWith(DIST) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(DIST, 'index.html')
   const ext = path.extname(file)
-  res.writeHead(200, { 'content-type': TYPES[ext] || 'application/octet-stream',
-    'cache-control': file.includes(`${path.sep}assets${path.sep}`) ? 'public, max-age=31536000, immutable' : 'no-cache' })
-  fs.createReadStream(file).pipe(res)
+  const hashed = file.includes(`${path.sep}assets${path.sep}`)
+  // pre-compressed copies from the build (compress.mjs): brotli, else gzip
+  const accept = String(res.req?.headers['accept-encoding'] || '')
+  const enc = /\bbr\b/.test(accept) && fs.existsSync(file + '.br') ? 'br' : /\bgzip\b/.test(accept) && fs.existsSync(file + '.gz') ? 'gzip' : null
+  res.writeHead(200, { 'content-type': TYPES[ext] || 'application/octet-stream', vary: 'accept-encoding',
+    'cache-control': hashed ? 'public, max-age=31536000, immutable' : 'no-cache', ...(enc ? { 'content-encoding': enc } : {}) })
+  fs.createReadStream(enc ? file + (enc === 'br' ? '.br' : '.gz') : file).pipe(res)
 }
 
 let cfg
-http.createServer(async (req, res) => {
+http.createServer((req, res) => handle(req, res).catch((e) => {
+  console.error(`request ${req.method} ${req.url} failed:`, e)
+  try { if (!res.headersSent) send(res, 500, { title: 'internal error' }); else res.end() } catch {}
+})).listen(PORT, HOST, () => console.log(`board on http://${HOST}:${PORT} -> ${BD.href} as ${ACTOR}`))
+
+async function handle(req, res) {
   if (ACCESS_TEAM && ACCESS_AUD) {
     req.accessEmail = await accessEmail(req)
     if (!req.accessEmail) return send(res, 403, { title: 'Cloudflare Access login required' })
@@ -477,7 +504,7 @@ http.createServer(async (req, res) => {
   if (url.pathname === '/api/meta' && req.method === 'GET') return sendMeta(res)
   if (url.pathname === '/api/links' && req.method === 'GET') return sendLinks(res)
   if (url.pathname === '/api/mermaid' && req.method === 'POST') return sendMermaid(req, res, url).catch((e) => send(res, 500, { error: e.message }))
-  if (url.pathname === '/api/presence' && req.method === 'GET') return sendPresence(res).catch((e) => send(res, 500, { title: e.message }))
+  if (url.pathname === '/api/presence' && req.method === 'GET') return sendPresence(res)
   const wm = /^\/api\/workers\/([\w.-]+)$/.exec(url.pathname)
   if (wm && req.method === 'GET') return sendWorkers(res, wm[1]).catch((e) => send(res, 500, { title: e.message }))
   const cm = /^\/api\/content\/([\w.-]+)$/.exec(url.pathname)
@@ -486,4 +513,4 @@ http.createServer(async (req, res) => {
   if (url.pathname === '/api/settings' && req.method === 'GET') return sendSettings(res).catch((e) => send(res, 500, { title: e.message }))
   if (url.pathname.startsWith('/api/')) return proxy(req, res, url.pathname.slice(4), url.search)
   serveFile(res, url.pathname)
-}).listen(PORT, HOST, () => console.log(`board on http://${HOST}:${PORT} -> ${BD.href} as ${ACTOR}`))
+}

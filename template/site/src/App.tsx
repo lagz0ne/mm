@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUpRightIcon, ChatCircleIcon, LinkSimpleIcon, PlusIcon } from '@phosphor-icons/react'
 import { toast } from 'sonner'
 import { api, blockers, type BeadEvent, type Issue, type Meta } from '@/lib/api'
@@ -8,13 +8,16 @@ import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Toaster } from '@/components/ui/sonner'
 import { cn } from '@/lib/utils'
-import { Detail } from '@/Detail'
 import { NewItem } from '@/NewItem'
-import { Leads } from '@/Leads'
 import { Identify } from '@/Identify'
 import { Avatar, PersonaContext, personaOf } from '@/lib/persona'
 import { CardPresence, NowStrip, PresenceBar, PresenceContext, RowPresence, usePresenceFeed } from '@/Presence'
 
+// Heavy parts load on demand (markdown, diffs, RACI, settings), and are prefetched once the board is idle.
+const loadDetail = () => import('@/Detail'), loadLeads = () => import('@/Leads')
+const Detail = lazy(() => loadDetail().then((m) => ({ default: m.Detail })))
+const Leads = lazy(() => loadLeads().then((m) => ({ default: m.Leads })))
+if (typeof window !== 'undefined') window.addEventListener('load', () => setTimeout(() => { loadDetail(); loadLeads() }, 1500))
 const EMPTY_META: Meta = { project: '', leads: {}, creators: {}, last: {} }
 const SLOW_MIN = 15 // a ready item nobody picked up for this long turns red
 
@@ -40,8 +43,9 @@ export default function App() {
 
   const load = useCallback(async () => {
     try {
-      const [open, closed, rdy, m] = await Promise.all([api.open(), api.closed(), api.ready(), api.meta().catch(() => null)])
-      if (m) { setRoleDefs(m.roles); setMeta(m) }
+      // items first: never hold the board back for agents/personas (meta fills in when it arrives)
+      api.meta().then((m) => { setRoleDefs(m.roles); setMeta(m) }).catch(() => {})
+      const [open, closed, rdy] = await Promise.all([api.open(), api.closed(), api.ready()])
       setIssues([...open, ...closed])
       setReady(new Set(rdy.map((i) => i.id)))
       setTick((t) => t + 1)
@@ -173,7 +177,7 @@ export default function App() {
         </dl>
       </header>
 
-      {view === 'leads' ? <Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /> : (<>
+      {view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
       <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-6 py-2.5">
         <ToggleGroup type="single" value={role} onValueChange={(v) => v && setRole(v)} variant="outline" size="sm" spacing={0}>
           <ToggleGroupItem value="all">All</ToggleGroupItem>
@@ -247,7 +251,7 @@ export default function App() {
       </div>
       </>)}
 
-      <Detail id={openId} tick={tick} byId={byId} creator={openId ? meta.creators[openId] : undefined} onClose={() => setOpenId(null)} onOpen={setOpenId} onChanged={load} />
+      {openId && <Suspense fallback={null}><Detail id={openId} tick={tick} byId={byId} creator={meta.creators[openId]} onClose={() => setOpenId(null)} onOpen={setOpenId} onChanged={load} /></Suspense>}
       <NewItem open={creating} onOpenChange={setCreating} epics={epics} defaultRole={role === 'all' ? '' : role}
         onCreated={(i) => { load(); toast.success(`Created ${i.id}`) }} />
       <Identify open={identifying} current={idSource === 'self' ? actor : ''} onOpenChange={setIdentifying}
