@@ -1,0 +1,144 @@
+# mm manifest v1 (step 1)
+# Read by `mm doctor` (check) and `mm onboard` / `mm new` (fix).
+# Facts verified on the first machine (Linux x86_64, Rocky Linux 10.2) on 2026-11-03: every `tested:` version,
+# path, secret name and service below is what is there today. Machine-specific values (host name, domain, IPs,
+# fixed ports) are deliberately NOT in this file: they are vars, or runtime state written by the process manager.
+# Rule: names only for secrets, never values.
+#
+# Layers:
+#   kernel = guard rails (config-check + hook, land/wt/deploy, bin/lead, wake's limits, board server rules, setup/)
+#   engine = generic code (board, wake, tools in bin/): no project, role or machine literals
+#   data   = per project: roles.json, raci.json, personas.json, briefs, skills, settings.tmpl.json,
+#            services file, tools.json, secrets.json  (owned by the project's setup agent, except services/tools)
+
+version: 1
+platforms: [linux-x64, linux-arm64]          # later: darwin-arm64, darwin-x64, wsl (= linux)
+
+# ---------- Layer 1: machine (one per machine, shared by all clients) ----------
+machine:
+  vars:
+    host:      { ask: "Machine name", default: "$(hostname -s)" }
+    home:      { default: "$HOME" }
+    access:    { ask: "Access mode", choices: [tailscale, domain] }      # first machine: domain
+    domain:    { ask: "Domain", when: "access == domain" }
+    bind_host: { default: "127.0.0.1" }   # where project HTTP services listen. First machine (domain mode) binds the
+                                          # docker bridge gateway so its web proxy can reach them; see notes.domain_mode
+
+  tools:                                      # doctor: present (+ version >= min); onboard: install if `install` given
+    git:        { min: "2.40", tested: "2.52.0", required: true }
+    curl:       { tested: "8.12.1", required: true }
+    node:       { min: "24", tested: "24.21.0", install: nodejs-dist }      # board server + build, wake, bin/ scripts
+    npm:        { tested: "11.19.0", with: node }                         # paseo install, board build, workers' npm ci
+    jq:         { install: system, check: presence }                      # `jq --version` prints "jq-" here: presence only
+    tmux:       { install: system, tested: "next-3.4" }
+    bubblewrap: { install: system, tested: "0.10.0", required: true }      # Claude Code sandbox for workers (failIfUnavailable)
+    socat:      { install: system, tested: "1.7.4.4", required: true }     # sandbox network proxy
+    claude:     { install: claude-install-script, tested: "2.1.317", path: "~/.local/bin/claude" }
+    paseo:      { install: "npm i -g @getpaseo/cli", tested: "0.13.0" }   # lands in the npm global prefix
+    merman-cli: { install: "github-release Latias94/merman v0.9.3 (merman-cli-<arch>-unknown-linux-gnu.tar.xz + .sha256)",
+                  version: "0.9.3", path: "~/.local/share/merman/<version>/, linked as ~/.local/bin/merman-cli",
+                  why: "board renders mermaid server-side (MERMAN_BIN)", licence: "MIT/Apache; prebuilt includes EPL-2.0 ELK layout" }
+    process-compose: { install: "github-release F1bonacc1/process-compose", status: "not installed yet: step 2" }
+    portless:   { status: "not installed yet: step 2" }
+    docker:     { min: "28", tested: "28.5.2", when: "access == domain" }   # domain mode on the first machine goes through
+                                                                            # Dokploy's Traefik (see notes); also headless
+                                                                            # browser screenshots (playwright image)
+    cloudflared: { tested: "2026.10.3", when: "access == domain", optional: true }   # installed, but NOT used by domain
+                                                                                      # mode today (no tunnel): question
+    tailscale:  { install: tailscale-install-script, when: "access == tailscale" }    # not on the first machine
+    python3:    { tested: "3.12.15", needed_by: brain }   # brain's bin/cf and bin/guard are Python; mm needs none
+
+  paths:
+    brain:    { path: "~/brain", git: "git@github.com:lagz0ne/mastermind.git" }   # private; no remote configured yet
+    projects: { path: "~/projects" }
+    mm:       { path: "~/.mm" }                     # bin/ (mm binary), pc.sock (process-compose API): step 2
+    tool_store: { path: "~/.local/share/<tool>/<version>" }     # versioned installs, linked into ~/.local/bin
+    backups:  { path: "~/.local/share/backups/<project>" }      # written by <project>/bin/backup
+
+  secrets:                                    # doctor: file exists, mode 600, not tracked by git. Names only.
+    - { path: "~/brain/.keys/.cf",            used_by: "brain/bin/cf (Cloudflare API token)" }
+    - { path: "~/brain/.keys/.telebot",       used_by: "paseo-telegram bridge (Telegram bot token)" }
+    - { path: "~/.config/secrets/expose.pass", used_by: "expose --auth (basic auth for protected public services)" }
+    - { path: "~/.claude/.credentials.json",   managed_by: claude }
+    - { path: "~/.paseo/daemon-keypair.json",  managed_by: paseo }
+    - { path: "~/.paseo/local-credential",     managed_by: paseo }
+
+  services:                                   # machine-level (brain), today as systemd user units
+    paseo:          { unit: paseo.service }               # agent daemon
+    paseo-telegram: { unit: paseo-telegram.service }      # Telegram -> Paseo bridge
+    preview-http:   { unit: preview-http.service }        # static review pages (~/.local/share/preview)
+    brain-snapshot: { unit: brain-snapshot.timer }
+    process-compose: { status: "step 2: one boot unit, API on ~/.mm/pc.sock, a namespace per project" }
+  system:                                     # root-level on the first machine (brain migrations), domain mode only
+    - "firewall: 80/443 accepted from Cloudflare ranges only (DOCKER-USER -> BRAIN-CF), refreshed daily"
+    - "Dokploy (docker swarm) + Traefik file-provider routes, written by `expose <name> <port> [--auth]`"
+
+# ---------- Layer 2: project (many per client; made by `mm new <client>/<name>`) ----------
+project:
+  path: "~/projects/<client>/<name>"         # the first project (playground) predates clients: ~/projects/playground
+  vars:
+    client: { ask: "Client" }
+    name:   { ask: "Project name" }
+    short:  { ask: "Service prefix", default: "first 2 letters of name" }   # playground: "pg"
+    dolt_socket: { default: "{{project}}/.dolt/mysql.sock" }    # VERIFIED: bd reads/writes through it (BEADS_DOLT_SERVER_SOCKET)
+    dolt_port:   { default: "hash(client/name) in 38100-38999" }  # still needed: dolt exits without a TCP port (port 0
+                                                                   # fails). Loopback only; clients use the socket.
+    http_names:  { via: portless, pattern: "<service>.<project>.localhost" }   # board, app, bd-serve
+
+  tools:                                      # project-local in <project>/tools, NOT on PATH; facts in <project>/tools.json
+    bd:   { version: "1.3.2", repo: gastownhall/beads,
+            url: "https://github.com/gastownhall/beads/releases/download/v1.3.2/beads_1.3.2_linux_amd64.tar.gz",
+            sha256: "c6ea3281f6ff82628351b2d0967c9eb85862c8a0ec0ebc24e63e645c8b02462e" }
+    dolt: { version: "2.6.2", repo: dolthub/dolt,
+            url: "https://github.com/dolthub/dolt/releases/download/v2.6.2/dolt-linux-amd64.tar.gz",
+            sha256: "e27a7957b8626946a5022fe0ad6ce4bfb3c8f51544c7f1372b0e6db14c1549cf" }
+
+  repos:
+    root:    { kind: config, hook: "ops/githooks/pre-commit -> bin/config-check --render --staged",
+               gitignore_whitelist: [CLAUDE.md, leads/, ops/, bin/, site/, setup/, worktrees/CLAUDE.md,
+                                     services.json, tools.json, secrets.json] }
+    code:    { kind: product, branch: main,
+               worktrees: "lead-<role> for every role without workers (playground: architecture, design, ops, qa,
+                           requirement); w-<item> per worker (transient, bubblewrap profile); release/ = detached,
+                           moved only by bin/deploy" }
+    control: { kind: beads, init: "bin/init <short>" }   # git init + bd init --server --stealth + events-journal; tested
+
+  files:                                      # data, per project
+    roles: leads/roles.json
+    raci: [leads/raci.json, leads/RACI.md (generated)]
+    personas: leads/personas.json
+    permissions: "leads/<role>/.claude/settings.tmpl.json ({root} {home} {project} {url:<service>}) -> settings.json (generated)"
+    services: services.json                   # rename to services.yaml at step 3 (see notes.services_file)
+    tools: tools.json
+    secrets: secrets.json                     # names only
+    runtime: ".run/endpoints.json (written by the process manager; git-ignored)"
+
+  env:                                        # what bin/bd sets
+    BEADS_DIR: "{{project}}/control/.beads"
+    XDG_CONFIG_HOME: "{{project}}/.config"
+    DOLT_ROOT_PATH: "{{project}}/.dolt-root"
+    BEADS_DOLT_SERVER_SOCKET: "{{project}}/.dolt/mysql.sock   # when the socket exists"
+    PATH_prepend: "{{project}}/tools"
+    git_config: { beads.role: maintainer }
+
+  services:                                   # declared in the project's services file
+    names: [dolt, bd-serve, board, wake, app]  # app = optional slot
+    schedules: { health: 1m, backup: "daily 03:30" }   # process-compose has no scheduler: brain runs these
+    today: "systemd user units {{short}}-<service> + {{short}}-health/-backup timers (legacy; step 2 replaces them)"
+
+  checks:                                     # doctor per project
+    - "each service's ready probe (services file)"
+    - "bin/smoke-beads (bd HTTP /v0/beads/*)"
+    - "bin/config-check (governance rules; renders permission templates)"
+    - "worktrees: lead-<role> per non-worker role, on its branch; release/ exists"
+    - "backups: newest under ~/.local/share/backups/<project> is < 26h old"
+
+notes:
+  domain_mode: >
+    On the first machine, `domain` access = Cloudflare proxied wildcard DNS -> host :443, the firewall open to
+    Cloudflare only, and Dokploy's Traefik routing <name>.<domain> to services bound on the docker bridge gateway.
+    That is brain-owned machine setup, not cloudflared. mm needs a decision on how `domain` mode is provisioned.
+  services_file: >
+    The handover says services.yaml. Engine scripts are Node without dependencies and cannot parse YAML, so the
+    plan is: services.yaml is the source; mm (Bun.YAML) writes the resolved .run/services.json for the engine,
+    next to .run/endpoints.json.
