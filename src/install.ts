@@ -102,7 +102,7 @@ export async function install(name: string, spec: Install): Promise<string> {
     case 'github-release': {
       const asset = fill(spec.asset), base = `https://github.com/${spec.repo}/releases/download/${spec.tag}`
       let want: string | undefined
-      if (spec.checksums) want = new TextDecoder().decode(await download(`${base}/${spec.checksums}`)).split('\n').find((l) => l.trim().endsWith(asset))?.split(/\s+/)[0]
+      if (spec.checksums) want = new TextDecoder().decode(await download(`${base}/${fill(spec.checksums)}`)).split('\n').find((l) => l.trim().endsWith(asset))?.split(/\s+/)[0]
       else if (spec.checksum_suffix) want = new TextDecoder().decode(await download(`${base}/${asset}${spec.checksum_suffix}`)).trim().split(/\s+/)[0]
       if (!want) throw new Error(`no published checksum for ${asset}`)
       const dest = join(DIRS.tools, name, spec.tag)

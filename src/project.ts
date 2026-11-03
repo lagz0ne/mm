@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join } from 'node:path'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, run, toolPath } from './env'
+import { obsEndpoints } from './obs'
 import { writeBase } from './pc'
 import { renderTo, template, templateCommit } from './template'
 import pkg from '../package.json'
@@ -143,17 +144,22 @@ export function up(root: string): Step[] {
   const { answers: a, services, schedules, socket, pp, dport } = resolve(root)
   const steps: Step[] = []
   mkdirSync(join(root, '.run', 'logs'), { recursive: true }); mkdirSync(join(root, '.dolt'), { recursive: true }); mkdirSync(PROJECTS_PC, { recursive: true })
-  const env = { PATH: toolPath(), MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0' }
+  const obs = obsEndpoints() as { traces?: string; metrics?: string }
+  const env = { PATH: toolPath(), MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0',
+    ...(obs.traces ? { MM_OBS_TRACES: obs.traces, MM_OBS_METRICS: obs.metrics } : {}) }
   const processes: Record<string, unknown> = {}
+  const pdeath = run(['sh', '-c', 'command -v setpriv']).ok ? 'setpriv --pdeathsig TERM ' : ''
   for (const [n, s] of Object.entries(services)) {
     let cmd = s.command.replaceAll('$PORT', '$$$$PORT') // keep $PORT for the service's shell (process-compose would expand it)
-    if (s.port === 'http') cmd = `portless ${n}.${a.project} sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
+    // the service dies with its wrapper (portless): no orphan keeps the port after a crash or kill
+    if (s.port === 'http') cmd = `portless ${n}.${a.project} ${pdeath}sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
     const probe = s.ready?.http ? { exec: { command: `curl -sf -o /dev/null --max-time 3 ${s.url}${s.ready.http}` } }
       : s.ready?.socket ? { exec: { command: `test -S ${socket}` } } : undefined
     processes[`${a.project}.${n}`] = {
       namespace: a.project, command: cmd, working_dir: s.workdir || root,
-      environment: Object.entries({ ...env, ...s.env }).map(([k, v]) => `${k}=${v}`),
+      environment: Object.entries({ ...env, MM_SERVICE: n, ...s.env }).map(([k, v]) => `${k}=${v}`),
       log_location: join(root, '.run', 'logs', `${n}.log`),
+      log_configuration: { add_timestamp: true, timestamp_format: '2006-01-02T15:04:05.000Z07:00', flush_each_line: true, rotation: { max_size_mb: 20, max_backups: 3 } },
       availability: { restart: s.restart === 'on_failure' ? 'on_failure' : 'always', backoff_seconds: 3 },
       ...(probe ? { readiness_probe: { ...probe, initial_delay_seconds: 1, period_seconds: 3, timeout_seconds: 4, failure_threshold: 20 } } : {}),
       ...(s.depends_on ? { depends_on: Object.fromEntries(Object.keys(s.depends_on).filter((d) => services[d]).map((d) => [`${a.project}.${d}`, { condition: services[d].ready ? 'process_healthy' : 'process_started' }])) } : {}),
@@ -163,7 +169,7 @@ export function up(root: string): Step[] {
   // what engine scripts read at runtime
   writeFileSync(join(root, '.run', 'services.json'), JSON.stringify({ project: a.project, dolt_port: dport, services, schedules }, null, 2))
   const ep = { manager: 'process-compose (mm)', restart: `process-compose -U -u ${DIRS.socket} process restart ${a.project}.{service}`,
-    logs: `tail -n {lines} ${join(root, '.run', 'logs')}/{service}.log`,
+    logs: `tail -n {lines} ${join(root, '.run', 'logs')}/{service}.log`, observability: obsEndpoints(),
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
   writeFileSync(join(root, '.run', 'endpoints.json'), JSON.stringify(ep, null, 2))
   steps.push({ step: 'services', status: 'ok', detail: `${Object.keys(processes).length} processes, namespace ${a.project}` })

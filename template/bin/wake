@@ -5,7 +5,7 @@
 // Hop limit: after MAX_HOPS lead-to-lead wakes on one item without a human in between, the item gets `needs-you`
 // and leads stop being woken for it until a human acts on it.
 // Env: BD_SERVE (else the bd-serve URL from .run/endpoints.json), PASEO_BIN (default paseo), WAKE_EVERY_MS (default 5000).
-import { execFile } from 'node:child_process'
+import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/obs.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -32,7 +32,8 @@ const raci = () => { try { return JSON.parse(fs.readFileSync(path.join(P, 'leads
 const hops = new Map() // issue id -> lead-to-lead wakes since a human last acted on it
 const idleSeen = {} // role -> agent id seen idle on the previous tick
 
-const log = (...a) => console.log(new Date().toISOString(), ...a)
+const log = (...a) => olog(/fail/i.test(String(a[0])) ? 'error' : 'info', a.map(String).join(' '))
+startMetrics()
 const clip = (s, n = 160) => (s || '').replace(/\s+/g, ' ').slice(0, n)
 const bd = (p) => fetch(new URL(p, BD)).then((r) => r.json())
 const paseo = (args) => new Promise((ok, no) =>
@@ -71,7 +72,8 @@ function raciRoute(e) {
   }
 }
 
-function onEvent(e) {
+function onEvent(e) { return span('wake event', { op: e.op, issue: e.issue_id, actor: e.actor }, () => onEvent1(e), { minMs: 1000 }) }
+function onEvent1(e) {
   if (e.actor === 'wake') return // its own pause notes
   if (isHuman(e.actor)) hops.delete(e.issue_id) // a human in the loop resets the count
   if (leadOf(e.actor) && (hops.get(e.issue_id) || 0) >= MAX_HOPS) return // paused item: no routing either
@@ -81,7 +83,7 @@ function onEvent(e) {
   if (leadOf(e.actor)) { // another lead caused this
     const n = (hops.get(e.issue_id) || 0) + 1
     hops.set(e.issue_id, n)
-    if (n === MAX_HOPS + 1) return stopLoop(e.issue_id)
+    if (n === MAX_HOPS + 1) { log(`hop limit on ${e.issue_id}: paused`); count('mm_wake_paused_total', {}); return stopLoop(e.issue_id) }
     if (n > MAX_HOPS) return
   }
   const who = e.actor || 'beads'
@@ -133,7 +135,8 @@ async function tick() {
     const items = [...reasons.keys()]
     reasons.clear()
     try {
-      await paseo(['send', a.id, '--no-wait', '--prompt', msg])
+      await span('wake lead', { role, agent: a.id, items: items.join(' ') }, () => paseo(['send', a.id, '--no-wait', '--prompt', msg]))
+      count('mm_wake_sent_total', { role })
       // For the board's "who is working on what": the items this lead was just woken for.
       try {
         const f = path.join(P, '.wake-state.json')

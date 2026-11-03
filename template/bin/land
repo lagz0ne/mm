@@ -2,6 +2,7 @@
 # Land a worktree branch on main: rebase it onto main, then fast-forward code/ (the deployed checkout).
 # Serialised with a lock, so two agents landing at once can't interleave. Never merges, never rewrites main.
 #   land <name>   prints the new main commit (short hash) on success
+[ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" land -- "$0" "$@"
 set -eu
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 name=${1:?usage: land <worktree-name>}

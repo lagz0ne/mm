@@ -10,6 +10,7 @@
 #   5. Design previews (~/.local/share/preview/<name>-design/)
 #   6. Claude Code transcripts (~/.claude/projects/-home-<user>-projects-<name>*)
 #   7. Claude Code folder trust (~/.claude.json, projects["<root>"…]): entries removed with a backup copy
+[ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" purge -- "$0" "$@"
 set -eu
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 PROJECT=$(sed -n 's/^project:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p' "$P/.mm-answers.yaml" 2>/dev/null || true); PROJECT=${PROJECT:-$(basename "$P")}; NAME=$PROJECT

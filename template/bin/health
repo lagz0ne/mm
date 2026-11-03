@@ -12,6 +12,8 @@ const NAME = path.basename(P) // folder (for paths); the project id comes from p
 const STATE = process.env.HEALTH_STATE || path.join(P, '.health.json')
 const FORCE = process.env.HEALTH_FORCE_FAIL || '' // test only: treat this check as failing, without restarting anything
 import { endpoints, restartService, servicesDef, svcUrl } from './lib/svc.mjs'
+import { cli } from './lib/obs.mjs'
+cli('health')
 // Checks come from services.json (each service's `ready` probe) and where the manager put them (.run/endpoints.json).
 const SVC = servicesDef()
 async function ok(url) { try { const r = await fetch(url, { signal: AbortSignal.timeout(5000) }); return r.status < 500 } catch { return false } }

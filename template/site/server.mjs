@@ -2,7 +2,7 @@
 // It, not the browser, sets who made a change: BOARD_ACTOR now, the Cloudflare Access email later.
 // No dependencies: node server.mjs
 import http from 'node:http'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, fetch, httpSpan, log, routeOf, spawn, startMetrics, startSpan, withSpan } from '../bin/lib/obs.mjs'
 import crypto from 'node:crypto'
 import zlib from 'node:zlib'
 import fs from 'node:fs'
@@ -125,17 +125,20 @@ async function proxy(req, res, apiPath, search) {
     if (req.method === 'POST' && apiPath === '/v0/beads/issues') data.owner = actor
     body = JSON.stringify(data)
   }
+  const ps = startSpan(`${req.method} bd-serve${routeOf(apiPath)}`, { 'http.method': req.method, 'url.path': apiPath }, undefined, 3, req.method === 'GET' ? { minMs: 300 } : {})
   const up = http.request({
     host: BD.hostname, port: BD.port, method: req.method, path: apiPath + search,
-    headers: { host: BD.host, accept: req.headers.accept || '*/*',
+    headers: { host: BD.host, accept: req.headers.accept || '*/*', traceparent: ps.traceparent(),
       ...(body ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } : {}) },
   }, (r) => {
     const headers = { 'content-type': r.headers['content-type'] || 'application/json' }
     if (apiPath.endsWith('events:watch')) Object.assign(headers, { 'cache-control': 'no-cache', 'x-accel-buffering': 'no' })
     res.writeHead(r.statusCode || 502, headers)
+    ps.set('http.status_code', r.statusCode)
+    r.on('close', () => ((r.statusCode || 502) >= 500 ? ps.fail(`HTTP ${r.statusCode}`) : ps.end()))
     r.pipe(res)
   })
-  up.on('error', (e) => send(res, 502, { title: 'bd serve unreachable', detail: e.message }))
+  up.on('error', (e) => { ps.fail(e); send(res, 502, { title: 'bd serve unreachable', detail: e.message }) })
   req.on('close', () => up.destroy())
   up.end(body)
 }
@@ -146,7 +149,7 @@ async function proxy(req, res, apiPath, search) {
 let agents = { at: 0, data: null }
 const HOME_DIR = process.env.HOME || ''
 function pollAgents() {
-  execFile(PASEO, ['ls', '-g', '--json'], { timeout: 15000, maxBuffer: 16 << 20 }, (err, out) => {
+  execFile(PASEO, ['ls', '-g', '--json'], { timeout: 15000, maxBuffer: 16 << 20, minMs: 2000 }, (err, out) => {
     try {
       if (!err) {
         const list = JSON.parse(out)
@@ -179,7 +182,7 @@ async function leads() {
 const meta = { seq: 0, creators: {}, last: {}, lastAct: {} }
 async function refreshMeta() {
   for (;;) {
-    const r = await fetch(new URL(`/v0/beads/events?since=${meta.seq}&limit=500`, BD)).then((x) => x.json())
+    const r = await fetch(new URL(`/v0/beads/events?since=${meta.seq}&limit=500`, BD), { minMs: 1000 }).then((x) => x.json())
     const recs = r.records || []
     for (const e of recs) {
       meta.seq = Math.max(meta.seq, e.seq)
@@ -358,7 +361,7 @@ async function pollPresence() {
         ...Object.entries(l).filter(([k, a]) => k !== '_workers' && a && a.status === 'running').map(([role, a]) => ({ actor: role, kind: 'lead', id: a.id })),
         ...(l._workers || []).filter((w) => w.status === 'running').map((w) => ({ actor: `${w.role}/worker`, kind: 'worker', id: w.id, item: w.item })),
       ]
-      const tail = (id) => new Promise((ok) => execFile(PASEO, ['logs', id], { timeout: 8000, maxBuffer: 16 << 20 }, (e, out) => {
+      const tail = (id) => new Promise((ok) => execFile(PASEO, ['logs', id], { timeout: 8000, maxBuffer: 16 << 20, minMs: 2000 }, (e, out) => {
         const lines = (e ? '' : out).split('\n').filter((x) => x.trim())
         ok(lines[lines.length - 1] || '')
       }))
@@ -477,10 +480,11 @@ function serveFile(res, urlPath) {
 }
 
 let cfg
-http.createServer((req, res) => handle(req, res).catch((e) => {
-  console.error(`request ${req.method} ${req.url} failed:`, e)
+startMetrics()
+http.createServer((req, res) => withSpan(httpSpan(req, res, req.method === 'GET' ? { minMs: 300 } : {}), () => handle(req, res)).catch((e) => {
+  log('error', `request ${req.method} ${req.url} failed: ${e?.stack || e}`, { route: req.url })
   try { if (!res.headersSent) send(res, 500, { title: 'internal error' }); else res.end() } catch {}
-})).listen(PORT, HOST, () => console.log(`board on http://${HOST}:${PORT} -> ${BD.href} as ${ACTOR}`))
+})).listen(PORT, HOST, () => log('info', `board on http://${HOST}:${PORT} -> ${BD.href} as ${ACTOR}`))
 
 async function handle(req, res) {
   if (ACCESS_TEAM && ACCESS_AUD) {

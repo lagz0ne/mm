@@ -4,6 +4,7 @@
 #   bin/lead start <role> [--model provider/model]   start (archives a previous lead of that role first)
 #   bin/lead stop <role>                            archive the lead
 #   bin/lead ls                                     list leads
+[ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" lead -- "$0" "$@"
 set -eu
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 PROJECT=$(sed -n 's/^project:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p' "$P/.mm-answers.yaml" 2>/dev/null || true); PROJECT=${PROJECT:-$(basename "$P")}

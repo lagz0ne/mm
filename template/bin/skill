@@ -7,6 +7,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { cli } from './lib/obs.mjs'
+cli('skill')
 
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const API = process.env.SKILLS_API_URL || 'https://skills.sh'

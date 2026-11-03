@@ -4,6 +4,7 @@
 #   wt sync <name>   rebase <name> onto main (needs a clean tree); prints the new HEAD
 #   wt rm <name>     remove the worktree and its branch (refuses if the branch isn't on main; --force to drop work)
 #   wt ls            list worktrees
+[ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" wt -- "$0" "$@"
 set -eu
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 G="git -C $P/code"

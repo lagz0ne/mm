@@ -1,7 +1,7 @@
 // Config API for the Leads page. The board never writes config itself: edits, skill installs and restarts become
 // governance requests (Beads items assigned to the `setup` agent, label `governance`). The setup agent applies them
 // and commits. Read-only here: history, diffs, Claude review suggestions, skills.sh search/preview.
-import { execFile } from 'node:child_process'
+import { execFile, fetch } from '../bin/lib/obs.mjs'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'

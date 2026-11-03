@@ -1,5 +1,5 @@
 // Project lifecycle after `mm new`: update from the template (three-way merge), restart, archive (clean removal).
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DIRS, HOME, run } from './env'
 import { loadAll, PROJECTS_PC, readAnswers, resolve, up } from './project'
@@ -180,10 +180,13 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   }
   // 3. agents (soft-delete in Paseo; their history stays recoverable there)
   let n = 0
-  for (const id of agents) if (run(['paseo', 'archive', id], { timeoutMs: 30_000 }).ok) n++
+  for (const id of agents) if (run(['paseo', 'archive', '--force', id], { timeoutMs: 30_000 }).ok) n++
   steps.push({ step: 'agents', status: n === agents.length ? 'ok' : 'fail', detail: `${n}/${agents.length} archived` })
+  // 4. anything still running from the project (orphans of a crashed wrapper, bd's db proxy, agent tools)
+  const swept = sweep(root)
+  steps.push({ step: 'sweep', status: 'ok', detail: swept.length ? `stopped ${swept.length} leftover process(es): ${swept.join(', ').slice(0, 160)}` : 'nothing left running' })
 
-  // 4. pack, verify, delete
+  // 5. pack, verify, delete
   mkdirSync(ARCHIVE_DIR, { recursive: true })
   const rel = root.slice(DIRS.projects.length + 1)
   const p = run(['tar', '-czf', tarball, '--exclude=site/node_modules', '-C', DIRS.projects, rel], { timeoutMs: 900_000 })
@@ -220,6 +223,28 @@ export function restore(tarball: string): { steps: Step[]; root: string; ok: boo
   steps.push(...up(root))
   return { steps, root, ok: !steps.some((s) => s.status === 'fail') }
 }
+
+/**
+ * Processes still running from the project after its namespace stopped: started from a file under the root, or
+ * working inside it (orphans of a crashed wrapper, bd's db proxy). TERM, then KILL after 3s. Returns "pid name".
+ */
+export function sweep(root: string): string[] {
+  const mine = new Set<number>(); for (let p = process.pid; p > 1;) { mine.add(p); const st = readProc(p, 'stat'); p = st ? Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[1]) : 0 }
+  const inRoot = (f: string) => f === root || f.startsWith(`${root}/`)
+  const hits: { pid: number; name: string }[] = []
+  for (const d of readdirSync('/proc')) {
+    const pid = Number(d); if (!pid || mine.has(pid)) continue
+    const argv = (readProc(pid, 'cmdline') || '').split('\0').filter(Boolean); if (!argv.length) continue
+    let cwd = ''; try { cwd = readlinkSync(`/proc/${pid}/cwd`) } catch {}
+    if (inRoot(cwd) || inRoot(argv[0]) || (argv[1] && inRoot(argv[1]))) hits.push({ pid, name: (argv[1] && inRoot(argv[1]) ? argv[1] : argv[0]).split('/').pop() || '?' })
+  }
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
+  for (const h of hits) try { process.kill(h.pid, 'SIGTERM') } catch {}
+  for (let i = 0; i < 30 && hits.some((h) => alive(h.pid)); i++) Bun.sleepSync(100)
+  for (const h of hits) if (alive(h.pid)) try { process.kill(h.pid, 'SIGKILL') } catch {}
+  return hits.map((h) => `${h.pid} ${h.name}`)
+}
+function readProc(pid: number, f: string) { try { return readFileSync(`/proc/${pid}/${f}`, 'utf8') } catch { return '' } }
 
 /** Paseo agents whose working directory is inside the project. */
 function projectAgents(root: string): string[] {

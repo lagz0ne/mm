@@ -7,6 +7,7 @@ import { DIRS, HOME } from './env'
 import { manifest } from './manifest'
 import { onboard } from './onboard'
 import { archive, restore, update } from './lifecycle'
+import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
 import { listProjects, namespaceOp, newProject, parseRef, processes, resolve, rootOf, up } from './project'
 import { type Format, print } from './out'
 import pkg from '../package.json'
@@ -132,6 +133,57 @@ program.command('restore <tarball>').description('unpack an archived project and
 for (const [name, desc] of [['brain <action>', 'brain status|pull|push'], ['client <action>', 'client ls|add']] as const) {
   program.command(name).description(`${desc} (not yet)`).action(() => { console.error(`mm ${name.split(' ')[0]}: not built yet`); process.exit(2) })
 }
+
+program.command('ship').description('(run by mm-pc) ship service log files to VictoriaLogs').action(async () => { await ship() })
+
+const obs = program.command('obs').description('observability: the Victoria stack (metrics, logs, traces) and what it saw')
+obs.command('status').description('are the stores up; what came in during the last hour').action(async () => {
+  const o = fmt(), rows = await health()
+  print(rows, o, 'store')
+  if (rows.some((r) => r.status !== 'ok')) process.exit(1)
+  const logs = await logsql('_time:1h | stats by (project) count() as logs, count() if (level:error) as errors | sort by (project)', 100).catch(() => [])
+  const spans = await tracesql('_time:1h name:* | stats by ("resource_attr:service.namespace") count() as spans, count() if (status_code:2) as failed', 100).catch(() => [])
+  const sp = Object.fromEntries(spans.map((r) => [r['resource_attr:service.namespace'] || 'mm', r]))
+  console.log('')
+  print(logs.map((r) => ({ project: r.project, logs: r.logs, errors: r.errors, spans: sp[r.project]?.spans ?? 0, failed_spans: sp[r.project]?.failed ?? 0 })), o, 'project')
+})
+obs.command('errors').description('errors and failed operations, grouped (what the brain reads)')
+  .option('--since <dur>', 'window, e.g. 15m 1h 1d', '1h').option('-p, --project <project>', 'one project (client-name)')
+  .action(async (opts) => {
+    const o = fmt(), f = opts.project ? ` project:${JSON.stringify(opts.project)}` : ''
+    const logs = await logsql(`_time:${opts.since} level:error${f} | stats by (project, service, _msg) count() as n, max(_time) as last | sort by (n desc) | limit 30`)
+    const spans = await tracesql(`_time:${opts.since} status_code:2${opts.project ? ` "resource_attr:service.namespace":${JSON.stringify(opts.project)}` : ''} | stats by ("resource_attr:service.name", name, status_message) count() as n, max(_time) as last | sort by (n desc) | limit 30`)
+    if (o.format !== 'table') return console.log(JSON.stringify({ logs, spans }, null, 2))
+    console.log(`error logs (${opts.since})`); print(logs.map((r) => ({ project: r.project, service: r.service, n: r.n, last: r.last, msg: String(r._msg).slice(0, 90) })), o)
+    console.log(`\nfailed operations (${opts.since})`); print(spans.map((r) => ({ service: r['resource_attr:service.name'], op: r.name, n: r.n, last: r.last, why: String(r.status_message || '').slice(0, 70) })), o)
+  })
+obs.command('slow').description('slowest operations (p95 by span name)').option('--since <dur>', 'window', '1h').option('-p, --project <project>', 'one project')
+  .action(async (opts) => {
+    const o = fmt(), f = opts.project ? ` "resource_attr:service.namespace":${JSON.stringify(opts.project)}` : ''
+    const rows = await tracesql(`_time:${opts.since}${f} name:* | stats by ("resource_attr:service.name", name) count() as n, quantile(0.95, duration) as p95_ns, max(duration) as max_ns | sort by (p95_ns desc) | limit 25`)
+    print(rows.map((r) => ({ service: r['resource_attr:service.name'], op: r.name, n: r.n, p95_ms: Math.round(Number(r.p95_ns) / 1e6), max_ms: Math.round(Number(r.max_ns) / 1e6) })), o)
+  })
+obs.command('logs').description('recent log lines (LogsQL filter optional)').argument('[query]', 'LogsQL, e.g. \'project:"tripglobal-create" service:board\'')
+  .option('--since <dur>', 'window', '15m').option('-n, --lines <n>', 'lines', '50')
+  .action(async (q: string | undefined, opts) => {
+    const rows = await logsql(`_time:${opts.since}${q ? ` ${q}` : ''} | sort by (_time desc) | limit ${Number(opts.lines)}`)
+    for (const r of rows.reverse()) console.log(`${r._time}  ${String(r.level || '').padEnd(5)} ${r.project}/${r.service}  ${r._msg}`)
+  })
+obs.command('ui').description('where the UIs are (loopback: open them through an SSH tunnel)').action(() => {
+  const e = obsEndpoints() as { ui?: Record<string, string> }
+  if (!e.ui) { console.error('mm obs: the stack is not installed (mm onboard)'); process.exit(1) }
+  const ports = Object.values(e.ui).map((u) => new URL(u).port)
+  for (const [k, u] of Object.entries(e.ui)) console.log(`${k.padEnd(8)} ${u}`)
+  console.log(`\ntunnel: ssh ${ports.map((p) => `-L ${p}:127.0.0.1:${p}`).join(' ')} <this machine>`)
+})
+
+// Every mm command is one trace (children such as bin/init and npm join it); the long-running shipper is not.
+program.hook('preAction', (_p, cmd) => {
+  const name = [cmd.parent?.name() !== 'mm' ? cmd.parent?.name() : '', cmd.name()].filter(Boolean).join(' ')
+  if (name === 'ship' || name.startsWith('obs')) return
+  const done = mmSpan(`mm ${name}`, { args: cmd.args.join(' ') })
+  process.on('exit', (code) => done(code === 0, { exit_code: code }))
+})
 
 // No arguments: onboard on first run, status afterwards.
 if (process.argv.length <= 2) process.argv.push(Object.keys(loadConfig()).length ? 'status' : 'onboard')

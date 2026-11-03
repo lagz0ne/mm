@@ -6,6 +6,7 @@
 # The app runs from release/ (a detached worktree of code/), so main can move without touching production.
 # The app slot is the `app` service in services.json; where it runs and how to restart it come from the process
 # manager (.run/endpoints.json, via bin/svc).
+[ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" deploy -- "$0" "$@"
 set -eu
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 { grep -q '"app"' "$P/.run/services.json" 2>/dev/null || grep -q '"app"' "$P/services.json" 2>/dev/null; } || { echo "deploy: this project has no app slot (services.json: app)" >&2; exit 2; }

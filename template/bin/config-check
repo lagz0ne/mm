@@ -18,6 +18,8 @@ const problems = []
 const bad = (m) => problems.push(m)
 import os from 'node:os'
 import { projectName, svcUrl } from './lib/svc.mjs'
+import { cli } from './lib/obs.mjs'
+cli('config-check')
 const HOME = process.env.HOME || os.homedir()
 // Roles: leads/roles.json is the list; every role has a folder and every folder a role.
 let DEF = []

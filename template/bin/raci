@@ -9,6 +9,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { cli } from './lib/obs.mjs'
+cli('raci')
 
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const FILE = path.join(P, 'leads', 'raci.json'), MD = path.join(P, 'leads', 'RACI.md')

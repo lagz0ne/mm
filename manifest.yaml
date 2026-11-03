@@ -22,6 +22,9 @@ machine:
     access:    { ask: "Access mode", choices: [tailscale, domain] }      # first machine: domain
     domain:    { ask: "Domain", when: "access == domain" }
     portless_port: { default: "1355" }    # the names proxy (<service>.<project>.localhost:<port>); unprivileged
+    metrics_port: { default: "8428" }     # VictoriaMetrics, loopback (vmui at /vmui)
+    logs_port:    { default: "9428" }     # VictoriaLogs, loopback (UI at /select/vmui)
+    traces_port:  { default: "10428" }    # VictoriaTraces, loopback (OTLP in, Jaeger API + UI out)
     bind_host: { default: "127.0.0.1" }   # where project HTTP services listen. First machine (domain mode) binds the
                                           # docker bridge gateway so its web proxy can reach them; see notes.domain_mode
 
@@ -55,6 +58,19 @@ machine:
                              asset: "merman-cli-{rustarch}-unknown-linux-gnu.tar.xz", checksum_suffix: .sha256,
                              binary: "merman-cli-{rustarch}-unknown-linux-gnu/merman-cli" },
                   licence: "MIT/Apache; prebuilt includes EPL-2.0 ELK layout" }
+    # observability (machine-level, loopback only; run by mm-pc in namespace mm): metrics, logs, traces
+    victoria-metrics: { required: true, tested: "1.155.0", version: ["victoria-metrics", "--version"],
+                  install: { kind: github-release, repo: VictoriaMetrics/VictoriaMetrics, tag: v1.155.0,
+                             asset: "victoria-metrics-linux-{goarch}-v1.155.0.tar.gz",
+                             checksums: "victoria-metrics-linux-{goarch}-v1.155.0_checksums.txt", binary: victoria-metrics-prod } }
+    victoria-logs: { required: true, tested: "1.53.0", version: ["victoria-logs", "--version"],
+                  install: { kind: github-release, repo: VictoriaMetrics/VictoriaLogs, tag: v1.53.0,
+                             asset: "victoria-logs-linux-{goarch}-v1.53.0.tar.gz",
+                             checksums: "victoria-logs-linux-{goarch}-v1.53.0_checksums.txt", binary: victoria-logs-prod } }
+    victoria-traces: { required: true, tested: "0.12.1", version: ["victoria-traces", "--version"],
+                  install: { kind: github-release, repo: VictoriaMetrics/VictoriaTraces, tag: v0.12.1,
+                             asset: "victoria-traces-linux-{goarch}-v0.12.1.tar.gz",
+                             checksums: "victoria-traces-linux-{goarch}-v0.12.1_checksums.txt", binary: victoria-traces-prod } }
     docker:     { when: "access == domain", min: "28", tested: "28.5.2", version: ["docker", "--version"] }  # Traefik (Dokploy) router
     cloudflared: { when: "access == domain", optional: true, tested: "2026.10.3", version: ["cloudflared", "--version"] }  # tunnel variant
     tailscale:  { when: "access == tailscale", version: ["tailscale", "version"],

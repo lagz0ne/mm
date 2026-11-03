@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url'
 
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 import { requireUrl } from './lib/svc.mjs'
+import { cli } from './lib/obs.mjs'
+cli('smoke-beads')
 const BD = new URL(process.env.BD_SERVE || requireUrl('bd-serve'))
 let failed = 0
 const ok = (name, cond, detail = '') => { console.log(`${cond ? 'ok  ' : 'FAIL'} ${name}${cond ? '' : `  ${detail}`}`); if (!cond) failed++ }

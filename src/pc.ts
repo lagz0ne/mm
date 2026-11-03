@@ -4,8 +4,9 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, hasSystemdUser, run, toolPath, which } from './env'
+import { obsProcesses } from './obs'
 
-const BASE = join(DIRS.pc, 'base.yaml')
+const BASE = join(DIRS.pc, 'base.yaml'), PROJECTS = join(DIRS.pc, 'projects')
 const UNIT_DIR = join(HOME, '.config', 'systemd', 'user')
 
 export const answering = () => run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'state'], { timeoutMs: 10_000 }).ok
@@ -21,21 +22,30 @@ export function writeBase() {
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${pp}/` }, period_seconds: 3, failure_threshold: 20 },
     },
   } : {}
+  Object.assign(processes, obsProcesses())
   writeFileSync(BASE, `# mm: the machine process manager. Projects join as namespaces (~/.mm/pc/projects/*.yaml).\nversion: "0.5"\n${Bun.YAML.stringify({ processes }, null, 2)}\n`)
 }
 
 export async function ensurePc(): Promise<string> {
   mkdirSync(DIRS.pc, { recursive: true })
+  mkdirSync(join(HOME, '.config', 'process-compose'), { recursive: true }) // else every CLI call logs a debug line
   writeBase()
   const pc = which('process-compose')
   if (!pc) throw new Error('process-compose is not installed')
-  const args = `up -t=false --keep-project -U -u %h/.mm/pc.sock -L %h/.mm/pc/process-compose.log -f %h/.mm/pc/base.yaml`
+  // the launcher loads the base file and every project file, so projects come back after a reboot or restart
+  const launcher = join(DIRS.bin, 'mm-pc-up')
+  mkdirSync(DIRS.bin, { recursive: true })
+  writeFileSync(launcher, [
+    '#!/bin/sh', '# Written by mm onboard: the machine process manager with the base file and every project file.',
+    `set -- -f "${BASE}"`, `for f in "${PROJECTS}"/*.yaml; do [ -e "$f" ] && set -- "$@" -f "$f"; done`, `rm -f "${DIRS.socket}"`,
+    `exec "${pc}" up -t=false --keep-project -U -u "${DIRS.socket}" -L "${join(DIRS.pc, 'process-compose.log')}" "$@"`, '',
+  ].join('\n'), { mode: 0o755 })
   if (hasSystemdUser()) {
     mkdirSync(UNIT_DIR, { recursive: true })
     writeFileSync(join(UNIT_DIR, 'mm-pc.service'), [
       '# Written by mm onboard. The machine process manager: one process-compose, a namespace per project.',
       '[Unit]', 'Description=mm: process manager (process-compose)', 'After=network-online.target', '',
-      '[Service]', `ExecStartPre=/bin/rm -f %h/.mm/pc.sock`, `ExecStart=${pc.replace(HOME, '%h')} ${args}`,
+      '[Service]', `ExecStart=${launcher}`,
       'Environment=PATH=%h/.mm/bin:%h/.mm/npm/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin',
       'Restart=always', 'RestartSec=3', '', '[Install]', 'WantedBy=default.target', '',
     ].join('\n'))
@@ -45,7 +55,7 @@ export async function ensurePc(): Promise<string> {
   } else if (!answering()) {
     // no systemd user session (e.g. a container): start it detached for now
     // setsid -f: its own session, so it outlives mm and any terminal
-    run(['setsid', '-f', pc, ...args.replaceAll('%h', HOME).split(' ')], { timeoutMs: 10_000 })
+    run(['setsid', '-f', launcher], { timeoutMs: 10_000 })
   }
   for (let i = 0; i < 40 && !answering(); i++) await Bun.sleep(250)
   if (!answering()) throw new Error('process-compose did not come up on ~/.mm/pc.sock (see ~/.mm/pc/process-compose.log)')

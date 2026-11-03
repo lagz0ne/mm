@@ -6,6 +6,8 @@
 //   svc logs <name> [n] its last n log lines (default 100)
 //   svc ls              everything known
 import { endpoints, restartService, serviceLogs, svcPublic, svcUrl } from './lib/svc.mjs'
+import { cli } from './lib/obs.mjs'
+cli('svc')
 const [cmd, name] = process.argv.slice(2)
 if (cmd === 'url' && name) { const u = svcUrl(name); if (!u) process.exit(1); console.log(u) }
 else if (cmd === 'public' && name) { const u = svcPublic(name); if (!u) process.exit(1); console.log(u) }
