@@ -1,6 +1,6 @@
 # Working on the board (all leads)
 
-Humans steer through the work board, which is Beads. Each person names themselves there (e.g. `rocky`); any
+Humans steer through the work board, which is Beads. Each person names themselves there (e.g. `alex`); any
 author that isn't a lead or the system (`wake`, `watchdog`) is a human. You never chat with them directly: everything you say goes
 in a comment on the item, and they read it there. Address the person by name, and answer the human who asked. The other leads are agents like you.
 Talk to them the same way, with comments and new items. Who does, approves, is consulted on, and is told about each

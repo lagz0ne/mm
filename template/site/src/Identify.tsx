@@ -28,7 +28,7 @@ export function Identify({ open, current, onOpenChange, onDone }: {
             <DialogDescription className="text-xs">Your items and comments show this name. Leads reply to it.</DialogDescription>
           </DialogHeader>
           <div className="grid gap-2 px-5 py-4">
-            <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. rocky" aria-label="Your name" />
+            <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. alex" aria-label="Your name" />
             {err && <p className="text-xs text-swiss">{err}</p>}
           </div>
           <DialogFooter className="border-t px-5 py-3">
