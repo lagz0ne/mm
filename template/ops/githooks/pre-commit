@@ -1,0 +1,3 @@
+#!/bin/sh
+# Config repo guard: render permission templates, then the governance rules must hold in every commit, whoever makes it.
+exec "$(git rev-parse --show-toplevel)/bin/config-check" --render --staged

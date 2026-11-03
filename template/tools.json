@@ -1,0 +1,24 @@
+{
+  "_doc": "Project-local tools, installed into tools/ (never on the system PATH). Verified 2026-11-03: download sha256 = archive below; installed sha256 = the extracted binary now in tools/.",
+  "bd": {
+    "version": "1.3.2",
+    "repo": "gastownhall/beads",
+    "linux-x64": {
+      "url": "https://github.com/gastownhall/beads/releases/download/v1.3.2/beads_1.3.2_linux_amd64.tar.gz",
+      "sha256": "c6ea3281f6ff82628351b2d0967c9eb85862c8a0ec0ebc24e63e645c8b02462e",
+      "checksums": "https://github.com/gastownhall/beads/releases/download/v1.3.2/checksums.txt",
+      "extract": "bd",
+      "installed_sha256": "2e95822a8211b20b18584efb93e5ac93deabab8d95eb63ca8b724067c392dc11"
+    }
+  },
+  "dolt": {
+    "version": "2.6.2",
+    "repo": "dolthub/dolt",
+    "linux-x64": {
+      "url": "https://github.com/dolthub/dolt/releases/download/v2.6.2/dolt-linux-amd64.tar.gz",
+      "sha256": "e27a7957b8626946a5022fe0ad6ce4bfb3c8f51544c7f1372b0e6db14c1549cf",
+      "extract": "dolt-linux-amd64/bin/dolt",
+      "installed_sha256": "3432987c3f5f213dd19d5fb1f475d896fb787eba108ccadeff9e5d5db70d5fd2"
+    }
+  }
+}

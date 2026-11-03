@@ -1,0 +1,65 @@
+#!/usr/bin/env node
+// skill — skills.sh for this project's leads (used by the setup agent; it commits the result).
+//   skill search <query>               search skills.sh
+//   skill show <owner/repo/skill>      print the skill's file list, flag scripts, and print SKILL.md
+//   skill install <role> <owner/repo/skill>   write it to leads/<role>/.claude/skills/<skill>/ (+ .skills-sh.json)
+//   skill rm <role> <name>             remove an installed skill
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const API = process.env.SKILLS_API_URL || 'https://skills.sh'
+const ID = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.:-]+$/
+const die = (m) => { console.error(`skill: ${m}`); process.exit(2) }
+const roles = () => fs.readdirSync(path.join(P, 'leads'), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name)
+
+async function download(id) {
+  if (!ID.test(id)) die('id must be owner/repo/skill')
+  const [o, r, s] = id.split('/')
+  const res = await fetch(`${API}/api/download/${encodeURIComponent(o)}/${encodeURIComponent(r)}/${encodeURIComponent(s)}`, { signal: AbortSignal.timeout(30000) })
+  if (!res.ok) die(`download failed (${res.status})`)
+  const d = await res.json()
+  const files = (d.files || []).filter((f) => typeof f.path === 'string' && typeof f.contents === 'string')
+  if (!files.some((f) => f.path.toLowerCase() === 'skill.md')) die('no SKILL.md in this skill')
+  for (const f of files) if (f.path.includes('..') || path.isAbsolute(f.path) || !/^[\w./ -]{1,200}$/.test(f.path)) die(`unsafe path ${f.path}`)
+  if (files.length > 60 || files.reduce((n, f) => n + f.contents.length, 0) > 2_000_000) die('skill too large')
+  return { slug: s, files, hash: d.hash || null }
+}
+const isScript = (p) => /\.(sh|py|js|mjs|ts|rb|pl|ps1|bash)$/.test(p)
+
+const [cmd, a, b] = process.argv.slice(2)
+if (cmd === 'search') {
+  if (!a || a.length < 2) die('usage: skill search <query>')
+  const d = await fetch(`${API}/api/search?${new URLSearchParams({ q: process.argv.slice(3).join(' '), limit: '20' })}`).then((x) => x.json())
+  for (const s of (d.skills || []).sort((x, y) => (y.installs || 0) - (x.installs || 0))) console.log(`${String(s.installs).padStart(9)}  ${s.id}`)
+} else if (cmd === 'show') {
+  const { files, hash } = await download(a)
+  console.log(`${a}  hash ${hash}\nfiles:`)
+  for (const f of files) console.log(`  ${isScript(f.path) ? 'SCRIPT ' : '       '}${f.path} (${f.contents.length} bytes)`)
+  console.log('\n--- SKILL.md ---\n' + files.find((f) => f.path.toLowerCase() === 'skill.md').contents)
+  const scripts = files.filter((f) => isScript(f.path))
+  for (const f of scripts) console.log(`\n--- ${f.path} ---\n${f.contents}`)
+} else if (cmd === 'install') {
+  if (!roles().includes(a)) die(`unknown role ${a}`)
+  const { slug, files, hash } = await download(b)
+  const name = slug.toLowerCase().replace(/[^a-z0-9._-]/g, '-').slice(0, 64)
+  const dir = path.join(P, 'leads', a, '.claude', 'skills', name)
+  fs.rmSync(dir, { recursive: true, force: true })
+  for (const f of files) {
+    const abs = path.join(dir, f.path)
+    if (!abs.startsWith(dir + path.sep)) die('unsafe path')
+    fs.mkdirSync(path.dirname(abs), { recursive: true })
+    fs.writeFileSync(abs, f.contents)
+  }
+  fs.writeFileSync(path.join(dir, '.skills-sh.json'), JSON.stringify({ id: b, hash, installedAt: new Date().toISOString(), by: process.env.BEADS_ACTOR || 'setup' }, null, 2) + '\n')
+  console.log(`installed ${b} -> leads/${a}/.claude/skills/${name} (${files.length} files). Commit it in the config repo.`)
+} else if (cmd === 'rm') {
+  if (!roles().includes(a) || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(b || '')) die('usage: skill rm <role> <name>')
+  const dir = path.join(P, 'leads', a, '.claude', 'skills', b)
+  if (!fs.existsSync(dir)) die('no such skill')
+  fs.rmSync(dir, { recursive: true, force: true })
+  console.log(`removed leads/${a}/.claude/skills/${b}. Commit it in the config repo.`)
+} else {
+  console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 7).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'))
+}

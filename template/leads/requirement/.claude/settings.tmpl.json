@@ -1,0 +1,48 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "{root}"
+    ],
+    "allow": [
+      "Bash(bd *)",
+      "Bash(cd {root}*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git -C {root}/worktrees/lead-requirement status*)",
+      "Bash(git -C {root}/worktrees/lead-requirement diff*)",
+      "Bash(git -C {root}/worktrees/lead-requirement log*)",
+      "Bash(git -C {root}/worktrees/lead-requirement show*)",
+      "Bash(git -C {root}/worktrees/lead-requirement add*)",
+      "Bash(git -C {root}/worktrees/lead-requirement commit*)",
+      "Bash(wt *)",
+      "Bash(land *)",
+      "Bash(ls *)",
+      "Bash(mkdir -p *)",
+      "Write(//tmp/**)",
+      "Edit({root}/worktrees/lead-requirement/docs/spec/**)",
+      "Write({root}/worktrees/lead-requirement/docs/spec/**)"
+    ],
+    "deny": [
+      "Read({root}/secrets/**)",
+      "Bash(git push*)",
+      "Edit({root}/code/**)",
+      "Write({root}/code/**)",
+      "Edit({root}/control/**)",
+      "Write({root}/control/**)",
+      "Edit({root}/leads/**)",
+      "Write({root}/leads/**)",
+      "Edit({root}/CLAUDE.md)",
+      "Write({root}/CLAUDE.md)",
+      "Edit({root}/worktrees/CLAUDE.md)",
+      "Write({root}/worktrees/CLAUDE.md)",
+      "Edit({root}/setup/**)",
+      "Write({root}/setup/**)",
+      "Edit({root}/release/**)",
+      "Write({root}/release/**)"
+    ]
+  }
+}

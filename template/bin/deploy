@@ -1,0 +1,48 @@
+#!/bin/sh
+# deploy — put a landed commit into production (the app slot) safely; roll back by itself if it doesn't come up.
+#   deploy [rev]        deploy rev (default: main) into release/, restart the app, health-check; on failure roll back
+#   deploy rollback     go back to the previous release
+#   deploy status       what runs now, and the recent releases
+# The app runs from release/ (a detached worktree of code/), so main can move without touching production.
+# The app slot is the `app` service in services.json; where it runs and how to restart it come from the process
+# manager (.run/endpoints.json, via bin/svc).
+set -eu
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+{ grep -q '"app"' "$P/.run/services.json" 2>/dev/null || grep -q '"app"' "$P/services.json" 2>/dev/null; } || { echo "deploy: this project has no app slot (services.json: app)" >&2; exit 2; }
+HEALTH=${DEPLOY_HEALTH_PATH:-/}
+REL=$P/release LOG=$P/.releases
+G="git -C $P/code"
+
+healthy() { i=0; while [ $i -lt 20 ]; do
+  c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$("$P/bin/svc" url app)$HEALTH" || true)
+  [ "$c" = 200 ] && return 0; i=$((i + 1)); sleep 1; done; return 1; }
+switch() { git -C "$REL" checkout -q --detach "$1"
+  if [ -f "$REL/package.json" ] && grep -q '"dependencies"' "$REL/package.json"; then (cd "$REL" && npm ci --omit=dev --silent --no-audit --no-fund); fi
+  "$P/bin/svc" restart app; }
+
+[ $# -gt 0 ] || set -- main
+exec 9>"$P/.deploy.lock"; flock -w 120 9 || { echo "deploy: another deploy is running" >&2; exit 1; }
+[ -d "$REL" ] || $G worktree add -q --detach "$REL" main
+
+case "${1:-main}" in
+  status) echo "live: $(git -C "$REL" log -1 --format='%h %s')  ($("$P/bin/svc" url app))"; tail -5 "$LOG" 2>/dev/null; exit 0 ;;
+  rollback) prev=$(awk '$3=="ok"{print $2}' "$LOG" 2>/dev/null | tail -2 | head -1)
+            [ -n "$prev" ] || { echo "deploy: no previous release to roll back to" >&2; exit 1; }
+            set -- "$prev" ;;
+esac
+want=$($G rev-parse --verify --quiet "${1}^{commit}") || { echo "deploy: unknown revision $1" >&2; exit 2; }
+$G merge-base --is-ancestor "$want" main || { echo "deploy: $1 is not on main; land it first" >&2; exit 1; }
+cur=$(git -C "$REL" rev-parse HEAD)
+short=$(git -C "$P/code" rev-parse --short "$want")
+switch "$want"
+if healthy; then
+  echo "$(date -u +%FT%TZ) $short ok ${BEADS_ACTOR:-${USER:-?}}" >> "$LOG"
+  echo "deployed $short: $(git -C "$REL" log -1 --format=%s) (healthy at $("$P/bin/svc" url app)$HEALTH)"
+else
+  echo "$(date -u +%FT%TZ) $short failed ${BEADS_ACTOR:-${USER:-?}}" >> "$LOG"
+  echo "deploy: $short did not come up healthy in 20s; rolling back to $(git -C "$P/code" rev-parse --short "$cur")" >&2
+  switch "$cur"
+  if healthy; then echo "rolled back; production is on $(git -C "$P/code" rev-parse --short "$cur")" >&2
+  else echo "deploy: ROLLBACK ALSO UNHEALTHY: check the app's log in the process manager" >&2; fi
+  exit 1
+fi

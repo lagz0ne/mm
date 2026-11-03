@@ -1,0 +1,51 @@
+# {{project}}: processes for the machine's process manager (process-compose; namespace {{project}}).
+# Placeholders resolved by mm at start: {root} project folder, {home} $HOME, {project} this id, {socket} Dolt socket,
+# {url:<service>} another service's URL. HTTP services get PORT from portless (name: <service>.{project}.localhost).
+version: 1
+services:
+  dolt:
+    about: Dolt SQL server with the Beads database. Clients use the Unix socket; the TCP port is loopback-only.
+    command: "{root}/tools/dolt sql-server --host 127.0.0.1 --port {dolt_port} --socket {socket} --loglevel warning"
+    workdir: "{root}/control/.beads/dolt"
+    env: { DOLT_ROOT_PATH: "{root}/.dolt-root", XDG_CONFIG_HOME: "{root}/.config" }
+    port: internal
+    ready: { socket: "{socket}" }
+    restart: on_failure
+  bd-serve:
+    about: Beads HTTP API and event stream (board and wake read it).
+    command: "{root}/bin/bd serve --addr 127.0.0.1:$PORT --actor ui --allowed-host bd-serve.{project}.localhost"
+    workdir: "{root}/control"
+    env: { BEADS_DOLT_SERVER_SOCKET: "{socket}" }
+    port: http
+    depends_on: { dolt: ready }
+    ready: { http: /healthz }
+    restart: always
+  board:
+    about: The work board (web UI + API proxy).
+    command: "node {root}/site/server.mjs"
+    env: { HOST: 127.0.0.1, BD_SERVE: "{url:bd-serve}", MERMAN_BIN: merman-cli }
+    port: http
+    public: { name: "board-{{name}}-{{client}}", auth: required }
+    depends_on: { bd-serve: ready }
+    ready: { http: /api/whoami }
+    restart: always
+  wake:
+    about: Wakes a role's lead (Paseo agent) when its board items change.
+    command: "node {root}/bin/wake"
+    env: { BD_SERVE: "{url:bd-serve}" }
+    port: none
+    depends_on: { bd-serve: ready }
+    restart: always
+  app:
+    about: Optional app slot, served from release/ (moved only by bin/deploy). Starts once release/ exists.
+    optional: true
+    command: "node server.js"
+    workdir: "{root}/release"
+    env: { HOST: 127.0.0.1 }
+    port: http
+    public: { name: "{{name}}-{{client}}", auth: none }
+    ready: { http: / }
+    restart: always
+schedules:
+  health: { every: 1m, command: "node {root}/bin/health" }
+  backup: { every: "daily 03:30", command: "{root}/bin/backup" }

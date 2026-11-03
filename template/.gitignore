@@ -1,0 +1,31 @@
+# Project config repo: briefs, skills, permissions, scripts, board source. Everything else stays out.
+/*
+!/.gitignore
+!/CLAUDE.md
+!/leads/
+!/ops/
+!/bin/
+!/site/
+!/setup/
+!/worktrees/
+/worktrees/*
+!/worktrees/CLAUDE.md
+!/services.yaml
+!/.mm-answers.yaml
+!/tools.json
+!/secrets.json
+
+leads/RACI.md
+# Generated from settings.tmpl.json by `bin/config-check --render` (absolute paths for this machine).
+leads/*/.claude/settings.json
+setup/.claude/settings.json
+
+# Never in git, whatever the lines above say: secret material, and runtime state.
+secrets/
+.keys/
+.run/
+.dolt/
+.health.json
+.releases
+.wake-state.json
+.deploy.lock

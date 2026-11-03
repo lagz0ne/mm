@@ -1,0 +1,68 @@
+#!/usr/bin/env node
+// smoke-beads — checks every Beads route and field the board (site/server.mjs, site/src) and bin/wake rely on.
+// Run it before any bd/dolt upgrade, and after one (against the upgraded tools/). Exit 0 = all good.
+// It creates one throwaway issue, exercises it, and deletes it. Env: BD_SERVE (else bd-serve from .run/endpoints.json).
+import { execFileSync } from 'node:child_process'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+import { requireUrl } from './lib/svc.mjs'
+const BD = new URL(process.env.BD_SERVE || requireUrl('bd-serve'))
+let failed = 0
+const ok = (name, cond, detail = '') => { console.log(`${cond ? 'ok  ' : 'FAIL'} ${name}${cond ? '' : `  ${detail}`}`); if (!cond) failed++ }
+async function call(method, p, body) {
+  const r = await fetch(new URL(p, BD), { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined })
+  let data = null
+  try { data = await r.json() } catch {}
+  return { status: r.status, data }
+}
+const has = (o, keys) => o && keys.every((k) => k in o)
+
+// reads
+ok('GET /healthz', (await fetch(new URL('/healthz', BD))).ok)
+let r = await call('GET', '/v0/beads/context'); ok('GET context', r.status === 200)
+r = await call('GET', '/v0/beads/stats'); ok('GET stats', r.status === 200)
+r = await call('GET', '/v0/beads/issues?limit=1'); ok('GET issues: items/has_more', r.status === 200 && has(r.data, ['items', 'has_more']), JSON.stringify(r.data)?.slice(0, 200))
+r = await call('GET', '/v0/beads/issues?status=closed&limit=1'); ok('GET issues?status=closed', r.status === 200 && Array.isArray(r.data?.items))
+r = await call('GET', '/v0/beads/ready?limit=1'); ok('GET ready', r.status === 200 && Array.isArray(r.data?.items))
+r = await call('GET', '/v0/beads/events?since=0&limit=1'); ok('GET events: head/records', r.status === 200 && has(r.data, ['head', 'records']))
+const head = r.data?.head ?? 0
+
+// live stream: subscribe, then write, and expect the event
+const ac = new AbortController()
+const seen = []
+const stream = fetch(new URL(`/v0/beads/events:watch?since=${head}`, BD), { signal: ac.signal, headers: { accept: 'text/event-stream' } })
+  .then(async (res) => { const dec = new TextDecoder(); for await (const c of res.body) seen.push(dec.decode(c)) }).catch(() => {})
+
+// writes (the same bodies the board sends)
+r = await call('POST', '/v0/beads/issues', { title: 'smoke-probe (deleted automatically)', description: 'smoke test', issue_type: 'task', priority: 4, actor: 'smoke', owner: 'smoke' })
+const id = r.data?.id
+ok('POST issues (create, owner)', r.status < 300 && id && r.data.owner === 'smoke', JSON.stringify(r.data)?.slice(0, 200))
+try {
+  r = await call('PATCH', `/v0/beads/issues/${id}`, { patch: { assignee: 'smoke-nobody', status: 'in_progress' }, actor: 'smoke' })
+  ok('PATCH issue {patch, actor}', r.status < 300, JSON.stringify(r.data)?.slice(0, 200))
+  r = await call('POST', `/v0/beads/issues/${id}/comments`, { author: 'smoke', text: 'probe' })
+  ok('POST comment {author, text}', r.status < 300, JSON.stringify(r.data)?.slice(0, 200))
+  r = await call('GET', `/v0/beads/issues/${id}?include_comments=true`)
+  ok('GET issue include_comments', r.status === 200 && r.data?.comments?.[0]?.author === 'smoke' &&
+    has(r.data, ['id', 'title', 'status', 'priority', 'issue_type', 'assignee', 'updated_at']), JSON.stringify(r.data)?.slice(0, 300))
+  r = await call('POST', `/v0/beads/issues/${id}:close`, { actor: 'smoke', reason: 'smoke' }); ok('POST :close', r.status < 300)
+  r = await call('POST', `/v0/beads/issues/${id}:reopen`, { actor: 'smoke' }); ok('POST :reopen', r.status < 300)
+  // CLI calls used by leads and wake
+  const env = { ...process.env }
+  try { execFileSync(path.join(P, 'bin/bd'), ['label', 'add', id, 'needs-you', '--actor', 'smoke'], { cwd: path.join(P, 'control'), env, stdio: 'pipe' }); ok('bd label add (CLI)', true) }
+  catch (e) { ok('bd label add (CLI)', false, String(e.stderr || e).slice(0, 200)) }
+  await new Promise((res) => setTimeout(res, 1500))
+  const text = seen.join('')
+  ok('events:watch streams create/update/comment', ['"create"', '"update"', '"comment"'].every((op) => text.includes(op)) && text.includes(id), text.slice(0, 200))
+  ok('event carries actor + issue + comment.author', /"actor":"smoke"/.test(text) && /"issue":\{/.test(text) && /"author":"smoke"/.test(text))
+} finally {
+  ac.abort(); await stream
+  if (id) {
+    r = await call('POST', '/v0/beads/issues:delete', { ids: [id], actor: 'smoke' })
+    ok('cleanup: delete probe', r.status < 300, JSON.stringify(r.data)?.slice(0, 200))
+  }
+}
+console.log(failed ? `\n${failed} check(s) FAILED: don't upgrade (or roll back) until the board/wake are adapted.` : '\nall Beads routes the board and wake use are OK')
+process.exit(failed ? 1 : 0)

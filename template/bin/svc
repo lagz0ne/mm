@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+// svc — this project's services at runtime (from .run/endpoints.json or SVC_URL_<NAME>).
+//   svc url <name>      base URL, e.g. svc url app
+//   svc public <name>   public URL, if any
+//   svc restart <name>  restart it through the process manager
+//   svc logs <name> [n] its last n log lines (default 100)
+//   svc ls              everything known
+import { endpoints, restartService, serviceLogs, svcPublic, svcUrl } from './lib/svc.mjs'
+const [cmd, name] = process.argv.slice(2)
+if (cmd === 'url' && name) { const u = svcUrl(name); if (!u) process.exit(1); console.log(u) }
+else if (cmd === 'public' && name) { const u = svcPublic(name); if (!u) process.exit(1); console.log(u) }
+else if (cmd === 'restart' && name) restartService(name)
+else if (cmd === 'logs' && name) process.stdout.write(serviceLogs(name, Number(process.argv[4]) || 100))
+else if (!cmd || cmd === 'ls') { const e = endpoints(); for (const [k, v] of Object.entries(e.services || {})) console.log(`${k.padEnd(10)} ${v.url || '-'}  ${v.public || ''}`); if (e.restart) console.log(`restart: ${e.restart}`) }
+else { console.error('usage: svc url|public|restart <name> · svc ls'); process.exit(2) }

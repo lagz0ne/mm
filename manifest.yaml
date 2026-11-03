@@ -21,6 +21,7 @@ machine:
     home:      { default: "$HOME" }
     access:    { ask: "Access mode", choices: [tailscale, domain] }      # first machine: domain
     domain:    { ask: "Domain", when: "access == domain" }
+    portless_port: { default: "1355" }    # the names proxy (<service>.<project>.localhost:<port>); unprivileged
     bind_host: { default: "127.0.0.1" }   # where project HTTP services listen. First machine (domain mode) binds the
                                           # docker bridge gateway so its web proxy can reach them; see notes.domain_mode
 

@@ -1,0 +1,80 @@
+#!/usr/bin/env node
+// persona — names, colors and avatars of this project's agents (leads/personas.json). Used by the setup agent.
+// Every name starts with its role's initial (Requirement → R…, Design → D…, Code → C…, QA → Q…, Setup → S…).
+//   persona                       show the current personas
+//   persona themes                list themes and their names
+//   persona theme <theme> [--reset]  switch theme: new random names and the theme's avatars (colors kept; --reset: default colors)
+//   persona reroll [role]         draw a new random name from the current theme (all roles, or one)
+//   persona set <role> [name=X] [color=#rrggbb] [avatar=X]   set one agent by hand (avatar: 1–2 letters or an emoji)
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const FILE = path.join(P, 'leads', 'personas.json')
+// Roles come from leads/roles.json (any number); `setup` is the governance agent.
+const DEF = JSON.parse(fs.readFileSync(path.join(P, 'leads', 'roles.json'), 'utf8')).roles
+const ROLES = { ...Object.fromEntries(DEF.map((r) => [r.id, r.initial])), setup: 'S' }
+const COLORS = { ...Object.fromEntries(DEF.map((r) => [r.id, r.color])), setup: '#111111' }
+// Any letter a theme lacks falls back to these.
+const GENERIC = { A: ['Ada', 'Alan', 'Ari', 'Ayla'], B: ['Bea', 'Boris', 'Bram'], C: ['Cleo', 'Cyrus', 'Cora'], D: ['Dara', 'Dex', 'Dina'],
+  E: ['Eden', 'Ezra', 'Elio'], F: ['Fern', 'Felix', 'Freya'], G: ['Gaia', 'Gus', 'Greta'], H: ['Hana', 'Hugo', 'Hale'], I: ['Iris', 'Ivo', 'Ines'],
+  J: ['Juno', 'Jas', 'Jett'], K: ['Kai', 'Kira', 'Knox'], L: ['Lena', 'Leo', 'Lux'], M: ['Mira', 'Max', 'Milo'], N: ['Nova', 'Nils', 'Nia'],
+  O: ['Orla', 'Otto', 'Oren'], P: ['Pia', 'Pax', 'Petra'], Q: ['Quinn', 'Quill'], R: ['Rio', 'Rhea', 'Remy'], S: ['Sage', 'Sol', 'Suki'],
+  T: ['Tess', 'Theo', 'Tova'], U: ['Uma', 'Ugo'], V: ['Vera', 'Vik', 'Vesta'], W: ['Wren', 'Wade', 'Willa'], X: ['Xan', 'Xia'],
+  Y: ['Yara', 'Yuri'], Z: ['Zara', 'Zeke', 'Zoe'] }
+export const THEMES = {
+  birds: { emoji: { R: '🐦', D: '🕊️', C: '🦩', Q: '🐤', S: '🦅' },
+    R: ['Robin', 'Raven', 'Rook', 'Rhea'], D: ['Dove', 'Dunlin', 'Dipper', 'Drongo'], C: ['Crane', 'Condor', 'Curlew', 'Cassowary'],
+    Q: ['Quail', 'Quetzal', 'Quelea'], S: ['Swift', 'Sparrow', 'Stork', 'Shrike'] },
+  scientists: { emoji: { R: '🧬', D: '🐢', C: '⚛️', Q: '☢️', S: '🔭' },
+    R: ['Rosalind', 'Rutherford', 'Ramanujan', 'Raman'], D: ['Darwin', 'Dirac', 'Dalton', 'Doppler'], C: ['Curie', 'Copernicus', 'Cavendish', 'Carson'],
+    Q: ['Quimby', 'Quine', 'Quetelet'], S: ['Sagan', 'Snell', 'Somerville', 'Salk'] },
+  mythology: { emoji: { R: '🌾', D: '🍇', C: '🌊', Q: '🐍', S: '🌙' },
+    R: ['Rhea', 'Ra', 'Rán'], D: ['Demeter', 'Dionysus', 'Daphne', 'Durga'], C: ['Calypso', 'Cronus', 'Circe', 'Ceres'],
+    Q: ['Quetzalcoatl', 'Quirinus'], S: ['Selene', 'Sol', 'Sekhmet', 'Sif'] },
+  cities: { emoji: { R: '🏛️', D: '🍀', C: '🏺', Q: '⛰️', S: '🌉' },
+    R: ['Rome', 'Riga', 'Rabat', 'Reykjavik'], D: ['Dublin', 'Delhi', 'Dakar', 'Dhaka'], C: ['Cairo', 'Cusco', 'Cork', 'Colombo'],
+    Q: ['Quito', 'Quebec', 'Qingdao'], S: ['Seoul', 'Sydney', 'Santiago', 'Sofia'] },
+  gems: { emoji: { R: '♦️', D: '💎', C: '🪸', Q: '🔮', S: '💠' },
+    R: ['Ruby', 'Rhodonite', 'Rutile'], D: ['Diamond', 'Diopside', 'Dioptase'], C: ['Coral', 'Citrine', 'Carnelian', 'Chrysoprase'],
+    Q: ['Quartz'], S: ['Sapphire', 'Spinel', 'Sunstone', 'Sodalite'] },
+  stars: { emoji: { R: '⭐', D: '✨', C: '🌟', Q: '💫', S: '🌠' },
+    R: ['Rigel', 'Regulus', 'Rasalhague'], D: ['Deneb', 'Diphda', 'Dubhe'], C: ['Capella', 'Castor', 'Canopus'],
+    Q: ['Quasar'], S: ['Sirius', 'Spica', 'Shaula', 'Sadr'] },
+}
+const pick = (a, not) => { const c = a.filter((x) => x !== not); return (c.length ? c : a)[Math.floor(Math.random() * (c.length ? c : a).length)] }
+const load = () => { try { return JSON.parse(fs.readFileSync(FILE, 'utf8')) } catch { return { theme: 'birds', agents: {} } } }
+function save(d) { fs.writeFileSync(FILE, JSON.stringify(d, null, 2) + '\n'); show(d); console.log('\nwritten leads/personas.json: commit it in the config repo') }
+function show(d) { for (const r of Object.keys(ROLES)) { const a = d.agents[r] || {}; console.log(`${r.padEnd(12)} ${String(a.avatar || '').padEnd(3)} ${String(a.name || '-').padEnd(14)} ${a.color || ''}`) } console.log(`theme: ${d.theme}`) }
+function draw(d, roles, theme, { color = false, avatar = false } = {}) {
+  const t = THEMES[theme]
+  for (const r of roles) {
+    const L = ROLES[r], cur = d.agents[r] || {}
+    const names = t[L] || GENERIC[L] || [r[0].toUpperCase() + r.slice(1)]
+    const name = pick(names, cur.name)
+    d.agents[r] = { name, color: color || !cur.color ? COLORS[r] : cur.color, avatar: avatar || !cur.avatar ? (t.emoji[L] || name.slice(0, 2)) : cur.avatar }
+  }
+}
+const [cmd, a, ...rest] = process.argv.slice(2)
+const d = load()
+if (!cmd) show(d)
+else if (cmd === 'themes') for (const [k, t] of Object.entries(THEMES)) console.log(`${k.padEnd(11)} ${Object.keys(ROLES).map((r) => `${ROLES[r]}: ${(t[ROLES[r]] || GENERIC[ROLES[r]] || []).join('/')}`).join('  ')}`)
+else if (cmd === 'theme') {
+  if (!THEMES[a]) { console.error(`persona: unknown theme ${a}; try: ${Object.keys(THEMES).join(', ')}`); process.exit(2) }
+  d.theme = a; draw(d, Object.keys(ROLES), a, { avatar: true, color: rest.includes('--reset') }); save(d)
+} else if (cmd === 'reroll') {
+  if (a && !ROLES[a]) { console.error(`persona: unknown role ${a}`); process.exit(2) }
+  draw(d, a ? [a] : Object.keys(ROLES), d.theme in THEMES ? d.theme : 'birds'); save(d)
+} else if (cmd === 'set') {
+  if (!ROLES[a]) { console.error(`persona: unknown role ${a}`); process.exit(2) }
+  const cur = d.agents[a] || {}
+  for (const kv of rest) {
+    const i = kv.indexOf('='); const k = kv.slice(0, i), v = kv.slice(i + 1)
+    if (k === 'name') { if (!new RegExp(`^${ROLES[a]}[\\p{L}' -]{1,23}$`, 'u').test(v)) { console.error(`persona: a ${a} name must start with ${ROLES[a]} (2–24 letters)`); process.exit(2) } cur.name = v }
+    else if (k === 'color') { if (!/^#[0-9a-fA-F]{6}$/.test(v)) { console.error('persona: color must be #rrggbb'); process.exit(2) } cur.color = v }
+    else if (k === 'avatar') { if ([...v].length < 1 || [...v].length > 4) { console.error('persona: avatar is 1–2 letters or an emoji'); process.exit(2) } cur.avatar = v }
+    else { console.error(`persona: unknown field ${k}`); process.exit(2) }
+  }
+  d.agents[a] = cur; save(d)
+} else { console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 9).map((l) => l.replace(/^\/\/ ?/, '')).join('\n')) }

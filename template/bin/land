@@ -1,0 +1,20 @@
+#!/bin/sh
+# Land a worktree branch on main: rebase it onto main, then fast-forward code/ (the deployed checkout).
+# Serialised with a lock, so two agents landing at once can't interleave. Never merges, never rewrites main.
+#   land <name>   prints the new main commit (short hash) on success
+set -eu
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+name=${1:?usage: land <worktree-name>}
+case "$name" in *[!a-z0-9._-]*|.*) echo "land: bad name" >&2; exit 2;; esac
+W=$P/worktrees/$name
+[ -d "$W" ] || { echo "land: no worktree $name" >&2; exit 2; }
+exec 9>"$P/worktrees/.land.lock"
+flock -w 120 9 || { echo "land: lock busy for 120s" >&2; exit 1; }
+[ -z "$(git -C "$W" status --porcelain)" ] || { echo "land: $name has uncommitted changes; commit first" >&2; exit 1; }
+[ -z "$(git -C "$P/code" status --porcelain --untracked-files=no)" ] || { echo "land: code/ has local edits (nobody should edit code/ directly)" >&2; exit 1; }
+git -C "$W" rebase -q main || { git -C "$W" rebase --abort; echo "land: $name conflicts with main; rebase and resolve in the worktree, then land again" >&2; exit 1; }
+if git -C "$P/code" merge-base --is-ancestor "$name" main; then echo "land: nothing new on $name"; git -C "$P/code" rev-parse --short main; exit 0; fi
+# The project's gate (ops/land-check, machine-level): typically the test suite. Red never reaches main.
+if [ -x "$P/ops/land-check" ]; then "$P/ops/land-check" "$W" || { echo "land: $name refused by ops/land-check (fix it on the branch, then land again)" >&2; exit 1; }; fi
+git -C "$P/code" merge -q --ff-only "$name"
+git -C "$P/code" rev-parse --short main

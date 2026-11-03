@@ -1,0 +1,8 @@
+#!/bin/sh
+# Project-local bd: finds its project from its own location; nothing outside the project is used.
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+export BEADS_DIR="$P/control/.beads" XDG_CONFIG_HOME="$P/.config" DOLT_ROOT_PATH="$P/.dolt-root" PATH="$P/tools:$PATH"
+# Talk to Dolt through its Unix socket when it runs with one (services.json); otherwise the TCP port in metadata.
+[ -S "$P/.dolt/mysql.sock" ] && export BEADS_DOLT_SERVER_SOCKET="$P/.dolt/mysql.sock"
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=beads.role GIT_CONFIG_VALUE_0=maintainer
+exec "$P/tools/bd" "$@"

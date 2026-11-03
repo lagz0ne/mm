@@ -1,0 +1,81 @@
+{
+  "activities": [
+    {
+      "id": "spec",
+      "title": "Requirements & specs",
+      "raci": {
+        "requirement": "R",
+        "human": "A",
+        "design": "C",
+        "code": "C",
+        "qa": "I",
+        "architecture": "C"
+      }
+    },
+    {
+      "id": "design",
+      "title": "UI design",
+      "raci": {
+        "design": "R",
+        "human": "A",
+        "requirement": "C",
+        "code": "C",
+        "qa": "I",
+        "architecture": "C"
+      }
+    },
+    {
+      "id": "build",
+      "title": "Code changes",
+      "raci": {
+        "code": "RA",
+        "design": "C",
+        "requirement": "I",
+        "qa": "I",
+        "architecture": "C",
+        "ops": "I"
+      }
+    },
+    {
+      "id": "arch",
+      "title": "System design & architecture",
+      "raci": {
+        "code": "C",
+        "human": "A",
+        "requirement": "C",
+        "qa": "I",
+        "architecture": "R"
+      }
+    },
+    {
+      "id": "test",
+      "title": "QA acceptance",
+      "raci": {
+        "qa": "R",
+        "human": "A",
+        "code": "C",
+        "requirement": "I"
+      }
+    },
+    {
+      "id": "release",
+      "title": "Deploy & release",
+      "raci": {
+        "code": "C",
+        "human": "A",
+        "qa": "C",
+        "requirement": "I",
+        "design": "I",
+        "ops": "R"
+      }
+    },
+    {
+      "id": "epic",
+      "title": "Epic progress & closure",
+      "raci": {
+        "requirement": "RA",
+        "human": "I"
+      }
+    }
+  ]
+}

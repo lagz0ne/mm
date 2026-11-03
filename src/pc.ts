@@ -2,16 +2,31 @@
 // Projects are added as namespaces later (`mm new` / `mm up`); it starts empty and stays up (--keep-project).
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { DIRS, HOME, hasSystemdUser, run, which } from './env'
+import { getPath, loadConfig } from './config'
+import { DIRS, HOME, hasSystemdUser, run, toolPath, which } from './env'
 
 const BASE = join(DIRS.pc, 'base.yaml')
 const UNIT_DIR = join(HOME, '.config', 'systemd', 'user')
 
 export const answering = () => run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'state'], { timeoutMs: 10_000 }).ok
 
+/** Machine-level processes (namespace mm): the portless proxy that gives every project's HTTP services their names. */
+export function writeBase() {
+  const pp = Number(getPath(loadConfig(), 'portless_port') ?? 1355)
+  const processes: Record<string, unknown> = which('portless') ? {
+    'mm.portless': {
+      namespace: 'mm', command: `portless proxy start --foreground --port ${pp} --no-tls`,
+      environment: [`PATH=${toolPath()}`, 'PORTLESS_SYNC_HOSTS=0'],
+      log_location: join(DIRS.pc, 'portless.log'), availability: { restart: 'always', backoff_seconds: 3 },
+      readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${pp}/` }, period_seconds: 3, failure_threshold: 20 },
+    },
+  } : {}
+  writeFileSync(BASE, `# mm: the machine process manager. Projects join as namespaces (~/.mm/pc/projects/*.yaml).\nversion: "0.5"\n${Bun.YAML.stringify({ processes }, null, 2)}\n`)
+}
+
 export async function ensurePc(): Promise<string> {
   mkdirSync(DIRS.pc, { recursive: true })
-  if (!existsSync(BASE)) writeFileSync(BASE, '# mm: the machine process manager. Projects are added as namespaces at runtime.\nversion: "0.5"\nprocesses: {}\n')
+  writeBase()
   const pc = which('process-compose')
   if (!pc) throw new Error('process-compose is not installed')
   const args = `up -t=false --keep-project -U -u %h/.mm/pc.sock -L %h/.mm/pc/process-compose.log -f %h/.mm/pc/base.yaml`

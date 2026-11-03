@@ -1,0 +1,25 @@
+#!/bin/sh
+# backup — nightly copy of everything this project can't rebuild, outside the project folder:
+#   ~/.local/share/backups/<project>/<UTC date>/
+#     board.dolt/        full Dolt backup of the Beads database (history included; restore: dolt backup restore)
+#     board.jsonl        readable export of all items, comments, labels, dependencies
+#     code.bundle        git bundle of the product repo (all branches)
+#     config.bundle      git bundle of the project config repo (briefs, skills, permissions, scripts)
+#     releases           the release log
+# Keeps the newest 14. Same disk (RAID1): protects against mistakes and corruption, not disk loss; off-site is separate.
+set -eu
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+PROJECT=$(sed -n 's/^project:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p' "$P/.mm-answers.yaml" 2>/dev/null || true); PROJECT=${PROJECT:-$(basename "$P")}; NAME=$PROJECT
+ROOT=${BACKUP_DIR:-$HOME/.local/share/backups/$NAME}
+D=$ROOT/$(date -u +%Y-%m-%dT%H%MZ)
+mkdir -p "$D"
+PORT=$(sed -n 's/^ *port: *\([0-9]*\).*/\1/p' "$P/control/.beads/dolt-server-config.yaml" | head -1)
+DB=$(sed -n 's/.*"dolt_database": *"\([^"]*\)".*/\1/p' "$P/control/.beads/metadata.json")
+export DOLT_ROOT_PATH="$P/.dolt-root" XDG_CONFIG_HOME="$P/.config" DOLT_CLI_PASSWORD=""
+"$P/tools/dolt" --host 127.0.0.1 --port "$PORT" --no-tls -u root --use-db "$DB" sql -q "CALL dolt_backup('sync-url', 'file://$D/board.dolt')" >/dev/null
+(cd "$P/control" && "$P/bin/bd" export --all -o "$D/board.jsonl" >/dev/null 2>&1 || "$P/bin/bd" export --all > "$D/board.jsonl")
+git -C "$P/code" bundle create -q "$D/code.bundle" --all
+git -C "$P" bundle create -q "$D/config.bundle" --all
+[ -f "$P/.releases" ] && cp "$P/.releases" "$D/releases"
+ls -1d "$ROOT"/20*/ 2>/dev/null | head -n -14 | xargs -r rm -rf
+echo "backup $D: $(du -sh "$D" | cut -f1), $(wc -l < "$D/board.jsonl") items"

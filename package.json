@@ -8,8 +8,9 @@
     "mm": "src/cli.ts"
   },
   "scripts": {
-    "build": "bun build src/cli.ts --compile --outfile dist/mm",
-    "check": "bun x tsc --noEmit"
+    "build": "bun scripts/pack-template.ts && bun build src/cli.ts --compile --outfile dist/mm",
+    "check": "bun x tsc --noEmit",
+    "pack": "bun scripts/pack-template.ts"
   },
   "dependencies": {
     "commander": "^15.0.0"

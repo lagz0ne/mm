@@ -1,0 +1,52 @@
+#!/bin/sh
+# Remove everything this project left OUTSIDE its folder, then (optionally) the folder itself.
+# Default is a dry run that lists each trace. --yes does it. --delete-folder also removes the project folder.
+#
+# Traces outside <root> and how each is removed:
+#   1. Paseo agents (leads, workers): hard-deleted by label project=<name> (history goes with them)
+#   2. Paseo workspaces + project registry entry: archived / deleted
+#   3. systemd user unit links (~/.config/systemd/user/<prefix>-*.service): bin/down
+#   4. Public routes (the machine's `expose` routes): expose rm, for each `public` service in services.json
+#   5. Design previews (~/.local/share/preview/<name>-design/)
+#   6. Claude Code transcripts (~/.claude/projects/-home-<user>-projects-<name>*)
+#   7. Claude Code folder trust (~/.claude.json, projects["<root>"…]): entries removed with a backup copy
+set -eu
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+PROJECT=$(sed -n 's/^project:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p' "$P/.mm-answers.yaml" 2>/dev/null || true); PROJECT=${PROJECT:-$(basename "$P")}; NAME=$PROJECT
+PASEO=${PASEO_BIN:-paseo}
+DO=0; DEL=0
+for a in "$@"; do case "$a" in --yes) DO=1;; --delete-folder) DEL=1;; --with-backups) WITH_BACKUPS=1;; *) echo "usage: bin/purge [--yes] [--delete-folder] [--with-backups]" >&2; exit 2;; esac; done
+run() { if [ $DO = 1 ]; then echo "+ $*"; "$@" || echo "  (failed, continuing)"; else echo "would: $*"; fi; }
+
+echo "== 1. Paseo agents"
+for id in $("$PASEO" ls -g -a --label "project=$NAME" -q 2>/dev/null); do run "$PASEO" delete "$id"; done
+echo "== 2. Paseo workspaces and project"
+"$PASEO" project ls 2>/dev/null | awk -v p="$P" '$NF==p || index($NF, p"/")==1 {print $1}' | while read -r pid; do run "$PASEO" project delete "$pid"; done
+echo "== 3. services"
+run "$P/bin/down"
+echo "== 4. public routes"
+node -e "try{const s=require('$P/services.json').services;for(const d of Object.values(s))if(d.public)console.log(d.public.name.replaceAll('{project}','$NAME'))}catch{}" | while read -r n; do [ -n "$n" ] && run expose rm "$n"; done
+echo "== 5. design previews"
+[ -d "$HOME/.local/share/preview/$NAME-design" ] && run rm -rf "$HOME/.local/share/preview/$NAME-design"
+echo "== 6. Claude Code transcripts"
+key=$(printf '%s' "$P" | sed 's#[^A-Za-z0-9]#-#g')
+for d in "$HOME/.claude/projects/$key" "$HOME/.claude/projects/$key"-*; do [ -d "$d" ] && run rm -rf "$d"; done
+echo "== 7. Claude Code folder trust (~/.claude.json)"
+if [ $DO = 1 ]; then
+  cp "$HOME/.claude.json" "$HOME/.claude.json.bak-purge-$NAME"
+  python3 -I - "$P" <<'PY'
+import json, os, sys, tempfile
+p = os.path.expanduser('~/.claude.json'); root = sys.argv[1]
+d = json.load(open(p)); projs = d.get('projects', {})
+gone = [k for k in list(projs) if k == root or k.startswith(root + '/')]
+for k in gone: del projs[k]
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p)); os.close(fd)
+json.dump(d, open(tmp, 'w'), indent=2); os.chmod(tmp, os.stat(p).st_mode & 0o777); os.replace(tmp, p)
+print('  removed', len(gone), 'entries:', ', '.join(gone) or '-')
+PY
+else python3 -I -c "import json,os,sys; r=sys.argv[1]; print('would: remove', [k for k in json.load(open(os.path.expanduser('~/.claude.json'))).get('projects',{}) if k==r or k.startswith(r+'/')])" "$P"; fi
+echo "== 8. backups (~/.local/share/backups/$NAME): kept unless --with-backups"
+if [ -d "$HOME/.local/share/backups/$NAME" ]; then if [ "${WITH_BACKUPS:-0}" = 1 ]; then run rm -rf "$HOME/.local/share/backups/$NAME"; else echo "kept $HOME/.local/share/backups/$NAME"; fi; fi
+echo "== 9. project folder"
+if [ $DEL = 1 ]; then run rm -rf "$P"; else echo "kept $P (add --delete-folder to remove it)"; fi
+[ $DO = 1 ] || printf "\ndry run: nothing changed. Re-run with --yes to do it.\n"

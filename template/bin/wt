@@ -1,0 +1,59 @@
+#!/bin/sh
+# Worktrees of code/ under worktrees/: one per lead (lead-<role>) and one per worker (w-<item-id>), each on its own branch.
+#   wt <name>        create worktrees/<name> on branch <name> from main (no-op if it exists); prints its path
+#   wt sync <name>   rebase <name> onto main (needs a clean tree); prints the new HEAD
+#   wt rm <name>     remove the worktree and its branch (refuses if the branch isn't on main; --force to drop work)
+#   wt ls            list worktrees
+set -eu
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+G="git -C $P/code"
+valid() { case "$1" in ''|*[!a-z0-9._-]*|.*) echo "wt: bad name '$1'" >&2; exit 2;; esac; }
+case "${1:-}" in
+  ls) $G worktree list ;;
+  sync) valid "${2:-}"; W=$P/worktrees/$2
+        [ -z "$(git -C "$W" status --porcelain)" ] || { echo "wt: $2 has uncommitted changes; commit first" >&2; exit 1; }
+        git -C "$W" rebase -q main || { git -C "$W" rebase --abort; echo "wt: rebase of $2 onto main conflicts; resolve by hand" >&2; exit 1; }
+        git -C "$W" rev-parse --short HEAD ;;
+  rm) valid "${2:-}"; W=$P/worktrees/$2
+      if [ "${3:-}" != --force ] && ! $G merge-base --is-ancestor "$2" main 2>/dev/null; then
+        echo "wt: branch $2 has commits not on main (land it, or: wt rm $2 --force)" >&2; exit 1; fi
+      $G worktree remove ${3:+--force} "$W" 2>/dev/null || $G worktree remove --force "$W"
+      $G branch -D -q "$2"; echo "removed $2" ;;
+  ''|-h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) valid "$1"; W=$P/worktrees/$1
+     if [ ! -d "$W" ]; then
+       $G worktree add -q "$W" -b "$1" main 2>/dev/null || $G worktree add -q "$W" "$1"
+       # commits show who made them: lead-<role> -> <role>, w-<item> -> code-worker
+       case "$1" in lead-*) who=${1#lead-};; w-*) who=code-worker;; *) who=$1;; esac
+       $G config extensions.worktreeConfig true
+       git -C "$W" config --worktree user.name "$who"
+       git -C "$W" config --worktree user.email "$who@$(basename "$P").local"
+       # Workers run arbitrary code (npm, node): every shell command they run is jailed by bubblewrap through
+       # Claude Code's sandbox. Writes: this worktree + npm cache + temp. Reads: nothing else under $HOME.
+       # Network: the npm registry only. The profile itself is read-only to the worker.
+       case "$1" in w-*)
+         mkdir -p "$W/.claude"
+         cat > "$W/.claude/settings.local.json" <<JSON
+{
+  "sandbox": {
+    "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false, "autoAllowBashIfSandboxed": true,
+    "filesystem": {
+      "allowWrite": ["$HOME/.npm", "/tmp"],
+      "denyWrite": ["$W/.claude", "$W/.git"],
+      "denyRead": ["$HOME"],
+      "allowRead": ["$W", "$HOME/.npm", "$P/code/.git"]
+    },
+    "network": { "allowedDomains": ["registry.npmjs.org"] }
+  },
+  "permissions": {
+    "deny": ["Edit($W/.claude/**)", "Write($W/.claude/**)", "Bash(git push*)", "Bash(*SANDBOX*)"]
+  }
+}
+JSON
+         sed -i 's|"Edit(/|"Edit(//|; s|"Write(/|"Write(//|' "$W/.claude/settings.local.json"
+         grep -qx '.claude/settings.local.json' "$P/code/.git/info/exclude" 2>/dev/null || echo '.claude/settings.local.json' >> "$P/code/.git/info/exclude"
+         ;;
+       esac
+     fi
+     echo "$W" ;;
+esac

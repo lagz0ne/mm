@@ -1,0 +1,86 @@
+#!/usr/bin/env node
+// role — add or remove a lead role (same structure as every other lead). Used by the setup agent; commit afterwards.
+//   role ls
+//   role add <id> --title "<Title>" --initial <L> [--color #rrggbb] [--summary "<one line>"] [--workers]
+//   role rm <id>          refuses while the role has open items or unlanded work; stops its lead
+// A new role gets: leads/<id>/CLAUDE.md (brief skeleton), .claude/settings.tmpl.json (base permissions + safety
+// denies), .claude/skills/, an entry in leads/roles.json, a persona, and a RACI column (cells set with `raci set`).
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const RF = path.join(P, 'leads', 'roles.json')
+const die = (m) => { console.error(`role: ${m}`); process.exit(2) }
+const load = () => JSON.parse(fs.readFileSync(RF, 'utf8'))
+const save = (d) => fs.writeFileSync(RF, JSON.stringify(d, null, 2) + '\n')
+const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : undefined }
+const run = (cmd, args) => execFileSync(path.join(P, 'bin', cmd), args, { cwd: P, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+
+function baseSettings(id, workers) {
+  const W = `{root}/worktrees/lead-${id}`
+  const allow = ['Bash(bd *)', 'Bash(cd {root}*)', 'Bash(git status*)', 'Bash(git diff*)', 'Bash(git log*)', 'Bash(git show*)',
+    'Bash(wt *)', 'Bash(land *)', 'Bash(ls *)', 'Bash(mkdir -p *)', 'Write(//tmp/**)',
+    `Bash(git -C ${W} status*)`, `Bash(git -C ${W} diff*)`, `Bash(git -C ${W} log*)`, `Bash(git -C ${W} show*)`,
+    `Bash(git -C ${W} add *)`, `Bash(git -C ${W} commit *)`, `Edit(${W}/docs/${id}/**)`, `Write(${W}/docs/${id}/**)`]
+  const deny = ['Read({root}/secrets/**)', 'Bash(git push*)', 'Edit({root}/code/**)', 'Write({root}/code/**)', 'Edit({root}/control/**)',
+    'Write({root}/control/**)', 'Edit({root}/leads/**)', 'Write({root}/leads/**)', 'Edit({root}/CLAUDE.md)', 'Write({root}/CLAUDE.md)',
+    'Edit({root}/worktrees/CLAUDE.md)', 'Write({root}/worktrees/CLAUDE.md)', 'Edit({root}/setup/**)', 'Write({root}/setup/**)',
+    'Edit({root}/release/**)', 'Write({root}/release/**)']
+  if (workers) deny.push('mcp__paseo__get_agent_activity', 'Edit({root}/worktrees/**)', 'Write({root}/worktrees/**)')
+  return { permissions: { additionalDirectories: ['{root}'], allow, deny } }
+}
+
+const [cmd, id] = process.argv.slice(2)
+if (!cmd || cmd === 'ls') {
+  for (const r of load().roles) console.log(`${r.id.padEnd(14)} ${r.initial}  ${r.title.padEnd(24)} ${r.workers ? 'workers  ' : '         '}${r.summary || ''}`)
+} else if (cmd === 'add') {
+  const d = load()
+  const title = arg('--title'), initial = arg('--initial'), color = arg('--color') || '#555555', summary = arg('--summary') || ''
+  const workers = process.argv.includes('--workers')
+  if (!/^[a-z][a-z0-9-]{1,23}$/.test(id || '')) die('id: 2–24 chars, a-z 0-9 -')
+  if (['setup', 'human', 'wake', 'smoke', 'ui', 'beads', 'system', 'admin', 'brain'].includes(id)) die(`${id} is reserved`)
+  if (d.roles.some((r) => r.id === id)) die(`role ${id} exists`)
+  if (!title || !/^[A-Z]$/.test(initial || '')) die('need --title "<Title>" and --initial <one capital letter>')
+  if (!/^#[0-9a-fA-F]{6}$/.test(color)) die('--color must be #rrggbb')
+  const dir = path.join(P, 'leads', id)
+  if (fs.existsSync(dir)) die(`leads/${id} already exists`)
+  fs.mkdirSync(path.join(dir, '.claude', 'skills'), { recursive: true })
+  fs.writeFileSync(path.join(dir, '.claude', 'skills', '.keep'), '')
+  fs.writeFileSync(path.join(dir, 'CLAUDE.md'), [`# ${title} lead`, '', summary || '(One line: what this lead is for.)', '',
+    '## Your work', '- You own the activities where you are R or A in the RACI matrix; give input where you are C.',
+    `- Write in your worktree (\`worktrees/lead-${id}\`) under \`docs/${id}/\`, commit with the item id, then \`land\`.`,
+    '- (The setup agent fills in the specifics with the human: what you produce, how it is checked, what "done" means.)', ''].join('\n'))
+  fs.writeFileSync(path.join(dir, '.claude', 'settings.tmpl.json'), JSON.stringify(baseSettings(id, workers), null, 2) + '\n')
+  d.roles.push({ id, title, initial, color, workers, summary }); save(d)
+  try { run('persona', ['reroll', id]) } catch (e) { console.error(`(persona: ${String(e.stderr || e).trim()})`) }
+  run('raci', ['render'])
+  console.log(`added role ${id} (${title}, ${initial}). Next: write leads/${id}/CLAUDE.md with the human, set its RACI cells`,
+    `(raci set <activity> ${id}=R|A|C|I), add skills, then commit and \`lead start ${id}\`.`)
+} else if (cmd === 'rm') {
+  const d = load()
+  if (!d.roles.some((r) => r.id === id)) die(`no role ${id}`)
+  let open = []
+  try { open = JSON.parse(run('bd', ['list', '--assignee', id, '--status', 'open,in_progress,blocked', '--json']) || '[]') } catch {}
+  if (open.length) die(`${id} still has ${open.length} open item(s): ${open.map((i) => i.id).join(', ')}. Reassign or close them first.`)
+  // Removing a role must not leave an activity without its Accountable or Responsible.
+  const rj = JSON.parse(fs.readFileSync(path.join(P, 'leads', 'raci.json'), 'utf8'))
+  const orphans = rj.activities.filter((a) => {
+    const rest = Object.entries(a.raci).filter(([p]) => p !== id).map(([, l]) => l)
+    return (a.raci[id] || '').match(/[AR]/) && (!rest.some((l) => l.includes('A')) || !rest.some((l) => l.includes('R')))
+  })
+  if (orphans.length) die(`${id} is the only A or R for: ${orphans.map((a) => a.id).join(', ')}. Hand those over first (raci set <activity> <other>=R|A).`)
+  const wt = path.join(P, 'worktrees', `lead-${id}`)
+  if (fs.existsSync(wt)) { try { run('wt', ['rm', `lead-${id}`]) } catch (e) { die(`lead-${id} worktree has unlanded work: ${String(e.stderr || e).trim()}`) } }
+  try { run('lead', ['stop', id]) } catch {}
+  fs.rmSync(path.join(P, 'leads', id), { recursive: true, force: true })
+  d.roles = d.roles.filter((r) => r.id !== id); save(d)
+  const rf = path.join(P, 'leads', 'raci.json')
+  const r = JSON.parse(fs.readFileSync(rf, 'utf8')); for (const a of r.activities) delete a.raci[id]
+  fs.writeFileSync(rf, JSON.stringify(r, null, 2) + '\n'); run('raci', ['render'])
+  const pf = path.join(P, 'leads', 'personas.json')
+  if (fs.existsSync(pf)) { const pj = JSON.parse(fs.readFileSync(pf, 'utf8')); delete pj.agents?.[id]; fs.writeFileSync(pf, JSON.stringify(pj, null, 2) + '\n') }
+  console.log(`removed role ${id} (folder, roles.json, RACI cells, persona). Its history stays in git and on the board.`,
+    'Check that every RACI activity still has an A and an R (raci).')
+} else console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 8).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'))

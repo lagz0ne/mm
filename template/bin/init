@@ -1,0 +1,46 @@
+#!/bin/sh
+# init — create this project's control/ (the Beads board database) from zero. Run once, before the services start.
+#   bin/init <prefix>     e.g. bin/init ab   (item ids become ab-xxx)
+# Steps:
+#   1. tools/bd and tools/dolt must match tools.json (installed_sha256)
+#   2. control/ = a git repo (repo-local identity), with project-local config dirs (.config, .dolt-root, .dolt, .run)
+#   3. bd init --server: Beads in Dolt server mode (database = <prefix>), stealth, maintainer role
+#   4. events-journal on: the board's live stream and wake read /v0/beads/events
+#   5. stop the Dolt server bd started for init; from now on the process manager runs it (services.json: dolt, which
+#      listens on {root}/.dolt/mysql.sock, so bd clients use the socket)
+#   6. first commit in control/
+# Refuses if control/.beads exists.
+set -eu
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+PREFIX=${1:?usage: bin/init <prefix>}
+case "$PREFIX" in *[!a-z0-9]*|'') echo "init: prefix must be a-z0-9" >&2; exit 2;; esac
+[ ! -e "$P/control/.beads" ] || { echo "init: $P/control/.beads exists; nothing to do" >&2; exit 1; }
+
+# 1. tools
+for t in bd dolt; do
+  want=$(node -e "const j=require('$P/tools.json');process.stdout.write(j['$t']['linux-x64'].installed_sha256)")
+  have=$(sha256sum "$P/tools/$t" 2>/dev/null | cut -d' ' -f1)
+  [ "$have" = "$want" ] || { echo "init: tools/$t missing or not the version in tools.json (want $want)" >&2; exit 1; }
+done
+
+# 2. folders + control repo
+mkdir -p "$P/control" "$P/.config" "$P/.dolt-root" "$P/.dolt" "$P/.run"
+chmod 700 "$P/.config" "$P/.dolt-root"
+git -C "$P/control" init -q -b main
+git -C "$P/control" config user.name "$(basename "$P")"
+git -C "$P/control" config user.email "board@$(basename "$P").local"
+
+# 3. Beads, server mode (bd starts a temporary Dolt server for this)
+cd "$P/control"
+"$P/bin/bd" init --quiet --stealth --server --prefix "$PREFIX" --non-interactive --role maintainer
+
+# 4. live event stream for the board and wake
+"$P/bin/bd" config set events-journal true >/dev/null
+
+# 5. hand Dolt over to the process manager
+"$P/bin/bd" dolt stop >/dev/null 2>&1 || true
+
+# 6. first commit
+git -C "$P/control" add -A
+git -C "$P/control" commit -q --allow-empty -m "init: Beads (server mode, prefix $PREFIX, events journal on; .beads is kept by Dolt, not git)"
+echo "init: control/ ready (prefix $PREFIX). Start the services (services.json); bd talks to Dolt via $P/.dolt/mysql.sock."

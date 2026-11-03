@@ -1,0 +1,58 @@
+#!/usr/bin/env node
+// health — the project's watchdog (run every minute by the machine's scheduler). Checks every service and endpoint; restarts
+// what is down; after 3 failed checks in a row opens a P0 incident on the board (label incident, needs-you) and closes
+// it when the check passes again. State: .health.json. Prints one line per problem (its log: the scheduler's).
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const NAME = path.basename(P) // folder (for paths); the project id comes from projectName()
+const STATE = process.env.HEALTH_STATE || path.join(P, '.health.json')
+const FORCE = process.env.HEALTH_FORCE_FAIL || '' // test only: treat this check as failing, without restarting anything
+import { endpoints, restartService, servicesDef, svcUrl } from './lib/svc.mjs'
+// Checks come from services.json (each service's `ready` probe) and where the manager put them (.run/endpoints.json).
+const SVC = servicesDef()
+async function ok(url) { try { const r = await fetch(url, { signal: AbortSignal.timeout(5000) }); return r.status < 500 } catch { return false } }
+const SOCK = path.join(P, '.dolt', 'mysql.sock')
+const checks = [
+  ...Object.entries(SVC).filter(([n, d]) => !(d.optional && !svcUrl(n) && d.port === 'http')).map(([name, d]) => {
+    const r = d.ready || {}
+    const run = r.http ? async () => { const u = svcUrl(name); return !!u && ok(u + r.http) }
+      : r.socket ? async () => fs.existsSync(SOCK) || !!endpoints().services?.[name]?.port // legacy TCP dolt has no socket
+      : async () => true // process liveness is the manager's job
+    return { id: name, title: `${name} is not answering`, service: name, run }
+  }),
+  { id: 'paseo', title: 'Paseo daemon (agents) does not answer', run: async () => { try { execFileSync(process.env.PASEO_BIN || 'paseo', ['ls', '-q'], { timeout: 15000, stdio: 'ignore' }); return true } catch { return false } } },
+]
+const BD = svcUrl('bd-serve')
+
+const state = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } })()
+async function bd(method, p, body) {
+  const r = await fetch(`${BD}${p}`, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(8000) })
+  return r.json().catch(() => ({}))
+}
+
+for (const c of checks) {
+  const s = state[c.id] ||= { fails: 0, incident: null }
+  const good = c.id === FORCE ? false : await c.run()
+  if (good) {
+    if (s.incident) {
+      await bd('POST', `/v0/beads/issues/${s.incident}/comments`, { author: 'watchdog', text: `Recovered at ${new Date().toISOString()} after ${s.fails} failed check(s).` }).catch(() => {})
+      await bd('POST', `/v0/beads/issues/${s.incident}:close`, { actor: 'watchdog', reason: 'recovered (watchdog)' }).catch(() => {})
+      console.log(`${c.id}: recovered; closed ${s.incident}`)
+    }
+    state[c.id] = { fails: 0, incident: null }
+    continue
+  }
+  s.fails += 1
+  console.log(`${c.id}: FAILED (${s.fails} in a row): ${c.title}`)
+  if (c.service && s.fails <= 3 && c.id !== FORCE) { try { restartService(c.service); console.log(`${c.id}: restarted`) } catch (e) { console.log(`${c.id}: restart failed: ${e.message}`) } }
+  if (s.fails >= 3 && !s.incident) {
+    const r = await bd('POST', '/v0/beads/issues', { title: `Incident: ${c.title}`, issue_type: 'bug', priority: 0, labels: ['incident', 'needs-you'], actor: 'watchdog', owner: 'watchdog',
+      description: `The watchdog found **${c.title}** on ${s.fails} checks in a row (one per minute) and could not fix it by restarting${c.service ? ` \`${c.service}\`` : ''}.\n\nCheck the process manager's log for ${c.service || 'it'}. This item closes itself when the check passes again.` }).catch(() => ({}))
+    if (r.id) { s.incident = r.id; console.log(`${c.id}: opened incident ${r.id}`) }
+  }
+}
+fs.writeFileSync(STATE, JSON.stringify(state, null, 1))

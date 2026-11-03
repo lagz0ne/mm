@@ -1,0 +1,52 @@
+{
+  "roles": [
+    {
+      "id": "requirement",
+      "title": "Requirement",
+      "initial": "R",
+      "color": "#1f5fbf",
+      "workers": false,
+      "summary": "Turns asks into testable requirements; owns epics."
+    },
+    {
+      "id": "design",
+      "title": "Design",
+      "initial": "D",
+      "color": "#7a3fc0",
+      "workers": false,
+      "summary": "Turns specs into UI designs and mockups."
+    },
+    {
+      "id": "code",
+      "title": "Code",
+      "initial": "C",
+      "color": "#1e7e34",
+      "workers": true,
+      "summary": "Orchestrates workers that build, and lands their work."
+    },
+    {
+      "id": "qa",
+      "title": "QA",
+      "initial": "Q",
+      "color": "#b45f06",
+      "workers": false,
+      "summary": "Checks the built product against the spec; files bugs."
+    },
+    {
+      "id": "architecture",
+      "title": "System architecture",
+      "initial": "A",
+      "color": "#0f766e",
+      "workers": false,
+      "summary": "Owns the system design and protects it as the system grows."
+    },
+    {
+      "id": "ops",
+      "title": "CI/CD & production",
+      "initial": "O",
+      "color": "#b91c1c",
+      "workers": false,
+      "summary": "Owns pipelines, releases and production health."
+    }
+  ]
+}

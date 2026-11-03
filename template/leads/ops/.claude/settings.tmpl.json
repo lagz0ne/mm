@@ -1,0 +1,55 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "{root}"
+    ],
+    "allow": [
+      "Bash(bd *)",
+      "Bash(cd {root}*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(wt *)",
+      "Bash(land *)",
+      "Bash(ls *)",
+      "Bash(mkdir -p *)",
+      "Write(//tmp/**)",
+      "Bash(git -C {root}/worktrees/lead-ops status*)",
+      "Bash(git -C {root}/worktrees/lead-ops diff*)",
+      "Bash(git -C {root}/worktrees/lead-ops log*)",
+      "Bash(git -C {root}/worktrees/lead-ops show*)",
+      "Bash(git -C {root}/worktrees/lead-ops add *)",
+      "Bash(git -C {root}/worktrees/lead-ops commit *)",
+      "Edit({root}/worktrees/lead-ops/docs/ops/**)",
+      "Write({root}/worktrees/lead-ops/docs/ops/**)",
+      "Edit({root}/worktrees/lead-ops/scripts/ci/**)",
+      "Write({root}/worktrees/lead-ops/scripts/ci/**)",
+      "Bash(node --test*)",
+      "Bash(deploy*)",
+      "Bash(curl -s {url:app}*)",
+      "Bash(svc logs *)",
+      "Bash(deploy status*)",
+      "Bash(svc ls*)",
+      "Bash(svc url *)"
+    ],
+    "deny": [
+      "Read({root}/secrets/**)",
+      "Bash(git push*)",
+      "Edit({root}/code/**)",
+      "Write({root}/code/**)",
+      "Edit({root}/control/**)",
+      "Write({root}/control/**)",
+      "Edit({root}/leads/**)",
+      "Write({root}/leads/**)",
+      "Edit({root}/CLAUDE.md)",
+      "Write({root}/CLAUDE.md)",
+      "Edit({root}/worktrees/CLAUDE.md)",
+      "Write({root}/worktrees/CLAUDE.md)",
+      "Edit({root}/setup/**)",
+      "Write({root}/setup/**)",
+      "Edit({root}/release/**)",
+      "Write({root}/release/**)"
+    ]
+  }
+}

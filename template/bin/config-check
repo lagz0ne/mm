@@ -1,0 +1,138 @@
+#!/usr/bin/env node
+// config-check — the governance rules, as code. Run by the setup agent and by the config repo's pre-commit hook.
+//   config-check            check the working tree
+//   config-check --staged   also refuse staged changes to setup/ (the setup agent's own brief/permissions; humans only)
+//   config-check --render   first write each .claude/settings.json from its settings.tmpl.json
+// Permission templates are written relative to the project root: `{root}` = this folder, `{home}` = $HOME, `{project}` = its name,
+// `{url:<service>}` = that service's URL at runtime. Read/Edit/Write
+// rules get Claude Code's `//` absolute prefix when rendered. The rendered settings.json files are generated (git-ignored).
+// Exit 1 with reasons if any rule is broken.
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const R = P
+const problems = []
+const bad = (m) => problems.push(m)
+import os from 'node:os'
+import { projectName, svcUrl } from './lib/svc.mjs'
+const HOME = process.env.HOME || os.homedir()
+// Roles: leads/roles.json is the list; every role has a folder and every folder a role.
+let DEF = []
+try { DEF = JSON.parse(fs.readFileSync(path.join(P, 'leads', 'roles.json'), 'utf8')).roles || [] } catch (e) { problems.push(`leads/roles.json unreadable (${e.message})`) }
+const ROLES = DEF.map((r) => r.id)
+const WORKERS = new Set(DEF.filter((r) => r.workers).map((r) => r.id))
+for (const r of DEF) {
+  if (!/^[a-z][a-z0-9-]{1,23}$/.test(r.id) || !/^[A-Z]$/.test(r.initial || '') || !r.title || !/^#[0-9a-fA-F]{6}$/.test(r.color || '')) problems.push(`roles.json: bad entry ${JSON.stringify(r)}`)
+  if (!fs.existsSync(path.join(P, 'leads', r.id))) problems.push(`roles.json lists ${r.id} but leads/${r.id}/ is missing`)
+}
+for (const d of fs.readdirSync(path.join(P, 'leads'), { withFileTypes: true })) if (d.isDirectory() && !ROLES.includes(d.name)) problems.push(`leads/${d.name}/ is not in roles.json`)
+
+/** Template → Claude Code settings: substitute {root}/{home}; make Read/Edit/Write paths absolute (`//…`). */
+function render(tmpl) {
+  const fill = (v) => v.replaceAll('{root}', R).replaceAll('{home}', HOME).replaceAll('{project}', projectName())
+    .replace(/\{url:([\w-]+)\}/g, (m, n) => svcUrl(n) || m) // where the process manager put that service
+  const rule = (r) => { const m = /^(Read|Edit|Write)\((.*)\)$/.exec(r); const v = fill(r); return m && m[2].startsWith('{') ? v.replace(/^(Read|Edit|Write)\(\//, '$1(//') : v }
+  const p = tmpl.permissions || {}
+  return { ...tmpl, permissions: { ...p,
+    ...(p.additionalDirectories ? { additionalDirectories: p.additionalDirectories.map(fill) } : {}),
+    // a rule naming a service that doesn't run yet ({url:app} before the first deploy) is left out, not half-rendered
+    allow: (p.allow || []).map(rule).filter((r) => !r.includes('{url:')), deny: (p.deny || []).map(rule) } }
+}
+const SETTINGS_DIRS = [...fs.readdirSync(path.join(P, 'leads'), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(P, 'leads', d.name)), path.join(P, 'setup')]
+for (const dir of SETTINGS_DIRS) {
+  const t = path.join(dir, '.claude', 'settings.tmpl.json')
+  if (!fs.existsSync(t)) continue
+  let tj
+  try { tj = JSON.parse(fs.readFileSync(t, 'utf8')) } catch (e) { bad(`${path.relative(P, t)} is not valid JSON (${e.message})`); continue }
+  if (JSON.stringify(tj).includes(R)) bad(`${path.relative(P, t)} hard-codes ${R}; write {root} instead`)
+  if (process.argv.includes('--render')) fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify(render(tj), null, 2) + '\n')
+}
+
+function mandatoryDeny(role) {
+  const d = [`Read(/${R}/secrets/**)`, 'Bash(git push*)', `Edit(/${R}/code/**)`, `Write(/${R}/code/**)`,
+    `Edit(/${R}/control/**)`, `Write(/${R}/control/**)`, `Edit(/${R}/leads/**)`, `Write(/${R}/leads/**)`,
+    `Edit(/${R}/CLAUDE.md)`, `Write(/${R}/CLAUDE.md)`, `Edit(/${R}/worktrees/CLAUDE.md)`, `Write(/${R}/worktrees/CLAUDE.md)`,
+    `Edit(/${R}/setup/**)`, `Write(/${R}/setup/**)`, `Edit(/${R}/release/**)`, `Write(/${R}/release/**)`]
+  if (WORKERS.has(role)) d.push('mcp__paseo__get_agent_activity', `Edit(/${R}/worktrees/**)`, `Write(/${R}/worktrees/**)`)
+  return d
+}
+// Allow rules that would hand a lead arbitrary execution or reach outside its job. Project facts come from the folder
+// and from where the process manager put the app slot (.run/endpoints.json); nothing machine-specific is written here.
+const esc = (x) => x.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
+const NAME = projectName()
+const APP_URL = svcUrl('app')
+const PREVIEW_DIR = `.local/share/preview/${NAME}-design/`
+const FORBIDDEN_ALLOW = [
+  /^Bash\(\*\)$/, /^Bash\((ba|z|da)?sh\b/, /^Bash\(sudo\b/, /^Bash\(eval\b/, /^Bash\(exec\b/, /^Bash\(env\b/,
+  /^Bash\((python3?|node|perl|ruby|deno|bun) +-(c|e)\b/, /^Bash\(npx\b/, /^Bash\(wget\b/, /^Bash\(ssh\b/,
+  /^Bash\((python3?|node|perl|ruby|deno|bun) \*\)$/, /^Bash\(git -C \*\)$/,
+  /^Bash\((cp|mv|rm|ln|tee|install|chmod|chown|dd|rsync) \*\)$/, /^Bash\(git push/, /^Bash\(.*--no-verify/,
+  // network: only the app slot's URL
+  APP_URL ? new RegExp(`^Bash\\(curl\\b(?!.*${esc(APP_URL)}(/|\\*|\\b))`) : /^Bash\(curl\b/,
+  // services: never directly; releases go through the deploy gateway
+  /^Bash\(systemctl\b/,
+  // files: only inside this project, /tmp, and this project's design-preview folder
+  new RegExp(`^(Edit|Write|Read)\\(//(?!${esc(R.slice(1))}/|tmp/|${esc(HOME.slice(1))}/${esc(PREVIEW_DIR)})`),
+  new RegExp(`^(Edit|Write|Read)\\(~/(?!${esc(PREVIEW_DIR)})`),
+]
+
+for (const role of ROLES) {
+  const f = path.join(P, 'leads', role, '.claude', 'settings.json')
+  if (!fs.existsSync(f)) { bad(`${role}: missing .claude/settings.json`); continue }
+  let j
+  try { j = JSON.parse(fs.readFileSync(f, 'utf8')) } catch (e) { bad(`${role}: settings.json is not valid JSON (${e.message})`); continue }
+  const deny = new Set(j.permissions?.deny || [])
+  for (const d of mandatoryDeny(role)) if (!deny.has(d)) bad(`${role}: settings.json lost the safety deny ${d}`)
+  for (const a of j.permissions?.allow || []) if (FORBIDDEN_ALLOW.some((re) => re.test(a))) bad(`${role}: forbidden allow rule ${a}`)
+  if (j.permissions?.defaultMode === 'bypassPermissions') bad(`${role}: bypassPermissions is not allowed`)
+  const sk = path.join(P, 'leads', role, '.claude', 'skills')
+  if (fs.existsSync(sk)) for (const name of fs.readdirSync(sk).filter((n) => !n.startsWith('.'))) {
+    const md = path.join(sk, name, 'SKILL.md')
+    if (!fs.existsSync(md)) { bad(`${role}: skill ${name} has no SKILL.md`); continue }
+    const head = /^---\n([\s\S]*?)\n---/.exec(fs.readFileSync(md, 'utf8'))
+    if (!head || !/^name:/m.test(head[1]) || !/^description:/m.test(head[1])) bad(`${role}: skill ${name} needs name + description frontmatter`)
+  }
+  if (!fs.existsSync(path.join(P, 'leads', role, 'CLAUDE.md'))) bad(`${role}: missing role brief CLAUDE.md`)
+}
+// Personas: cosmetic, but names must keep their role's initial and colors must be valid.
+const pf = path.join(P, 'leads', 'personas.json')
+if (fs.existsSync(pf)) {
+  try {
+    const pj = JSON.parse(fs.readFileSync(pf, 'utf8'))
+    const INIT = { ...Object.fromEntries(DEF.map((r) => [r.id, r.initial])), setup: 'S' }
+    for (const [role, a] of Object.entries(pj.agents || {})) {
+      if (!INIT[role]) { bad(`personas: unknown role ${role}`); continue }
+      if (typeof a.name !== 'string' || !a.name.startsWith(INIT[role])) bad(`personas: ${role} name must start with ${INIT[role]}`)
+      if (!/^#[0-9a-fA-F]{6}$/.test(a.color || '')) bad(`personas: ${role} color must be #rrggbb`)
+      if (a.avatar && [...a.avatar].length > 4) bad(`personas: ${role} avatar too long`)
+    }
+  } catch (e) { bad(`personas.json is not valid JSON (${e.message})`) }
+}
+// RACI: exactly one Accountable and at least one Responsible per activity; only known participants.
+const rf = path.join(P, 'leads', 'raci.json')
+if (fs.existsSync(rf)) {
+  try {
+    const rj = JSON.parse(fs.readFileSync(rf, 'utf8')); const who = [...ROLES, 'human']
+    for (const a of rj.activities || []) {
+      const cells = Object.entries(a.raci || {})
+      for (const [p, l] of cells) { if (!who.includes(p)) bad(`raci ${a.id}: unknown participant ${p}`); if (!/^[RACI]{1,2}$/.test(l)) bad(`raci ${a.id}: bad letters ${p}=${l}`) }
+      const A = cells.filter(([, l]) => l.includes('A')).length
+      if (A !== 1) bad(`raci ${a.id}: needs exactly one Accountable (has ${A})`)
+      if (!cells.some(([, l]) => l.includes('R'))) bad(`raci ${a.id}: needs at least one Responsible`)
+    }
+    if (process.argv.includes('--render')) execFileSync(path.join(P, 'bin', 'raci'), ['render'], { cwd: P, stdio: 'ignore' })
+  } catch (e) { bad(`raci.json unreadable (${e.message})`) }
+}
+for (const f of ['CLAUDE.md', 'leads/CLAUDE.md', 'leads/START.md', 'worktrees/CLAUDE.md']) if (!fs.existsSync(path.join(P, f))) bad(`missing ${f}`)
+
+if (process.argv.includes('--staged')) {
+  const staged = execFileSync('git', ['-C', P, 'diff', '--cached', '--name-only'], { encoding: 'utf8' }).split('\n').filter(Boolean)
+  const gov = staged.filter((f) => f.startsWith('setup/'))
+  if (gov.length && process.env.SETUP_HUMAN !== '1') bad(`setup/ changes are for humans only (${gov.join(', ')}); a human commits them with SETUP_HUMAN=1`)
+}
+
+if (problems.length) { console.error(`config-check: ${problems.length} problem(s)\n- ${problems.join('\n- ')}`); process.exit(1) }
+console.log(`config-check: ok (${ROLES.length} leads)`)

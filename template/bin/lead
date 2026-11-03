@@ -1,0 +1,40 @@
+#!/bin/sh
+# Leads = Paseo agents, one per role, started in leads/<role>/ so Claude Code loads that role's CLAUDE.md chain,
+# skills and permissions.
+#   bin/lead start <role> [--model provider/model]   start (archives a previous lead of that role first)
+#   bin/lead stop <role>                            archive the lead
+#   bin/lead ls                                     list leads
+set -eu
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+PROJECT=$(sed -n 's/^project:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p' "$P/.mm-answers.yaml" 2>/dev/null || true); PROJECT=${PROJECT:-$(basename "$P")}
+PASEO=${PASEO_BIN:-paseo}
+# Leads are always top-level agents in their own folder. Run from inside an agent (e.g. the setup agent), paseo would
+# otherwise make the lead that agent's sub-agent and use the caller's folder, brief and permissions.
+unset PASEO_AGENT_ID PASEO_AGENT_CWD
+ids() { "$PASEO" ls -g --label "project=$PROJECT" --label "role=$1" -q 2>/dev/null || true; }
+case "${1:-}" in
+  ls) "$PASEO" ls -g --label "project=$PROJECT" ;;
+  stop) [ -n "${2:-}" ] || { echo "usage: bin/lead stop <role>" >&2; exit 2; }
+        for id in $(ids "$2"); do "$PASEO" archive "$id" >/dev/null && echo "archived $2 lead $id"; done ;;
+  start)
+    role=${2:-}; DIR=$P/leads/$role; [ "$role" = setup ] && DIR=$P/setup   # setup = the governance agent
+    [ -n "$role" ] && [ -d "$DIR" ] || { echo "no such role: $role" >&2; exit 2; }
+    # model: --model, else the role's `model` in leads/roles.json, else the default
+    model=$(node -e "try{const r=require('$P/leads/roles.json').roles.find(x=>x.id==='$role');process.stdout.write((r&&r.model)||'')}catch{}" 2>/dev/null)
+    model=${model:-claude/claude-opus-5-5}; [ "${3:-}" = --model ] && model=$4
+    for id in $(ids "$role"); do "$PASEO" archive "$id" >/dev/null && echo "archived previous $role lead $id"; done
+    # its own worktree for docs/tests, unless it is setup or a role that works through workers
+    workers=$(node -e "try{const r=require('$P/leads/roles.json').roles.find(x=>x.id==='$role');process.stdout.write(r&&r.workers?'1':'')}catch{}" 2>/dev/null)
+    [ "$role" = setup ] || [ -n "$workers" ] || "$P/bin/wt" "lead-$role" >/dev/null
+    "$P/bin/config-check" --render >/dev/null || { echo "lead: config-check failed; not starting $role" >&2; "$P/bin/config-check"; exit 1; }
+    START=$P/leads/START.md; [ -f "$DIR/START.md" ] && START=$DIR/START.md
+    name=$(node -e "try{process.stdout.write(require('$P/leads/personas.json').agents['$role'].name||'')}catch{}" 2>/dev/null)
+    prompt=$(sed -e "s/{role}/$role/g" -e "s/{project}/$PROJECT/g" -e "s/{name}/${name:-the $role lead}/g" "$START")
+    "$PASEO" run --no-wait -q --title "$PROJECT · $role lead" --provider "$model" --mode auto \
+      --cwd "$DIR" --label "project=$PROJECT" --label "role=$role" \
+      --env "BEADS_ACTOR=$role" \
+      --env "GIT_AUTHOR_NAME=$role" --env "GIT_COMMITTER_NAME=$role" \
+      --env "GIT_AUTHOR_EMAIL=$role@$PROJECT.local" --env "GIT_COMMITTER_EMAIL=$role@$PROJECT.local" --env "PATH=$P/bin:$PATH" "$prompt"
+    ;;
+  *) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
