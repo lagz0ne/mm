@@ -7,8 +7,9 @@ import { DIRS, HOME } from './env'
 import { manifest } from './manifest'
 import { onboard } from './onboard'
 import { archive, restore, update } from './lifecycle'
+import { cron } from './cron'
 import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
-import { listProjects, namespaceOp, newProject, parseRef, processes, resolve, rootOf, up } from './project'
+import { findRoot, listProjects, namespaceOp, newProject, processes, resolve, up } from './project'
 import { type Format, print } from './out'
 import pkg from '../package.json'
 
@@ -84,7 +85,7 @@ program.command('new <project>').description('stamp a project from the template:
   })
 program.command('ls').description('list projects').action(() => { const o = fmt(); print(listProjects(), o, 'project') })
 program.command('inspect <project>').description('a project: answers, services, URLs').action((ref: string) => {
-  const o = fmt(), { client, name } = parseRef(ref), root = rootOf(client, name)
+  const o = fmt(), root = findRoot(ref)
   const { answers, services } = resolve(root), ps = processes(answers.project)
   const rows = Object.entries(services).map(([n, s]) => { const p = ps.find((x) => x.name === `${answers.project}.${n}`)
     return { service: n, status: p?.status ?? 'not loaded', ready: p?.is_ready ?? '', restarts: p?.restarts ?? '', url: (s as { url?: string }).url ?? '' } })
@@ -93,7 +94,7 @@ program.command('inspect <project>').description('a project: answers, services, 
   print(rows, o, 'service')
 })
 program.command('up <project>').description('load (or reload) a project into the process manager and start it').action((ref: string) => {
-  const o = fmt(), { client, name } = parseRef(ref); const steps = up(rootOf(client, name)); print(steps, o); process.exit(steps.some((s) => s.status === 'fail') ? 1 : 0)
+  const o = fmt(); const steps = up(findRoot(ref)); print(steps, o); process.exit(steps.some((s) => s.status === 'fail') ? 1 : 0)
 })
 for (const [cmd, op] of [['down', 'stop'], ['restart', 'restart']] as const) {
   program.command(`${cmd} <project>`).description(`${op} a project's processes (namespace)`).action((ref: string) => {
@@ -108,7 +109,7 @@ program.command('update [project]').description('bring a project (default: every
   .option('--adopt', 'once, for a project made before mm update: record the template (MM_TEMPLATE_DIR) as its baseline')
   .action((ref: string | undefined, opts) => {
     const o = fmt()
-    const roots = ref ? [rootOf(parseRef(ref).client, parseRef(ref).name)] : listProjects().map((p) => p.root.replace(/^~(?=\/)/, HOME)).filter((r) => r !== '?')
+    const roots = ref ? [findRoot(ref)] : listProjects().map((p) => p.root.replace(/^~(?=\/)/, HOME)).filter((r) => r !== '?')
     let bad = 0
     for (const root of roots) {
       const r = update(root, opts)
@@ -123,7 +124,7 @@ program.command('update [project]').description('bring a project (default: every
 program.command('archive <project>').description('clean removal: stop + unload, drop public routes, archive agents, pack to a tarball, delete')
   .option('-n, --dry-run', 'show the plan; change nothing')
   .action((ref: string, opts) => {
-    const o = fmt(), { client, name } = parseRef(ref), r = archive(rootOf(client, name), opts)
+    const o = fmt(), r = archive(findRoot(ref), opts)
     print(r.steps, o); if (!opts.dryRun && r.ok) console.log(`\narchived: ${r.tarball}\nbring back: mm restore ${r.tarball}`)
     process.exit(r.ok ? 0 : 1)
   })
@@ -134,6 +135,7 @@ for (const [name, desc] of [['brain <action>', 'brain status|pull|push'], ['clie
   program.command(name).description(`${desc} (not yet)`).action(() => { console.error(`mm ${name.split(' ')[0]}: not built yet`); process.exit(2) })
 }
 
+program.command('cron').description('(run by mm-pc) run every project\'s schedules (health, backup, ...)').action(async () => { await cron() })
 program.command('ship').description('(run by mm-pc) ship service log files to VictoriaLogs').action(async () => { await ship() })
 
 const obs = program.command('obs').description('observability: the Victoria stack (metrics, logs, traces) and what it saw')
@@ -180,7 +182,7 @@ obs.command('ui').description('where the UIs are (loopback: open them through an
 // Every mm command is one trace (children such as bin/init and npm join it); the long-running shipper is not.
 program.hook('preAction', (_p, cmd) => {
   const name = [cmd.parent?.name() !== 'mm' ? cmd.parent?.name() : '', cmd.name()].filter(Boolean).join(' ')
-  if (name === 'ship' || name.startsWith('obs')) return
+  if (name === 'ship' || name === 'cron' || name.startsWith('obs')) return
   const done = mmSpan(`mm ${name}`, { args: cmd.args.join(' ') })
   process.on('exit', (code) => done(code === 0, { exit_code: code }))
 })

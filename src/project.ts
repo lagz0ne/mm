@@ -20,6 +20,22 @@ export function parseRef(ref: string): { client: string; name: string } {
   return { client: m[1], name: m[2] }
 }
 export const rootOf = (client: string, name: string) => join(DIRS.projects, client, name)
+/** A project's folder from `client/name` or its project id: the usual place, else any folder one or two levels under
+ *  ~/projects whose .mm-answers.yaml says so (projects that predate mm keep their folder, e.g. ~/projects/playground). */
+export function findRoot(ref: string): string {
+  const m = /^([a-z][a-z0-9-]{0,30})\/([a-z][a-z0-9-]{0,30})$/.exec(ref || '')
+  if (m && existsSync(join(rootOf(m[1], m[2]), '.mm-answers.yaml'))) return rootOf(m[1], m[2])
+  const dirs: string[] = []
+  for (const a of existsSync(DIRS.projects) ? readdirSync(DIRS.projects) : []) {
+    dirs.push(join(DIRS.projects, a))
+    try { for (const b of readdirSync(join(DIRS.projects, a))) dirs.push(join(DIRS.projects, a, b)) } catch {}
+  }
+  for (const d of dirs) {
+    if (!existsSync(join(d, '.mm-answers.yaml'))) continue
+    try { const a = readAnswers(d); if (`${a.client}/${a.name}` === ref || a.project === ref) return d } catch {}
+  }
+  throw new Error(`no project "${ref}" (want <client>/<name> or a project id; see mm ls)`)
+}
 export function readAnswers(root: string): Answers {
   return Bun.YAML.parse(readFileSync(join(root, '.mm-answers.yaml'), 'utf8')) as Answers
 }
@@ -194,8 +210,7 @@ export function loadAll() {
 }
 
 export function namespaceOp(ref: string, op: 'start' | 'stop' | 'restart') {
-  const { client, name } = parseRef(ref)
-  return run(['process-compose', '-U', '-u', DIRS.socket, 'namespace', op, `${client}-${name}`], { timeoutMs: 120_000 })
+  return run(['process-compose', '-U', '-u', DIRS.socket, 'namespace', op, readAnswers(findRoot(ref)).project], { timeoutMs: 120_000 })
 }
 
 export function processes(project?: string) {

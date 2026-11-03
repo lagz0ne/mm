@@ -207,7 +207,7 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
 export function restore(tarball: string): { steps: Step[]; root: string; ok: boolean } {
   const steps: Step[] = []
   const list = run(['tar', '-tzf', tarball], { timeoutMs: 300_000 })
-  const ans = list.out.split('\n').find((l) => /^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*\/\.mm-answers\.yaml$/.test(l))
+  const ans = list.out.split('\n').find((l) => /^([a-z][a-z0-9-]*\/){1,2}\.mm-answers\.yaml$/.test(l))
   if (!list.ok || !ans) return { steps: [{ step: 'tarball', status: 'fail', detail: 'not an mm project archive' }], root: '', ok: false }
   const root = join(DIRS.projects, ans.replace(/\/\.mm-answers\.yaml$/, ''))
   if (existsSync(root)) return { steps: [{ step: 'restore', status: 'fail', detail: `${root.replace(HOME, '~')} exists` }], root, ok: false }

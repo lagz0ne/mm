@@ -22,6 +22,9 @@ export function writeBase() {
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${pp}/` }, period_seconds: 3, failure_threshold: 20 },
     },
   } : {}
+  const mm = which('mm') || join(DIRS.bin, 'mm')
+  processes['mm.cron'] = { namespace: 'mm', command: `${mm} cron`, environment: [`PATH=${toolPath()}`], log_location: join(DIRS.pc, 'cron.log'),
+    availability: { restart: 'always', backoff_seconds: 5 } }   // every project's schedules (process-compose has no scheduler)
   Object.assign(processes, obsProcesses())
   writeFileSync(BASE, `# mm: the machine process manager. Projects join as namespaces (~/.mm/pc/projects/*.yaml).\nversion: "0.5"\n${Bun.YAML.stringify({ processes }, null, 2)}\n`)
 }
