@@ -15,7 +15,8 @@ import { projectName, requireUrl, servicesDef, svcPublic } from '../bin/lib/svc.
 // PORT is assigned by the process manager (portless); HOST is where the machine wants services bound.
 const PORT = Number(process.env.PORT || process.env.BOARD_PORT)
 if (!PORT) { console.error('board: set PORT'); process.exit(2) }
-const HOST = process.env.HOST || process.env.BOARD_HOST || '127.0.0.1'
+// MM_BIND: where the machine wants it reachable (portless overrides HOST with loopback for the apps it runs)
+const HOST = process.env.MM_BIND || process.env.HOST || process.env.BOARD_HOST || '127.0.0.1'
 const BD = new URL(process.env.BD_SERVE || requireUrl('bd-serve'))
 const ACTOR = process.env.BOARD_ACTOR || 'guest' // until the visitor names themselves
 const ACCESS_HEADER = 'cf-access-authenticated-user-email' // trusted only behind Cloudflare Access
