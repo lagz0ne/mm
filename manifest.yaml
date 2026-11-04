@@ -69,6 +69,8 @@ machine:
     tar:        { install: { kind: system, packages: { dnf: tar, apt: tar, apk: tar } } }            # unpacks releases
     xz:         { install: { kind: system, packages: { dnf: xz, apt: xz-utils, apk: xz } } }       # .tar.xz releases
     jq:         { install: { kind: system, packages: { dnf: jq, apt: jq, apk: jq } } }            # first machine prints "jq-": presence only
+    age:        { required: true, min: "1.1", version: ["age", "--version"],                          # the vault (sealed secrets)
+                  install: { kind: system, packages: { dnf: age, apt: age, apk: age } } }             # signed distro packages (dnf: EPEL)
     tmux:       { tested: "next-3.4", install: { kind: system, packages: { dnf: tmux, apt: tmux, apk: tmux } } }
     bwrap:      { required: true, tested: "0.10.0", version: ["bwrap", "--version"],             # Claude Code sandbox for workers
                   install: { kind: system, packages: { dnf: bubblewrap, apt: bubblewrap, apk: bubblewrap } } }
