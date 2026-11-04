@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { checkTool, doctor, type Check } from './doctor'
 import { type Config, getPath, loadConfig, saveConfig, setPath, when } from './config'
-import { DIRS, HOME, run } from './env'
+import { DIRS, HOME, LAYOUT, run } from './env'
 import { install, installSystem, packageManager } from './install'
 import { configKey, machineInputs, varDefault } from './inputs'
 import { manifest } from './manifest'
@@ -50,6 +50,7 @@ function pathLine(steps: Step[]) {
 export async function onboard(o: OnboardOpts): Promise<{ steps: Step[]; checks: Check[] }> {
   const steps: Step[] = []
   const c = loadConfig()
+  if (getPath(c, 'layout') === undefined) { setPath(c, 'layout', LAYOUT); steps.push({ step: 'layout', status: 'fixed', detail: `${LAYOUT}${LAYOUT === 'one-root' ? ` (everything under ${DIRS.mm.replace(HOME, '~')})` : ''}` }) }
   vars(c, o, steps)
   for (const d of [DIRS.mm, DIRS.bin, DIRS.tools, DIRS.pc, DIRS.projects]) if (!existsSync(d)) { mkdirSync(d, { recursive: true }); steps.push({ step: `dir ${d.replace(HOME, '~')}`, status: 'fixed', detail: 'created' }) }
   pathLine(steps)

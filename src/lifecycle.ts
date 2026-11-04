@@ -12,7 +12,7 @@ const short = (r: { out: string; err: string }) => (r.err || r.out).trim().split
 
 function varsOf(root: string) {
   const a = readAnswers(root)
-  return { a, vars: { client: a.client, name: a.name, project: a.project, short: a.short, root, home: HOME, profile: a.profile || 'project' } as Record<string, string> }
+  return { a, vars: { client: a.client, name: a.name, project: a.project, short: a.short, root, home: HOME, brain: DIRS.brain, projects: DIRS.projects, mm: DIRS.mm, profile: a.profile || 'project' } as Record<string, string> }
 }
 
 // ---------- mm update ----------
@@ -144,7 +144,7 @@ function writeAnswers(root: string, a: object) {
 }
 
 // ---------- mm archive ----------
-export const ARCHIVE_DIR = join(HOME, '.local', 'share', 'mm', 'archive')
+export const ARCHIVE_DIR = DIRS.archive
 
 /**
  * Clean removal: stop and unload the namespace, drop public routes, archive the project's agents, pack the whole

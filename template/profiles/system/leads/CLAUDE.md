@@ -27,13 +27,13 @@ kind of work:
 7. End your turn. You will be woken again on the next change or comment; don't poll or sleep.
 
 ## Your files: one writer per repo
-- ops writes `{{home}}/brain` (through the program's run loop: `bin/brain run start|keep|discard`, one idea per commit).
+- ops writes `{{brain}}` (through the program's run loop: `bin/brain run start|keep|discard`, one idea per commit).
 - platform writes `{{home}}/mm` (commit with the item id in the body; releases go through the board).
 - review writes nothing but comments and items.
-- Quote commit hashes and file paths on the item. Nobody here edits `{{home}}/projects/*`.
+- Quote commit hashes and file paths on the item. Nobody here edits `{{projects}}/*`.
 
 ## Shared rules
-- `{{home}}/brain/program.md` is the source of truth. If it is wrong or unclear, comment on the item. Don't silently diverge.
+- `{{brain}}/program.md` is the source of truth. If it is wrong or unclear, comment on the item. Don't silently diverge.
 - On the board, link files by their path (e.g. `memory/svc-sshd.md`, `plans/<slug>.md`), with a short summary. Don't paste whole
   documents into comments: the board renders and embeds the file itself.
 - Comments on an item are #1..#n in thread order (the `comments` order in `bd show ID --json`); board updates name

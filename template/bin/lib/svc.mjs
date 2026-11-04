@@ -26,6 +26,15 @@ export function svcUrl(name) {
   const v = process.env[envKey(name)] || endpoints().services?.[name]?.url
   return v ? v.replace(/\/$/, '') : null
 }
+/**
+ * Where the machine's folders are (mm writes them: .run/endpoints.json "dirs", else MM_* env from the mm that runs this,
+ * else the older layout). Engine code never builds ~/brain or ~/projects itself.
+ */
+export function dirs() {
+  const d = endpoints().dirs || {}, E = process.env, H = E.HOME || ''
+  return { mm: d.mm || E.MM_HOME || `${H}/.mm`, brain: d.brain || E.MM_BRAIN || `${H}/brain`, system: d.system || E.MM_SYSTEM || `${H}/brain/system`,
+    projects: d.projects || E.MM_PROJECTS || `${H}/projects`, backups: d.backups || E.MM_BACKUPS || `${H}/.local/share/backups`, vault: d.vault || `${d.mm || E.MM_HOME || `${H}/.mm`}/vault` }
+}
 export function svcPublic(name) { return endpoints().services?.[name]?.public || null }
 /** Restart one service through whatever manages them (template from endpoints.json, e.g. "process-compose process restart {project}/{service}"). */
 export function restartService(name) {

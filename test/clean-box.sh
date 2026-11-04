@@ -45,16 +45,23 @@ check "mm needs exit 0" mm needs
 check "doctor exit 0" mm doctor
 echo "== new"
 check "mm new acme/shop" mm new acme/shop
+# a fresh box gets the one-root layout: everything mm manages under ~/.mm, nothing in ~/projects or ~/brain
+check "layout one-root (config.yaml)" sh -c 'mm config get layout | grep -qx one-root'
+check "project under ~/.mm/projects" test -f ~/.mm/projects/acme/shop/.mm-answers.yaml
+check "no ~/projects, no ~/brain" sh -c '! test -e ~/projects && ! test -e ~/brain'
+check "the board's engine knows the folders (endpoints.json dirs)" sh -c 'jq -e ".dirs.projects == \"$HOME/.mm/projects\" and .dirs.backups == \"$HOME/.mm/backups\"" ~/.mm/projects/acme/shop/.run/endpoints.json'
 for _ in $(seq 1 90); do mm inspect acme/shop 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
 check "board ready" sh -c 'mm inspect acme/shop | grep -q "board .*Ready"'
 check "board answers by name" curl -sf -o /dev/null http://board.acme-shop.localhost:1355/api/whoami
-check "item on the board" sh -c 'cd ~/projects/acme/shop && bin/bd create "hello from a clean box" --json | grep -q "\"id\""'
+check "item on the board" sh -c 'cd ~/.mm/projects/acme/shop && bin/bd create "hello from a clean box" --json | grep -q "\"id\""'
 check "item through the board API" sh -c 'curl -sf http://board.acme-shop.localhost:1355/api/v0/beads/issues?limit=10 | grep -q "hello from a clean box"'
 check "update is a no-op" sh -c 'mm update acme/shop | grep -q "already at"'
+check "backup lands in ~/.mm/backups" sh -c 'cd ~/.mm/projects/acme/shop && timeout 300 bin/backup >/dev/null 2>&1; ls -d ~/.mm/backups/acme-shop/*/ >/dev/null'
 check "logs reach VictoriaLogs" sh -c 'mm obs status | grep -q acme-shop'
 echo "== archive"
 check "mm archive" mm archive acme/shop
-check "project gone" test ! -e ~/projects/acme/shop
+check "project gone" test ! -e ~/.mm/projects/acme/shop
+check "tarball in ~/.mm/archive" sh -c 'ls ~/.mm/archive/acme-shop-*.tar.gz >/dev/null' 
 check "no processes left" sh -c '! grep -lsa "acme/sho[p]" /proc/[0-9]*/cmdline'
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]
 EOF

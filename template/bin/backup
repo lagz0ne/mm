@@ -1,6 +1,6 @@
 #!/bin/sh
 # backup — nightly copy of everything this project can't rebuild, outside the project folder:
-#   ~/.local/share/backups/<project>/<UTC date>/
+#   <the machine's backups folder>/<project>/<UTC date>/  ($MM_HOME/backups, or ~/.local/share/backups on older boxes)
 #     board.dolt/        full Dolt backup of the Beads database (history included; restore: dolt backup restore)
 #     board.jsonl        readable export of all items, comments, labels, dependencies
 #     code.bundle        git bundle of the product repo (all branches)
@@ -11,7 +11,9 @@
 set -eu
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 PROJECT=$(sed -n 's/^project:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p' "$P/.mm-answers.yaml" 2>/dev/null || true); PROJECT=${PROJECT:-$(basename "$P")}; NAME=$PROJECT
-ROOT=${BACKUP_DIR:-$HOME/.local/share/backups/$NAME}
+# the machine's backups folder: where mm says (.run/endpoints.json "dirs", else its env), else the older layout
+BK=$(sed -n 's/.*"backups": *"\([^"]*\)".*/\1/p' "$P/.run/endpoints.json" 2>/dev/null | head -1); BK=${BK:-${MM_BACKUPS:-$HOME/.local/share/backups}}
+ROOT=${BACKUP_DIR:-$BK/$NAME}
 D=$ROOT/$(date -u +%Y-%m-%dT%H%MZ)
 mkdir -p "$D"
 # Dolt's TCP port: where the process manager runs it (.run/services.json), else bd's own config

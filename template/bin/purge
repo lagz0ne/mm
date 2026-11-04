@@ -46,8 +46,10 @@ json.dump(d, open(tmp, 'w'), indent=2); os.chmod(tmp, os.stat(p).st_mode & 0o777
 print('  removed', len(gone), 'entries:', ', '.join(gone) or '-')
 PY
 else python3 -I -c "import json,os,sys; r=sys.argv[1]; print('would: remove', [k for k in json.load(open(os.path.expanduser('~/.claude.json'))).get('projects',{}) if k==r or k.startswith(r+'/')])" "$P"; fi
-echo "== 8. backups (~/.local/share/backups/$NAME): kept unless --with-backups"
-if [ -d "$HOME/.local/share/backups/$NAME" ]; then if [ "${WITH_BACKUPS:-0}" = 1 ]; then run rm -rf "$HOME/.local/share/backups/$NAME"; else echo "kept $HOME/.local/share/backups/$NAME"; fi; fi
+# the machine's backups folder: where mm says (.run/endpoints.json "dirs", else its env), else the older layout
+BK=$(sed -n 's/.*"backups": *"\([^"]*\)".*/\1/p' "$P/.run/endpoints.json" 2>/dev/null | head -1); BK=${BK:-${MM_BACKUPS:-$HOME/.local/share/backups}}
+echo "== 8. backups ($BK/$NAME): kept unless --with-backups"
+if [ -d "$BK/$NAME" ]; then if [ "${WITH_BACKUPS:-0}" = 1 ]; then run rm -rf "$BK/$NAME"; else echo "kept $BK/$NAME"; fi; fi
 echo "== 9. project folder"
 if [ $DEL = 1 ]; then run rm -rf "$P"; else echo "kept $P (add --delete-folder to remove it)"; fi
 [ $DO = 1 ] || printf "\ndry run: nothing changed. Re-run with --yes to do it.\n"

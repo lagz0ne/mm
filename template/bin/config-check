@@ -17,7 +17,7 @@ const R = P
 const problems = []
 const bad = (m) => problems.push(m)
 import os from 'node:os'
-import { projectName, svcUrl } from './lib/svc.mjs'
+import { dirs, projectName, svcUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
 cli('config-check')
 const HOME = process.env.HOME || os.homedir()
@@ -43,12 +43,14 @@ for (const d of fs.readdirSync(path.join(P, 'leads'), { withFileTypes: true })) 
 // Paths and rules use {home}/{root}; Read/Edit/Write rules get Claude Code's // prefix like the templates.
 let G = {}
 try { G = JSON.parse(fs.readFileSync(path.join(P, 'governance.json'), 'utf8')) } catch (e) { if (fs.existsSync(path.join(P, 'governance.json'))) bad(`governance.json unreadable (${e.message})`) }
-const gfill = (v) => v.replaceAll('{root}', R).replaceAll('{home}', HOME)
+// {brain} {projects} {mm}: the machine's folders, from mm (one-root boxes keep them under $MM_HOME)
+const D = dirs()
+const gfill = (v) => v.replaceAll('{root}', R).replaceAll('{home}', HOME).replaceAll('{brain}', D.brain).replaceAll('{projects}', D.projects).replaceAll('{mm}', D.mm)
 const grule = (r) => { const v = gfill(r); return /^(Read|Edit|Write)\(\//.test(v) ? v.replace(/^(Read|Edit|Write)\(\//, '$1(//') : v }
 const G_READ = (G.read || []).map(gfill), G_WRITE = Object.fromEntries(Object.entries(G.write || {}).map(([k, v]) => [k, v.map(gfill)]))
 const G_BASH_OK = (G.bash_ok || []).map((x) => new RegExp(x))
 function render(tmpl, role) {
-  const fill = (v) => v.replaceAll('{root}', R).replaceAll('{home}', HOME).replaceAll('{project}', projectName())
+  const fill = (v) => gfill(v).replaceAll('{project}', projectName())
     .replace(/\{url:([\w-]+)\}/g, (m, n) => svcUrl(n) || m) // where the process manager put that service
   const rule = (r) => { const m = /^(Read|Edit|Write)\((.*)\)$/.exec(r); const v = fill(r); return m && m[2].startsWith('{') ? v.replace(/^(Read|Edit|Write)\(\//, '$1(//') : v }
   const p = tmpl.permissions || {}

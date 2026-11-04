@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { getPath, loadConfig } from './config'
-import { DIRS, HOME, run, toolPath } from './env'
+import { DIRS, engineDirs, HOME, run, toolPath } from './env'
 import { obsEndpoints } from './obs'
 import { pcRunning, writeBase } from './pc'
 import { renderTo, template, templateCommit } from './template'
@@ -25,7 +25,7 @@ export const rootOf = (client: string, name: string) => join(DIRS.projects, clie
 export function findRoot(ref: string): string {
   const m = /^([a-z][a-z0-9-]{0,30})\/([a-z][a-z0-9-]{0,30})$/.exec(ref || '')
   if (m && existsSync(join(rootOf(m[1], m[2]), '.mm-answers.yaml'))) return rootOf(m[1], m[2])
-  const dirs: string[] = [join(DIRS.brain, 'system')]
+  const dirs: string[] = [DIRS.system]
   for (const a of existsSync(DIRS.projects) ? readdirSync(DIRS.projects) : []) {
     dirs.push(join(DIRS.projects, a))
     try { for (const b of readdirSync(join(DIRS.projects, a))) dirs.push(join(DIRS.projects, a, b)) } catch {}
@@ -69,7 +69,7 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
   // 1. render the template
   const t = template()
   answers.template_version = t.version
-  const vars: Record<string, string> = { client, name, project: answers.project, short: answers.short, root, home: HOME, profile }
+  const vars: Record<string, string> = { client, name, project: answers.project, short: answers.short, root, home: HOME, brain: DIRS.brain, projects: DIRS.projects, mm: DIRS.mm, profile }
   renderTo(root, vars, t)
   writeFileSync(join(root, '.mm-answers.yaml'), `# Answers mm new used for this project (mm update renders the template again with these).\n${Bun.YAML.stringify(answers, null, 2)}\n`)
   step('template', `${t.files.length} files, version ${answers.template_version}`)
@@ -194,7 +194,7 @@ export function up(root: string): Step[] {
   // what engine scripts read at runtime
   writeFileSync(join(root, '.run', 'services.json'), JSON.stringify({ project: a.project, dolt_port: dport, services, schedules }, null, 2))
   const ep = { manager: 'process-compose (mm)', self_healing: true, restart: `process-compose -U -u ${DIRS.socket} process restart ${a.project}.{service}`,
-    logs: `tail -n {lines} ${join(root, '.run', 'logs')}/{service}.log`, observability: obsEndpoints(),
+    logs: `tail -n {lines} ${join(root, '.run', 'logs')}/{service}.log`, observability: obsEndpoints(), dirs: engineDirs(),
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
   writeFileSync(join(root, '.run', 'endpoints.json'), JSON.stringify(ep, null, 2))
   steps.push({ step: 'services', status: 'ok', detail: `${Object.keys(processes).length} processes, namespace ${a.project}` })

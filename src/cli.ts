@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { Command, Option } from 'commander'
 import { getPath, loadConfig, saveConfig, setPath, unsetPath } from './config'
 import { doctor } from './doctor'
-import { DIRS, HOME, run } from './env'
+import { DIRS, HOME, run, tilde } from './env'
 import { expand as expandHome, fill, needs, unmet } from './inputs'
 import { manifest } from './manifest'
 import { onboard } from './onboard'
@@ -109,7 +109,7 @@ program.command('new <project>').description('stamp a project from the template:
       if (o.format !== 'table') return console.log(o.format === 'json' ? JSON.stringify({ answers, steps }, null, 2) : Bun.YAML.stringify({ answers, steps }, null, 2))
       print(steps, o)
       const { services } = resolve(answers.root)
-      console.log(`\n${answers.project} ready at ${answers.root.replace(DIRS.projects, '~/projects')}`)
+      console.log(`\n${answers.project} ready at ${tilde(answers.root)}`)
       for (const [n, s] of Object.entries(services)) if ((s as { url?: string }).url) console.log(`  ${n.padEnd(9)} ${(s as { url?: string }).url}`)
       process.exit(steps.some((s) => s.status === 'fail') ? 1 : 0)
     } catch (e) { console.error(`mm new: ${(e as Error).message}`); process.exit(1) }
@@ -121,7 +121,7 @@ program.command('inspect <project>').description('a project: answers, services, 
   const rows = Object.entries(services).map(([n, s]) => { const p = ps.find((x) => x.name === `${answers.project}.${n}`)
     return { service: n, status: p?.status ?? 'not loaded', ready: p?.is_ready ?? '', restarts: p?.restarts ?? '', url: (s as { url?: string }).url ?? '' } })
   if (o.format !== 'table') return print([{ ...answers, services: rows }] as unknown as Record<string, unknown>[], o)
-  console.log(`${answers.project}  ${root.replace(DIRS.projects, '~/projects')}  (template ${answers.template_version})`)
+  console.log(`${answers.project}  ${tilde(root)}  (template ${answers.template_version})`)
   print(rows, o, 'service')
 })
 program.command('up <project>').description('load (or reload) a project into the process manager and start it').action((ref: string) => {
@@ -146,7 +146,7 @@ program.command('update [project]').description('bring a project (default: every
       const r = update(root, opts)
       if (!r.ok) bad++
       if (o.format !== 'table') { console.log(JSON.stringify({ root, ...r }, null, 2)); continue }
-      console.log(`${root.replace(DIRS.projects, '~/projects')}  ${r.from} -> ${r.to}`)
+      console.log(`${tilde(root)}  ${r.from} -> ${r.to}`)
       print(r.steps, o)
       if (opts.dryRun && r.changed.length) console.log(r.changed.map((f) => `  ${r.conflicts.includes(f) ? 'C' : 'M'} ${f}`).join('\n'))
     }
@@ -162,15 +162,15 @@ program.command('archive <project>').description('clean removal: stop + unload, 
 program.command('restore <tarball>').description('unpack an archived project and start it').action((tb: string) => {
   const o = fmt(), r = restore(tb); print(r.steps, o); process.exit(r.ok ? 0 : 1)
 })
-const sys = program.command('system').description('the system project: the machine\'s own board and leads (ops, review, platform, setup), in ~/brain/system')
+const sys = program.command('system').description('the system project: the machine\'s own board and leads (ops, review, platform, setup), in the brain\'s system folder (~/brain/system, or $MM_HOME/system on a one-root box)')
 sys.command('init').description('make the system project (profile system) next to the brain')
   .option('--name <host>', 'machine name (default: hostname -s)')
   .action(async (opts) => {
     const o = fmt()
     if (!existsSync(DIRS.brain)) { console.error(`mm system init: ${DIRS.brain.replace(HOME, '~')} missing (the brain repo comes first)`); process.exit(1) }
     const host = (opts.name || run(['hostname', '-s']).out.trim() || 'box').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^[^a-z]+/, '') || 'box'
-    const root = join(DIRS.brain, 'system')
-    if (run(['git', '-C', DIRS.brain, 'rev-parse', '--git-dir']).ok && !run(['git', '-C', DIRS.brain, 'check-ignore', '-q', 'system/']).ok)
+    const root = DIRS.system
+    if (root.startsWith(`${DIRS.brain}/`) && run(['git', '-C', DIRS.brain, 'rev-parse', '--git-dir']).ok && !run(['git', '-C', DIRS.brain, 'check-ignore', '-q', 'system/']).ok)
       console.error(`mm system init: note: add "/system/" to ${DIRS.brain.replace(HOME, '~')}/.gitignore (the system project is its own repo)`)
     try {
       const { answers, steps } = await newProject(`system/${host}`, { profile: 'system', root, project: 'system', short: 'sy' })

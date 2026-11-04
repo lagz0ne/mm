@@ -2,7 +2,7 @@
 // sentinel — SRE watch over the whole machine (profile system; every 5 min under mm cron). Turns problems into incident
 // items for ops on this board: one item per problem (a stable key), commented when it changes, closed when it clears.
 //   conditions (open while present; the sentinel closes them when gone):
-//     alert:<text>                `bin/brain status` ALERT lines (the brain is this board's parent folder)      P1
+//     alert:<text>                `bin/brain status` ALERT lines (the brain: where mm says)      P1
 //     cron:<project>/<job>        the last run of a scheduled job failed (<project root>/.run/logs/cron.log)  P1
 //     errors:<project>/<service>  new error logs or failed spans on N checks in a row (`mm obs errors`)       P2
 //     obs:stack                   the observability stores are down (`mm obs status`)                         P1
@@ -18,12 +18,12 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { ROOT, projectName, requireUrl } from './lib/svc.mjs'
+import { ROOT, dirs, projectName, requireUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
 
 cli('sentinel')
 const E = process.env
-const BRAIN = E.SENTINEL_BRAIN || path.resolve(ROOT, '..')
+const BRAIN = E.SENTINEL_BRAIN || dirs().brain
 const STATE = E.SENTINEL_STATE || path.join(ROOT, '.sentinel.json')
 const CONF = (() => { try { return JSON.parse(fs.readFileSync(E.SENTINEL_CONFIG || path.join(ROOT, 'sentinel.json'), 'utf8')) } catch { return {} } })()
 const MM = E.MM_BIN || 'mm'

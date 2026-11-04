@@ -1,6 +1,9 @@
 {
   "permissions": {
-    "additionalDirectories": ["{root}", "{home}/mm"],
+    "additionalDirectories": [
+      "{root}",
+      "{home}/mm"
+    ],
     "allow": [
       "Bash(bd *)",
       "Bash(cd {home}/mm*)",
@@ -36,9 +39,9 @@
       "Bash(paseo ls*)",
       "Bash(ls *)",
       "Read({home}/mm/**)",
-      "Read({home}/projects/**)",
-      "Read({home}/brain/**)",
-      "Read({home}/.mm/**)",
+      "Read({projects}/**)",
+      "Read({brain}/**)",
+      "Read({mm}/**)",
       "Edit({home}/mm/**)",
       "Write({home}/mm/**)",
       "Write(//tmp/**)"
@@ -47,8 +50,32 @@
       "Read({root}/secrets/**)",
       "Bash(*core.hooksPath*)",
       "Bash(git tag*)",
-      "Edit({home}/brain/**)",
-      "Write({home}/brain/**)"
+      "Edit({brain}/**)",
+      "Write({brain}/**)",
+      "mcp__paseo__respond_to_permission",
+      "mcp__paseo__create_agent",
+      "mcp__paseo__update_agent",
+      "mcp__paseo__set_agent_mode",
+      "mcp__paseo__send_agent_prompt",
+      "mcp__paseo__cancel_agent",
+      "mcp__paseo__kill_agent",
+      "mcp__paseo__archive_agent",
+      "mcp__paseo__create_terminal",
+      "mcp__paseo__send_terminal_keys",
+      "mcp__paseo__kill_terminal",
+      "mcp__paseo__create_workspace",
+      "mcp__paseo__rename_workspace",
+      "mcp__paseo__archive_workspace",
+      "mcp__paseo__start_workspace_script",
+      "mcp__paseo__stop_workspace_script",
+      "mcp__paseo__create_schedule",
+      "mcp__paseo__update_schedule",
+      "mcp__paseo__delete_schedule",
+      "mcp__paseo__pause_schedule",
+      "mcp__paseo__resume_schedule",
+      "mcp__paseo__run_schedule_once",
+      "mcp__paseo__create_heartbeat",
+      "mcp__paseo__delete_heartbeat"
     ]
   }
 }

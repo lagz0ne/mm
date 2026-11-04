@@ -62,15 +62,16 @@ export function doctor(): Check[] {
 
   // paths
   for (const [k, p] of Object.entries(m.paths)) {
-    if (p.path.includes('<')) continue // patterns, not single paths
-    const path = expand(p.path)
-    if (!existsSync(path)) { out.push({ layer: 'path', item: k, status: k === 'brain' ? 'warn' : 'fail', detail: `${p.path} missing`, fix: k === 'brain' ? 'mm brain pull' : 'mm onboard' }); continue }
+    if (!p.dir && (!p.path || p.path.includes('<'))) continue // patterns, not single paths
+    const path = p.dir ? DIRS[p.dir] : expand(p.path!), shown = path.replace(HOME, '~')
+    if (k === 'backups' && !existsSync(path)) { out.push({ layer: 'path', item: k, status: 'ok', detail: `${shown} (made by the first backup)` }); continue }
+    if (!existsSync(path)) { out.push({ layer: 'path', item: k, status: k === 'brain' ? 'warn' : 'fail', detail: `${shown} missing`, fix: k === 'brain' ? 'mm brain pull' : 'mm onboard' }); continue }
     if (p.git) {
       const remote = run(['git', '-C', path, 'remote', 'get-url', 'origin'], { timeoutMs: 10_000 })
-      if (!run(['git', '-C', path, 'rev-parse', '--git-dir'], { timeoutMs: 10_000 }).ok) out.push({ layer: 'path', item: k, status: 'warn', detail: `${p.path} is not a git repo` })
-      else if (!remote.ok) out.push({ layer: 'path', item: k, status: 'warn', detail: `${p.path}: no git remote (want ${p.git})`, fix: `git -C ${p.path} remote add origin ${p.git}` })
-      else out.push({ layer: 'path', item: k, status: 'ok', detail: `${p.path} (origin ${remote.out.trim()})` })
-    } else out.push({ layer: 'path', item: k, status: 'ok', detail: p.path })
+      if (!run(['git', '-C', path, 'rev-parse', '--git-dir'], { timeoutMs: 10_000 }).ok) out.push({ layer: 'path', item: k, status: 'warn', detail: `${shown} is not a git repo` })
+      else if (!remote.ok) out.push({ layer: 'path', item: k, status: 'warn', detail: `${shown}: no git remote (want ${p.git})`, fix: `git -C ${shown} remote add origin ${p.git}` })
+      else out.push({ layer: 'path', item: k, status: 'ok', detail: `${shown} (origin ${remote.out.trim()})` })
+    } else out.push({ layer: 'path', item: k, status: 'ok', detail: shown })
   }
 
   // the machine's process manager

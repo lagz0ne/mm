@@ -109,12 +109,13 @@ machine:
                   install: { kind: script, url: "https://tailscale.com/install.sh", root: true } }
     python3:    { optional: true, tested: "3.12.15", needed_by: brain }   # brain's bin/cf and bin/guard; mm needs none
 
-  paths:
-    brain:    { path: "~/brain", synced_to: "lagz0ne/mastermind (private; brain/ subtree, synced by the brain)" }  # no remote by design
-    projects: { path: "~/projects" }
-    mm:       { path: "~/.mm" }                     # bin/ (mm binary), pc.sock (process-compose API): step 2
+  paths:   # `dir` = where mm keeps it on this box's layout (src/env.ts DIRS): one-root = under $MM_HOME, legacy = the
+           # older folders shown in `legacy`. Nothing else in mm or the template names these folders.
+    brain:    { dir: brain, legacy: "~/brain", synced_to: "lagz0ne/mastermind (private; brain/ subtree, synced by the brain)" }  # no remote by design
+    projects: { dir: projects, legacy: "~/projects" }
+    mm:       { dir: mm, legacy: "~/.mm" }          # bin/ (mm binary), pc.sock (process-compose API)
+    backups:  { dir: backups, legacy: "~/.local/share/backups" }   # <project>/<date>/, written by <project>/bin/backup
     tool_store: { path: "~/.local/share/<tool>/<version>" }     # versioned installs, linked into ~/.local/bin
-    backups:  { path: "~/.local/share/backups/<project>" }      # written by <project>/bin/backup
 
   services:                                   # machine-level (brain), today as systemd user units
     paseo:          { unit: paseo.service }               # agent daemon

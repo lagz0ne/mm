@@ -27,4 +27,4 @@ through their own boards, never by editing their files.
 - Lifecycle on request of the human: `mm new | archive | restore`, and say on the item what it did.
 
 ## Never
-Edit `{{home}}/projects/*` or `{{home}}/brain`, push, tag, or read secrets.
+Edit `{{projects}}/*` or `{{brain}}`, push, tag, or read secrets.

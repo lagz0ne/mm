@@ -1,10 +1,10 @@
 {
   "_doc": "Profile system: wider reach than a project (the machine's repos and logs), stricter rules. Humans only (SETUP_HUMAN=1). One writer per repo: ops writes the brain, platform writes mm. Nobody writes projects: they change through mm and their own boards.",
   "read": [
-    "{home}/brain/",
+    "{brain}/",
     "{home}/mm/",
-    "{home}/projects/",
-    "{home}/.mm/",
+    "{projects}/",
+    "{mm}/",
     "{home}/.local/state/brain/",
     "{home}/.local/share/backups/",
     "{home}/.config/systemd/",
@@ -15,7 +15,7 @@
   ],
   "write": {
     "ops": [
-      "{home}/brain/"
+      "{brain}/"
     ],
     "platform": [
       "{home}/mm/"
@@ -23,7 +23,7 @@
   },
   "deny_all": [
     "Read({home}/.config/secrets/**)",
-    "Read({home}/brain/.keys/**)",
+    "Read({brain}/.keys/**)",
     "Read({home}/.ssh/**)",
     "Read(/root/.ssh/**)",
     "Read({home}/.paseo/daemon-keypair.json)",
@@ -31,18 +31,18 @@
     "Read({home}/.claude/.credentials.json)",
     "Read(/etc/shadow)",
     "Read(/etc/gshadow)",
-    "Edit({home}/projects/**)",
-    "Write({home}/projects/**)",
-    "Edit({home}/brain/bin/**)",
-    "Write({home}/brain/bin/**)",
-    "Edit({home}/brain/program.md)",
-    "Write({home}/brain/program.md)",
-    "Edit({home}/brain/CLAUDE.md)",
-    "Write({home}/brain/CLAUDE.md)",
-    "Edit({home}/brain/.claude/settings.json)",
-    "Write({home}/brain/.claude/settings.json)",
-    "Edit({home}/brain/ops/githooks/**)",
-    "Write({home}/brain/ops/githooks/**)",
+    "Edit({projects}/**)",
+    "Write({projects}/**)",
+    "Edit({brain}/bin/**)",
+    "Write({brain}/bin/**)",
+    "Edit({brain}/program.md)",
+    "Write({brain}/program.md)",
+    "Edit({brain}/CLAUDE.md)",
+    "Write({brain}/CLAUDE.md)",
+    "Edit({brain}/.claude/settings.json)",
+    "Write({brain}/.claude/settings.json)",
+    "Edit({brain}/ops/githooks/**)",
+    "Write({brain}/ops/githooks/**)",
     "Edit({root}/governance.json)",
     "Write({root}/governance.json)",
     "Bash(*--approved*)",
@@ -80,6 +80,6 @@
     "^Bash\\(sudo -n (firewall-cmd --(list|state|get)|fail2ban-client (status|get)|journalctl|ss -)"
   ],
   "hooks_required": [
-    "{home}/brain/bin/guard"
+    "{brain}/bin/guard"
   ]
 }

@@ -26,7 +26,7 @@ export SVC_URL_BD_SERVE="http://bd-serve.$PROJECT.localhost:1355"
 for _ in $(seq 1 60); do curl -sf -o /dev/null "$SVC_URL_BD_SERVE/healthz" && break; sleep 1; done
 check "bd-serve answers" curl -sf -o /dev/null "$SVC_URL_BD_SERVE/healthz"
 
-# the sentinel as the system profile lays it out: <sys>/bin/sentinel + bin/lib, the brain one folder up
+# the sentinel as the system profile lays it out: <sys>/bin/sentinel + bin/lib; the stub brain is handed over like mm does (MM_BRAIN)
 SYS="$W/brain/system"; mkdir -p "$SYS/bin" "$W/brain/bin" "$W/p1/.run/logs"
 cp "$SRC/template/profiles/system/bin/sentinel" "$SYS/bin/"; cp -r "$SRC/template/bin/lib" "$SYS/bin/"
 cat >"$W/brain/bin/brain" <<EOF
@@ -46,7 +46,7 @@ EOF
 chmod +x "$W/brain/bin/brain" "$W/mm"
 echo "[{\"project\":\"p1\",\"root\":\"$W/p1\"},{\"project\":\"sysqa\",\"root\":\"$SYS\"}]" >"$W/ls.json"
 echo 0 >"$W/obs.rc"
-export MM_BIN="$W/mm" MM_PROJECT=sysqa MM_OBS_TRACES="" MM_OBS_METRICS=""
+export MM_BIN="$W/mm" MM_PROJECT=sysqa MM_OBS_TRACES="" MM_OBS_METRICS="" MM_BRAIN="$W/brain"   # mm tells engine scripts where the brain is
 sentinel() { node "$SYS/bin/sentinel" >>"$W/run.log" 2>&1; }
 status() { printf '[brain] score 3\n' >"$W/status.txt"; for l in "$@"; do printf '[brain] %s\n' "$l" >>"$W/status.txt"; done; }
 cronlog() { printf '{"time":"%s","msg":"%s","job":"%s","exit_code":%s}\n' "$(date -u +%FT%TZ)" "$3" "$1" "$2" >>"$W/p1/.run/logs/cron.log"; }
