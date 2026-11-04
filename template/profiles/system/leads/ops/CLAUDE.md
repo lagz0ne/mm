@@ -25,6 +25,13 @@ each service, and its memory (`memory/`) what we know.
   from logs and traces, comment it, fix it through the loop, close it with the evidence.
 - Problems inside a project (its errors in `mm obs`): don't touch it. Comment on the incident and ask platform to file
   the item on that project's board.
+- **Flow health**, on every wake and on `stalled` incidents, for this board and every project board: the wake is alive
+  and delivering (`mm obs logs --since 30m 'project:"<p>" service:wake'`), no item has waited more than 10 min on an
+  idle lead (`bd list` against `paseo ls -g --label project=<p>`), and no lead is stuck in one turn. Remedies, in order,
+  stopping at the first that works: re-deliver (comment on the item, which is a fresh board event); restart the wake
+  (`svc restart wake` here; `mm restart <p>` for a project, which restarts its app too); restart the stuck lead here
+  (`lead start <role>`, never your own); then an item for platform with the cause. On a project board you can't
+  comment or restart its leads: ask platform. Comment on the stuck item what you did.
 - Weekly housekeeping (the brain-housekeeping skill) when `bin/brain status` says it is due, as its own run.
 
 ## Never
