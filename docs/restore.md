@@ -1,6 +1,6 @@
 # mm sync, whole-machine restore, and the drill
 
-Design (sy-240; review's conditions sy-fto and sy-4in; the vault, docs/vault.md). Status: **design**.
+Design (sy-240; review's conditions sy-fto and sy-4in; the vault, docs/vault.md). Status: `mm sync` **built** (`src/sync.ts`, `test/sync.sh`); restore and the drill: **design**.
 
 ## What mastermind holds
 A private git repo (the machine's backup), laid out like `$MM_HOME` but only what can't be rebuilt:
@@ -9,27 +9,43 @@ A private git repo (the machine's backup), laid out like `$MM_HOME` but only wha
 |---|---|---|
 | `config.yaml` | `$MM_HOME/config.yaml` | sealed (`config.yaml.age`): it decides access and routes (sy-fto 3) |
 | `vault/*.age`, `vault/recipients.txt`, `vault/digests.txt` | `$MM_HOME/vault/` | an allowlist; **never** `vault/key`; any blob with `AGE-SECRET-KEY-` is refused, by `mm sync` and by a pre-commit hook in the sync checkout |
-| `brain/` | the brain repo | its git bundle, sealed (a bundle keeps history; the restore clones from it) |
-| `system/`, `projects/<client>/<name>/` | each board's config repo, board data (the newest `bin/backup`: Dolt backup + JSONL), code bundle | sealed, one file per board and kind (`<id>.config.bundle.age`, `<id>.board.tar.age`, `<id>.code.bundle.age`) |
-| `MANIFEST` | mm | what's in it: each file's sha256, the mm version that wrote it, the time |
+| `brain/repo.bundle.age` | the brain repo | its git bundle (`--all`), sealed (a bundle keeps history; the restore clones from it) |
+| `system/`, `projects/<client>/<name>/` | each board: a fresh `bin/backup` | sealed, one file per kind: `config.bundle.age` (config repo), `code.bundle.age` (product repo, if any), `board.tar.age` (Dolt backup + JSONL + releases) |
+| `MANIFEST` | mm | each file's sha256 and the mm version that wrote it (plain text: names and hashes only) |
+| `README.md` | mm | what this repo is (plain text, nothing machine-specific) |
+
+Nothing else may be in it. `mm sync` checks the whole checkout before it commits (the allowlist above, every `.age`
+really an age file, no age secret key in any file), and the checkout's pre-commit hook checks the same for a commit
+made by hand. Throwaway projects (`mm new --throwaway`) are left out.
 
 Everything is sealed to the vault's two recipients (the machine key and the human's recovery key), so the restore
 needs only mastermind plus the recovery key. The repo itself is a convenience for transport and history, not a
 security boundary.
 
 ## mm sync
-`mm sync [--dry-run]` (run by the system's scheduler, say hourly, and after a promote):
-1. takes a fresh backup of each board (`bin/backup`) and of the brain (`git bundle create --all`);
-2. seals each into the sync checkout (`$MM_HOME/state/mastermind`, a clone of the repo), with the allowlist and the
-   secret-key refusal;
-3. writes `MANIFEST`, commits ("sync <time>") and pushes with the mastermind deploy key (an input).
+`mm sync --init <repo>` once: clones mastermind into `$MM_HOME/state/mastermind` (0700), installs the hook, and
+records `mastermind.remote` in `config.yaml`. Then `mm sync [--dry-run] [--no-push]` (run by the system's scheduler,
+say hourly, and after a promote):
+1. takes a fresh backup of each board (`bin/backup` into a 0700 work folder under `$MM_HOME/state`, removed after)
+   and bundles the brain (`git bundle create --all`);
+2. seals each from memory into the checkout. **Only what changed is resealed:** age's output differs on every run, so
+   resealing everything would add a full copy to the repo each hour. A local `$MM_HOME/state/mastermind.json` (0600,
+   never pushed) keeps a fingerprint of each source: a repo's refs, the board's JSONL and release log, a file's
+   sha256. A board whose Dolt history changed without any item changing waits for the next item change;
+3. drops files whose source is gone (an archived project; history keeps them), writes `MANIFEST`, checks the rails,
+   commits ("sync <time>"; no commit when nothing changed) and pushes with the mastermind deploy key (the
+   `mastermind-deploy-key` input, used by path through `GIT_SSH_COMMAND`; mm never reads it).
+
+A failed sync puts the checkout back to its last commit.
 
 A push is outward-facing, but it's the backup the human asked for: allowed for `mm sync` only, through the deploy
 key, never by a lead.
 
-**A fresh start** (the human: reuse lagz0ne/mastermind, history may be rewritten): `mm sync --fresh` makes an orphan
-commit with the new layout and force-pushes it to the repo's default branch once. It's a t2 step (ops, the human's
-approval), because it rewrites what's there.
+**A fresh start** (reusing an existing mastermind repo, whose history may be rewritten): `mm sync --fresh --force` makes an orphan
+commit with the new layout and force-pushes it to the branch (`mastermind.branch`, default `main`) once. It's a t2
+step (ops, the human's approval), because it rewrites what's there; without `--force` it is refused and says why.
+The old commits stay in GitHub's storage until GitHub collects them: if the old history holds anything sensitive,
+purging it needs GitHub's support, not only the force-push.
 
 ## Trust: what a restore applies (sy-fto)
 Whoever can write to mastermind could own the next restored box, since restore runs the brain's migrations as root.

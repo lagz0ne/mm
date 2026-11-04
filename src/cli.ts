@@ -12,6 +12,7 @@ import { onboard } from './onboard'
 import { archive, restore, update } from './lifecycle'
 import { cron } from './cron'
 import * as vaultMod from './vault'
+import * as syncMod from './sync'
 import { AUTH_SOCK, callApi, serve as authServe } from './auth'
 import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
 import { findRoot, listProjects, namespaceOp, newProject, processes, resolve, up } from './project'
@@ -200,6 +201,21 @@ auth.command('grant <name>').description('give someone focus: --for <scope> [--r
 auth.command('revoke <name> [scope]').description('end a grant (or one scope of it) and its sessions at once; "all" ends every session').action((name: string, scope?: string) => authCall('/revoke', { name, scope, by: 'cli' }))
 auth.command('grants').description('who may see and steer which boards').action(() => authCall('/grants'))
 auth.command('sessions').description('who is signed in where').action(() => authCall('/sessions'))
+
+program.command('sync').description('seal what can\'t be rebuilt into the mastermind repo and push it (docs/restore.md)')
+  .option('--init <repo>', 'first time: clone the mastermind repo into ~/.mm/state/mastermind and remember it')
+  .option('-n, --dry-run', 'list what would go in; seal and commit nothing')
+  .option('--no-push', 'commit in the checkout only')
+  .option('--fresh', 'one-time fresh start: replace mastermind\'s whole history with one commit (t2; needs --force)')
+  .option('--force', 'with --fresh: really rewrite it')
+  .action((opts) => {
+    const o = fmt()
+    try {
+      if (opts.init) { print(syncMod.init(opts.init), o); return }
+      const r = syncMod.sync({ dryRun: opts.dryRun, push: opts.push, fresh: opts.fresh, force: opts.force })
+      print(r.steps, o); process.exit(r.ok ? 0 : 1)
+    } catch (e) { console.error(`mm sync: ${(e as Error).message}`); process.exit(1) }
+  })
 
 program.command('cron').description('(run by mm-pc) run every project\'s schedules (health, backup, ...)').action(async () => { await cron() })
 program.command('ship').description('(run by mm-pc) ship service log files to VictoriaLogs').action(async () => { await ship() })

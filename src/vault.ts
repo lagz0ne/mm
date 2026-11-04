@@ -56,6 +56,18 @@ export function seal(name: string, value: Buffer) {
   const d = digests(); d[name] = sha(readFileSync(out)); saveDigests(d)
 }
 
+/** Seal bytes (in memory, never argv) to the vault's recipients into `out` (0600), for mm sync. Not a vault secret:
+ *  no digest entry, any path. Written to a temp file first, so `out` is either the old or the new ciphertext. */
+export function sealTo(value: Buffer | Uint8Array, out: string) {
+  if (!ready()) throw new Error('no vault on this machine yet (mm vault init): mastermind is sealed to its recipients')
+  const tmp = `${out}.tmp-${process.pid}`
+  const r = spawnSync(ageBin(), ['-e', '-R', RCPT, '-o', tmp], { input: value, maxBuffer: 1 << 30 })
+  if (r.status !== 0) throw new Error(`age failed: ${String(r.stderr).trim().slice(0, 200)}`)
+  chmodSync(tmp, 0o600); renameSync(tmp, out)
+}
+/** The vault's files that may leave the machine (sealed values, recipients, digests): never `key`. */
+export const exportable = (f: string) => /^[a-z][a-z0-9_.-]{1,63}\.age$/.test(f) || f === 'recipients.txt' || f === 'digests.txt'
+
 /** The plaintext, in memory, for one caller (open-at-start, reseal). Checks the sealed file's digest first. */
 function decrypt(name: string, identity = KEY): Buffer {
   vaultName(name)
