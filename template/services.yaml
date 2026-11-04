@@ -39,7 +39,7 @@ services:
   app:
     about: Optional app slot, served from release/ (moved only by bin/deploy). Starts once release/ exists.
     optional: true
-    command: "HOST=$${MM_BIND:-$$HOST} node server.js"   # portless sets HOST=loopback; a public app binds where mm says
+    command: "HOST=$${MM_BIND:-$$HOST} node server.js"   # loopback (portless); mm forwards a public app from the machine's bind_host
     workdir: "{root}/release"
     env: { HOST: 127.0.0.1 }
     port: http

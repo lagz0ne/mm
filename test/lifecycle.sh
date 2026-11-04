@@ -39,6 +39,14 @@ check "marked throwaway (mm ls)" sh -c "mm ls -o json | jq -e --arg p '$PROJECT'
 check "mm-template branch = baseline" git -C "$ROOT" rev-parse -q --verify refs/heads/mm-template
 PUB=$(public_name); PORT=$(public_port)
 if [ -n "$PUB" ]; then check "public route $PUB listed" sh -c "expose ls | grep -q '$PUB'"; fi
+BIND=$(mm config get bind_host 2>/dev/null || echo 127.0.0.1)
+if [ -n "$PORT" ] && [ "${BIND#127.}" = "$BIND" ]; then   # domain mode with the web proxy in docker: the forwarder
+  listening() { ss -Hltn | awk '{print $4}' | grep -qx -- "$1"; }
+  check "public port: the service on loopback" listening "127.0.0.1:$PORT"
+  check "public port: mm's forwarder on $BIND" listening "$BIND:$PORT"
+  check "public port: nothing on every interface" sh -c "! ss -Hltn | awk '{print \$4}' | grep -qxE '(0[.]0[.]0[.]0|[*]|[[]::[]]):$PORT'"
+  check "public port answers through $BIND" curl -sf -o /dev/null --max-time 5 "http://$BIND:$PORT/api/whoami"
+fi
 OLDV=$(sed -n 's/^template_version: //p' "$ROOT/.mm-answers.yaml")
 
 step "data and local edits"

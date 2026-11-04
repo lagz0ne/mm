@@ -17,7 +17,7 @@ import { dirs, projectName, requireUrl, servicesDef, svcPublic } from '../bin/li
 // PORT is assigned by the process manager (portless); HOST is where the machine wants services bound.
 const PORT = Number(process.env.PORT || process.env.BOARD_PORT)
 if (!PORT) { console.error('board: set PORT'); process.exit(2) }
-// MM_BIND: where the machine wants it reachable (portless overrides HOST with loopback for the apps it runs)
+// Loopback (portless sets HOST); a public board is reached through mm's forwarder on the machine's bind_host. MM_BIND: an explicit override
 const HOST = process.env.MM_BIND || process.env.HOST || process.env.BOARD_HOST || '127.0.0.1'
 const BD = new URL(process.env.BD_SERVE || requireUrl('bd-serve'))
 const ACTOR = process.env.BOARD_ACTOR || 'guest' // until the visitor names themselves
