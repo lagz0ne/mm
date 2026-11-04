@@ -58,4 +58,26 @@ for (const c of checks) {
     if (r.id) { s.incident = r.id; console.log(`${c.id}: opened incident ${r.id}`) }
   }
 }
+// Memories past verified + ttl_days (memory/README.md): one item for setup with the list, updated when it changes,
+// closed by the watchdog once none is left. Not an incident: a fact to check again, fix or delete.
+const MEM = path.join(P, 'memory')
+const stale = (fs.existsSync(MEM) ? fs.readdirSync(MEM) : []).filter((f) => f.endsWith('.md') && !['MEMORY.md', 'README.md'].includes(f)).filter((f) => {
+  const h = /^---\n([\s\S]*?)\n---/.exec(fs.readFileSync(path.join(MEM, f), 'utf8'))?.[1] || ''
+  const v = /^\s*verified:\s*(\d{4}-\d\d-\d\d)\s*$/m.exec(h)?.[1], t = /^\s*ttl_days:\s*(\d+)\s*$/m.exec(h)?.[1]
+  return !!v && !!t && Date.parse(v) + Number(t) * 864e5 < Date.now()
+}).sort()
+const mem = state.memory ||= { item: null, list: [] }
+const listed = stale.map((f) => `- \`memory/${f}\``).join('\n')
+try {
+  if (stale.length && !mem.item) {
+    const r = await bd('POST', '/v0/beads/issues', { title: `Stale memories: ${stale.length} past their ttl_days`, issue_type: 'task', priority: 3, labels: ['memory'], assignee: 'setup', actor: 'watchdog', owner: 'watchdog',
+      description: `These project memories are older than their \`verified\` date plus \`ttl_days\`:\n\n${listed}\n\nFor each: check the fact again and set a new \`verified\`, fix it, or delete the file (and its line in \`memory/MEMORY.md\`). This item closes itself when none is left.` })
+    if (r.id) { mem.item = r.id; mem.list = stale; console.log(`memory: ${stale.length} stale; opened ${r.id}`) }
+  } else if (stale.length && mem.list.join() !== stale.join()) {
+    await bd('POST', `/v0/beads/issues/${mem.item}/comments`, { author: 'watchdog', text: `Now ${stale.length} stale:\n\n${listed}` }); mem.list = stale
+  } else if (!stale.length && mem.item) {
+    await bd('POST', `/v0/beads/issues/${mem.item}:close`, { actor: 'watchdog', reason: 'no stale memory left (watchdog)' })
+    console.log(`memory: none stale; closed ${mem.item}`); state.memory = { item: null, list: [] }
+  }
+} catch (e) { console.log(`memory: could not reach the board (${e.message})`) }
 fs.writeFileSync(STATE, JSON.stringify(state, null, 1))

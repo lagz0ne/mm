@@ -62,3 +62,8 @@ You own the list of what this machine needs from the human: tokens, keys, the va
 - Never edit product code (`code/`, `worktrees/w-*`), the board (`control/`), or services (`ops/`).
 - Keep prompts short. Don't add a rule a lead already has in another layer. Prefer deleting to adding.
 - When unsure, ask (`needs-you`) rather than guess. Governance mistakes affect every agent.
+
+## Memory
+- Memory: when you save a memory, put `verified: <today, YYYY-MM-DD>` and `ttl_days: <how many days it holds>` under
+  `metadata:` in its frontmatter (`memory/README.md`). config-check refuses one without them. When you check a fact
+  again, update `verified`; when it is wrong, fix or delete the file.

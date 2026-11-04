@@ -135,6 +135,16 @@ check "config-check accepts a well-formed memory" sh -c "cd '$ROOT' && bin/confi
 printf -- '---\nname: bad\n---\nno description\n' >"$ROOT/memory/qa-bad.md"
 check "config-check refuses one without a description" sh -c "! (cd '$ROOT' && bin/config-check)"
 rm -f "$ROOT/memory/qa-bad.md"
+printf -- '---\nname: undated\ndescription: no verified, no ttl_days (what built-in memory writes)\nmetadata:\n  type: project\n---\nx\n' >"$ROOT/memory/qa-undated.md"
+check "config-check refuses one without verified and ttl_days" sh -c "cd '$ROOT' && bin/config-check 2>&1 | grep -q 'qa-undated.md: needs verified'"
+rm -f "$ROOT/memory/qa-undated.md"
+printf -- '---\nname: qa-stale\ndescription: a fact past its time\nmetadata:\n  type: project\n  verified: 2020-01-01\n  ttl_days: 1\n---\nold\n' >"$ROOT/memory/qa-stale.md"
+HST=$(mktemp); (cd "$ROOT" && HEALTH_STATE="$HST" node bin/health >/dev/null 2>&1)
+SITEM=$(jq -r '.memory.item // empty' "$HST")
+check "health: a stale memory opens one item for setup, listing it" sh -c "[ -n '$SITEM' ] && cd '$ROOT' && bin/bd show '$SITEM' --json | jq -e 'if type==\"array\" then .[0] else . end | .assignee == \"setup\" and (.description | test(\"qa-stale.md\"))'"
+rm -f "$ROOT/memory/qa-stale.md"; (cd "$ROOT" && HEALTH_STATE="$HST" node bin/health >/dev/null 2>&1)
+check "health: the item closes once no memory is stale" sh -c "cd '$ROOT' && bin/bd show '$SITEM' --json | jq -e 'if type==\"array\" then .[0] else . end | .status == \"closed\"'"
+rm -f "$HST"
 check "memory/ is tracked by the project's config repo" sh -c "cd '$ROOT' && git add memory/qa-probe.md && git -c user.name=qa -c user.email=qa@qa commit -qm 'qa: memory probe' && git ls-files memory | grep -q qa-probe.md"
 
 step "archive: dry run, then clean removal"

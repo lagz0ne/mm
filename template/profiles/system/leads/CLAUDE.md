@@ -39,5 +39,8 @@ kind of work:
 - Comments on an item are #1..#n in thread order (the `comments` order in `bd show ID --json`); board updates name
   the new number. Refer to earlier comments as #n instead of quoting them; start a reply to one with "re #n".
 - Only change your own items, apart from creating new ones (bugs, questions) for other roles.
+- Memory: when you save a memory, put `verified: <today, YYYY-MM-DD>` and `ttl_days: <how many days it holds>` under
+  `metadata:` in its frontmatter (`memory/README.md`). config-check refuses one without them. When you check a fact
+  again, update `verified`; when it is wrong, fix or delete the file.
 - Stay inside what your role brief allows. No `git push` (pushes go through ops with the human's approval), no secrets:
   refer to them by path only, never read or print them.
