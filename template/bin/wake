@@ -4,8 +4,10 @@
 // so a working lead is never interrupted. Changes a lead (or its workers, actor `<role>/...`) makes never wake it.
 // Hop limit: after MAX_HOPS lead-to-lead wakes on one item without a human in between, the item gets `needs-you`
 // and leads stop being woken for it until a human acts on it.
-// Env: BD_SERVE (else the bd-serve URL from .run/endpoints.json), PASEO_BIN (default paseo), WAKE_EVERY_MS (default 5000).
+// Env: BD_SERVE (else the bd-serve URL from .run/endpoints.json), WAKE_EVERY_MS (default 5000). Paseo: bin/lib/paseo.mjs (its SDK, else
+// the CLI: PASEO_BIN, PASEO_URL, PASEO_NO_SDK=1).
 import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/obs.mjs'
+import * as P_ from './lib/paseo.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -14,7 +16,6 @@ import { projectName } from './lib/svc.mjs'
 const PROJECT = projectName()
 import { requireUrl } from './lib/svc.mjs'
 const BD = new URL(process.env.BD_SERVE || requireUrl('bd-serve'))
-const PASEO = process.env.PASEO_BIN || 'paseo'
 const EVERY = Number(process.env.WAKE_EVERY_MS || 5000)
 const MAX_HOPS = Number(process.env.WAKE_MAX_HOPS || 3)
 import fs from 'node:fs'
@@ -29,19 +30,19 @@ function loadRoles() {
 }
 loadRoles()
 const raci = () => { try { return JSON.parse(fs.readFileSync(path.join(P, 'leads', 'raci.json'), 'utf8')).activities || [] } catch { return [] } }
-const hops = new Map() // issue id -> lead-to-lead wakes since a human last acted on it
+const hops = new Map() // issue id -> lead-to-lead wakes sent since a human last acted on it
+const paused = new Set() // items paused at the hop limit (needs-you set once; resumed by a human)
 const idleSeen = {} // role -> agent id seen idle on the previous tick
 
 const log = (...a) => olog(/fail/i.test(String(a[0])) ? 'error' : 'info', a.map(String).join(' '))
 startMetrics()
 const clip = (s, n = 160) => (s || '').replace(/\s+/g, ' ').slice(0, n)
 const bd = (p) => fetch(new URL(p, BD)).then((r) => r.json())
-const paseo = (args) => new Promise((ok, no) =>
-  execFile(PASEO, args, { timeout: 20000 }, (err, out, errOut) => (err ? no(new Error(clip(errOut || err.message, 300))) : ok(out))))
 
-function note(role, id, reason) {
+function note(role, id, reason, byLead = false) {
   if (!ROLES.includes(role)) return
-  pending[role].set(id, reason)
+  const prev = pending[role].get(id)
+  pending[role].set(id, { reason, byLead: byLead || !!prev?.byLead })
 }
 
 const leadOf = (actor) => ROLES.find((r) => actor === r || (actor || '').startsWith(`${r}/`)) || null
@@ -57,7 +58,7 @@ function stopLoop(id) {
 
 // RACI routing: an item labelled act:<activity> asks its Consulted roles for input when created, and tells its
 // Informed roles when closed. The doer (assignee) and the actor's own role are skipped.
-function raciRoute(e) {
+function raciRoute(e, byLead = false) {
   const act = (e.issue?.labels || []).find((l) => l.startsWith('act:'))?.slice(4)
   if (!act || !['create', 'close'].includes(e.op)) return
   const a = raci().find((x) => x.id === act)
@@ -66,37 +67,35 @@ function raciRoute(e) {
   const who = e.actor || 'beads', title = clip(e.issue?.title, 80)
   for (const [role, l] of Object.entries(a.raci || {})) {
     if (!l.includes(letter) || !ROLES.includes(role) || role === e.issue?.assignee || role === leadOf(e.actor)) continue
-    note(role, e.issue_id, letter === 'C'
+    note(role, e.issue_id, (letter === 'C'
       ? `consult: ${who} opened ${e.issue_id} "${title}" (${a.title}). You are Consulted: comment your input on it, or "no input".`
-      : `FYI: ${who} closed ${e.issue_id} "${title}" (${a.title})${e.issue?.close_reason ? `: ${clip(e.issue.close_reason, 200)}` : ''}. You are Informed; act only if it affects your work.`)
+      : `FYI: ${who} closed ${e.issue_id} "${title}" (${a.title})${e.issue?.close_reason ? `: ${clip(e.issue.close_reason, 200)}` : ''}. You are Informed; act only if it affects your work.`), byLead)
   }
 }
 
 function onEvent(e) { return span('wake event', { op: e.op, issue: e.issue_id, actor: e.actor }, () => onEvent1(e), { minMs: 1000 }) }
 function onEvent1(e) {
   if (e.actor === 'wake') return // its own pause notes
-  if (isHuman(e.actor)) hops.delete(e.issue_id) // a human in the loop resets the count
-  if (leadOf(e.actor) && (hops.get(e.issue_id) || 0) >= MAX_HOPS) return // paused item: no routing either
-  raciRoute(e)
+  if (isHuman(e.actor)) { hops.delete(e.issue_id); paused.delete(e.issue_id) } // a human in the loop resets the count
+  const byLead = !!leadOf(e.actor)
+  if (byLead && (hops.get(e.issue_id) || 0) >= MAX_HOPS) { // at the limit: pause it, visibly, once
+    if (!paused.has(e.issue_id)) { paused.add(e.issue_id); log(`hop limit on ${e.issue_id}: paused`); count('mm_wake_paused_total', {}); stopLoop(e.issue_id) }
+    return
+  }
+  raciRoute(e, byLead)
   const role = e.issue?.assignee
   if (!ROLES.includes(role) || leadOf(e.actor) === role) return
-  if (leadOf(e.actor)) { // another lead caused this
-    const n = (hops.get(e.issue_id) || 0) + 1
-    hops.set(e.issue_id, n)
-    if (n === MAX_HOPS + 1) { log(`hop limit on ${e.issue_id}: paused`); count('mm_wake_paused_total', {}); return stopLoop(e.issue_id) }
-    if (n > MAX_HOPS) return
-  }
   const who = e.actor || 'beads'
   const title = clip(e.issue?.title, 80)
   if (e.op === 'comment' && e.comment) {
     const reason = (n) => `${e.comment.author} commented${n ? ` #${n}` : ''} on ${e.issue_id} "${title}": "${clip(e.comment.text, 400)}"`
-    note(role, e.issue_id, reason(0))
+    note(role, e.issue_id, reason(0), byLead)
     // Number the comment as the board shows it (#n = position in the thread), so leads can answer "re #n".
     bd(`/v0/beads/issues/${encodeURIComponent(e.issue_id)}?include_comments=true`)
-      .then((i) => { const n = (i.comments || []).findIndex((c) => c.id === e.comment.id) + 1; if (n && pending[role].has(e.issue_id)) note(role, e.issue_id, reason(n)) })
+      .then((i) => { const n = (i.comments || []).findIndex((c) => c.id === e.comment.id) + 1; if (n && pending[role].has(e.issue_id)) note(role, e.issue_id, reason(n), byLead) })
       .catch(() => {})
   } else if (['create', 'update', 'reopen'].includes(e.op) && ['open', 'in_progress'].includes(e.issue?.status)) {
-    note(role, e.issue_id, `${who} ${e.op === 'create' ? 'created' : e.op === 'reopen' ? 'reopened' : 'changed'} ${e.issue_id} "${title}" (now ${e.issue.status})`)
+    note(role, e.issue_id, `${who} ${e.op === 'create' ? 'created' : e.op === 'reopen' ? 'reopened' : 'changed'} ${e.issue_id} "${title}" (now ${e.issue.status})`, byLead)
   }
 }
 
@@ -113,8 +112,7 @@ async function catchUp() {
 }
 
 async function lead(role) {
-  const out = await paseo(['ls', '-g', '--label', `project=${PROJECT}`, '--label', `role=${role}`, '--json'])
-  return JSON.parse(out)[0] || null
+  return (await P_.list({ project: PROJECT, role }))[0] || null
 }
 
 async function tick() {
@@ -130,13 +128,14 @@ async function tick() {
     const steady = idle && idleSeen[role] === a.id
     idleSeen[role] = idle ? a.id : null
     if (!steady) continue
-    const msg = [`Board update for the ${role} lead (${PROJECT}):`, ...[...reasons.values()].map((r) => `- ${r}`),
+    const msg = [`Board update for the ${role} lead (${PROJECT}):`, ...[...reasons.values()].map((r) => `- ${r.reason}`),
       '', 'Follow your role brief: pick up, answer every human comment on the item, then end your turn.'].join('\n')
-    const items = [...reasons.keys()]
+    const items = [...reasons.keys()], batch = new Map(reasons)
     reasons.clear()
     try {
-      await span('wake lead', { role, agent: a.id, items: items.join(' ') }, () => paseo(['send', a.id, '--no-wait', '--prompt', msg]))
+      await span('wake lead', { role, agent: a.id, items: items.join(' '), via: P_.via() }, () => P_.send(a.id, msg))
       count('mm_wake_sent_total', { role })
+      for (const [id, r] of batch) if (r.byLead) hops.set(id, (hops.get(id) || 0) + 1) // a lead-to-lead wake, sent
       // For the board's "who is working on what": the items this lead was just woken for.
       try {
         const f = path.join(P, '.wake-state.json')
@@ -145,7 +144,10 @@ async function tick() {
         fs.writeFileSync(f, JSON.stringify(st))
       } catch {}
       log(`woke ${role} (${a.shortId || a.id}) with ${msg.split('\n').length - 3} reason(s)`)
-    } catch (e) { log(`send to ${role} failed:`, e.message) }
+    } catch (e) {
+      for (const [id, r] of batch) if (!reasons.has(id)) reasons.set(id, r) // not sent: keep them for the next idle tick
+      log(`send to ${role} failed (reasons kept):`, e.message)
+    }
   }
 }
 
@@ -154,7 +156,10 @@ async function tick() {
 // the poll delivers them (catch-up), logs an error (mm obs and the system's sentinel see it) and the stream reconnects.
 const STALL_MS = Number(process.env.WAKE_STALL_MS || 90000), CHECK_MS = Number(process.env.WAKE_CHECK_MS || 30000)
 let since = 0, stream = null, behind = 0
-const deliver = (e) => { if (!e || (e.seq || 0) <= since) return; since = e.seq; onEvent(e) } // each event once, in order
+const STATE = path.join(P, '.wake-state.json')
+let saveT = null
+const saveSeq = () => { saveT ||= setTimeout(() => { saveT = null; try { const st = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } })(); st._seq = since; fs.writeFileSync(STATE, JSON.stringify(st)) } catch {} }, 2000) }
+const deliver = (e) => { if (!e || (e.seq || 0) <= since) return; since = e.seq; onEvent(e); saveSeq() } // each event once, in order
 
 async function check() {
   const r = await fetch(new URL(`/v0/beads/events?since=${since}&limit=500`, BD), { minMs: 1000 }).then((x) => x.json())
@@ -195,6 +200,19 @@ async function watch() {
 }
 
 since = await catchUp()
+// events after the last one this wake delivered before it stopped (a restart, a crash): replay them, so none is lost
+const saved = (() => { try { return Number(JSON.parse(fs.readFileSync(STATE, 'utf8'))._seq) || 0 } catch { return 0 } })()
+if (saved && saved < since) {
+  const head = since; since = saved
+  try {
+    const r = await fetch(new URL(`/v0/beads/events?since=${saved}&limit=500`, BD)).then((x) => x.json())
+    const missed = (r.records || []).filter((e) => (e.seq || 0) > saved && (e.seq || 0) <= head)
+    for (const e of missed) deliver(e)
+    if (missed.length) log(`replayed ${missed.length} event(s) from seq ${saved} (missed while stopped)`)
+  } catch (e) { log('replay failed:', e.message) }
+  since = Math.max(since, head)
+}
+saveSeq()
 log(`wake for ${PROJECT}: watching ${BD.href} from seq ${since} (stall check every ${CHECK_MS / 1000}s, after ${STALL_MS / 1000}s)`)
 setInterval(() => tick().catch((e) => log('tick:', e.message)), EVERY)
 setInterval(() => check().catch((e) => log('stream check failed:', e.message)), CHECK_MS)

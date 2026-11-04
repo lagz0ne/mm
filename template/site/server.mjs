@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configApi } from './config-api.mjs'
+import * as P_ from '../bin/lib/paseo.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const DIST = path.join(here, 'dist')
@@ -143,16 +144,15 @@ async function proxy(req, res, apiPath, search) {
   up.end(body)
 }
 
-// Agents of this project, kept fresh in the background: ONE `paseo ls` every few seconds (each call costs ~0.6 s of
-// CLI start-up), never on a request's path. Roles come from where an agent runs: leads/<role>, setup/, or a worker's
+// Agents of this project, kept fresh in the background: one list every few seconds over the Paseo SDK's connection
+// (bin/lib/paseo.mjs; ~15 ms, where a `paseo ls` costs ~0.6 s of CLI start-up), never on a request's path. Roles come from where an agent runs: leads/<role>, setup/, or a worker's
 // worktrees/w-<item>.
 let agents = { at: 0, data: null }
 const HOME_DIR = process.env.HOME || ''
 function pollAgents() {
-  execFile(PASEO, ['ls', '-g', '--json'], { timeout: 15000, maxBuffer: 16 << 20, minMs: 2000 }, (err, out) => {
+  P_.list().then((list) => [null, list], (e) => [e, null]).then(([err, list]) => {
     try {
       if (!err) {
-        const list = JSON.parse(out)
         const data = Object.fromEntries([...ROLES, 'setup'].map((r) => [r, null]))
         data._workers = []
         const workerRole = ROLE_DEFS.find((r) => r.workers)?.id || 'code'
@@ -361,7 +361,7 @@ async function sendWorkers(res, id) {
   if (!ID_RE.test(id)) return send(res, 400, { title: 'bad id' })
   const run = (cmd, args, timeout = 15000) => new Promise((ok) => execFile(cmd, args, { timeout, maxBuffer: 8 << 20 }, (e, out) => ok(e ? '' : out)))
   let list = []
-  try { list = JSON.parse(await run(PASEO, ['ls', '-g', '-a', '--label', `project=${PROJECT}`, '--label', `item=${id}`, '--json']) || '[]') } catch {}
+  try { list = await P_.list({ project: PROJECT, item: id }, { archived: true }) } catch {}
   const branch = `w-${id}`
   const has = (await run('git', ['-C', CODE, 'rev-parse', '--verify', '--quiet', branch])).trim()
   const commits = has ? (await run('git', ['-C', CODE, 'log', '--format=%h%x1f%an%x1f%cI%x1f%s', `main..${branch}`])).trim().split('\n').filter(Boolean)
