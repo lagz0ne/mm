@@ -41,11 +41,11 @@ PUB=$(public_name); PORT=$(public_port)
 if [ -n "$PUB" ]; then check "public route $PUB listed" sh -c "expose ls | grep -q '$PUB'"; fi
 BIND=$(mm config get bind_host 2>/dev/null || echo 127.0.0.1)
 if [ -n "$PORT" ] && [ "${BIND#127.}" = "$BIND" ]; then   # domain mode with the web proxy in docker: the forwarder
-  listening() { ss -Hltn | awk '{print $4}' | grep -qx -- "$1"; }
+  listening() { for _ in $(seq 1 20); do ss -Hltn | awk '{print $4}' | grep -qx -- "$1" && return 0; sleep 1; done; return 1; }   # the forwarder starts just after the service
   check "public port: the service on loopback" listening "127.0.0.1:$PORT"
   check "public port: mm's forwarder on $BIND" listening "$BIND:$PORT"
   check "public port: nothing on every interface" sh -c "! ss -Hltn | awk '{print \$4}' | grep -qxE '(0[.]0[.]0[.]0|[*]|[[]::[]]):$PORT'"
-  check "public port answers through $BIND" curl -sf -o /dev/null --max-time 5 "http://$BIND:$PORT/api/whoami"
+  check "public port (old template, before the update): still served through $BIND" curl -sf -o /dev/null --max-time 5 "http://$BIND:$PORT/api/whoami"
 fi
 OLDV=$(sed -n 's/^template_version: //p' "$ROOT/.mm-answers.yaml")
 
@@ -85,6 +85,10 @@ check "services ready after update" wait_ready 3 60
 check "board serves brotli assets" sh -c "curl -sf --max-time 5 -H 'accept-encoding: br' -D- -o /dev/null http://board.$PROJECT.localhost:1355/ | grep -qi 'content-encoding: br'"
 check "item survived the update" item_there
 check "still throwaway after the update" sh -c "mm ls -o json | jq -e --arg p '$PROJECT' '.[] | select(.project == \$p) | .throwaway == true'"
+if [ -n "$PORT" ] && [ "${BIND#127.}" = "$BIND" ]; then   # now on the current template: the board's gated public side
+  check "public port through $BIND: refused without the gateway's assertion (401)" sh -c "[ \$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H 'x-board-user: owner' 'http://$BIND:$PORT/api/whoami') = 401 ]"
+  check "...and the local side still answers (health, leads)" board /api/whoami
+fi
 out=$(mm update "$REF" 2>&1); grep -q 'already at' <<<"$out" && ok "second update is a no-op" || bad "second update: $out"
 check "backup runs (bin/backup)" sh -c "cd '$ROOT' && timeout 300 bin/backup"
 check "health passes (bin/health)" sh -c "cd '$ROOT' && timeout 120 node bin/health"

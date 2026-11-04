@@ -13,7 +13,7 @@ import * as P_ from '../bin/lib/paseo.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const DIST = path.join(here, 'dist')
-import { dirs, projectName, requireUrl, servicesDef, svcPublic } from '../bin/lib/svc.mjs'
+import { dirs, endpoints, projectName, requireUrl, servicesDef, svcPublic } from '../bin/lib/svc.mjs'
 // PORT is assigned by the process manager (portless); HOST is where the machine wants services bound.
 const PORT = Number(process.env.PORT || process.env.BOARD_PORT)
 if (!PORT) { console.error('board: set PORT'); process.exit(2) }
@@ -86,12 +86,14 @@ function cookieUser(req) {
 }
 const validName = (n) => /^[a-z][a-z0-9._-]{1,31}$/.test(n) && !RESERVED.has(n) && !RESERVED.has(n.split('/')[0])
 function whoSource(req) {
+  if (req.gateway) return 'gateway'
   if (req.accessEmail) return 'access'
   if (cookieUser(req)) return 'self'
   return 'default'
 }
 
 function who(req) {
+  if (req.gateway) return req.gateway.u // the public side: only the gateway's signed assertion says who
   if (req.accessEmail) return req.accessEmail.split('@')[0]
   const self = cookieUser(req)
   if (self) return self
@@ -532,12 +534,54 @@ function serveFile(res, urlPath) {
   fs.createReadStream(enc ? file + (enc === 'br' ? '.br' : '.gz') : file).pipe(res)
 }
 
+// ---------- the public side (mm.auth): only through mm's forwarder; nothing without the gateway's signed assertion ----------
+// Its own port (BOARD_PUBLIC_PORT, loopback, reached only by the forwarder on bind_host), so a request from the web
+// proxy can't be confused with a local one. The assertion: base64url(JSON {u, r, h, exp, n}) "." Ed25519 signature,
+// checked with the gateway's public key (mm writes it into .run/endpoints.json "auth"); no key: refuse everything.
+const PUBLIC_PORT = Number(process.env.BOARD_PUBLIC_PORT || 0)
+let gwKey = { at: 0, key: null }
+function gatewayKey() {
+  if (Date.now() - gwKey.at > 60000) {
+    let key = null
+    const pem = process.env.MM_AUTH_PUBLIC_KEY || endpoints().auth?.public_key
+    try { if (pem) key = crypto.createPublicKey(pem) } catch {}
+    gwKey = { at: Date.now(), key }
+  }
+  return gwKey.key
+}
+function assertion(req) {
+  const a = String(req.headers['x-mm-assertion'] || ''), [body, sig] = a.split('.'), key = gatewayKey()
+  if (!body || !sig || !key) return null
+  try {
+    if (!crypto.verify(null, Buffer.from(body), key, Buffer.from(sig, 'base64url'))) return null
+    const c = JSON.parse(Buffer.from(body, 'base64url').toString())
+    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim()
+    if (c.h !== host || !(c.exp > Date.now()) || !['owner', 'member', 'viewer'].includes(c.r) || !validGatewayName(c.u)) return null
+    return c
+  } catch { return null }
+}
+const validGatewayName = (n) => typeof n === 'string' && /^[a-z][a-z0-9._-]{1,31}$/.test(n)
+const SIGN_IN = '<!doctype html><meta charset="utf-8"><title>Sign in</title><p>Sign in through the gateway: open this board\'s address again.</p>'
+async function handlePublic(req, res) {
+  const c = assertion(req)
+  if (!c) { res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); return res.end(SIGN_IN) }
+  req.gateway = c
+  if (c.r === 'viewer' && !['GET', 'HEAD'].includes(req.method)) return send(res, 403, { title: 'Viewers can look, not change: ask the owner for member access.' })
+  const url = new URL(req.url, 'http://x')
+  if (url.pathname === '/api/whoami' && req.method === 'POST') return send(res, 403, { title: 'Your name comes from your sign-in.' })
+  return handle(req, res)
+}
+
 let cfg
 startMetrics()
 http.createServer((req, res) => withSpan(httpSpan(req, res, req.method === 'GET' ? { minMs: 300 } : {}), () => handle(req, res)).catch((e) => {
   log('error', `request ${req.method} ${req.url} failed: ${e?.stack || e}`, { route: req.url })
   try { if (!res.headersSent) send(res, 500, { title: 'internal error' }); else res.end() } catch {}
 })).listen(PORT, HOST, () => log('info', `board on http://${HOST}:${PORT} -> ${BD.href} as ${ACTOR}`))
+if (PUBLIC_PORT) http.createServer((req, res) => withSpan(httpSpan(req, res, req.method === 'GET' ? { minMs: 300 } : {}), () => handlePublic(req, res)).catch((e) => {
+  log('error', `public request ${req.method} ${req.url} failed: ${e?.stack || e}`, { route: req.url })
+  try { if (!res.headersSent) send(res, 500, { title: 'internal error' }); else res.end() } catch {}
+})).listen(PUBLIC_PORT, '127.0.0.1', () => log('info', `board public side on 127.0.0.1:${PUBLIC_PORT} (the gateway's assertion required)`))
 
 async function handle(req, res) {
   if (ACCESS_TEAM && ACCESS_AUD) {

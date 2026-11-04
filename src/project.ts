@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import { getPath, loadConfig } from './config'
 import { DIRS, engineDirs, HOME, run, toolPath } from './env'
 import { obsEndpoints } from './obs'
+import { publicKeyPem } from './auth'
 import { pcRunning, writeBase } from './pc'
 import { renderTo, template, templateCommit } from './template'
 import pkg from '../package.json'
@@ -134,6 +135,10 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
 type Svc = { about?: string; command: string; workdir?: string; env?: Record<string, string>; port?: 'http' | 'internal' | 'none'
   public?: { name: string; auth: string }; depends_on?: Record<string, string>; ready?: { http?: string; socket?: string }; restart?: string; optional?: boolean }
 
+/** Does this board's server have the gateway-checked public side (BOARD_PUBLIC_PORT)? Older templates don't. */
+function boardHasPublicSide(root: string) {
+  try { return readFileSync(join(root, 'site', 'server.mjs'), 'utf8').includes('BOARD_PUBLIC_PORT') } catch { return false }
+}
 export function resolve(root: string) {
   const a = readAnswers(root)
   const spec = Bun.YAML.parse(readFileSync(join(root, 'services.yaml'), 'utf8')) as { services: Record<string, Svc>; schedules?: Record<string, { every: string; command: string }> }
@@ -156,7 +161,11 @@ export function resolve(root: string) {
     let pub: { public_url?: string; public_port?: number; public_bind?: string } = {}
     if (s.public && access === 'domain' && domain) {
       const port = prev.services?.[n]?.public_port ?? hashPort(`${a.project}/${n}`)
-      Object.assign(env, { PORTLESS_APP_PORT: String(port) })
+      // a service behind the gateway (auth: required, the boards) gets its own public listener on that port, if its
+      // server has one (a board still on an older template doesn't: it keeps serving the public port itself until
+      // `mm update` brings the listener, so its route never goes dark); an open one (the app slot) serves it itself
+      const gated = s.public.auth === 'required' && boardHasPublicSide(root)
+      Object.assign(env, gated ? { BOARD_PUBLIC_PORT: String(port) } : { PORTLESS_APP_PORT: String(port) })
       pub = { public_url: `https://${fill(s.public.name)}.${domain}`, public_port: port, public_bind: bindHost }
     }
     services[n] = { ...s, command: fill(s.command), workdir: s.workdir && fill(s.workdir), env, ...(s.port === 'http' ? { url: url(n) } : {}), ...pub,
@@ -209,6 +218,7 @@ export function up(root: string): Step[] {
   writeFileSync(join(root, '.run', 'services.json'), JSON.stringify({ project: a.project, dolt_port: dport, services, schedules }, null, 2))
   const ep = { manager: 'process-compose (mm)', self_healing: true, restart: `process-compose -U -u ${DIRS.socket} process restart ${a.project}.{service}`,
     logs: `tail -n {lines} ${join(root, '.run', 'logs')}/{service}.log`, observability: obsEndpoints(), dirs: engineDirs(),
+    ...(publicKeyPem() ? { auth: { public_key: publicKeyPem() } } : {}), // the gateway's key: boards verify its assertions
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
   writeFileSync(join(root, '.run', 'endpoints.json'), JSON.stringify(ep, null, 2))
   steps.push({ step: 'services', status: 'ok', detail: `${Object.keys(processes).length} processes, namespace ${a.project}` })
