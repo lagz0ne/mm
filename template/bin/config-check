@@ -21,6 +21,9 @@ import { projectName, svcUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
 cli('config-check')
 const HOME = process.env.HOME || os.homedir()
+// Every agent here, leads and setup, in every profile: no SSH keys (whatever they are named, the user's or root's), and
+// no filling machine or project inputs (a human's step: it never shows a value, but it can replace one).
+const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm fill*)']
 // Roles: leads/roles.json is the list; every role has a folder and every folder a role.
 let DEF = []
 try { DEF = JSON.parse(fs.readFileSync(path.join(P, 'leads', 'roles.json'), 'utf8')).roles || [] } catch (e) { problems.push(`leads/roles.json unreadable (${e.message})`) }
@@ -55,7 +58,7 @@ function render(tmpl, role) {
     if (JSON.stringify(hooks?.PreToolUse || []).includes(h)) continue
     hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: 'Bash|Read|Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: h, timeout: 10 }] }] }
   }
-  const govDeny = [...(role && ROLES.includes(role) ? mandatoryDeny(role) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
+  const govDeny = [...ALWAYS_DENY, ...(role && ROLES.includes(role) ? mandatoryDeny(role) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
   return { ...tmpl, ...(hooks ? { hooks } : {}), permissions: { ...p,
     ...(p.additionalDirectories ? { additionalDirectories: p.additionalDirectories.map(fill) } : {}),
     // a rule naming a service that doesn't run yet ({url:app} before the first deploy) is left out, not half-rendered

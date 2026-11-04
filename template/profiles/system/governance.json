@@ -24,7 +24,8 @@
   "deny_all": [
     "Read({home}/.config/secrets/**)",
     "Read({home}/brain/.keys/**)",
-    "Read({home}/.ssh/id_*)",
+    "Read({home}/.ssh/**)",
+    "Read(/root/.ssh/**)",
     "Read({home}/.paseo/daemon-keypair.json)",
     "Read({home}/.paseo/local-credential)",
     "Read({home}/.claude/.credentials.json)",
@@ -47,6 +48,7 @@
     "Bash(*--approved*)",
     "Bash(*--no-verify*)",
     "Bash(git push*)",
+    "Bash(mm fill*)",
     "mcp__paseo__archive_agent",
     "mcp__paseo__archive_workspace",
     "mcp__paseo__cancel_agent",
