@@ -155,7 +155,8 @@ export function mmSpan(name: string, attrs: Record<string, unknown>) {
   return (ok: boolean, extra: Record<string, unknown> = {}) => {
     const end = Date.now(), all = { ...attrs, ...extra, ok }
     try { appendFileSync(join(DIRS.pc, 'mm.log'), JSON.stringify({ time: new Date(end).toISOString(), level: ok ? 'info' : 'error', msg: `${name} ${ok ? 'ok' : 'failed'}`, project: 'mm', service: 'mm', op: name, duration_ms: end - start, trace_id: traceId, ...all }) + '\n') } catch {}
-    const ep = obsEndpoints() as { traces?: string }
+    // MM_OBS_TRACES as in the engine (bin/lib/obs.mjs): unset = the stack's endpoint, empty = off (tests, throwaway homes)
+    const ep = { traces: process.env.MM_OBS_TRACES ?? (obsEndpoints() as { traces?: string }).traces }
     if (!ep.traces) return
     const kv = Object.entries(all).filter(([, v]) => v !== undefined).map(([key, v]) => ({ key, value: typeof v === 'boolean' ? { boolValue: v } : typeof v === 'number' ? { intValue: String(v) } : { stringValue: String(v).slice(0, 2000) } }))
     const body = JSON.stringify({ resourceSpans: [{ resource: { attributes: [{ key: 'service.name', value: { stringValue: 'mm' } }] }, scopeSpans: [{ scope: { name: 'mm' }, spans: [{
