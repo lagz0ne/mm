@@ -60,8 +60,10 @@ of that board. Two rails stay, enforced by the board's API from the verified ass
   unique). It refuses any name that equals a role of any board on the machine, a system author (`wake`, `watchdog`,
   `brain`, `ui`, `beads`, `smoke`, `system`, `admin`, `setup`) or the owner's name. The board refuses a self-chosen
   name when the gateway is on: identity only comes from the assertion.
-- **`all`:** the system board and every project, now and later (the owner's decision). The gateway still records the
-  explicit list it covers at each moment, so the audit can say who could steer which board when.
+- **`all`:** the system board and every project, now and later (the owner's decision). When the owner confirms an
+  `all` grant, the bot lists every board it covers at that moment, client projects included. The gateway's socket API
+  returns that list. The gateway also records the explicit list at each moment, so the audit can say who could steer
+  which board when.
 
 ## Sessions and revocation
 - Server-side only: a session is a random id → `{user, scope, created, expires, boards}`. Forward-auth checks it on
