@@ -17,6 +17,9 @@ curl -fsSL https://raw.githubusercontent.com/lagz0ne/mm/main/bin/mm | sh
 
 That puts the binary in `~/.mm/bin/mm` and runs it; the first run is `mm onboard`. Without a terminal, pass the
 answers: `... | sh -s -- onboard --yes --access tailscale`. A given release: `MM_VERSION=v0.1.0`.
+Onboard installs everything it can; what only you can give (tokens, keys, answers) it leaves to `mm needs`, which
+says what each one is for and how to get it. Fill each with `mm fill <name>`; `mm doctor` passes once the required
+ones are there.
 
 ## Use
 

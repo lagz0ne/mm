@@ -33,9 +33,15 @@ check() { local d=$1; shift; if "$@" >/tmp/check.out 2>&1; then ok "$d"; else ba
 export PATH=$HOME/.mm/bin:$PATH
 echo "== install line + onboard"
 curl -fsSL "$SHIM" | sh -s -- onboard --yes --access tailscale --name cleanbox >/tmp/onboard.out 2>&1
-grep -q "0 failing" /tmp/onboard.out && ok "onboard: doctor 0 failing" || { bad "onboard"; tail -20 /tmp/onboard.out; }
+# a fresh box lacks only what a human gives it (inputs): onboard installs everything else, then says so
+mm doctor -o json >/tmp/doctor.json 2>/dev/null
+jq -e '[.[] | select(.status == "fail")] | length > 0 and all(.layer == "var" or .layer == "secret" or .layer == "account")' /tmp/doctor.json >/dev/null \
+  && ok "onboard: only inputs left ($(jq -r '[.[] | select(.status == "fail") | .item] | join(", ")' /tmp/doctor.json))" || { bad "onboard"; tail -20 /tmp/onboard.out; }
 echo "     mm $(mm --version)"
 sleep 3; check "process manager outlives mm" process-compose -U -u "$HOME/.mm/pc.sock" project state
+check "mm needs: exit 1 while a required input is missing" sh -c '! mm needs'
+check "fill the required inputs (dummy values, from a pipe)" sh -c 'for n in $(mm needs -o json | jq -r ".[] | select(.required and .status == \"missing\" and .kind == \"secret\") | .name"); do printf "cleanbox-dummy-%s" "$n" | mm fill "$n" || exit 1; done'
+check "mm needs exit 0" mm needs
 check "doctor exit 0" mm doctor
 echo "== new"
 check "mm new acme/shop" mm new acme/shop
