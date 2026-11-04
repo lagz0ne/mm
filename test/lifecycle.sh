@@ -92,8 +92,13 @@ check "board answers again" board
 for _ in $(seq 1 10); do n=$(pgrep -fc "^node $ROOT/site/server.mjs"); [ "$n" = 1 ] && break; sleep 1; done
 [ "$n" = 1 ] && ok "no orphan: one board process" || { bad "$n board processes (orphan left by the crash)"; ps -o pid,ppid,etime,cmd -p "$(pgrep -fd, "^node $ROOT/site/server.mjs")" | cut -c1-160; }
 
-step "agent (cheap) for the archive check"
-AG=$(paseo -q run --no-wait --cwd "$ROOT/leads" --provider claude/claude-haiku-5-5 --title qa-probe --label project=$PROJECT "Reply with the single word: ok" 2>/dev/null | tail -1)
+step "agent (cheap) and a leftover process for the archive check, both under another spelling of the folder"
+# ALIAS is a symlink to the client folder (as ~/projects -> ~/.mm/projects will be): archive must still find what was
+# started through it. The leftover runs from a file under the root with cwd /, so only its argv points inside.
+ALIAS="$HOME/.mm-qa-alias-$$"; ln -s "$(dirname "$ROOT")" "$ALIAS"
+cp "$(command -v sleep)" "$ROOT/qa-leftover" && (cd / && nohup "$ALIAS/$NAME/qa-leftover" 900 >/dev/null 2>&1 &)
+check "leftover running" pgrep -f "$ALIAS/$NAME/[q]a-leftover"
+AG=$(paseo -q run --no-wait --cwd "$ALIAS/$NAME/leads" --provider claude/claude-haiku-5-5 --title qa-probe --label project=$PROJECT "Reply with the single word: ok" 2>/dev/null | tail -1)
 [ -n "$AG" ] && ok "agent $AG started" || bad "start agent"
 
 step "archive: dry run, then clean removal"
@@ -108,7 +113,9 @@ check "process file gone" test ! -e "$HOME/.mm/pc/projects/$PROJECT.yaml"
 [ -n "$PUB" ] && check "public route removed" sh -c "! expose ls | grep -q '$PUB'"
 [ -n "$PORT" ] && check "public port $PORT free" sh -c "! ss -Hltn | grep -q ':$PORT '"
 check "board name gone" sh -c "! curl -sf -o /dev/null --max-time 3 http://board.$PROJECT.localhost:1355/"
-[ -n "$AG" ] && check "agent archived" sh -c "! paseo ls -g --json | jq -e --arg a '$AG' '.[]|select(.id|startswith(\$a))' >/dev/null"
+check "leftover swept (argv through the symlink)" sh -c "! pgrep -f '$ALIAS/$NAME/[q]a-leftover'"
+rm -f "$ALIAS"
+[ -n "$AG" ] && check "agent archived (cwd through the symlink)" sh -c "! paseo ls -g --json | jq -e --arg a '$AG' '.[]|select(.id|startswith(\$a))' >/dev/null"
 check "tarball kept" test -s "$TB"
 check "other projects untouched" sh -c "mm ls | grep -v '$PROJECT' | grep -q running"
 

@@ -1,7 +1,7 @@
 // Project lifecycle after `mm new`: update from the template (three-way merge), restart, archive (clean removal).
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { DIRS, HOME, run } from './env'
+import { isAbsolute, join, relative } from 'node:path'
+import { canon, DIRS, HOME, run, within } from './env'
 import { loadAll, PROJECTS_PC, readAnswers, resolve, up } from './project'
 import { template, templateCommit } from './template'
 
@@ -190,8 +190,9 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
 
   // 5. pack, verify, delete
   mkdirSync(ARCHIVE_DIR, { recursive: true })
-  const rel = root.slice(DIRS.projects.length + 1)
-  const p = run(['tar', '-czf', tarball, '--exclude=site/node_modules', '-C', DIRS.projects, rel], { timeoutMs: 900_000 })
+  const base = canon(DIRS.projects), rel = relative(base, canon(root))
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) { steps.push({ step: 'pack', status: 'fail', detail: `${root.replace(HOME, '~')} is not under ${DIRS.projects.replace(HOME, '~')}; project directory kept` }); return { steps, tarball, ok: false } }
+  const p = run(['tar', '-czf', tarball, '--exclude=site/node_modules', '-C', base, rel], { timeoutMs: 900_000 })
   const v = p.ok && run(['tar', '-tzf', tarball], { timeoutMs: 300_000 })
   if (!p.ok || !v || !v.ok || !v.out.includes(`${rel}/.mm-answers.yaml`)) {
     steps.push({ step: 'pack', status: 'fail', detail: `${p.ok ? 'tarball did not verify' : short(p)}; project directory kept` })
@@ -232,7 +233,7 @@ export function restore(tarball: string): { steps: Step[]; root: string; ok: boo
  */
 export function sweep(root: string): string[] {
   const mine = new Set<number>(); for (let p = process.pid; p > 1;) { mine.add(p); const st = readProc(p, 'stat'); p = st ? Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[1]) : 0 }
-  const inRoot = (f: string) => f === root || f.startsWith(`${root}/`)
+  const real = canon(root), inRoot = (f: string) => within(f, real) // /proc shows real paths; argv may use any spelling
   const hits: { pid: number; name: string }[] = []
   for (const d of readdirSync('/proc')) {
     const pid = Number(d); if (!pid || mine.has(pid)) continue
@@ -254,6 +255,6 @@ function projectAgents(root: string): string[] {
   if (!r.ok) return []
   try {
     return (JSON.parse(r.out) as { id: string; cwd?: string }[])
-      .filter((x) => { const c = String(x.cwd || '').replace(/^~(?=\/|$)/, HOME); return c === root || c.startsWith(`${root}/`) }).map((x) => x.id)
+      .filter((x) => within(String(x.cwd || ''), root)).map((x) => x.id) // agents keep the spelling they started with
   } catch { return [] }
 }

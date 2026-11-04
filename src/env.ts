@@ -1,7 +1,7 @@
 // Where things live, and how to run things. Every path is derived from $HOME; nothing machine-specific is written here.
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 export const HOME = process.env.HOME || homedir()
 export const MM = process.env.MM_HOME || join(HOME, '.mm')
@@ -15,6 +15,27 @@ export const DIRS = {
   socket: join(MM, 'pc.sock'),
   projects: join(HOME, 'projects'),
   brain: join(HOME, 'brain'),
+}
+
+/**
+ * A path as the kernel sees it: ~ expanded, symlinks resolved, a /proc " (deleted)" suffix dropped. A path that no
+ * longer exists resolves through its nearest existing ancestor. Compare and key paths only in this form: the same
+ * folder can be spelled through a symlink (e.g. ~/projects -> ~/.mm/projects) and /proc always shows the real one.
+ */
+export function canon(p: string): string {
+  let q = p.replace(/ \(deleted\)$/, '').replace(/^~(?=\/|$)/, HOME).replace(/\/+$/, '') || '/'
+  const tail: string[] = []
+  for (;;) {
+    try { return join(realpathSync(q), ...tail.reverse()) } catch {}
+    const up = dirname(q); if (up === q) return join(q, ...tail.reverse())
+    tail.push(basename(q)); q = up
+  }
+}
+/** Is `p` the folder `root` or inside it, however either is spelled? Only absolute (or ~) paths can be inside. */
+export function within(p: string, root: string): boolean {
+  if (!p || !(p.startsWith('/') || p.startsWith('~'))) return false
+  const a = canon(p), r = canon(root)
+  return a === r || a.startsWith(r === '/' ? '/' : `${r}/`)
 }
 
 // Architecture names as each upstream spells them.
