@@ -20,13 +20,15 @@ waits on `age` being installed** (a signed system package; the manifest lists it
 - **At start**, mm opens only the secrets a service declares (`secrets: [name, …]` in its services file) into
   `$XDG_RUNTIME_DIR/mm/secrets/<project>/<name>` (0600, folders 0700), with `age -d -i vault/key` reading the
   ciphertext and writing to that file. The service reads the file by path (`<NAME>_FILE` env), never a value in env.
-  `mm doctor` checks that the folder is a tmpfs, and warns when swap is unencrypted and the folder isn't `noswap`
-  (sy-suk 5: the `noswap` mount needs root, so it's a brain migration for ops).
+  `MM_SECRETS_DIR` replaces that folder (e.g. a tmpfs the brain mounts with `noswap`). `mm doctor` checks the vault's
+  modes and digests and that the folder is a tmpfs (fail), and warns when some swap is not dm-crypt and the folder
+  isn't mounted `noswap` (sy-suk 5: that mount needs root, so it's a brain migration for ops).
 - Nothing prints a value: `mm vault ls` shows names, sizes, digests and which services use them.
 
 ## Restore (whole machine)
 `mm restore` asks for the recovery identity (a hidden tty prompt or a file the human names; refused when run inside
-an agent). It decrypts each sealed file in memory, makes a new machine key, reseals everything to the new machine key
+an agent, except `--drill` with test keys). The prompt reads `/dev/tty` with echo off and holds the line in a 0600 file
+in the memory-backed secrets folder only while restore runs; `age` reads it from there. It decrypts each sealed file in memory, makes a new machine key, reseals everything to the new machine key
 plus the recovery public key, and drops the identity from memory. The old machine key is never needed.
 
 ## What changes for existing inputs

@@ -5,6 +5,7 @@ import { type Config, getPath, loadConfig, when } from './config'
 import { DIRS, HOME, hasSystemdUser, isRoot, run, which } from './env'
 import { needs } from './inputs'
 import { manifest, type Tool } from './manifest'
+import * as vault from './vault'
 
 export type Status = 'ok' | 'warn' | 'fail' | 'skip'
 export interface Check { layer: string; item: string; status: Status; detail: string; fix?: string }
@@ -85,6 +86,15 @@ export function doctor(): Check[] {
     : { layer: 'agents', item: 'shared instructions', status: 'ok', detail: 'none above the projects' })
   const global = ['CLAUDE.md', 'settings.json'].map((f) => join(HOME, '.claude', f)).filter((f) => existsSync(f))
   if (global.length) out.push({ layer: 'agents', item: 'global Claude folder', status: 'warn', detail: `${global.map((f) => f.replace(HOME, '~')).join(', ')} reach any agent not started by mm (mm's agents use $MM_HOME/claude/<project>)` })
+
+  // the vault (docs/vault.md): modes and digests; where opened secrets go (a tmpfs; swap, sy-suk 5)
+  for (const c of vault.check()) out.push({ layer: 'vault', item: 'vault', status: c.ok ? 'ok' : 'fail', detail: c.detail, fix: c.ok ? undefined : 'chmod 700 ~/.mm/vault, 600 the files; a digest mismatch: restore the file from mastermind' })
+  if (vault.ready()) {
+    let at = vault.secretsBase(); while (!existsSync(at) && at !== dirname(at)) at = dirname(at)
+    out.push(vault.isTmpfs(at) ? { layer: 'vault', item: 'secrets folder', status: 'ok', detail: `${at} is memory-backed` } : { layer: 'vault', item: 'secrets folder', status: 'fail', detail: `${at} is not a tmpfs: opened secrets would land on disk`, fix: 'set MM_SECRETS_DIR to a tmpfs (or use a systemd user session)' })
+    const w = vault.swapRisk()
+    if (w) out.push({ layer: 'vault', item: 'swap', status: 'warn', detail: w })
+  }
 
   // the machine's process manager
   const pc = run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'state'], { timeoutMs: 10_000 })

@@ -98,6 +98,21 @@ if command -v script >/dev/null; then
   check "a drill box can never be released, even with the right words" bash -c "printf 'the old box is down\n' | script -qec 'mm restore --release' /dev/null | grep -q 'never goes outward' && mm config get restore.hold | grep -qx true"
 fi
 
+echo '== who may run it, and the hidden prompt'
+box f
+check "inside an agent: refused, nothing written" bash -c "CLAUDECODE=1 mm restore '$R' --identity '$T/recovery.key' --accept '$C2' 2>&1 | grep -q 'not from an agent' && ! test -e '$MM_HOME/config.yaml'"
+box g
+check "inside an agent: a --drill (test keys) may run" bash -c "CLAUDECODE=1 mm restore --data-only --drill '$R' --identity '$T/recovery.key' --accept '$C2' >>'$LOG' 2>&1 && test -s '$MM_HOME/vault/key'"
+if command -v script >/dev/null; then
+  box h   # the input comes after a pause, so the terminal's echo is already off when it arrives
+  (sleep 3; grep -v '^#' "$T/recovery.key") | script -qec "mm restore --data-only '$R' --accept '$C2'" /dev/null >"$T/prompt.out" 2>&1
+  check "the hidden prompt: restored from the typed identity" bash -c "grep -q more '$MM_HOME/brain/memory/fact.md' && test -s '$MM_HOME/vault/key'"
+  check "...nothing of it shown on the terminal" bash -c "grep -q 'nothing shows' '$T/prompt.out' && ! grep -qF \"\$(grep -v '^#' '$T/recovery.key')\" '$T/prompt.out'"
+  check "...its memory-backed file removed, nothing left on the box" bash -c "! ls '$SHM'/mm/secrets/.restore-identity-* 2>/dev/null && ! grep -rqF \"\$(grep -v '^#' '$T/recovery.key')\" '$HOME' '$SHM'"
+  box i
+  check "the prompt refuses a line that isn't an age identity" bash -c "(sleep 3; echo not-a-key) | script -qec \"mm restore --data-only '$R' --accept '$C2'\" /dev/null 2>&1 | grep -q 'not an age identity line' && ! test -e '$MM_HOME/config.yaml'"
+fi
+
 echo '== a tampered mastermind'
 git clone -q -b main "$R" "$T/evil" && printf 'x' >>"$T/evil/brain/repo.bundle.age" && git -C "$T/evil" commit -qam evil --no-verify && E=$(git -C "$T/evil" rev-parse HEAD)
 box d

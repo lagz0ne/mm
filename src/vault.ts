@@ -5,7 +5,7 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { DIRS, run } from './env'
 
 export const VAULT = DIRS.vault
@@ -83,11 +83,26 @@ function decrypt(name: string, identity = KEY): Buffer {
 export function canOpen(name: string): true { decrypt(name).fill(0); return true }
 
 /** Where a project's opened secrets live while its services run: a memory-backed folder, 0700. */
+/** The base folder for opened secrets: $MM_SECRETS_DIR (e.g. a `noswap` tmpfs the brain mounts), else the user's
+ *  runtime folder (systemd's tmpfs). */
+export const secretsBase = () => process.env.MM_SECRETS_DIR || join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 0}`, 'mm', 'secrets')
 export function runtimeDir(project: string) {
-  const base = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 0}`
-  const d = join(base, 'mm', 'secrets', project)
-  mkdirSync(d, { recursive: true, mode: 0o700 }); chmodSync(join(base, 'mm'), 0o700); chmodSync(join(base, 'mm', 'secrets'), 0o700); chmodSync(d, 0o700)
+  const base = secretsBase(), d = join(base, project)
+  mkdirSync(d, { recursive: true, mode: 0o700 })
+  if (!process.env.MM_SECRETS_DIR) chmodSync(dirname(base), 0o700)
+  chmodSync(base, 0o700); chmodSync(d, 0o700)
   return d
+}
+/** sy-suk 5: opened secrets sit in a tmpfs, whose pages can be swapped out. A warning when some swap is not
+ *  encrypted (dm-crypt) and the folder is not mounted `noswap`. Undefined when there is nothing to warn about. */
+export function swapRisk(dir = secretsBase()): string | undefined {
+  let swaps: string[] = []
+  try { swaps = readFileSync('/proc/swaps', 'utf8').split('\n').slice(1).map((l) => l.split(/\s+/)[0]).filter(Boolean) } catch { return undefined }
+  const plain = swaps.filter((dev) => !/^crypt$/m.test(run(['lsblk', '-no', 'TYPE', dev]).out.trim()))
+  if (!plain.length) return undefined
+  let at = dir; while (!existsSync(at) && at !== dirname(at)) at = dirname(at)
+  if (/(^|,)noswap(,|$)/.test(run(['findmnt', '-no', 'OPTIONS', '-T', at]).out.trim())) return undefined
+  return `swap is not encrypted (${plain.join(', ')}) and ${at} is not mounted noswap: an opened secret can reach the swap disk (a noswap tmpfs for MM_SECRETS_DIR is a brain migration)`
 }
 export const isTmpfs = (dir: string) => /^(tmpfs|ramfs)$/.test(run(['stat', '-f', '-c', '%T', dir]).out.trim())
 

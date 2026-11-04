@@ -108,11 +108,41 @@ function recoveryPublic(dir: string, identity: string): string {
  * mm's state. The layout is always one-root: a restore is also how a legacy box moves.
  */
 export async function restoreMachine(src: string, o: RestoreOpts): Promise<{ steps: Step[]; ok: boolean; boards: string[] }> {
+  const fail = (step: string, detail: string) => ({ steps: [{ step, status: 'fail' as const, detail }], ok: false, boards: [] as string[] })
+  // sy-suk 2: moving the machine's secrets is the human's (T3). An agent may run only a drill (test keys, nothing out).
+  const inAgent = !!(process.env.CLAUDECODE || process.env.PASEO_AGENT_ID)
+  if (inAgent && !o.drill) return fail('agent', 'a restore opens the recovery key and every secret: run it yourself at a terminal, not from an agent (only --drill with test keys may run in one)')
+  if (o.identity) return restoreWith(src, o)
+  if (inAgent) return fail('identity', 'give --identity <file>: the hidden prompt is for a human at a terminal')
+  let file = ''
+  try { file = promptIdentity() } catch (e) { return fail('identity', (e as Error).message) }
+  try { return await restoreWith(src, { ...o, identity: file }) } finally { rmSync(file, { force: true }) }
+}
+
+/** The recovery identity, typed (or pasted) at the terminal with no echo, into a 0600 file in a memory-backed folder
+ *  that lives only while restore runs. Never argv, never env, never on disk. */
+function promptIdentity(): string {
+  let fd: number
+  try { fd = openSync('/dev/tty', 'r+') } catch { throw new Error('no terminal for the hidden prompt: give --identity <file>') }
+  let line = ''
+  try {
+    writeSync(fd, 'Paste your recovery identity (the AGE-SECRET-KEY-1… line; nothing shows): ')
+    spawnSync('sh', ['-c', 'stty -echo </dev/tty'])
+    const b = Buffer.alloc(512), n = readSync(fd, b, 0, 512, null); line = b.subarray(0, n).toString().trim(); b.fill(0)
+  } finally { spawnSync('sh', ['-c', 'stty echo </dev/tty']); writeSync(fd, '\n'); closeSync(fd) }
+  if (!/^AGE-SECRET-KEY-1[0-9A-Z]+$/.test(line) && !/^AGE-PLUGIN-[A-Z0-9-]+1[0-9A-Z]+$/.test(line)) throw new Error('that is not an age identity line')
+  const dir = vault.secretsBase(); mkdirSync(dir, { recursive: true, mode: 0o700 })
+  if (!vault.isTmpfs(dir)) throw new Error(`${dir} is not memory-backed: refusing to hold the identity there (set MM_SECRETS_DIR to a tmpfs, or give --identity <file>)`)
+  const f = join(dir, `.restore-identity-${process.pid}`); writeFileSync(f, `${line}\n`, { mode: 0o600 }); line = ''
+  return f
+}
+
+async function restoreWith(src: string, o: RestoreOpts): Promise<{ steps: Step[]; ok: boolean; boards: string[] }> {
   const steps: Step[] = [], boards: string[] = []
   const fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return { steps, ok: false, boards } }
   const there = [DIRS.config, DIRS.brain, DIRS.system, DIRS.projects, join(DIRS.vault, 'key'), join(HOME, 'projects'), join(HOME, 'brain')].filter(existsSync)
   if (there.length) return fail('blank box', `this box already has mm's state (${there.map(tl).join(', ')}): restore only onto a blank box`)
-  if (!o.identity || !existsSync(o.identity)) return fail('identity', 'give the recovery identity as a file you name (--identity <file>); it is read by age only, never copied')
+  if (!o.identity || !existsSync(o.identity)) return fail('identity', 'the recovery identity file is not there; it is read by age only, never copied')
 
   // a blank box has no age yet, and everything in mastermind is sealed: the signed distro package first (the manifest)
   if (!run(['sh', '-c', 'command -v age && command -v age-keygen']).ok) {

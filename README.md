@@ -34,7 +34,15 @@ mm up | down | restart acme/shop
 mm update [acme/shop]        # bring projects up to this mm's template (three-way merge; --dry-run, --continue, --abort)
 mm archive acme/shop         # stop, unload, unexpose, archive agents, pack to a tarball, delete; mm restore <tarball>
 mm obs status | errors | slow | logs     # what the projects did (metrics, logs, traces on this machine)
+mm vault init --recovery <age1…>         # sealed secrets: this machine's key + your offline recovery key (public half)
+mm sync [--init <repo>]      # seal what can't be rebuilt into your private mastermind repo, and push it
+mm restore <repo>            # a whole machine onto a blank box, on hold until you say the old box is down (--release)
 ```
+
+Secrets are sealed with age to two keys (`docs/vault.md`): the machine's own, and your recovery key, which stays
+offline. **If a key is ever exposed, rotate the secrets themselves:** sealed files stay in git history (mastermind)
+for ever, so resealing them to a new key is not enough. A lost or exposed machine key costs a reseal plus that
+rotation; an exposed recovery key needs a new recovery key too. Restores are documented in `docs/restore.md`.
 
 ## Operating model
 
