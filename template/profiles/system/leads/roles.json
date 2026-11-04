@@ -1,0 +1,28 @@
+{
+  "roles": [
+    {
+      "id": "ops",
+      "title": "Ops & SRE",
+      "initial": "O",
+      "color": "#b91c1c",
+      "workers": false,
+      "summary": "Runs the machine through the brain's run loop; watches it and handles incidents."
+    },
+    {
+      "id": "review",
+      "title": "Security & compliance review",
+      "initial": "R",
+      "color": "#1f5fbf",
+      "workers": false,
+      "summary": "Reviews every T2 plan, the posture and the audit trail; never applies changes."
+    },
+    {
+      "id": "platform",
+      "title": "Platform (mm)",
+      "initial": "P",
+      "color": "#0f766e",
+      "workers": false,
+      "summary": "Owns mm and its template; rolls updates out; governs projects through their boards."
+    }
+  ]
+}

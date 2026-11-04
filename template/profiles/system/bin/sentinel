@@ -1,0 +1,179 @@
+#!/usr/bin/env node
+// sentinel — SRE watch over the whole machine (profile system; every 5 min under mm cron). Turns problems into incident
+// items for ops on this board: one item per problem (a stable key), commented when it changes, closed when it clears.
+//   conditions (open while present; the sentinel closes them when gone):
+//     alert:<text>                `bin/brain status` ALERT lines (the brain is this board's parent folder)      P1
+//     cron:<project>/<job>        the last run of a scheduled job failed (<project root>/.run/logs/cron.log)  P1
+//     errors:<project>/<service>  new error logs or failed spans on N checks in a row (`mm obs errors`)       P2
+//     obs:stack                   the observability stores are down (`mm obs status`)                         P1
+//     sentinel:<source>           the sentinel could not read a source (that source's items are left as they are)
+//   events (stay open until someone closes them; later events become comments on the open one):
+//     drift                       a new drift block in `bin/brain status` (the first run only records it)      P2
+// An item someone closes while its problem is still there mutes that problem until it clears.
+// The board is the truth for which items are open (label `sentinel`, line "sentinel key: `<key>`"); .sentinel.json keeps
+// counters, mutes and the last drift seen. Optional config sentinel.json (this board's root):
+//   { "assignee": "ops", "ignore": ["<regex on project/service, project/job or a message>"], "errors": { "streak": 3, "quiet": 6 } }
+// Env (tests): SENTINEL_BRAIN (brain folder), SENTINEL_STATE, SENTINEL_CONFIG, MM_BIN, SVC_URL_BD_SERVE.
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { ROOT, projectName, requireUrl } from './lib/svc.mjs'
+import { cli } from './lib/obs.mjs'
+
+cli('sentinel')
+const E = process.env
+const BRAIN = E.SENTINEL_BRAIN || path.resolve(ROOT, '..')
+const STATE = E.SENTINEL_STATE || path.join(ROOT, '.sentinel.json')
+const CONF = (() => { try { return JSON.parse(fs.readFileSync(E.SENTINEL_CONFIG || path.join(ROOT, 'sentinel.json'), 'utf8')) } catch { return {} } })()
+const MM = E.MM_BIN || 'mm'
+const ASSIGNEE = CONF.assignee || 'ops'
+const STREAK = CONF.errors?.streak ?? 3, QUIET = CONF.errors?.quiet ?? 6
+const IGNORE = (CONF.ignore || []).map((r) => new RegExp(r))
+const ignored = (...s) => s.some((x) => IGNORE.some((re) => re.test(String(x))))
+const BD = requireUrl('bd-serve')
+const ACTOR = 'watchdog' // a system author for wake and the lead briefs (not a human)
+const KEY_LINE = /^sentinel key: `([^`]+)`$/m
+const COMMENT_EVERY = 3600e3 // at most one change comment per item per hour
+const NOW = Date.now(), now = new Date(NOW).toISOString()
+const SELF = projectName()
+
+/** Ids, counters and times out, so the same problem keeps the same text. */
+const norm = (s) => String(s).replace(/\d{4}-\d\d-\d\d[T ][\d:.]+Z?/g, '<time>').replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4,12})+\b/gi, '<id>')
+  .replace(/\b[0-9a-f]{12,}\b/gi, '<id>').replace(/\d+/g, '#').replace(/\s+/g, ' ').trim()
+const run = (cmd, args, t = 60000) => execFileSync(cmd, args, { encoding: 'utf8', timeout: t, stdio: ['ignore', 'pipe', 'pipe'] })
+const expand = (p) => p.replace(/^~(?=\/|$)/, os.homedir())
+const ms = (t) => Date.parse(t) || 0
+const fence = (s) => `\`\`\`\n${String(s).replaceAll('```', "'''")}\n\`\`\``
+async function bd(method, p, body) {
+  const r = await fetch(`${BD}${p}`, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(10000) })
+  if (!r.ok) throw new Error(`${method} ${p}: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`)
+  return r.json().catch(() => ({}))
+}
+
+const state = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } })()
+for (const k of ['muted', 'errors', 'notes', 'said']) state[k] ||= {}
+
+// ---------- sources: each returns [{ prefix, sticky?, problems: [{ key, title, priority, body, note }] }] or throws ----------
+function brain() {
+  const bin = path.join(BRAIN, 'bin', 'brain')
+  const out = fs.existsSync(bin) ? run(bin, ['status'], 120000) : ''
+  const alerts = [...out.matchAll(/^\[brain\] ALERT (.+)$/gm)].map(([, text]) => ({
+    key: `alert:${norm(text).slice(0, 120)}`, priority: 1, title: `Alert: ${text.slice(0, 100)}`, note: text,
+    body: `\`bin/brain status\` reports:\n\n> ALERT ${text}\n\nSee \`bin/brain status\` and the snapshot. This item closes itself when the alert is gone.` }))
+  const drift = []
+  const m = /^\[brain\] last drift \(([^)]+)\): (.*)$/m.exec(out)
+  if (m && state.drift === undefined) state.drift = m[1] // first run: record, no item for drift from before the sentinel
+  else if (m && m[1] !== state.drift) {
+    state.drift = m[1]
+    drift.push({ key: 'drift', priority: 2, title: 'Drift: the machine changed outside a migration', note: `${m[1]}: ${m[2]}`,
+      body: `The snapshot at ${m[1]} differs from the one before it:\n\n${fence(m[2].split('; ').join('\n'))}\n\nCheck it was intended (a migration, an update) and record it, or put it back. Later drift is added here as comments; close this item when it is accounted for.` })
+  }
+  return [{ prefix: 'alert:', problems: alerts }, { prefix: 'drift', sticky: true, problems: drift }]
+}
+
+/** Last part of a file: enough for the last run of every job. */
+function tail(file, bytes = 64 * 1024) {
+  const fd = fs.openSync(file, 'r')
+  try { const size = fs.fstatSync(fd).size, n = Math.min(size, bytes), b = Buffer.alloc(n); fs.readSync(fd, b, 0, n, size - n); return b.toString('utf8') } finally { fs.closeSync(fd) }
+}
+function cron() {
+  const problems = []
+  for (const p of JSON.parse(run(MM, ['ls', '-o', 'json']))) {
+    const project = p.project, log = path.join(expand(p.root), '.run', 'logs', 'cron.log')
+    if (!fs.existsSync(log)) continue
+    const last = {}
+    for (const line of tail(log).split('\n')) { try { const r = JSON.parse(line); if (r.job) last[r.job] = r } catch {} }
+    for (const [job, r] of Object.entries(last)) {
+      if (!r.exit_code || (project === SELF && job === 'sentinel') || ignored(`${project}/${job}`, r.msg)) continue // own runs: board down = health's
+      problems.push({ key: `cron:${project}/${job}`, priority: 1, title: `${project}: scheduled job ${job} failed`, note: norm(r.msg),
+        body: `The last run of \`${job}\` in **${project}** failed at ${r.time} (exit ${r.exit_code}):\n\n${fence(String(r.msg).slice(0, 1500))}\n\nLog: \`${log.replace(os.homedir(), '~')}\`, or \`mm obs logs 'project:"${project}" service:cron'\`. This item closes itself after the next good run.` })
+    }
+  }
+  return [{ prefix: 'cron:', problems }]
+}
+
+function errors() {
+  const rows = JSON.parse(run(MM, ['obs', 'errors', '--by', 'service', '--since', '15m', '-o', 'json']))
+  const seen = {}
+  for (const r of rows) {
+    const id = `${r.project}/${r.service}`
+    if ((r.kind === 'log' && r.service === 'cron') || id === `${SELF}/sentinel` || ignored(id)) continue // cron: its own source
+    const fps = (r.sample || []).filter((m) => !ignored(m)).map((m) => norm(m).slice(0, 200))
+    if (r.sample?.length && !fps.length) continue // every sample ignored
+    const s = (seen[id] ||= { n: 0, last: 0, fps: new Set() })
+    s.n += r.n; s.last = Math.max(s.last, ms(r.last)); fps.forEach((f) => s.fps.add(f))
+  }
+  const problems = [], onBoard = Object.keys(open).filter((k) => k.startsWith('errors:')).map((k) => k.slice(7))
+  for (const id of new Set([...Object.keys(seen), ...Object.keys(state.errors), ...onBoard])) {
+    const st = (state.errors[id] ||= { streak: 0, quiet: 0, last: 0, fps: [], open: onBoard.includes(id) }), s = seen[id]
+    if (s && s.last > st.last) { st.streak += 1; st.quiet = 0; st.last = s.last; st.fps = [...new Set([...st.fps, ...s.fps])].slice(0, 20) }
+    else { st.streak = 0; st.quiet += 1 }
+    if (st.quiet >= QUIET || (!st.open && st.streak === 0)) { delete state.errors[id]; continue } // cleared, or a blip that passed
+    if (!st.open && st.streak < STREAK) continue
+    st.open = true
+    const project = id.split('/')[0]
+    problems.push({ key: `errors:${id}`, priority: 2, title: `${id} keeps logging errors`, note: st.fps.slice().sort().join('\n'),
+      body: `**${id}** logged errors or failed operations on ${STREAK} checks in a row (every 5 min); last at ${new Date(st.last).toISOString()}. What it says (ids and numbers replaced):\n\n${fence(st.fps.join('\n'))}\n\nLook: \`mm obs errors -p ${project} --since 1h\`, \`mm obs logs 'project:"${project}" level:error'\`. If the cause is inside a project, file it on that project's board (\`project-item\`). This item closes itself after ${QUIET * 5} min without errors.` })
+  }
+  return [{ prefix: 'errors:', problems }]
+}
+
+function obs() {
+  try { run(MM, ['obs', 'status'], 30000); return [{ prefix: 'obs:', problems: [] }] } catch (e) {
+    if (typeof e.status !== 'number') throw e // mm did not run at all
+    return [{ prefix: 'obs:', problems: [{ key: 'obs:stack', priority: 1, title: 'Observability stores are down', note: 'down',
+      body: `\`mm obs status\` failed:\n\n${fence(String(e.stdout || e.stderr || '').slice(0, 1200))}\n\nUntil they answer, error-based incidents are not raised. Check \`mm obs status\` and the process manager (namespace mm). This item closes itself when they are back.` }] }]
+  }
+}
+
+// ---------- reconcile with the board ----------
+const open = {} // key -> item (the board is the truth)
+for (const it of (await bd('GET', '/v0/beads/issues?label=sentinel&limit=500')).items || []) {
+  const k = KEY_LINE.exec(it.description || '')?.[1]
+  if (k && it.status !== 'closed') open[k] = it
+}
+const results = [], failed = []
+for (const [name, fn] of Object.entries({ brain, cron, errors, obs })) {
+  try { results.push(...fn()) } catch (e) { failed.push({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) }) }
+}
+results.push({ prefix: 'sentinel:', problems: failed.map((f) => ({ key: `sentinel:${f.name}`, priority: 2, title: `Sentinel cannot read its ${f.name} source`, note: norm(f.err),
+  body: `The sentinel could not read **${f.name}**:\n\n${fence(f.err)}\n\nThat source's items are left as they are until it reads again; then this item closes itself.` })) })
+
+let opened = 0, updated = 0, closed = 0
+for (const src of results) {
+  const present = new Map(src.problems.map((p) => [p.key, p]))
+  for (const p of present.values()) {
+    const it = open[p.key]
+    if (it) { // open: comment what changed (events always; conditions at most hourly)
+      if (state.notes[p.key] === undefined && !src.sticky) { state.notes[p.key] = p.note; state.said[p.key] = NOW; continue } // state lost: adopt
+      if (state.notes[p.key] !== p.note && (src.sticky || NOW - (state.said[p.key] || 0) >= COMMENT_EVERY)) {
+        await bd('POST', `/v0/beads/issues/${it.id}/comments`, { author: ACTOR, text: `${src.sticky ? 'More' : 'Changed'} at ${now}:\n\n${fence(String(p.note).slice(0, 1500))}` })
+        state.notes[p.key] = p.note; state.said[p.key] = NOW; updated++
+      }
+      continue
+    }
+    if (!src.sticky) {
+      if (state.muted[p.key]) continue
+      if (state.notes[p.key] !== undefined) { state.muted[p.key] = now; console.log(`${p.key}: closed by someone while still there; quiet until it clears`); continue }
+    }
+    const r = await bd('POST', '/v0/beads/issues', { title: p.title, issue_type: 'bug', priority: p.priority, assignee: ASSIGNEE, labels: ['incident', 'act:incident', 'sentinel'],
+      actor: ACTOR, owner: ACTOR, description: `${p.body}\n\nsentinel key: \`${p.key}\`` })
+    if (r.id) { state.notes[p.key] = p.note; state.said[p.key] = NOW; opened++; console.log(`${p.key}: opened ${r.id}`) }
+  }
+  // gone, from a source that read fine: close (conditions) or forget (events, once closed)
+  for (const k of new Set([...Object.keys(open), ...Object.keys(state.notes), ...Object.keys(state.muted)])) {
+    if (!k.startsWith(src.prefix) || present.has(k)) continue
+    if (src.sticky) { if (!open[k]) { delete state.notes[k]; delete state.said[k] } continue }
+    if (open[k]) {
+      await bd('POST', `/v0/beads/issues/${open[k].id}/comments`, { author: ACTOR, text: `Cleared at ${now}: the sentinel no longer sees it.` })
+      await bd('POST', `/v0/beads/issues/${open[k].id}:close`, { actor: ACTOR, reason: 'cleared (sentinel)' })
+      closed++; console.log(`${k}: cleared; closed ${open[k].id}`)
+    }
+    delete state.notes[k]; delete state.muted[k]; delete state.said[k]
+  }
+}
+
+fs.writeFileSync(STATE, JSON.stringify(state, null, 1))
+// a failed source is on the board (sentinel:<source>); exit 0 so it is not reported twice
+console.log(`sentinel: ${Object.keys(open).length + opened - closed} open, ${opened} opened, ${updated} updated, ${closed} closed${failed.length ? `; could not read: ${failed.map((f) => `${f.name} (${f.err.slice(0, 120)})`).join(', ')}` : ''}`)

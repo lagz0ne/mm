@@ -1,0 +1,25 @@
+#!/usr/bin/env node
+// project-item — the system's one way into a project: file an item on that project's own board (never edit its files).
+//   project-item <project> "title" [-d "description"] [--assignee setup|<role>] [-t task|bug|feature] [-p 0-4]
+// <project> is a project id or <client>/<name> (see `mm ls`). The item is labelled from-system and authored by
+// system/<your role>, so the project's leads see who asked. Prints the new item id.
+import { execFileSync } from 'node:child_process'
+import path from 'node:path'
+import { cli } from './lib/obs.mjs'
+
+cli('project-item')
+const [ref, title, ...rest] = process.argv.slice(2)
+if (!ref || !title) { console.error('usage: project-item <project> "title" [-d desc] [--assignee role] [-t type] [-p prio]'); process.exit(2) }
+const opt = (k, d) => { const i = rest.indexOf(k); return i >= 0 ? rest[i + 1] : d }
+let root
+try { root = JSON.parse(execFileSync('mm', ['inspect', ref, '-o', 'json'], { encoding: 'utf8' }))[0].root } catch (e) {
+  console.error(`project-item: no project ${ref} (${String(e.message).split('\n')[0]})`); process.exit(1)
+}
+const self = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+if (path.resolve(root) === self) { console.error('project-item: that is this board; use bd create'); process.exit(2) }
+const role = (process.cwd().match(/\/leads\/([\w-]+)/) || [])[1] || 'human'
+const args = ['create', title, '-d', opt('-d', ''), '-t', opt('-t', 'task'), '-p', opt('-p', '2'), '--actor', `system/${role}`, '--json']
+const who = opt('--assignee'); if (who) args.push('--assignee', who)
+const out = JSON.parse(execFileSync(path.join(root, 'bin', 'bd'), args, { cwd: root, encoding: 'utf8' }))
+execFileSync(path.join(root, 'bin', 'bd'), ['label', 'add', out.id, 'from-system', '--actor', `system/${role}`], { cwd: root, stdio: 'ignore' })
+console.log(`${out.id} on ${ref}`)

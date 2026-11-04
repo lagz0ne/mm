@@ -1,0 +1,5 @@
+{
+  "_doc": "Profile 'system': the machine's own board and leads (ops, review, platform, setup), made by `mm system init` in ~/brain/system. Overlays this folder on the base template and drops the product parts below.",
+  "omit": ["leads/requirement/", "leads/design/", "leads/code/", "leads/qa/", "leads/architecture/", "leads/ops/", "worktrees/",
+           "bin/land", "bin/deploy", "bin/wt", "ops/land-check"]
+}

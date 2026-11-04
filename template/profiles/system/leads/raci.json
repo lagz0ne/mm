@@ -1,0 +1,84 @@
+{
+  "activities": [
+    {
+      "id": "t1-change",
+      "title": "T1 machine change (reversible, local)",
+      "raci": {
+        "ops": "R",
+        "human": "A",
+        "review": "I",
+        "platform": "I"
+      }
+    },
+    {
+      "id": "t2-change",
+      "title": "T2 machine change (access, network, firewall, exposure, harness, promote --approved)",
+      "raci": {
+        "ops": "R",
+        "review": "C",
+        "human": "A",
+        "platform": "I"
+      }
+    },
+    {
+      "id": "incident",
+      "title": "Incidents and alerts",
+      "raci": {
+        "ops": "R",
+        "review": "I",
+        "human": "A",
+        "platform": "C"
+      }
+    },
+    {
+      "id": "posture",
+      "title": "Security posture and audit",
+      "raci": {
+        "review": "R",
+        "ops": "C",
+        "human": "A",
+        "platform": "I"
+      }
+    },
+    {
+      "id": "mm-release",
+      "title": "mm template and releases",
+      "raci": {
+        "platform": "R",
+        "review": "C",
+        "human": "A",
+        "ops": "I"
+      }
+    },
+    {
+      "id": "project-rollout",
+      "title": "mm update of projects",
+      "raci": {
+        "platform": "R",
+        "ops": "C",
+        "human": "A",
+        "review": "I"
+      }
+    },
+    {
+      "id": "project-governance",
+      "title": "Items for projects (on their own boards)",
+      "raci": {
+        "platform": "R",
+        "ops": "C",
+        "human": "A",
+        "review": "I"
+      }
+    },
+    {
+      "id": "sync",
+      "title": "mastermind sync and pushes",
+      "raci": {
+        "ops": "R",
+        "review": "C",
+        "human": "A",
+        "platform": "I"
+      }
+    }
+  ]
+}
