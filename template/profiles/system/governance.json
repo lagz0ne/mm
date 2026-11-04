@@ -49,6 +49,8 @@
     "Bash(*--no-verify*)",
     "Bash(git push*)",
     "Bash(mm fill*)",
+    "Bash(paseo permit allow*)",
+    "Bash(paseo permit deny*)",
     "mcp__paseo__archive_agent",
     "mcp__paseo__archive_workspace",
     "mcp__paseo__cancel_agent",
