@@ -160,6 +160,16 @@ for (const u of ASSISTANTS) {
   if (fs.existsSync(f)) { try { const deny = new Set(JSON.parse(fs.readFileSync(f, 'utf8')).permissions?.deny || []); for (const d of ASSIST_DENY) if (!deny.has(d)) bad(`${who}: settings.json lost the deny ${d}`) } catch { bad(`${who}: settings.json is not valid JSON`) } }
   else if (u !== '_template') bad(`${who}: missing .claude/settings.json (config-check --render)`)
 }
+// Project memory (memory/*.md): each file says what it is (frontmatter name + description, like the brain's);
+// verified / ttl_days, when given, must be a date and a number of days, so old facts can expire.
+const MEM = path.join(P, 'memory')
+for (const f of fs.existsSync(MEM) ? fs.readdirSync(MEM).filter((x) => x.endsWith('.md') && !['MEMORY.md', 'README.md'].includes(x)) : []) {
+  const head = /^---\n([\s\S]*?)\n---/.exec(fs.readFileSync(path.join(MEM, f), 'utf8'))
+  if (!head || !/^name:\s*\S/m.test(head[1]) || !/^description:\s*\S/m.test(head[1])) { bad(`memory/${f}: needs frontmatter with name and description`); continue }
+  const v = /^\s*verified:\s*(\S+)/m.exec(head[1]), t = /^\s*ttl_days:\s*(\S+)/m.exec(head[1])
+  if (v && !/^\d{4}-\d\d-\d\d$/.test(v[1])) bad(`memory/${f}: verified must be a date (YYYY-MM-DD)`)
+  if (t && !/^\d+$/.test(t[1])) bad(`memory/${f}: ttl_days must be a number of days`)
+}
 // Personas: cosmetic, but names must keep their role's initial and colors must be valid.
 const pf = path.join(P, 'leads', 'personas.json')
 if (fs.existsSync(pf)) {

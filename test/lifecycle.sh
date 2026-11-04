@@ -126,6 +126,17 @@ lead_env() { for _ in $(seq 1 60); do for p in $(pgrep -x claude 2>/dev/null); d
 LE=$(lead_env); [ "$LE" = "CLAUDE_CONFIG_DIR=$CDIR" ] && ok "the lead's Claude process has CLAUDE_CONFIG_DIR=$CDIR" || bad "the lead's CLAUDE_CONFIG_DIR: ${LE:-none found}"
 check "its session is in the project's folder, not ~/.claude" sh -c "for _ in \$(seq 1 30); do ls '$CDIR/projects' 2>/dev/null | grep -q 'leads-qa' && exit 0; sleep 1; done; exit 1"
 
+step "the project's memory: in its own repo, linked from each agent's Claude folder"
+MLINK="$CDIR/projects/$(printf '%s' "$LDIR" | sed 's/[^A-Za-z0-9]/-/g')/memory"
+check "the lead's Claude memory folder links to the project's memory/" sh -c "[ \"\$(readlink '$MLINK')\" = '$ROOT/memory' ]"
+printf -- '---\nname: qa-probe\ndescription: a fact the lifecycle test writes through the link\nmetadata:\n  type: project\n  verified: 2026-11-04\n  ttl_days: 30\n---\nlifecycle probe\n' >"$MLINK/qa-probe.md"
+check "a memory written through the link lands in the project's repo folder" test -f "$ROOT/memory/qa-probe.md"
+check "config-check accepts a well-formed memory" sh -c "cd '$ROOT' && bin/config-check"
+printf -- '---\nname: bad\n---\nno description\n' >"$ROOT/memory/qa-bad.md"
+check "config-check refuses one without a description" sh -c "! (cd '$ROOT' && bin/config-check)"
+rm -f "$ROOT/memory/qa-bad.md"
+check "memory/ is tracked by the project's config repo" sh -c "cd '$ROOT' && git add memory/qa-probe.md && git -c user.name=qa -c user.email=qa@qa commit -qm 'qa: memory probe' && git ls-files memory | grep -q qa-probe.md"
+
 step "archive: dry run, then clean removal"
 check "dry run" mm archive "$REF" --dry-run
 check "dry run changed nothing" test -d "$ROOT"
@@ -150,6 +161,7 @@ mm restore "$TB" >/dev/null 2>&1; rc=$?
 check "ready after restore" wait_ready 3 90
 check "board answers" board
 check "item survived archive + restore" item_there
+check "the memory survived archive + restore" test -f "$ROOT/memory/qa-probe.md"
 [ -n "$PUB" ] && check "public route back" sh -c "expose ls | grep -q '$PUB'"
 check "update state intact (no-op)" sh -c "mm update '$REF' | grep -q 'already at'"
 

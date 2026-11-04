@@ -7,7 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { dirs, projectName } from './svc.mjs'
+import { ROOT, dirs, projectName } from './svc.mjs'
 
 export function configDir(project = projectName()) {
   const d = path.join(dirs().mm, 'claude', project)
@@ -20,10 +20,27 @@ export function trust(paths, project = projectName()) {
   let j = {}
   try { j = JSON.parse(fs.readFileSync(f, 'utf8')) } catch {}
   j.projects ||= {}
-  for (const p of paths) { const a = path.resolve(p); j.projects[a] = { ...(j.projects[a] || {}), hasTrustDialogAccepted: true } }
+  for (const p of paths) { const a = path.resolve(p); j.projects[a] = { ...(j.projects[a] || {}), hasTrustDialogAccepted: true }; linkMemory(d, a) }
   const t = `${f}.tmp-${process.pid}`
   fs.writeFileSync(t, JSON.stringify(j, null, 1), { mode: 0o600 }); fs.renameSync(t, f)
   return d
+}
+/**
+ * What an agent learns lives in the project's own memory/ (its config repo: versioned, backed up, restored with it).
+ * Claude keeps a folder's memory in <config>/projects/<the folder's path, / as ->/memory: that becomes a link to it.
+ * A real folder already there is moved in first (a name clash keeps both), never deleted.
+ */
+export function linkMemory(d, folder, mem = path.join(ROOT, 'memory')) {
+  fs.mkdirSync(mem, { recursive: true })
+  const at = path.join(d, 'projects', folder.replace(/[^A-Za-z0-9]/g, '-'), 'memory')
+  fs.mkdirSync(path.dirname(at), { recursive: true, mode: 0o700 })
+  let st = null; try { st = fs.lstatSync(at) } catch {}
+  if (st?.isSymbolicLink()) { if (fs.readlinkSync(at) === mem) return; fs.unlinkSync(at) }
+  else if (st?.isDirectory()) {
+    for (const f of fs.readdirSync(at)) { let to = path.join(mem, f); if (fs.existsSync(to)) to = path.join(mem, `${path.parse(f).name}.from-${path.basename(folder)}${path.parse(f).ext}`); fs.renameSync(path.join(at, f), to) }
+    fs.rmdirSync(at)
+  }
+  fs.symlinkSync(mem, at)
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
