@@ -11,6 +11,7 @@ import { manifest } from './manifest'
 import { onboard } from './onboard'
 import { archive, restore, update } from './lifecycle'
 import { cron } from './cron'
+import * as vaultMod from './vault'
 import { AUTH_SOCK, callApi, serve as authServe } from './auth'
 import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
 import { findRoot, listProjects, namespaceOp, newProject, processes, resolve, up } from './project'
@@ -202,6 +203,25 @@ auth.command('sessions').description('who is signed in where').action(() => auth
 
 program.command('cron').description('(run by mm-pc) run every project\'s schedules (health, backup, ...)').action(async () => { await cron() })
 program.command('ship').description('(run by mm-pc) ship service log files to VictoriaLogs').action(async () => { await ship() })
+
+const vaultCmd = program.command('vault').description('sealed secrets (age): two keys, opened only into memory-backed files at start (docs/vault.md)')
+vaultCmd.command('init').description("make this machine's vault key and record the human's recovery PUBLIC key (age1…)")
+  .requiredOption('--recovery <age1…>', "the recovery key's public half (keep its secret half offline)")
+  .action((o) => { try { const r = vaultMod.init(o.recovery); console.log(`vault ready: sealed to this machine (${r.machine.slice(0, 16)}…) and the recovery key (${r.recovery.slice(0, 16)}…). Keep the recovery key's secret half offline.`) } catch (e) { console.error(`mm vault: ${(e as Error).message}`); process.exit(1) } })
+vaultCmd.command('ls').description('what is sealed (names, sizes, digests; never a value)').action(() => { const o = fmt(); print(vaultMod.list() as unknown as Record<string, unknown>[], o) })
+vaultCmd.command('check').description('modes and digests (doctor runs it too)').action(() => { const r = vaultMod.check(); for (const x of r) console.log(`${x.ok ? 'ok  ' : 'FAIL'} ${x.detail}`); process.exit(r.every((x) => x.ok) ? 0 : 1) })
+vaultCmd.command('run <project> <names> [cmd...]').description('(used by mm up) open the named secrets for <project>, then run cmd with <NAME>_FILE set')
+  .action(async (project: string, names: string, cmd: string[]) => {
+    try {
+      const list = names.split(',').filter(Boolean)
+      const files = vaultMod.openFor(project, list.map((n) => vaultMod.projectSecretName(project, n)))
+      const env: Record<string, string> = { ...process.env as Record<string, string> }
+      list.forEach((n) => { env[`${n.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_FILE`] = files[vaultMod.projectSecretName(project, n)] })
+      const p = Bun.spawn(cmd, { env, stdio: ['inherit', 'inherit', 'inherit'] })
+      for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(sig, () => p.kill(sig))
+      process.exit(await p.exited)
+    } catch (e) { console.error(`mm vault run: ${(e as Error).message}`); process.exit(1) }
+  })
 
 const obs = program.command('obs').description('observability: the Victoria stack (metrics, logs, traces) and what it saw')
 obs.command('status').description('are the stores up; what came in during the last hour').action(async () => {

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { getPath, loadConfig } from './config'
-import { DIRS, engineDirs, HOME, run, toolPath } from './env'
+import { DIRS, engineDirs, HOME, run, toolPath, which } from './env'
 import { obsEndpoints } from './obs'
 import { publicKeyPem } from './auth'
 import { pcRunning, writeBase } from './pc'
@@ -132,7 +132,7 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
 }
 
 // ---------- services.yaml -> process-compose project file + .run/ ----------
-type Svc = { about?: string; command: string; workdir?: string; env?: Record<string, string>; port?: 'http' | 'internal' | 'none'
+type Svc = { about?: string; command: string; secrets?: string[]; workdir?: string; env?: Record<string, string>; port?: 'http' | 'internal' | 'none'
   public?: { name: string; auth: string }; depends_on?: Record<string, string>; ready?: { http?: string; socket?: string }; restart?: string; optional?: boolean }
 
 /** Does this board's server have the gateway-checked public side (BOARD_PUBLIC_PORT)? Older templates don't. */
@@ -187,6 +187,8 @@ export function up(root: string): Step[] {
   for (const [n, s] of Object.entries(services)) {
     let cmd = s.command.replaceAll('$PORT', '$$$$PORT') // keep $PORT for the service's shell (process-compose would expand it)
     // the service dies with its wrapper (portless): no orphan keeps the port after a crash or kill
+    // secrets the service declares: opened at every start (the runtime folder is memory-backed: gone after a reboot)
+    if (s.secrets?.length) cmd = `${which('mm') || join(DIRS.bin, 'mm')} vault run ${a.project} ${s.secrets.join(',')} -- sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
     if (s.port === 'http') cmd = `portless ${n}.${a.project} ${pdeath}sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
     const probe = s.ready?.http ? { exec: { command: `curl -sf -o /dev/null --max-time 3 ${s.url}${s.ready.http}` } }
       : s.ready?.socket ? { exec: { command: `test -S ${socket}` } } : undefined

@@ -7,12 +7,13 @@ import { basename, dirname, join } from 'node:path'
 import { type Config, getPath, loadConfig, saveConfig, setPath, when } from './config'
 import { HOME, run } from './env'
 import { manifest } from './manifest'
+import * as vault from './vault'
 
 export interface Input {
   kind: 'var' | 'secret' | 'account'
   for?: string; how?: string; when?: string; required?: boolean
   ask?: string; default?: string; choices?: string[]; config?: string // var
-  path?: string; managed_by?: string                                    // secret
+  path?: string; managed_by?: string; vault?: boolean                   // secret (vault: sealed once the vault exists)
   check?: string[]                                                     // account: exit 0 = there
 }
 export type Status = 'missing' | 'filled' | 'sealed' | 'managed' | 'unchecked' | 'bad' | 'n/a'
@@ -65,9 +66,10 @@ export function projectNeeds(project: string, root: string): Need[] {
   const out: Need[] = []
   for (const [list, required] of [[s.required || [], true], [s.optional || [], false]] as const)
     for (const x of list) {
-      const f = secretFile(join(root, 'secrets', x.name))
+      const vn = vault.projectSecretName(project, x.name), inVault = x.secret !== false && vault.sealed(vn)
+      const f = inVault ? { status: 'sealed' as Status, detail: `vault/${vn}.age` } : secretFile(join(root, 'secrets', x.name))
       out.push({ scope: project, name: x.name, kind: x.secret === false ? 'var' : 'secret', status: f.status, required, for: [x.for, x.about].filter(Boolean).join(': '),
-        how: x.how || '', fill: f.status === 'filled' ? '' : `mm fill ${project}:${x.name}`, detail: f.detail })
+        how: x.how || '', fill: f.status === 'filled' || f.status === 'sealed' ? '' : `mm fill ${project}:${x.name}`, detail: f.detail })
     }
   return out
 }
@@ -145,13 +147,17 @@ export async function fill(name: string, value: string | undefined, o: FillOpts,
 
   if (value !== undefined) throw new Error(`a secret is never given on the command line (it would stay in your shell history): use --from <file>, a pipe, or run it in a terminal`)
   const path = target.path!
-  if (existsSync(path) && !o.replace) throw new Error(`${target.label} is already filled (${tilde(path)}); pass --replace to overwrite it`)
+  const vn = m ? vault.projectSecretName(m[1], m[2]) : target.input?.vault ? name : null
+  const toVault = !!vn && vault.ready()
+  if (!toVault && existsSync(path) && !o.replace) throw new Error(`${target.label} is already filled (${tilde(path)}); pass --replace to overwrite it`)
+  if (toVault && vault.sealed(vn!) && !o.replace) throw new Error(`${target.label} is already sealed; pass --replace to reseal it`)
   let v: string
   if (o.from) v = readFileSync(expand(o.from), 'utf8')
   else if (process.stdin.isTTY) v = await readHidden(`${target.label} (input hidden): `)
   else v = await readAll()
   if (!o.from) v = v.replace(/\r?\n$/, '') // a typed or piped line; a file is kept byte for byte (keys)
   if (!v.trim()) throw new Error('empty value: nothing written')
+  if (toVault) { vault.seal(vn!, Buffer.from(v)); return `${target.label} sealed (vault/${vn}.age, to the machine key and the recovery key). Services that declare it get it at their next start.` }
   writeSecret(path, v)
   const used = target.input?.for ? `; used by ${target.input.for}` : ''
   return `${target.label} filled (${tilde(path)}, mode 600)${used}. Restart what uses it to pick it up.`
