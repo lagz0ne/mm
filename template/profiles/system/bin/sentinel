@@ -4,6 +4,7 @@
 //   conditions (open while present; the sentinel closes them when gone):
 //     alert:<text>                `bin/brain status` ALERT lines (the brain: where mm says)      P1
 //     cron:<project>/<job>        the last run of a scheduled job failed (<project root>/.run/logs/cron.log)  P1
+//     (throwaway test projects, `mm new --throwaway`, and projects mm no longer lists raise nothing)
 //     errors:<project>/<service>  new error logs or failed spans on N checks in a row (`mm obs errors`)       P2
 //     obs:stack                   the observability stores are down (`mm obs status`)                         P1
 //     sentinel:<source>           the sentinel could not read a source (that source's items are left as they are)
@@ -77,9 +78,21 @@ function tail(file, bytes = 64 * 1024) {
   const fd = fs.openSync(file, 'r')
   try { const size = fs.fstatSync(fd).size, n = Math.min(size, bytes), b = Buffer.alloc(n); fs.readSync(fd, b, 0, n, size - n); return b.toString('utf8') } finally { fs.closeSync(fd) }
 }
+// The machine's projects (mm ls), once per run. Throwaway test projects (mm new --throwaway) raise nothing, and
+// neither do projects mm no longer lists (an archived throwaway's errors linger in the logs for a while), apart
+// from mm itself and this board.
+let listedCache = null
+const listed = () => (listedCache ||= JSON.parse(run(MM, ['ls', '-o', 'json'])))
+const quiet = (project) => {
+  let all; try { all = listed() } catch { return false } // no list: report everything rather than nothing
+  const p = all.find((x) => x.project === project)
+  return p ? !!p.throwaway : project !== 'mm' && project !== SELF
+}
+
 function cron() {
   const problems = []
-  for (const p of JSON.parse(run(MM, ['ls', '-o', 'json']))) {
+  for (const p of listed()) {
+    if (p.throwaway) continue
     const project = p.project, log = path.join(expand(p.root), '.run', 'logs', 'cron.log')
     if (!fs.existsSync(log)) continue
     const last = {}
@@ -98,7 +111,7 @@ function errors() {
   const seen = {}
   for (const r of rows) {
     const id = `${r.project}/${r.service}`
-    if ((r.kind === 'log' && r.service === 'cron') || id === `${SELF}/sentinel` || ignored(id)) continue // cron: its own source
+    if ((r.kind === 'log' && r.service === 'cron') || id === `${SELF}/sentinel` || ignored(id) || quiet(r.project)) continue // cron: its own source
     const fps = (r.sample || []).filter((m) => !ignored(m)).map((m) => norm(m).slice(0, 200))
     if (r.sample?.length && !fps.length) continue // every sample ignored
     const s = (seen[id] ||= { n: 0, last: 0, fps: new Set() })

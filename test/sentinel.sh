@@ -21,7 +21,7 @@ W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 ARCH_BEFORE=$(ls "$HOME/.local/share/mm/archive" 2>/dev/null)
 
 step "a throwaway board"
-MM_TEMPLATE_DIR="$SRC/template" mm new "$REF" --short qs >"$W/new.log" 2>&1 && ok "mm new" || { bad "mm new"; tail -20 "$W/new.log"; exit 1; }
+MM_TEMPLATE_DIR="$SRC/template" mm new "$REF" --short qs --throwaway >"$W/new.log" 2>&1 && ok "mm new" || { bad "mm new"; tail -20 "$W/new.log"; exit 1; }
 export SVC_URL_BD_SERVE="http://bd-serve.$PROJECT.localhost:1355"
 for _ in $(seq 1 60); do curl -sf -o /dev/null "$SVC_URL_BD_SERVE/healthz" && break; sleep 1; done
 check "bd-serve answers" curl -sf -o /dev/null "$SVC_URL_BD_SERVE/healthz"
@@ -44,14 +44,16 @@ case "\$1 \$2" in
 esac
 EOF
 chmod +x "$W/brain/bin/brain" "$W/mm"
-echo "[{\"project\":\"p1\",\"root\":\"$W/p1\"},{\"project\":\"sysqa\",\"root\":\"$SYS\"}]" >"$W/ls.json"
+mkdir -p "$W/p2/.run/logs"   # p2: a throwaway test project whose backup fails; it must raise nothing
+printf '{"time":"%s","msg":"backup failed (exit 1)","job":"backup","exit_code":1}\n' "$(date -u +%FT%TZ)" >"$W/p2/.run/logs/cron.log"
+echo "[{\"project\":\"p1\",\"root\":\"$W/p1\"},{\"project\":\"p2\",\"root\":\"$W/p2\",\"throwaway\":true},{\"project\":\"sysqa\",\"root\":\"$SYS\"}]" >"$W/ls.json"
 echo 0 >"$W/obs.rc"
 export MM_BIN="$W/mm" MM_PROJECT=sysqa MM_OBS_TRACES="" MM_OBS_METRICS="" MM_BRAIN="$W/brain"   # mm tells engine scripts where the brain is
 sentinel() { node "$SYS/bin/sentinel" >>"$W/run.log" 2>&1; }
 status() { printf '[brain] score 3\n' >"$W/status.txt"; for l in "$@"; do printf '[brain] %s\n' "$l" >>"$W/status.txt"; done; }
 cronlog() { printf '{"time":"%s","msg":"%s","job":"%s","exit_code":%s}\n' "$(date -u +%FT%TZ)" "$3" "$1" "$2" >>"$W/p1/.run/logs/cron.log"; }
 errs() { local t; t=$(date -u -d "@$(( $(date +%s) - ${1:-0} ))" +%FT%T.000Z)
-  echo "[{\"kind\":\"log\",\"project\":\"p1\",\"service\":\"board\",\"n\":4,\"last\":\"$t\",\"sample\":[\"Error: request 4f1a2b3c-1111-2222 failed after 120ms\"]},{\"kind\":\"log\",\"project\":\"p1\",\"service\":\"cron\",\"n\":1,\"last\":\"$t\",\"sample\":[\"backup failed\"]}]" >"$W/errors.json"; }
+  echo "[{\"kind\":\"log\",\"project\":\"p1\",\"service\":\"board\",\"n\":4,\"last\":\"$t\",\"sample\":[\"Error: request 4f1a2b3c-1111-2222 failed after 120ms\"]},{\"kind\":\"log\",\"project\":\"p1\",\"service\":\"cron\",\"n\":1,\"last\":\"$t\",\"sample\":[\"backup failed\"]},{\"kind\":\"log\",\"project\":\"p2\",\"service\":\"board\",\"n\":9,\"last\":\"$t\",\"sample\":[\"Error: throwaway\"]},{\"kind\":\"log\",\"project\":\"gone\",\"service\":\"dolt\",\"n\":9,\"last\":\"$t\",\"sample\":[\"Error: archived\"]}]" >"$W/errors.json"; }
 items() { curl -sf "$SVC_URL_BD_SERVE/v0/beads/issues?label=sentinel&limit=500" | jq -r '.items[] | .description | capture("sentinel key: `(?<k>[^`]+)`").k' | sort | tr '\n' ' '; }
 has() { [ "$(items)" = "$1" ]; }
 idof() { curl -sf "$SVC_URL_BD_SERVE/v0/beads/issues?label=sentinel&limit=500" | jq -r --arg k "$1" '.items[] | select(.description | contains("sentinel key: `" + $k + "`")) | .id'; }

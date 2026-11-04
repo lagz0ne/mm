@@ -17,7 +17,7 @@ check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d
 W=$(mktemp -d); SRV=""; trap '[ -n "$SRV" ] && kill $SRV 2>/dev/null; rm -rf "$W"' EXIT
 
 echo "== a throwaway project to file on"
-MM_TEMPLATE_DIR="$SRC/template" mm new "$REF" --short qp >"$W/new.log" 2>&1 && ok "mm new $REF" || { bad "mm new"; tail -20 "$W/new.log"; exit 1; }
+MM_TEMPLATE_DIR="$SRC/template" mm new "$REF" --short qp --throwaway >"$W/new.log" 2>&1 && ok "mm new $REF" || { bad "mm new"; tail -20 "$W/new.log"; exit 1; }
 ROOTP=$(mm inspect "$REF" -o json | jq -r '.[0].root')
 
 echo "== a scratch system board with the machine panel"

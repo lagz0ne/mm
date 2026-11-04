@@ -61,6 +61,9 @@ function shipFiles(): string[] {
   return out
 }
 /** One log line -> one record. Process-compose lines carry {process, message}; engine lines are JSON themselves. */
+/** Lines a tool logs as errors that are not: Dolt's note that a client hung up (every restart and every bd command
+ *  that exits makes one). Shipped as info, so they don't count as errors anywhere (mm obs errors, the sentinel). */
+export const BENIGN = [/Error reading packet from client \d+.*use of closed network connection/, /io\.ReadFull\(header size\) failed/]
 export function toRecord(line: string, file: string): Record<string, unknown> | null {
   if (!line.trim()) return null
   let r: Record<string, unknown>
@@ -84,7 +87,7 @@ export function toRecord(line: string, file: string): Record<string, unknown> | 
     const kv = [...m.matchAll(/(?:^|\s)([a-z_][\w.]*)=("(?:[^"\\]|\\.)*"|\S*)/g)]
     if (kv.length >= 3) for (const [, k, v] of kv) if (!(k in rec)) rec[k] = v.replace(/^"(.*)"$/, '$1')
     const st = Number(rec.status)
-    rec.level = /\b(panic|fatal)\b/i.test(m) || /\blevel=(error|fatal)\b/i.test(m) || /^\s*(error|err)\b[:\s]/i.test(m) || /\b(ERROR|FATAL|Traceback|Unhandled|uncaught)\b/.test(m) || st >= 500 ? 'error'
+    rec.level = BENIGN.some((re) => re.test(m)) ? 'info' : /\b(panic|fatal)\b/i.test(m) || /\blevel=(error|fatal)\b/i.test(m) || /^\s*(error|err)\b[:\s]/i.test(m) || /\b(ERROR|FATAL|Traceback|Unhandled|uncaught)\b/.test(m) || st >= 500 ? 'error'
       : /\blevel=warn/i.test(m) || /\b(WARN|WARNING)\b/.test(m) || /^\s*warn(ing)?\b/i.test(m) ? 'warn' : 'info'
   }
   return rec

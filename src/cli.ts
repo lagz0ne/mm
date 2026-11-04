@@ -102,10 +102,11 @@ program.command('status').description('short machine status').action(() => {
 
 program.command('new <project>').description('stamp a project from the template: <client>/<name>')
   .option('--short <prefix>', 'item id prefix (default: first 2 letters of the name)')
+  .option('--throwaway', 'a short-lived test project (QA): marked in its answers; the system board raises no incidents for it')
   .action(async (ref: string, opts) => {
     const o = fmt()
     try {
-      const { answers, steps } = await newProject(ref, { short: opts.short })
+      const { answers, steps } = await newProject(ref, { short: opts.short, throwaway: !!opts.throwaway })
       if (o.format !== 'table') return console.log(o.format === 'json' ? JSON.stringify({ answers, steps }, null, 2) : Bun.YAML.stringify({ answers, steps }, null, 2))
       print(steps, o)
       const { services } = resolve(answers.root)

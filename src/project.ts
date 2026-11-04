@@ -10,7 +10,7 @@ import { pcRunning, writeBase } from './pc'
 import { renderTo, template, templateCommit } from './template'
 import pkg from '../package.json'
 
-export interface Answers { client: string; name: string; project: string; short: string; root: string; template_version: string; created: string; profile?: string }
+export interface Answers { client: string; name: string; project: string; short: string; root: string; template_version: string; created: string; profile?: string; throwaway?: boolean }
 const ID = /^[a-z][a-z0-9-]{0,30}$/
 export const PROJECTS_PC = join(DIRS.pc, 'projects')
 
@@ -50,7 +50,7 @@ function hashPort(key: string): number {
 
 // ---------- mm new ----------
 type Step = { step: string; status: 'ok' | 'fail'; detail: string }
-export type NewOpts = { short?: string; profile?: string; root?: string; project?: string }
+export type NewOpts = { short?: string; profile?: string; root?: string; project?: string; throwaway?: boolean }
 export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answers: Answers; steps: Step[] }> {
   const { client, name } = parseRef(ref)
   const profile = o.profile || 'project', product = profile === 'project'
@@ -62,7 +62,7 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
   const must = (s: string, r: { ok: boolean; out: string; err: string }) => { if (!r.ok) throw new Error(`${s}: ${(r.err || r.out).trim().split('\n').slice(-3).join(' ')}`); step(s, (r.out.trim().split('\n').pop() || 'done').slice(0, 100)) }
   const answers: Answers = {
     client, name, project: o.project || `${client}-${name}`, short: short || name.replace(/[^a-z]/g, '').slice(0, 2) || 'pj',
-    root, template_version: pkg.version, created: new Date().toISOString(), ...(product ? {} : { profile }),
+    root, template_version: pkg.version, created: new Date().toISOString(), ...(product ? {} : { profile }), ...(o.throwaway ? { throwaway: true } : {}),
   }
   if (!/^[a-z]{1,8}$/.test(answers.short)) throw new Error('short (item id prefix) must be 1-8 letters')
 
@@ -234,12 +234,14 @@ export function processes(project?: string) {
 }
 
 export function listProjects() {
-  const out: { project: string; root: string; processes: string; ready: string }[] = []
+  const out: { project: string; root: string; processes: string; ready: string; throwaway?: boolean }[] = []
   for (const f of existsSync(PROJECTS_PC) ? readdirSync(PROJECTS_PC).filter((x) => x.endsWith('.yaml')) : []) {
     const project = f.replace(/\.yaml$/, '')
     const m = /from (.+)\/services\.yaml/.exec(readFileSync(join(PROJECTS_PC, f), 'utf8'))
     const ps = processes(project)
-    out.push({ project, root: m ? m[1] : '?', processes: `${ps.filter((p) => p.status === 'Running').length}/${ps.length} running`, ready: `${ps.filter((p) => p.is_ready === 'Ready').length} ready` })
+    let throwaway = false // a short-lived test project (mm new --throwaway): the system's sentinel raises nothing for it
+    try { throwaway = !!readAnswers((m ? m[1] : '').replace(/^~(?=\/)/, HOME)).throwaway } catch {}
+    out.push({ project, root: m ? m[1] : '?', processes: `${ps.filter((p) => p.status === 'Running').length}/${ps.length} running`, ready: `${ps.filter((p) => p.is_ready === 'Ready').length} ready`, ...(throwaway ? { throwaway } : {}) })
   }
   return out
 }

@@ -30,11 +30,12 @@ public_port() { jq -r '.services.board.public_port // empty' "$ROOT/.run/service
 mkdir -p "$HOME/.local/share/mm/archive"; ARCH_BEFORE=$(ls "$HOME/.local/share/mm/archive")
 
 step "new from the old template"
-MM_TEMPLATE_DIR=$OLD mm new "$REF" --short ql >/tmp/mm-qa-new.$$ 2>&1; rc=$?
+MM_TEMPLATE_DIR=$OLD mm new "$REF" --short ql --throwaway >/tmp/mm-qa-new.$$ 2>&1; rc=$?
 [ $rc = 0 ] && ok "mm new exit 0" || { bad "mm new exit $rc"; tail -20 /tmp/mm-qa-new.$$; exit 1; }
 rm -f /tmp/mm-qa-new.$$
 check "4 services ready" wait_ready 3 90      # wake has no probe: dolt, bd-serve, board
 check "board answers by name" board
+check "marked throwaway (mm ls)" sh -c "mm ls -o json | jq -e --arg p '$PROJECT' '.[] | select(.project == \$p) | .throwaway == true'"
 check "mm-template branch = baseline" git -C "$ROOT" rev-parse -q --verify refs/heads/mm-template
 PUB=$(public_name); PORT=$(public_port)
 if [ -n "$PUB" ]; then check "public route $PUB listed" sh -c "expose ls | grep -q '$PUB'"; fi
@@ -75,6 +76,7 @@ check "clean tree after update" test -z "$(git -C "$ROOT" status --porcelain --u
 check "services ready after update" wait_ready 3 60
 check "board serves brotli assets" sh -c "curl -sf --max-time 5 -H 'accept-encoding: br' -D- -o /dev/null http://board.$PROJECT.localhost:1355/ | grep -qi 'content-encoding: br'"
 check "item survived the update" item_there
+check "still throwaway after the update" sh -c "mm ls -o json | jq -e --arg p '$PROJECT' '.[] | select(.project == \$p) | .throwaway == true'"
 out=$(mm update "$REF" 2>&1); grep -q 'already at' <<<"$out" && ok "second update is a no-op" || bad "second update: $out"
 check "backup runs (bin/backup)" sh -c "cd '$ROOT' && timeout 300 bin/backup"
 check "health passes (bin/health)" sh -c "cd '$ROOT' && timeout 120 node bin/health"
