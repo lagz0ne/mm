@@ -149,10 +149,32 @@ async function tick() {
   }
 }
 
-async function watch(since) {
+// The event stream can hang without an error (the connection stays open, nothing more arrives). So a poll checks it:
+// if the board has events past the last one the stream delivered, for longer than STALL_MS, the stream is stalled:
+// the poll delivers them (catch-up), logs an error (mm obs and the system's sentinel see it) and the stream reconnects.
+const STALL_MS = Number(process.env.WAKE_STALL_MS || 90000), CHECK_MS = Number(process.env.WAKE_CHECK_MS || 30000)
+let since = 0, stream = null, behind = 0
+const deliver = (e) => { if (!e || (e.seq || 0) <= since) return; since = e.seq; onEvent(e) } // each event once, in order
+
+async function check() {
+  const r = await fetch(new URL(`/v0/beads/events?since=${since}&limit=500`, BD), { minMs: 1000 }).then((x) => x.json())
+  const missed = (r.records || []).filter((e) => (e.seq || 0) > since)
+  if (!missed.length) { behind = 0; return }
+  if (!behind) { behind = Date.now(); return } // may still be on its way through the stream
+  if (Date.now() - behind < STALL_MS) return
+  olog('error', `stream stalled: ${missed.length} event(s) not delivered for ${Math.round((Date.now() - behind) / 1000)}s (from seq ${since}); caught up by polling, reconnecting`,
+    { op: 'wake stall', missed: missed.length, since })
+  count('mm_wake_stalls_total', {})
+  for (const e of missed) deliver(e)
+  behind = 0
+  stream?.abort('stalled')
+}
+
+async function watch() {
   for (;;) {
+    const ac = (stream = new AbortController())
     try {
-      const r = await fetch(new URL(`/v0/beads/events:watch?since=${since}`, BD), { headers: { accept: 'text/event-stream' } })
+      const r = await fetch(new URL(`/v0/beads/events:watch?since=${since}`, BD), { headers: { accept: 'text/event-stream' }, signal: ac.signal })
       const dec = new TextDecoder()
       let buf = ''
       for await (const chunk of r.body) {
@@ -162,15 +184,18 @@ async function watch(since) {
           const frame = buf.slice(0, i); buf = buf.slice(i + 2)
           const data = frame.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('\n')
           if (!data) continue
-          try { const e = JSON.parse(data); since = Math.max(since, e.seq || 0); onEvent(e) } catch {}
+          try { deliver(JSON.parse(data)) } catch {}
         }
       }
-    } catch (e) { log('stream error:', e.message) }
-    await new Promise((r) => setTimeout(r, 3000))
+      if (!ac.signal.aborted) log(`stream ended; reconnecting from seq ${since}`)
+    } catch (e) { if (!ac.signal.aborted) log('stream error:', e.message) }
+    if (ac.signal.aborted) log(`stream reconnecting from seq ${since} (${ac.signal.reason || 'aborted'})`)
+    await new Promise((r) => setTimeout(r, ac.signal.aborted ? 200 : 3000))
   }
 }
 
-const head = await catchUp()
-log(`wake for ${PROJECT}: watching ${BD.href} from seq ${head}`)
+since = await catchUp()
+log(`wake for ${PROJECT}: watching ${BD.href} from seq ${since} (stall check every ${CHECK_MS / 1000}s, after ${STALL_MS / 1000}s)`)
 setInterval(() => tick().catch((e) => log('tick:', e.message)), EVERY)
-watch(head)
+setInterval(() => check().catch((e) => log('stream check failed:', e.message)), CHECK_MS)
+watch()
