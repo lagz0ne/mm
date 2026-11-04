@@ -19,14 +19,13 @@ export interface Tool {
   install?: Install
   needed_by?: string
 }
-export interface Secret { path: string; used_by?: string; managed_by?: string }
+import type { Input } from './inputs'
 export interface Manifest {
   version: number
   machine: {
-    vars: Record<string, { ask?: string; default?: string; choices?: string[]; when?: string }>
+    inputs: Record<string, Input>
     tools: Record<string, Tool>
     paths: Record<string, { path: string; git?: string }>
-    secrets: Secret[]
     services: Record<string, { unit?: string; socket?: string; status?: string }>
   }
   project: Record<string, unknown>

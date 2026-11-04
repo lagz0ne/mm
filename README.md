@@ -23,6 +23,8 @@ answers: `... | sh -s -- onboard --yes --access tailscale`. A given release: `MM
 ```sh
 mm doctor                    # check this machine against the manifest; changes nothing
 mm onboard                   # install and configure what is missing, then doctor
+mm needs                     # every input (answers, secrets, accounts): what is missing and how to get it
+mm fill <name> [--from f]    # fill one; a secret from a file, a pipe or a hidden prompt, never the command line
 mm new acme/shop             # a project in ~/projects/acme/shop, services started
 mm ls | inspect acme/shop    # projects, their services and URLs
 mm up | down | restart acme/shop
@@ -106,6 +108,8 @@ More on the inside of a project: [docs/project-model.md](docs/project-model.md).
 bun install
 bun run build                # packs template/ into the binary: dist/mm
 test/lifecycle.sh <old-template-dir>   # on a real machine: new -> update -> restart -> crash -> archive -> restore
+test/needs-fill.sh           # mm needs / mm fill, hermetic (throwaway HOME)
+test/sentinel.sh             # the system profile's sentinel, on a throwaway board
 ```
 
 Releases: push a tag `v<package.json version>`; CI builds each platform natively (`bun compile --trim`, plus a

@@ -5,6 +5,7 @@ import { checkTool, doctor, type Check } from './doctor'
 import { type Config, getPath, loadConfig, saveConfig, setPath, when } from './config'
 import { DIRS, HOME, run } from './env'
 import { install, installSystem, packageManager } from './install'
+import { configKey, machineInputs, varDefault } from './inputs'
 import { manifest } from './manifest'
 import { ensurePc } from './pc'
 
@@ -20,15 +21,17 @@ function ask(question: string, def?: string, choices?: string[]): string | undef
 
 function vars(c: Config, o: OnboardOpts, steps: Step[]) {
   const given: Record<string, string | undefined> = { access: o.access, domain: o.domain, host: o.host }
-  for (const [k, v] of Object.entries(manifest.machine.vars)) {
-    if (!when(v.when, c)) continue
-    if (given[k]) { setPath(c, k, given[k]); continue }
-    if (getPath(c, k) !== undefined) continue
-    const def = v.default === '$(hostname -s)' ? run(['hostname', '-s']).out.trim() : v.default === '$HOME' ? HOME : v.default
+  for (const [k, v] of Object.entries(machineInputs())) {
+    if (v.kind !== 'var' || !when(v.when, c)) continue
+    const key = configKey(k, v)
+    if (given[k]) { setPath(c, key, given[k]); continue }
+    if (getPath(c, key) !== undefined) continue
+    if (!v.ask && !v.default) continue // optional answers without a default: `mm needs` / `mm fill`
+    const def = varDefault(v)
     const val = o.yes ? def : ask(v.ask || k, def, v.choices)
-    if (val === undefined) { if (v.ask) steps.push({ step: `var ${k}`, status: 'fail', detail: `needed: pass --${k}` }); continue }
+    if (val === undefined) { if (v.required) steps.push({ step: `var ${k}`, status: 'fail', detail: `needed: pass --${k}` }); continue }
     if (v.choices && !v.choices.includes(val)) { steps.push({ step: `var ${k}`, status: 'fail', detail: `${val} is not one of ${v.choices.join(', ')}` }); continue }
-    setPath(c, k, val)
+    setPath(c, key, val)
     steps.push({ step: `var ${k}`, status: 'fixed', detail: val })
   }
   saveConfig(c)

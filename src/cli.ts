@@ -6,6 +6,7 @@ import { Command, Option } from 'commander'
 import { getPath, loadConfig, saveConfig, setPath, unsetPath } from './config'
 import { doctor } from './doctor'
 import { DIRS, HOME, run } from './env'
+import { expand as expandHome, fill, needs, unmet } from './inputs'
 import { manifest } from './manifest'
 import { onboard } from './onboard'
 import { archive, restore, update } from './lifecycle'
@@ -41,7 +42,7 @@ program.command('doctor').description('check this machine against the manifest (
 })
 
 program.command('onboard').description('install and configure what this machine is missing, then run doctor')
-  .addOption(new Option('--access <mode>', 'access mode').choices(manifest.machine.vars.access?.choices ?? ['tailscale', 'domain']))
+  .addOption(new Option('--access <mode>', 'access mode').choices(manifest.machine.inputs.access?.choices ?? ['tailscale', 'domain']))
   .option('--domain <domain>', 'domain (access = domain)')
   .option('--name <name>', 'machine name (default: hostname -s)')
   .option('-y, --yes', 'accept defaults, never prompt')
@@ -64,6 +65,34 @@ config.command('get [path]').action((p?: string) => {
 })
 config.command('set <path> <value>').action((p: string, v: string) => { const c = loadConfig(); setPath(c, p, v); saveConfig(c) })
 config.command('unset <path>').action((p: string) => { const c = loadConfig(); unsetPath(c, p); saveConfig(c) })
+
+const projectRoots = () => listProjects().map((p) => ({ project: p.project, root: expandHome(p.root) }))
+program.command('needs').description('every input this machine and its projects need (vars, secrets, accounts): status and how to fill it; exit 1 while a required one is missing')
+  .option('-p, --project <project>', 'one project\'s inputs only').option('--machine', 'machine inputs only').option('--all', 'also those that do not apply here (when ...)')
+  .action((opts) => {
+    const o = fmt()
+    const ps = opts.machine ? [] : projectRoots().filter((p) => !opts.project || p.project === opts.project)
+    let rows = needs(ps)
+    if (opts.project) rows = rows.filter((r) => r.scope !== 'machine')
+    if (!opts.all) rows = rows.filter((r) => r.status !== 'n/a')
+    const bad = unmet(rows)
+    if (o.format !== 'table') console.log(o.format === 'json' ? JSON.stringify(rows, null, 2) : Bun.YAML.stringify(rows, null, 2))
+    else {
+      print(rows.map((r) => ({ scope: r.scope, name: r.name, kind: r.kind, need: r.required ? 'required' : 'optional', status: r.status, detail: r.detail || '', fill: r.fill || (r.status === 'missing' ? r.how : '') })), o)
+      if (!o.quiet) {
+        const how = rows.filter((r) => r.how && (r.status === 'missing' || r.status === 'bad'))
+        if (how.length) { console.log('\nhow to get them:'); for (const r of how) console.log(`  ${r.scope === 'machine' ? '' : `${r.scope}:`}${r.name}: ${r.how} (for ${r.for})`) }
+        console.log(`\n${bad.length ? `${bad.length} required input(s) missing` : 'every required input is there'}`)
+      }
+    }
+    process.exit(bad.length ? 1 : 0)
+  })
+program.command('fill <name> [value]').description('fill one input (mm needs): a var takes the value; a secret (machine, or <project>:<NAME>) is read from --from <file>, a pipe, or the terminal without echo, never from the command line')
+  .option('--from <file>', 'read the secret from this file (kept byte for byte)').option('--replace', 'overwrite one that is already filled')
+  .action(async (name: string, value: string | undefined, opts) => {
+    try { console.log(await fill(name, value, opts, (p) => projectRoots().find((x) => x.project === p)?.root)) }
+    catch (e) { console.error(`mm fill: ${(e as Error).message}`); process.exit(1) }
+  })
 
 program.command('status').description('short machine status').action(() => {
   const o = fmt(), checks = doctor(), s = summary(checks)
@@ -214,7 +243,8 @@ obs.command('ui').description('where the UIs are (loopback: open them through an
 program.hook('preAction', (_p, cmd) => {
   const name = [cmd.parent?.name() !== 'mm' ? cmd.parent?.name() : '', cmd.name()].filter(Boolean).join(' ')
   if (name === 'ship' || name === 'cron' || name.startsWith('obs')) return
-  const done = mmSpan(`mm ${name}`, { args: cmd.args.join(' ') })
+  // fill: the name only, never what follows it (a secret typed on the command line by mistake must not reach a trace)
+  const done = mmSpan(`mm ${name}`, { args: name === 'fill' ? String(cmd.args[0] ?? '') : cmd.args.join(' ') })
   process.on('exit', (code) => done(code === 0, { exit_code: code }))
 })
 

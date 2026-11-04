@@ -16,17 +16,49 @@ platforms: [linux-x64, linux-arm64]          # later: darwin-arm64, darwin-x64, 
 
 # ---------- Layer 1: machine (one per machine, shared by all clients) ----------
 machine:
-  vars:
-    host:      { ask: "Machine name", default: "$(hostname -s)" }
-    home:      { default: "$HOME" }
-    access:    { ask: "Access mode", choices: [tailscale, domain] }      # first machine: domain
-    domain:    { ask: "Domain", when: "access == domain" }
-    portless_port: { default: "1355" }    # the names proxy (<service>.<project>.localhost:<port>); unprivileged
-    metrics_port: { default: "8428" }     # VictoriaMetrics, loopback (vmui at /vmui)
-    logs_port:    { default: "9428" }     # VictoriaLogs, loopback (UI at /select/vmui)
-    traces_port:  { default: "10428" }    # VictoriaTraces, loopback (OTLP in, Jaeger API + UI out)
-    bind_host: { default: "127.0.0.1" }   # where project HTTP services listen. First machine (domain mode) binds the
-                                          # docker bridge gateway so its web proxy can reach them; see notes.domain_mode
+  # Inputs: everything this machine needs from a human, with what it is for (for), when it is needed (when), how to get
+  # it (how) and whether doctor fails without it (required). `mm needs` lists them with their status, `mm fill <name>`
+  # fills one. kind var = an answer, kept in config.yaml (key: config, else the name); secret = a file at `path`
+  # (mode 600, never in git; read from a file, a pipe or the terminal, never the command line); account = held
+  # elsewhere, checked by `check` when possible, never stored; managed_by = made by that tool, only checked.
+  # Values never appear here, in output, logs or traces.
+  inputs:
+    host:      { kind: var, ask: "Machine name", default: "$(hostname -s)", for: "names this machine in reports and public names" }
+    home:      { kind: var, default: "$HOME", for: "the user's home folder (derived)" }
+    access:    { kind: var, required: true, ask: "Access mode", choices: [tailscale, domain],        # first machine: domain
+                 for: "how people reach boards and apps: a tailnet, or public names under a domain",
+                 how: "domain if you have a domain whose DNS is on Cloudflare; else tailscale" }
+    domain:    { kind: var, required: true, ask: "Domain", when: "access == domain",
+                 for: "public names <name>.<domain>", how: "a domain whose DNS is on Cloudflare" }
+    portless_port: { kind: var, default: "1355", for: "the names proxy (<service>.<project>.localhost:<port>); unprivileged" }
+    metrics_port:  { kind: var, default: "8428", for: "VictoriaMetrics, loopback (vmui at /vmui)" }
+    logs_port:     { kind: var, default: "9428", for: "VictoriaLogs, loopback (UI at /select/vmui)" }
+    traces_port:   { kind: var, default: "10428", for: "VictoriaTraces, loopback (OTLP in, Jaeger API + UI out)" }
+    bind_host: { kind: var, default: "127.0.0.1",   # first machine (domain mode) binds the docker bridge gateway so its
+                 for: "where project HTTP services listen" }  # web proxy can reach them; see notes.domain_mode
+    telegram_owner_id: { kind: var, config: telegram.owner_id,
+                 for: "the one Telegram user the bridge serves (approvals and chat with agents)",
+                 how: "your numeric Telegram user id: message @userinfobot on Telegram" }
+    cloudflare-token: { kind: secret, required: true, when: "access == domain", path: "~/brain/.keys/.cf",
+                 for: "brain/bin/cf: DNS records and tunnel routes for public names",
+                 how: "Cloudflare dashboard > My Profile > API Tokens > Create Token: Zone DNS Edit (+ Account Cloudflare Tunnel Edit) for the domain's zone" }
+    telegram-bot-token: { kind: secret, path: "~/brain/.keys/.telebot",
+                 for: "the paseo-telegram bridge (approvals and chat with agents)",
+                 how: "@BotFather on Telegram: /newbot, or /token for an existing bot" }
+    claude-oauth-token: { kind: secret, required: true, path: "~/.config/secrets/claude-oauth.token",
+                 for: "CLAUDE_CODE_OAUTH_TOKEN for agents (shell + paseo service)",
+                 how: "`claude setup-token` on any machine signed in to your Claude account" }
+    expose-password: { kind: secret, required: true, when: "access == domain", path: "~/.config/secrets/expose.pass",
+                 for: "expose --auth: basic auth in front of protected public services",
+                 how: "a new random password (e.g. `openssl rand -base64 24`); you type it in the browser" }
+    mastermind-deploy-key: { kind: secret, path: "~/.ssh/mastermind_deploy",
+                 for: "pushes to your private mastermind repo (the machine's backup)",
+                 how: "ssh-keygen -t ed25519 -N '' -f ~/.ssh/mastermind_deploy, then add the .pub to the repo as a deploy key with write access (or mm fill from your saved copy)" }
+    paseo-keypair:    { kind: secret, managed_by: paseo, path: "~/.paseo/daemon-keypair.json", for: "the Paseo daemon's identity" }
+    paseo-credential: { kind: secret, managed_by: paseo, path: "~/.paseo/local-credential", for: "local clients' credential for the Paseo daemon" }
+    github:    { kind: account, check: ["gh", "auth", "status"],
+                 for: "pushes and releases (mm, mastermind) and the gh CLI",
+                 how: "a GitHub account; `gh auth login` on this machine" }
 
   tools:   # doctor: present (+ version >= min); onboard: installs what is missing, into ~/.mm (never system-wide
            # except `system` packages). `tested` = the version on the first machine, 2026-11-03.
@@ -83,14 +115,6 @@ machine:
     mm:       { path: "~/.mm" }                     # bin/ (mm binary), pc.sock (process-compose API): step 2
     tool_store: { path: "~/.local/share/<tool>/<version>" }     # versioned installs, linked into ~/.local/bin
     backups:  { path: "~/.local/share/backups/<project>" }      # written by <project>/bin/backup
-
-  secrets:                                    # doctor: file exists, mode 600, not tracked by git. Names only.
-    - { path: "~/brain/.keys/.cf",            used_by: "brain/bin/cf (Cloudflare API token)" }
-    - { path: "~/brain/.keys/.telebot",       used_by: "paseo-telegram bridge (Telegram bot token)" }
-    - { path: "~/.config/secrets/expose.pass", used_by: "expose --auth (basic auth for protected public services)" }
-    - { path: "~/.config/secrets/claude-oauth.token", used_by: "CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`; shell + paseo service)" }
-    - { path: "~/.paseo/daemon-keypair.json",  managed_by: paseo }
-    - { path: "~/.paseo/local-credential",     managed_by: paseo }
 
   services:                                   # machine-level (brain), today as systemd user units
     paseo:          { unit: paseo.service }               # agent daemon

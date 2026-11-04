@@ -3,6 +3,7 @@ import { existsSync, statSync } from 'node:fs'
 import { dirname, basename } from 'node:path'
 import { type Config, getPath, loadConfig, when } from './config'
 import { DIRS, HOME, hasSystemdUser, isRoot, run, which } from './env'
+import { needs } from './inputs'
 import { manifest, type Tool } from './manifest'
 
 export type Status = 'ok' | 'warn' | 'fail' | 'skip'
@@ -37,17 +38,6 @@ export function checkTool(name: string, t: Tool, c: Config): Check {
   return row('ok', `${v}  ${path.replace(HOME, '~')}`)
 }
 
-function checkSecret(p: string, usedBy: string): Check {
-  const path = expand(p)
-  const row = (status: Status, detail: string, fix?: string): Check => ({ layer: 'secret', item: p, status, detail, fix })
-  if (!existsSync(path)) return row('warn', `missing (${usedBy})`, 'copy it by hand (names only in the manifest)')
-  const mode = (statSync(path).mode & 0o777).toString(8)
-  if (mode !== '600') return row('fail', `mode ${mode}, want 600`, `chmod 600 ${p}`)
-  const g = run(['git', '-C', dirname(path), 'ls-files', '--error-unmatch', basename(path)], { timeoutMs: 10_000 })
-  if (g.ok) return row('fail', 'tracked by git', `git rm --cached ${p}, and ignore it`)
-  return row('ok', `600, not in git (${usedBy})`)
-}
-
 export function doctor(): Check[] {
   const c = loadConfig()
   const m = manifest.machine
@@ -57,13 +47,14 @@ export function doctor(): Check[] {
   if (isRoot()) out.push({ layer: 'machine', item: 'user', status: 'fail', detail: 'running as root: mm and its projects run as a normal user',
     fix: 'sudo useradd -m -s /bin/bash <name> && give it sudo, then run mm as that user' })
 
-  // vars
-  for (const [k, v] of Object.entries(m.vars)) {
-    if (!when(v.when, c)) continue
-    const val = getPath(c, k)
-    if (val === undefined || val === '') out.push({ layer: 'var', item: k, status: v.ask ? 'fail' : 'warn', detail: 'not set', fix: 'mm onboard' })
-    else if (v.choices && !v.choices.includes(String(val))) out.push({ layer: 'var', item: k, status: 'fail', detail: `${val}: not one of ${v.choices.join(', ')}`, fix: `mm config set ${k} <${v.choices.join('|')}>` })
-    else out.push({ layer: 'var', item: k, status: 'ok', detail: String(val) })
+  // inputs: vars, secrets, accounts (`mm needs` has the full table; values never read)
+  for (const n of needs([], c)) {
+    if (n.status === 'n/a') continue
+    const bad = n.status === 'missing' || n.status === 'bad'
+    // a required one missing fails; an optional one warns; a bad one (wrong mode, in git, not a choice) always fails
+    const status: Status = n.status === 'unchecked' ? 'skip' : !bad ? 'ok' : n.required || n.status === 'bad' ? 'fail' : 'warn'
+    out.push({ layer: n.kind, item: n.name, status, detail: `${n.status}${n.detail ? `: ${n.detail}` : ''}`,
+      fix: bad ? (n.fill || n.how || 'mm needs') : undefined })
   }
 
   // tools
@@ -81,9 +72,6 @@ export function doctor(): Check[] {
       else out.push({ layer: 'path', item: k, status: 'ok', detail: `${p.path} (origin ${remote.out.trim()})` })
     } else out.push({ layer: 'path', item: k, status: 'ok', detail: p.path })
   }
-
-  // secrets (names only: existence, mode, git status; never read)
-  for (const s of m.secrets) out.push(checkSecret(s.path, s.used_by || `managed by ${s.managed_by}`))
 
   // the machine's process manager
   const pc = run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'state'], { timeoutMs: 10_000 })
