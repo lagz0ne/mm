@@ -1,6 +1,6 @@
 // mm doctor: check this machine against the manifest. Never changes anything.
-import { existsSync, statSync } from 'node:fs'
-import { dirname, basename } from 'node:path'
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { type Config, getPath, loadConfig, when } from './config'
 import { DIRS, HOME, hasSystemdUser, isRoot, run, which } from './env'
 import { needs } from './inputs'
@@ -73,6 +73,18 @@ export function doctor(): Check[] {
       else out.push({ layer: 'path', item: k, status: 'ok', detail: `${shown} (origin ${remote.out.trim()})` })
     } else out.push({ layer: 'path', item: k, status: 'ok', detail: shown })
   }
+
+  // no shared instructions down the tree: Claude reads every CLAUDE.md up from an agent's folder, and its global
+  // folder reaches any agent not started with its own (mm's agents get $MM_HOME/claude/<project>)
+  const stray: string[] = []
+  const isProject = (d: string) => existsSync(join(d, '.mm-answers.yaml'))
+  const clients = existsSync(DIRS.projects) ? readdirSync(DIRS.projects).map((c) => join(DIRS.projects, c)).filter((d) => { try { return statSync(d).isDirectory() && !isProject(d) } catch { return false } }) : []
+  for (const d of [DIRS.mm, DIRS.projects, ...clients]) for (const f of ['CLAUDE.md', '.claude']) if (existsSync(join(d, f))) stray.push(join(d, f).replace(HOME, '~'))
+  out.push(stray.length
+    ? { layer: 'agents', item: 'shared instructions', status: 'fail', detail: `Claude instructions above the projects reach every agent below: ${stray.join(', ')}`, fix: 'move them into the project (or the brain) they belong to' }
+    : { layer: 'agents', item: 'shared instructions', status: 'ok', detail: 'none above the projects' })
+  const global = ['CLAUDE.md', 'settings.json'].map((f) => join(HOME, '.claude', f)).filter((f) => existsSync(f))
+  if (global.length) out.push({ layer: 'agents', item: 'global Claude folder', status: 'warn', detail: `${global.map((f) => f.replace(HOME, '~')).join(', ')} reach any agent not started by mm (mm's agents use $MM_HOME/claude/<project>)` })
 
   // the machine's process manager
   const pc = run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'state'], { timeoutMs: 10_000 })

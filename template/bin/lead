@@ -31,7 +31,9 @@ case "${1:-}" in
     START=$P/leads/START.md; [ -f "$DIR/START.md" ] && START=$DIR/START.md
     name=$(node -e "try{process.stdout.write(require('$P/leads/personas.json').agents['$role'].name||'')}catch{}" 2>/dev/null)
     prompt=$(sed -e "s/{role}/$role/g" -e "s/{project}/$PROJECT/g" -e "s/{name}/${name:-the $role lead}/g" "$START")
-    "$PASEO" run --no-wait -q --title "$PROJECT · $role lead" --provider "$model" --mode auto \
+    # its own Claude folder for this project (no global CLAUDE.md, settings or memory), with its folder trusted
+    CDIR=$(MM_PROJECT="$PROJECT" node "$P/bin/lib/claude.mjs" trust "$DIR") || { echo "lead: could not prepare the Claude folder" >&2; exit 1; }
+    "$PASEO" run --no-wait -q --title "$PROJECT · $role lead" --provider "$model" --mode auto --env "CLAUDE_CONFIG_DIR=$CDIR" \
       --cwd "$DIR" --label "project=$PROJECT" --label "role=$role" \
       --env "BEADS_ACTOR=$role" \
       --env "GIT_AUTHOR_NAME=$role" --env "GIT_COMMITTER_NAME=$role" \

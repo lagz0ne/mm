@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { projectName } from './lib/svc.mjs'
 import { cli, log } from './lib/obs.mjs'
 import { TOOLS_DENIED, toolAllowed } from './lib/assist.mjs'
+import { trust as claudeTrust } from './lib/claude.mjs'
 
 cli('assist')
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -89,7 +90,7 @@ function runClaude(extra, prompt) {
     ...(E.ASSIST_MODEL ? ['--model', E.ASSIST_MODEL] : []), ...extra, '--disallowedTools', TOOLS_DENIED.join(',')]
   const t0 = Date.now()
   return new Promise((ok) => {
-    const p = spawn(CLAUDE, args, { cwd: DIR, env: { ...E, BEADS_ACTOR: `assistant-${user}` }, stdio: ['pipe', 'pipe', 'pipe'] })
+    const p = spawn(CLAUDE, args, { cwd: DIR, env: { ...E, BEADS_ACTOR: `assistant-${user}`, CLAUDE_CONFIG_DIR: claudeTrust([DIR]) }, stdio: ['pipe', 'pipe', 'pipe'] })
     let buf = '', done = false, tools = null, result = null
     const finish = (r) => { if (done) return; done = true; clearTimeout(timer); ok({ t0, tools, result, ...r }) }
     const timer = setTimeout(() => { p.kill('SIGKILL'); finish({ err: `timeout after ${TIMEOUT}ms` }) }, TIMEOUT)
@@ -155,7 +156,7 @@ function chat() {
   for (const id of execFileSync(PASEO, ['ls', '-g', ...labels, '-q'], { env, encoding: 'utf8' }).split('\n').filter(Boolean)) execFileSync(PASEO, ['archive', id], { env, stdio: 'ignore' })
   const model = E.ASSIST_CHAT_MODEL || 'claude/claude-opus-5-5'
   execFileSync(PASEO, ['run', '--no-wait', '-q', '--title', `${project} · assistant for ${user}`, '--provider', model, '--mode', 'dontAsk', '--cwd', DIR, ...labels,
-    '--env', `PATH=${path.join(P, 'bin')}:${E.PATH}`, '--env', `BEADS_ACTOR=assistant-${user}`,
+    '--env', `PATH=${path.join(P, 'bin')}:${E.PATH}`, '--env', `BEADS_ACTOR=assistant-${user}`, '--env', `CLAUDE_CONFIG_DIR=${claudeTrust([DIR])}`,
     `You are the assistant for ${user}. Read ../CLAUDE.md and CLAUDE.md. Wait for ${user}'s first message; messages from the bridge arrive here.`], { env, stdio: 'inherit' })
 }
 

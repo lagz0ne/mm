@@ -43,7 +43,9 @@ BIND=$(mm config get bind_host 2>/dev/null || echo 127.0.0.1)
 if [ -n "$PORT" ] && [ "${BIND#127.}" = "$BIND" ]; then   # domain mode with the web proxy in docker: the forwarder
   listening() { for _ in $(seq 1 20); do ss -Hltn | awk '{print $4}' | grep -qx -- "$1" && return 0; sleep 1; done; return 1; }   # the forwarder starts just after the service
   check "public port: the service on loopback" listening "127.0.0.1:$PORT"
-  check "public port: mm's forwarder on $BIND" listening "$BIND:$PORT"
+  if listening "$BIND:$PORT"; then ok "public port: mm's forwarder on $BIND"; else bad "public port: mm's forwarder on $BIND"
+    echo "      forwarder: $($PC process list -o json 2>/dev/null | jq -c --arg n "$PROJECT.board-public" '.[] | select(.name==$n) | {status, restarts, exit_code}')"
+    tail -5 "$ROOT/.run/logs/board-public.log" 2>/dev/null | sed 's/^/      /'; ss -Hltn | awk '{print $4}' | grep ":$PORT$" | sed 's/^/      listening: /'; fi
   check "public port: nothing on every interface" sh -c "! ss -Hltn | awk '{print \$4}' | grep -qxE '(0[.]0[.]0[.]0|[*]|[[]::[]]):$PORT'"
   check "public port (old template, before the update): still served through $BIND" curl -sf -o /dev/null --max-time 5 "http://$BIND:$PORT/api/whoami"
 fi
@@ -115,6 +117,15 @@ check "leftover running" pgrep -f "$ALIAS/$NAME/[q]a-leftover"
 AG=$(paseo -q run --no-wait --cwd "$ALIAS/$NAME/leads" --provider claude/claude-haiku-5-5 --title qa-probe --label project=$PROJECT "Reply with the single word: ok" 2>/dev/null | tail -1)
 [ -n "$AG" ] && ok "agent $AG started" || bad "start agent"
 
+step "a lead with this project's own Claude folder (no shared instructions)"
+CDIR="$HOME/.mm/claude/$PROJECT"; LDIR="$ROOT/leads/qa"
+(cd "$ROOT" && bin/lead start qa --model claude/claude-haiku-5-5) >/dev/null 2>&1 && ok "bin/lead start qa (cheap model)" || bad "bin/lead start qa"
+check "the project's Claude folder, 0700" sh -c "[ \$(stat -c %a '$CDIR') = 700 ]"
+check "...with the lead's folder trusted (so its allow rules apply)" jq -e --arg d "$LDIR" '.projects[$d].hasTrustDialogAccepted == true' "$CDIR/.claude.json"
+lead_env() { for _ in $(seq 1 60); do for p in $(pgrep -x claude 2>/dev/null); do [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$LDIR" ] && { tr '\0' '\n' </proc/$p/environ | grep '^CLAUDE_CONFIG_DIR='; return 0; }; done; sleep 1; done; return 1; }
+LE=$(lead_env); [ "$LE" = "CLAUDE_CONFIG_DIR=$CDIR" ] && ok "the lead's Claude process has CLAUDE_CONFIG_DIR=$CDIR" || bad "the lead's CLAUDE_CONFIG_DIR: ${LE:-none found}"
+check "its session is in the project's folder, not ~/.claude" sh -c "for _ in \$(seq 1 30); do ls '$CDIR/projects' 2>/dev/null | grep -q 'leads-qa' && exit 0; sleep 1; done; exit 1"
+
 step "archive: dry run, then clean removal"
 check "dry run" mm archive "$REF" --dry-run
 check "dry run changed nothing" test -d "$ROOT"
@@ -148,6 +159,7 @@ rm -rf "$HOME/.local/share/backups/$PROJECT"
 for f in $(ls "$HOME/.local/share/mm/archive"); do grep -qxF "$f" <<<"$ARCH_BEFORE" || rm -f "$HOME/.local/share/mm/archive/$f"; done
 rmdir "$HOME/projects/$CLIENT" 2>/dev/null || true
 check "nothing left" test ! -e "$ROOT"
+check "its Claude folder is gone too" test ! -e "$HOME/.mm/claude/$PROJECT"
 
 printf '\n%s passed, %s failed in %ss\n' "$pass" "$fail" $(( $(date +%s) - T0 ))
 [ "$fail" = 0 ]

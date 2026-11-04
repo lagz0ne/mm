@@ -12,7 +12,7 @@ const short = (r: { out: string; err: string }) => (r.err || r.out).trim().split
 
 function varsOf(root: string) {
   const a = readAnswers(root)
-  return { a, vars: { client: a.client, name: a.name, project: a.project, short: a.short, root, home: HOME, brain: DIRS.brain, projects: DIRS.projects, mm: DIRS.mm, profile: a.profile || 'project' } as Record<string, string> }
+  return { a, vars: { client: a.client, name: a.name, project: a.project, short: a.short, root, home: HOME, brain: DIRS.brain, projects: DIRS.projects, mm: DIRS.mm, claude_dir: join(DIRS.mm, 'claude', a.project), profile: a.profile || 'project' } as Record<string, string> }
 }
 
 // ---------- mm update ----------
@@ -200,6 +200,11 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   }
   steps.push({ step: 'pack', status: 'ok', detail: `${tarball.replace(HOME, '~')} (${(Bun.file(tarball).size / 1e6).toFixed(1)} MB)` })
   rmSync(root, { recursive: true, force: true })
+  // its agents' own Claude folder (sessions only: what they learn lives in the project's memory/, in the tarball)
+  if (/^[a-z][a-z0-9-]{0,62}$/.test(a.project)) {
+    const cdir = join(DIRS.mm, 'claude', a.project)
+    if (existsSync(cdir)) { rmSync(cdir, { recursive: true, force: true }); steps.push({ step: 'claude folder', status: 'ok', detail: `${cdir.replace(HOME, '~')} removed` }) }
+  }
   const clientDir = join(DIRS.projects, a.client)
   if (existsSync(clientDir) && !readdirSync(clientDir).length) rmSync(clientDir, { recursive: true })
   steps.push({ step: 'delete', status: 'ok', detail: root.replace(HOME, '~') })

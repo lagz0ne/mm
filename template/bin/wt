@@ -24,6 +24,7 @@ case "${1:-}" in
   *) valid "$1"; W=$P/worktrees/$1
      if [ ! -d "$W" ]; then
        $G worktree add -q "$W" -b "$1" main 2>/dev/null || $G worktree add -q "$W" "$1"
+       node "$(dirname "$(readlink -f "$0")")/lib/claude.mjs" trust "$W" >/dev/null 2>&1 || true   # the worker's folder, trusted for this project's agents
        # commits show who made them: lead-<role> -> <role>, w-<item> -> code-worker
        case "$1" in lead-*) who=${1#lead-};; w-*) who=code-worker;; *) who=$1;; esac
        $G config extensions.worktreeConfig true

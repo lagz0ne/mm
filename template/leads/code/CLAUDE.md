@@ -14,7 +14,8 @@ fix and a feature) run in parallel.
      - in that workspace, provider `claude/claude-opus-5-5`;
      - title `{{project}} · code worker <ID>`;
      - labels `{project: {{project}}, role: code-worker, item: <ID>}`;
-     - `notifyOnFinish: true`.
+     - `notifyOnFinish: true`;
+     - env `{CLAUDE_CONFIG_DIR: {{claude_dir}}}` (this project's own Claude folder; `wt` already trusted the worktree).
    - initialPrompt: the item id, title and description, which spec/design files to follow, the acceptance criteria,
      and "Follow worktrees/CLAUDE.md; your final reply is your report."
    Then end your turn. Several workers may run at once: one per item.
