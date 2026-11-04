@@ -24,6 +24,10 @@ const HOME = process.env.HOME || os.homedir()
 // Every agent here, leads and setup, in every profile: no SSH keys (whatever they are named, the user's or root's), and
 // no filling machine or project inputs (a human's step: it never shows a value, but it can replace one).
 const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm fill*)']
+// Assistants (assistants/<user>/, system profile): no tool that acts or reads on its own (bin/lib/assist.mjs); a tool
+// that is not allowed is refused without asking (defaultMode dontAsk), so no permission request ever reaches a
+// human's phone from an assistant.
+import { ALLOW_RULES as ASSIST_ALLOW, DENY as ASSIST_DENY } from './lib/assist.mjs'
 // Roles: leads/roles.json is the list; every role has a folder and every folder a role.
 let DEF = []
 try { DEF = JSON.parse(fs.readFileSync(path.join(P, 'leads', 'roles.json'), 'utf8')).roles || [] } catch (e) { problems.push(`leads/roles.json unreadable (${e.message})`) }
@@ -49,7 +53,7 @@ const gfill = (v) => v.replaceAll('{root}', R).replaceAll('{home}', HOME).replac
 const grule = (r) => { const v = gfill(r); return /^(Read|Edit|Write)\(\//.test(v) ? v.replace(/^(Read|Edit|Write)\(\//, '$1(//') : v }
 const G_READ = (G.read || []).map(gfill), G_WRITE = Object.fromEntries(Object.entries(G.write || {}).map(([k, v]) => [k, v.map(gfill)]))
 const G_BASH_OK = (G.bash_ok || []).map((x) => new RegExp(x))
-function render(tmpl, role) {
+function render(tmpl, role, assistant = false) {
   const fill = (v) => gfill(v).replaceAll('{project}', projectName())
     .replace(/\{url:([\w-]+)\}/g, (m, n) => svcUrl(n) || m) // where the process manager put that service
   const rule = (r) => { const m = /^(Read|Edit|Write)\((.*)\)$/.exec(r); const v = fill(r); return m && m[2].startsWith('{') ? v.replace(/^(Read|Edit|Write)\(\//, '$1(//') : v }
@@ -60,20 +64,23 @@ function render(tmpl, role) {
     if (JSON.stringify(hooks?.PreToolUse || []).includes(h)) continue
     hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: 'Bash|Read|Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: h, timeout: 10 }] }] }
   }
-  const govDeny = [...ALWAYS_DENY, ...(role && ROLES.includes(role) ? mandatoryDeny(role) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
+  const govDeny = [...ALWAYS_DENY, ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? mandatoryDeny(role) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
   return { ...tmpl, ...(hooks ? { hooks } : {}), permissions: { ...p,
     ...(p.additionalDirectories ? { additionalDirectories: p.additionalDirectories.map(fill) } : {}),
     // a rule naming a service that doesn't run yet ({url:app} before the first deploy) is left out, not half-rendered
     allow: (p.allow || []).map(rule).filter((r) => !r.includes('{url:')), deny: [...new Set([...(p.deny || []).map(rule), ...govDeny])] } }
 }
-const SETTINGS_DIRS = [...fs.readdirSync(path.join(P, 'leads'), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(P, 'leads', d.name)), path.join(P, 'setup')]
+const ASSIST_ROOT = path.join(P, 'assistants')
+const ASSISTANTS = fs.existsSync(ASSIST_ROOT) ? fs.readdirSync(ASSIST_ROOT, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name) : []
+const SETTINGS_DIRS = [...fs.readdirSync(path.join(P, 'leads'), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(P, 'leads', d.name)), path.join(P, 'setup'),
+  ...ASSISTANTS.map((u) => path.join(ASSIST_ROOT, u))]
 for (const dir of SETTINGS_DIRS) {
   const t = path.join(dir, '.claude', 'settings.tmpl.json')
   if (!fs.existsSync(t)) continue
   let tj
   try { tj = JSON.parse(fs.readFileSync(t, 'utf8')) } catch (e) { bad(`${path.relative(P, t)} is not valid JSON (${e.message})`); continue }
   if (JSON.stringify(tj).includes(R)) bad(`${path.relative(P, t)} hard-codes ${R}; write {root} instead`)
-  if (process.argv.includes('--render')) fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify(render(tj, path.basename(dir)), null, 2) + '\n')
+  if (process.argv.includes('--render')) fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify(render(tj, path.basename(dir), dir.startsWith(`${ASSIST_ROOT}/`)), null, 2) + '\n')
 }
 
 function mandatoryDeny(role) {
@@ -129,6 +136,22 @@ for (const role of ROLES) {
   }
   if (!fs.existsSync(path.join(P, 'leads', role, 'CLAUDE.md'))) bad(`${role}: missing role brief CLAUDE.md`)
 }
+// Assistants: read-only by permissions, whatever their brief says.
+const SYSTEM_NAMES = new Set(['wake', 'watchdog', 'brain', 'ui', 'beads', 'smoke', 'system', 'admin', 'setup', 'guest', 'human'])
+for (const u of ASSISTANTS) {
+  const dir = path.join(ASSIST_ROOT, u), who = `assistant ${u}`
+  if (u !== '_template' && (!/^[a-z][a-z0-9._-]{1,31}$/.test(u) || ROLES.includes(u) || SYSTEM_NAMES.has(u))) bad(`${who}: not a usable person's name (a role or system name, or not a-z0-9._-)`)
+  if (!fs.existsSync(path.join(dir, 'CLAUDE.md'))) bad(`${who}: missing CLAUDE.md`)
+  let t
+  try { t = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'settings.tmpl.json'), 'utf8')) } catch { bad(`${who}: missing or invalid .claude/settings.tmpl.json`); continue }
+  if (t.permissions?.defaultMode !== 'dontAsk') bad(`${who}: permissions.defaultMode must be dontAsk (refuse, never ask)`)
+  for (const a of t.permissions?.allow || []) if (!ASSIST_ALLOW.some((re) => re.test(a))) bad(`${who}: allow rule ${a} is not for an assistant (only Skill, and the scoped read tool mcp__mm_read)`)
+  if ((t.permissions?.additionalDirectories || []).length) bad(`${who}: no additionalDirectories (an assistant reads nothing on its own)`)
+  if (t.hooks) bad(`${who}: hooks are not allowed in an assistant`)
+  const f = path.join(dir, '.claude', 'settings.json')
+  if (fs.existsSync(f)) { try { const deny = new Set(JSON.parse(fs.readFileSync(f, 'utf8')).permissions?.deny || []); for (const d of ASSIST_DENY) if (!deny.has(d)) bad(`${who}: settings.json lost the deny ${d}`) } catch { bad(`${who}: settings.json is not valid JSON`) } }
+  else if (u !== '_template') bad(`${who}: missing .claude/settings.json (config-check --render)`)
+}
 // Personas: cosmetic, but names must keep their role's initial and colors must be valid.
 const pf = path.join(P, 'leads', 'personas.json')
 if (fs.existsSync(pf)) {
@@ -164,6 +187,9 @@ if (process.argv.includes('--staged')) {
   const staged = execFileSync('git', ['-C', P, 'diff', '--cached', '--name-only'], { encoding: 'utf8' }).split('\n').filter(Boolean)
   const gov = staged.filter((f) => f.startsWith('setup/') || f === 'governance.json')
   if (gov.length && process.env.SETUP_HUMAN !== '1') bad(`setup/ and governance.json are for humans only (${gov.join(', ')}); a human commits them with SETUP_HUMAN=1`)
+  // an assistant's permissions: the owner (a human, SETUP_HUMAN=1) or the setup agent, never the person it serves or a lead
+  const ap = staged.filter((f) => /^assistants\/[^/]+\/\.claude\/settings/.test(f) || /^assistants\/[^/]+\/\.claude\/?$/.test(f))
+  if (ap.length && process.env.SETUP_HUMAN !== '1' && process.env.GIT_AUTHOR_NAME !== 'setup') bad(`assistant permissions are changed by the owner or setup only (${ap.join(', ')})`)
 }
 
 if (problems.length) { console.error(`config-check: ${problems.length} problem(s)\n- ${problems.join('\n- ')}`); process.exit(1) }

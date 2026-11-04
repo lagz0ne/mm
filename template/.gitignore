@@ -3,6 +3,7 @@
 !/.gitignore
 !/CLAUDE.md
 !/leads/
+!/assistants/
 !/ops/
 !/bin/
 !/site/
@@ -19,6 +20,8 @@
 leads/RACI.md
 # Generated from settings.tmpl.json by `bin/config-check --render` (absolute paths for this machine).
 leads/*/.claude/settings.json
+assistants/*/.claude/settings.json
+assistants/*/mode
 setup/.claude/settings.json
 
 # Never in git, whatever the lines above say: secret material, and runtime state.

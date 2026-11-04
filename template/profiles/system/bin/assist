@@ -1,0 +1,168 @@
+#!/usr/bin/env node
+// assist — the bridge's way to a human's assistant (assistants/<user>/, profile system). An assistant drafts and
+// explains; it never acts and reads nothing on its own: every built-in tool is denied (settings + flags, no MCP), it
+// refuses without asking, and a run whose session offers any tool outside bin/lib/assist.mjs ALLOWED is killed at
+// once (exit 5). What it needs comes in on stdin, from the bridge.
+//   assist card <user>     an approval card     stdin {request:{command,fingerprint,tier,reason}, item:{id,title,signoff,tier}, context?}
+//   assist in <user>       a message they typed  stdin {text, board?, focus?}
+//   assist out <user>      a message for them    stdin {kind, board?, item?, author?, text}
+//       -> one JSON object on stdout (schema-checked). Any failure (timeout, error, bad output) exits non-zero and
+//          prints nothing on stdout: the caller then shows the raw text. Facts (fingerprint, tier, sign-off, item)
+//          are copied from the input, never written by the model.
+//   assist chat <user>     start (or restart) their conversation agent (Paseo), for Explain
+//   assist new <user>      make assistants/<user>/ from assistants/_template (setup runs it)
+//   assist mode <user> [always|demand|off]
+//   assist stop <user>     archive their conversation agent (on a revoke)
+//   assist tools <user>    audit: the tools a session of theirs has (must be Skill only)
+// Env: CLAUDE_BIN (claude), ASSIST_MODEL, ASSIST_TIMEOUT_MS (20000), PASEO_BIN (paseo).
+import { execFileSync, spawn } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { projectName } from './lib/svc.mjs'
+import { cli, log } from './lib/obs.mjs'
+import { TOOLS_DENIED, toolAllowed } from './lib/assist.mjs'
+
+cli('assist')
+const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const ROOT = path.join(P, 'assistants')
+const E = process.env, CLAUDE = E.CLAUDE_BIN || 'claude', TIMEOUT = Number(E.ASSIST_TIMEOUT_MS || 20000)
+const [cmd, user, arg] = process.argv.slice(2)
+const die = (msg, code = 2) => { process.stderr.write(`assist: ${msg}\n`); process.exit(code) }
+const NAME = /^[a-z][a-z0-9._-]{1,31}$/
+if (!cmd || !user) die('usage: assist card|in|out|chat|new|mode <user> ...')
+if (!NAME.test(user) || user === '_template') die(`not a person's name: ${user}`)
+const DIR = path.join(ROOT, user)
+
+// ---------- schemas: only what the model writes ----------
+const str = { type: 'string' }, strs = { type: 'array', items: str }
+const obj = (props, req = Object.keys(props)) => ({ type: 'object', properties: props, required: req, additionalProperties: false })
+const SCHEMA = {
+  card: obj({ asked: str, risk: str, safeguard: str, read: str }),
+  in: obj({ intent: str, board: str, item: str, missing: strs, questions: { type: 'array', items: str, maxItems: 3 }, draft: str }),
+  out: obj({ summary: str, needs_you: { type: 'boolean' }, next: str }),
+}
+const ASK = {
+  card: 'Write the approval card for the request in the data below: what is asked (one line), the risk in plain words, the safeguard, and your read (a recommendation, or "unclear: ..." saying what is unclear). Use only the facts given. You do not approve; the human taps Allow or Deny.',
+  in: 'Analyse the message your human wrote (in the data below): intent, which board and item it is about ("" if none), what is missing or assumed, up to three Socratic questions only if they matter (none if it is clear), and the draft you would send in their voice.',
+  out: 'Tell your human, in their terms, what the message in the data below says: a short summary, whether it needs them, and the next step you suggest.',
+}
+/** Board text as data: fenced and labelled; a closing tag inside it can't end the block. */
+const data = (label, v) => `<data source="${label}">\n${String(typeof v === 'string' ? v : JSON.stringify(v, null, 2)).replaceAll('</data', '<\\/data')}\n</data>`
+
+function check(v, s) { // the schema again, here: never trust the caller's validation alone
+  if (s.type === 'string') return typeof v === 'string'
+  if (s.type === 'boolean') return typeof v === 'boolean'
+  if (s.type === 'array') return Array.isArray(v) && (!s.maxItems || v.length <= s.maxItems) && v.every((x) => check(x, s.items))
+  return !!v && typeof v === 'object' && s.required.every((k) => k in v) && Object.keys(v).every((k) => s.properties[k] && check(v[k], s.properties[k]))
+}
+
+async function analyse(kind) {
+  if (!fs.existsSync(path.join(DIR, 'CLAUDE.md'))) die(`no assistant for ${user} (assist new ${user})`, 3)
+  let input
+  try { input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}') } catch { die('stdin: not JSON', 3) }
+  const prompt = `${ASK[kind]}\n\n${data(kind === 'in' ? `${user} (your human)` : 'board', input)}`
+  const out = await runClaude(['--json-schema', JSON.stringify(SCHEMA[kind])], prompt)
+  const t0 = out.t0
+  let res
+  res = out.result?.structured_output
+  if (out.err || !check(res, SCHEMA[kind])) {
+    log('warn', `assist ${kind} for ${user} failed: ${out.err || 'output does not match the schema'}`, { op: `assist ${kind}`, user, ms: Date.now() - t0 })
+    die(out.err || 'output does not match the schema', out.code || 4)
+  }
+  // facts come from the input, whatever the model wrote
+  if (kind === 'card') {
+    const r = input.request || {}, it = input.item || {}
+    res = { ...res, item: it.id ? `${it.id}${it.title ? ` "${it.title}"` : ''}` : '', signoff: it.signoff || 'none', tier: r.tier || it.tier || '', fingerprint: r.fingerprint || '' }
+  }
+  if (kind === 'out') res = { ...res, ref: input.item || '' }
+  log('info', `assist ${kind} for ${user}`, { op: `assist ${kind}`, user, ms: Date.now() - t0 })
+  process.stdout.write(JSON.stringify(res) + '\n')
+}
+
+/**
+ * One locked-down run: prompt on stdin, stream-json out. The first line (init) lists the session's tools: anything
+ * outside ALLOWED (a new built-in tool, an MCP server) kills the run before the model's first turn can use it.
+ */
+function runClaude(extra, prompt) {
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--strict-mcp-config', '--permission-mode', 'dontAsk',
+    ...(E.ASSIST_MODEL ? ['--model', E.ASSIST_MODEL] : []), ...extra, '--disallowedTools', TOOLS_DENIED.join(',')]
+  const t0 = Date.now()
+  return new Promise((ok) => {
+    const p = spawn(CLAUDE, args, { cwd: DIR, env: { ...E, BEADS_ACTOR: `assistant-${user}` }, stdio: ['pipe', 'pipe', 'pipe'] })
+    let buf = '', done = false, tools = null, result = null
+    const finish = (r) => { if (done) return; done = true; clearTimeout(timer); ok({ t0, tools, result, ...r }) }
+    const timer = setTimeout(() => { p.kill('SIGKILL'); finish({ err: `timeout after ${TIMEOUT}ms` }) }, TIMEOUT)
+    p.stdout.on('data', (d) => {
+      buf += d
+      let i
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1)
+        let m; try { m = JSON.parse(line) } catch { continue }
+        if (m.type === 'system' && m.subtype === 'init') {
+          tools = m.tools || []
+          const extraTools = [...tools.filter((t) => !toolAllowed(t)), ...(m.mcp_servers || []).map((x) => `mcp:${x.name || x}`)]
+          if (extraTools.length) { p.kill('SIGKILL'); log('error', `assist for ${user}: session offered tools outside the allowlist, killed: ${extraTools.join(', ')}`, { op: 'assist tools', user }); return finish({ err: `session offered tools outside the allowlist: ${extraTools.join(', ')}`, code: 5 }) }
+        }
+        if (m.type === 'result') result = m
+      }
+    })
+    p.on('error', (e) => finish({ err: e.message }))
+    p.on('close', (code) => finish(code ? { err: `exit ${code}` } : {}))
+    p.stdin.end(prompt)
+  })
+}
+
+async function tools() {
+  if (!fs.existsSync(path.join(DIR, 'CLAUDE.md'))) die(`no assistant for ${user}`, 3)
+  const out = await runClaude([], 'Reply with the word: ok')
+  console.log(JSON.stringify({ user, tools: out.tools, ok: !out.err, ...(out.err ? { error: out.err } : {}) }))
+  process.exit(out.err ? (out.code || 4) : 0)
+}
+
+function stop() {
+  const PASEO = E.PASEO_BIN || 'paseo', env = { ...E }
+  delete env.PASEO_AGENT_ID; delete env.PASEO_AGENT_CWD
+  const labels = ['--label', `project=${projectName()}`, '--label', 'kind=assistant', '--label', `user=${user}`]
+  let n = 0
+  for (const id of execFileSync(PASEO, ['ls', '-g', ...labels, '-q'], { env, encoding: 'utf8' }).split('\n').filter(Boolean)) { execFileSync(PASEO, ['archive', id], { env, stdio: 'ignore' }); n++ }
+  log('info', `assist stop ${user}: ${n} agent(s) archived`, { op: 'assist stop', user }); console.log(`${user}: ${n} agent(s) archived`)
+}
+
+function make() {
+  if (fs.existsSync(DIR)) die(`${path.relative(P, DIR)} exists`)
+  fs.cpSync(path.join(ROOT, '_template'), DIR, { recursive: true })
+  const md = path.join(DIR, 'CLAUDE.md'); fs.writeFileSync(md, fs.readFileSync(md, 'utf8').replaceAll('{user}', user))
+  fs.writeFileSync(path.join(DIR, 'mode'), 'always\n')
+  execFileSync(path.join(P, 'bin', 'config-check'), ['--render'], { cwd: P, stdio: 'inherit' })
+  console.log(`assistants/${user}/ made; write their brief with them (CLAUDE.md), then commit`)
+}
+
+function mode() {
+  const f = path.join(DIR, 'mode')
+  if (!fs.existsSync(DIR)) die(`no assistant for ${user}`)
+  if (!arg) return console.log((fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : 'always').trim())
+  if (!['always', 'demand', 'off'].includes(arg)) die('mode: always | demand | off')
+  fs.writeFileSync(f, `${arg}\n`); console.log(`${user}: ${arg}`)
+}
+
+function chat() {
+  if (!fs.existsSync(path.join(DIR, 'CLAUDE.md'))) die(`no assistant for ${user}`)
+  const PASEO = E.PASEO_BIN || 'paseo', project = projectName(), env = { ...E }
+  delete env.PASEO_AGENT_ID; delete env.PASEO_AGENT_CWD // its own top-level agent, in its own folder
+  execFileSync(path.join(P, 'bin', 'config-check'), ['--render'], { cwd: P, stdio: 'ignore' })
+  const labels = ['--label', `project=${project}`, '--label', 'kind=assistant', '--label', `user=${user}`]
+  for (const id of execFileSync(PASEO, ['ls', '-g', ...labels, '-q'], { env, encoding: 'utf8' }).split('\n').filter(Boolean)) execFileSync(PASEO, ['archive', id], { env, stdio: 'ignore' })
+  const model = E.ASSIST_CHAT_MODEL || 'claude/claude-opus-5-5'
+  execFileSync(PASEO, ['run', '--no-wait', '-q', '--title', `${project} · assistant for ${user}`, '--provider', model, '--mode', 'dontAsk', '--cwd', DIR, ...labels,
+    '--env', `PATH=${path.join(P, 'bin')}:${E.PATH}`, '--env', `BEADS_ACTOR=assistant-${user}`,
+    `You are the assistant for ${user}. Read ../CLAUDE.md and CLAUDE.md. Wait for ${user}'s first message; messages from the bridge arrive here.`], { env, stdio: 'inherit' })
+}
+
+if (['card', 'in', 'out'].includes(cmd)) await analyse(cmd)
+else if (cmd === 'new') make()
+else if (cmd === 'mode') mode()
+else if (cmd === 'chat') chat()
+else if (cmd === 'stop') stop()
+else if (cmd === 'tools') await tools()
+else die(`unknown command ${cmd}`)
