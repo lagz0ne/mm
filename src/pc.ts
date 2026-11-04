@@ -25,6 +25,11 @@ export function writeBase() {
   const mm = which('mm') || join(DIRS.bin, 'mm')
   processes['mm.cron'] = { namespace: 'mm', command: `${mm} cron`, environment: [`PATH=${toolPath()}`], log_location: join(DIRS.pc, 'cron.log'),
     availability: { restart: 'always', backoff_seconds: 5 } }   // every project's schedules (process-compose has no scheduler)
+  // the sign-in gateway for every board (docs/auth-gateway.md); its state is under $MM_HOME/auth. Off until the machine
+  // turns it on (`mm config set auth.enabled true`): a new listener on bind_host is an exposure change (t2, ops).
+  if (getPath(loadConfig(), 'auth.enabled') === true || getPath(loadConfig(), 'auth.enabled') === 'true') processes['mm.auth'] = { namespace: 'mm', command: `${mm} auth serve`, environment: [`PATH=${toolPath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
+    log_location: join(DIRS.pc, 'auth.log'), availability: { restart: 'always', backoff_seconds: 3 },
+    readiness_probe: { exec: { command: `test -S ${join(DIRS.mm, 'run', 'auth.sock')}` }, period_seconds: 3, failure_threshold: 20 } }
   Object.assign(processes, obsProcesses())
   writeFileSync(BASE, `# mm: the machine process manager. Projects join as namespaces (~/.mm/pc/projects/*.yaml).\nversion: "0.5"\n${Bun.YAML.stringify({ processes }, null, 2)}\n`)
 }

@@ -34,6 +34,8 @@ machine:
     metrics_port:  { kind: var, default: "8428", for: "VictoriaMetrics, loopback (vmui at /vmui)" }
     logs_port:     { kind: var, default: "9428", for: "VictoriaLogs, loopback (UI at /select/vmui)" }
     traces_port:   { kind: var, default: "10428", for: "VictoriaTraces, loopback (OTLP in, Jaeger API + UI out)" }
+    auth_port:     { kind: var, default: "9440", for: "the sign-in gateway (mm.auth): loopback, and bind_host for the web proxy" }
+    owner_name:    { kind: var, default: "owner", for: "the owner's name on the boards, when they sign in with their Telegram id" }
     bind_host: { kind: var, default: "127.0.0.1",   # first machine (domain mode): the docker bridge gateway, where its
                  for: "where the web proxy reaches public services (mm forwards from here; services stay on loopback)" }  # web proxy (Traefik) runs
     telegram_owner_id: { kind: var, config: telegram.owner_id,

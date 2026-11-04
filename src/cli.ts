@@ -11,6 +11,7 @@ import { manifest } from './manifest'
 import { onboard } from './onboard'
 import { archive, restore, update } from './lifecycle'
 import { cron } from './cron'
+import { AUTH_SOCK, callApi, serve as authServe } from './auth'
 import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
 import { findRoot, listProjects, namespaceOp, newProject, processes, resolve, up } from './project'
 import { type Format, print } from './out'
@@ -183,6 +184,21 @@ sys.command('init').description('make the system project (profile system) next t
 for (const [name, desc] of [['client <action>', 'client ls|add']] as const) {
   program.command(name).description(`${desc} (not yet)`).action(() => { console.error(`mm ${name.split(' ')[0]}: not built yet`); process.exit(2) })
 }
+
+const auth = program.command('auth').description('sign-in for every board: a code on the screen, approved here or over the chat bot (docs/auth-gateway.md)')
+auth.command('serve').description('(run by mm-pc as mm.auth) the sign-in gateway').action(() => { authServe() })
+const authOut = (r: { status: number; data: unknown }) => { const o = fmt(); if (o.format !== 'table') console.log(JSON.stringify(r.data, null, 2)); else if (Array.isArray(r.data)) print(r.data as Record<string, unknown>[], o); else console.log(JSON.stringify(r.data)); process.exit(r.status < 300 ? 0 : 1) }
+const authCall = async (path: string, body?: Record<string, unknown>) => { try { authOut(await callApi(path, body)) } catch (e) { console.error(`mm auth: the gateway does not answer on ${tilde(AUTH_SOCK)} (${(e as Error).message})`); process.exit(1) } }
+auth.command('approve <code>').description("approve a code someone shows you: --as <name> grants them on the spot (the owner's step)")
+  .option('--as <name>', 'their name on the boards').option('--for <scope>', 'project id(s), comma-separated, or all', '').option('--role <role>', 'member or viewer', 'member').option('--days <n>', 'how long the grant lasts', '7')
+  .action((code: string, o) => authCall('/approve', { code, ...(o.as ? { as: o.as, scope: o.for, role: o.role, days: Number(o.days) } : {}), by: 'cli' }))
+auth.command('pending <code>').description('what is asking with this code (board, browser, address, age), before approving').action((code: string) => authCall(`/pending?code=${encodeURIComponent(code)}`))
+auth.command('grant <name>').description('give someone focus: --for <scope> [--role member|viewer] [--telegram <id>] [--days n]')
+  .option('--for <scope>', 'project id(s), comma-separated, or all', '').option('--role <role>', 'member or viewer', 'member').option('--telegram <id>', 'their Telegram user id (they then approve their own codes)').option('--days <n>', '0 = no end', '0')
+  .action((name: string, o) => authCall('/grant', { name, scope: o.for, role: o.role, telegram_id: o.telegram, days: Number(o.days), by: 'cli' }))
+auth.command('revoke <name> [scope]').description('end a grant (or one scope of it) and its sessions at once; "all" ends every session').action((name: string, scope?: string) => authCall('/revoke', { name, scope, by: 'cli' }))
+auth.command('grants').description('who may see and steer which boards').action(() => authCall('/grants'))
+auth.command('sessions').description('who is signed in where').action(() => authCall('/sessions'))
 
 program.command('cron').description('(run by mm-pc) run every project\'s schedules (health, backup, ...)').action(async () => { await cron() })
 program.command('ship').description('(run by mm-pc) ship service log files to VictoriaLogs').action(async () => { await ship() })
