@@ -166,11 +166,13 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   steps.push({ step: 'stop', status: s.ok || /not found|no process/i.test(short(s)) ? 'ok' : 'fail', detail: s.ok ? `namespace ${a.project}` : short(s) })
   const pf = join(PROJECTS_PC, `${a.project}.yaml`)
   if (existsSync(pf)) rmSync(pf)
-  const l = loadAll()
+  // the reload can race processes that are still stopping: try again briefly
+  let l = loadAll()
+  for (let i = 0; i < 5 && !l.ok; i++) { Bun.sleepSync(2000); l = loadAll() }
   const left = pc('process', 'list', '-o', 'json')
   const still = left.ok ? (JSON.parse(left.out) as { name: string }[]).filter((p) => p.name.startsWith(`${a.project}.`)).map((p) => p.name) : []
   for (const n of still) pc('process', 'stop', n)
-  steps.push({ step: 'unload', status: l.ok ? 'ok' : 'fail', detail: l.ok ? (still.length ? `reloaded; ${still.length} process(es) process-compose keeps were stopped` : 'reloaded without the project') : short(l) })
+  steps.push({ step: 'unload', status: l.ok ? 'ok' : 'fail', detail: l.ok ? (still.length ? `reloaded; ${still.length} process(es) process-compose keeps were stopped` : 'reloaded without the project') : (short(l) || `process-compose exit ${l.code}`) })
 
   // 2. public routes
   for (const sv of Object.values(services)) {

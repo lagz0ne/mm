@@ -29,6 +29,26 @@ export function writeBase() {
   writeFileSync(BASE, `# mm: the machine process manager. Projects join as namespaces (~/.mm/pc/projects/*.yaml).\nversion: "0.5"\n${Bun.YAML.stringify({ processes }, null, 2)}\n`)
 }
 
+/**
+ * No systemd user session (a container): start the launcher in its own session with its output in a file. Not on
+ * mm's pipes: when mm exits, a write to a closed pipe (SIGPIPE) would kill process-compose and orphan its children.
+ */
+function startDetached(launcher: string) {
+  const out = join(DIRS.pc, 'mm-pc-up.out')
+  run(['sh', '-c', 'setsid -f "$0" >>"$1" 2>&1 </dev/null', launcher, out], { timeoutMs: 10_000 })
+}
+
+/** Make sure the process manager answers (mm up / new call this): start it the way onboard set it up. */
+export function pcRunning(): boolean {
+  if (answering()) return true
+  const launcher = join(DIRS.bin, 'mm-pc-up')
+  if (hasSystemdUser()) run(['systemctl', '--user', 'start', 'mm-pc.service'], { timeoutMs: 30_000 })
+  else if (existsSync(launcher)) startDetached(launcher)
+  else return false
+  for (let i = 0; i < 40; i++) { if (answering()) return true; Bun.sleepSync(250) }
+  return answering()
+}
+
 export async function ensurePc(): Promise<string> {
   mkdirSync(DIRS.pc, { recursive: true })
   mkdirSync(join(HOME, '.config', 'process-compose'), { recursive: true }) // else every CLI call logs a debug line
@@ -55,11 +75,7 @@ export async function ensurePc(): Promise<string> {
     run(['systemctl', '--user', 'daemon-reload'])
     const r = run(['systemctl', '--user', 'enable', '--now', 'mm-pc.service'])
     if (!r.ok) throw new Error(`systemctl enable mm-pc: ${r.err.trim()}`)
-  } else if (!answering()) {
-    // no systemd user session (e.g. a container): start it detached for now
-    // setsid -f: its own session, so it outlives mm and any terminal
-    run(['setsid', '-f', launcher], { timeoutMs: 10_000 })
-  }
+  } else if (!answering()) startDetached(launcher)
   for (let i = 0; i < 40 && !answering(); i++) await Bun.sleep(250)
   if (!answering()) throw new Error('process-compose did not come up on ~/.mm/pc.sock (see ~/.mm/pc/process-compose.log)')
   return hasSystemdUser() ? 'mm-pc.service enabled and running' : 'running detached (no systemd user session: not started at boot)'

@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, run, toolPath } from './env'
 import { obsEndpoints } from './obs'
-import { writeBase } from './pc'
+import { pcRunning, writeBase } from './pc'
 import { renderTo, template, templateCommit } from './template'
 import pkg from '../package.json'
 
@@ -191,6 +191,7 @@ export function up(root: string): Step[] {
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
   writeFileSync(join(root, '.run', 'endpoints.json'), JSON.stringify(ep, null, 2))
   steps.push({ step: 'services', status: 'ok', detail: `${Object.keys(processes).length} processes, namespace ${a.project}` })
+  if (!pcRunning()) { steps.push({ step: 'process manager', status: 'fail', detail: 'not running and could not be started: run `mm onboard`' }); return steps }
   const r = loadAll()
   steps.push({ step: 'process manager', status: r.ok ? 'ok' : 'fail', detail: r.ok ? 'loaded (project update)' : r.err.trim().slice(0, 200) })
   run(['process-compose', '-U', '-u', DIRS.socket, 'namespace', 'start', a.project])
@@ -208,7 +209,9 @@ export function up(root: string): Step[] {
 export function loadAll() {
   writeBase()
   const files = [join(DIRS.pc, 'base.yaml'), ...(existsSync(PROJECTS_PC) ? readdirSync(PROJECTS_PC).filter((f) => f.endsWith('.yaml')).sort().map((f) => join(PROJECTS_PC, f)) : [])]
-  return run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'update', ...files.flatMap((f) => ['-f', f])], { timeoutMs: 60_000 })
+  const r = run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'update', ...files.flatMap((f) => ['-f', f])], { timeoutMs: 60_000 })
+  // nothing to change (e.g. the last project was just removed) is not a failure
+  return /No processes were updated/i.test(r.out + r.err) ? { ...r, ok: true } : r
 }
 
 export function namespaceOp(ref: string, op: 'start' | 'stop' | 'restart') {

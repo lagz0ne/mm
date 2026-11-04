@@ -2,7 +2,7 @@
 import { existsSync, statSync } from 'node:fs'
 import { dirname, basename } from 'node:path'
 import { type Config, getPath, loadConfig, when } from './config'
-import { DIRS, HOME, hasSystemdUser, run, which } from './env'
+import { DIRS, HOME, hasSystemdUser, isRoot, run, which } from './env'
 import { manifest, type Tool } from './manifest'
 
 export type Status = 'ok' | 'warn' | 'fail' | 'skip'
@@ -52,6 +52,10 @@ export function doctor(): Check[] {
   const c = loadConfig()
   const m = manifest.machine
   const out: Check[] = []
+
+  // who: projects live under $HOME; bd's server refuses a database under /root, and agents should not run as root
+  if (isRoot()) out.push({ layer: 'machine', item: 'user', status: 'fail', detail: 'running as root: mm and its projects run as a normal user',
+    fix: 'sudo useradd -m -s /bin/bash <name> && give it sudo, then run mm as that user' })
 
   // vars
   for (const [k, v] of Object.entries(m.vars)) {

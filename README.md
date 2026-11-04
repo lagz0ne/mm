@@ -31,6 +31,63 @@ mm archive acme/shop         # stop, unload, unexpose, archive agents, pack to a
 mm obs status | errors | slow | logs     # what the projects did (metrics, logs, traces on this machine)
 ```
 
+## Operating model
+
+### Who does what
+- **You (humans)** steer through the **work board**: write items, comment, approve. You don't edit project files or
+  chat with agents directly; the board is the conversation, and every lead answers there.
+- **Leads** are Claude Code agents (via Paseo), one per role: requirement, design, code, qa, architecture, ops by
+  default. They pick up their items, answer every human comment, and coordinate through a RACI. The code lead runs
+  workers in sandboxed worktrees. Work reaches `code/` only through `land` (test-gated) and production only through
+  `deploy` (health-checked, automatic rollback).
+- **The setup agent** is the only one that changes a project's own configuration: roles, briefs, skills, permissions.
+  Ask it through a board item. A pre-commit check enforces the rules.
+- **mm** owns the machine and the project lifecycle: what is installed, what runs, upgrades from the template,
+  removal, schedules (health every minute, backup daily), and observability.
+
+### How each kind of change happens
+
+| What changes | Path |
+|---|---|
+| Product code | leads and workers → `land` → `deploy` |
+| Project configuration (roles, briefs, skills, permissions) | a board item for the setup agent |
+| Engine and kernel (`bin/`, `site/`, `services.yaml`, …) | a new mm template → `mm update` (three-way merge; project edits kept) |
+| The machine | `mm onboard`, `mm config`, a newer mm (`MM_VERSION=… curl … \| sh`) |
+
+Don't edit a project's files by hand. If you need to, do it through the setup agent or in the template.
+
+### Where to run it
+
+**Preferred: one dedicated Linux machine per client (engagement), with several projects on it, reached over
+Tailscale.**
+- Use a server or VM, not a laptop: leads work around the clock.
+- Run as a normal user with sudo, with lingering on (`sudo loginctl enable-linger $USER`) so services survive logout.
+- `mm onboard --access tailscale`. Boards and apps are reachable only inside your tailnet, and nothing is on the
+  public internet.
+- One client per machine keeps their agents, data and secrets apart, and one `mm update` upgrades all of that
+  client's projects together.
+
+**Domain mode** (`--access domain --domain example.com`) is for when people outside your tailnet need the board or
+the app. A wildcard DNS name points at the machine's web proxy. Public services get `<name>.<domain>`; boards stay
+behind a password. It needs Docker, a reverse proxy and an `expose` tool on the machine, so there is more to run and
+more exposed. Use it only when you need it.
+
+Not supported: running as root (`mm doctor` refuses: projects live in a normal home), and mixing unrelated clients
+on one machine.
+
+### A project's life
+```sh
+mm new acme/shop                               # services up; `mm inspect acme/shop` shows the board URL
+cd ~/projects/acme/shop && for r in requirement design code qa architecture ops setup; do bin/lead start $r; done
+# open the board, write the product brief as the first epic; the leads take it from there
+mm obs errors --since 24h                      # daily: what failed (or let your own automation read it)
+curl -fsSL https://raw.githubusercontent.com/lagz0ne/mm/main/bin/mm | MM_VERSION=v0.2.0 sh -s -- --version   # upgrade mm
+mm update --dry-run && mm update               # after upgrading mm: bring every project to the new template
+mm archive acme/shop                           # done: clean removal, tarball kept; `mm restore` brings it back
+```
+
+More on the inside of a project: [docs/project-model.md](docs/project-model.md).
+
 ## How it is put together
 
 - `manifest.yaml` — what a machine needs (tools with pinned versions and checksums, paths, secret *names*,
