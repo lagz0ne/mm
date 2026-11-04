@@ -44,11 +44,15 @@ the board who is asking in a way the board can verify. Status: **design, for rev
 - The signing key: `auth/signing.key` (0600, gateway-only), sealed into the vault once the vault exists, so a restore
   keeps it. Rotating it invalidates every board session.
 
-## Members: names, what they may write, and `all`
-Enforced by the board's API from the verified assertion's role, never by the UI alone:
-- **Reserved labels:** a member or viewer can't add or remove `approved`, `signed-off`, `needs-you`, `t1`, `t2`, `t3`
-  or `audit`; can't set an assignee; and can't close or reopen an item they didn't create. `approved` is how the
-  owner's go shows on a board, so only `owner` may set it. The board answers 403 with the reason.
+## Members: steering together, with two rails
+A grant is **focus**: which boards someone sees and steers. `member` is the default everywhere, including the system
+board; `viewer` is optional, for people who only watch. Members steer like the owner in their focus: they create and
+prioritise items, assign, comment, answer the leads, close or accept work, and reopen. The leads treat them as humans
+of that board. Two rails stay, enforced by the board's API from the verified assertion's role (never by the UI alone):
+- **T2 approvals are the owner's.** Only `owner` may add or remove `approved` (the owner's go). Nobody but the owner and
+  the leads may change the risk-tier labels `t1`, `t2`, `t3` (a lower tier would route around an approval), and only
+  the leads may change `signed-off` (review's) and `audit`. The board answers 403 with the reason.
+- **No agent sessions through the bot:** the bot acts only through boards (items and comments), never through Paseo.
 - **Author role on every write:** the board stamps the assertion's role on each item and comment it creates (a
   `by:<role>` label on items, and a `role` field on comments). Leads see it in `bd show`, and the template's lead brief
   says to read it.
@@ -56,19 +60,15 @@ Enforced by the board's API from the verified assertion's role, never by the UI 
   unique). It refuses any name that equals a role of any board on the machine, a system author (`wake`, `watchdog`,
   `brain`, `ui`, `beads`, `smoke`, `system`, `admin`, `setup`) or the owner's name. The board refuses a self-chosen
   name when the gateway is on: identity only comes from the assertion.
-- **`all`:** expanded into an explicit list of boards when it's granted. A project created later doesn't join a
-  grantee's scope by itself; the bot asks the owner. Client projects are included only when named. `all --as member`
-  means member on projects only; member on the system board needs its own `system --as member` grant.
-- **What a member's write may make a lead do** is the owner's decision (sy-wep). Until it's made, the gateway issues
-  `member` as `viewer`.
+- **`all`:** the system board and every project, now and later (the owner's decision). The gateway still records the
+  explicit list it covers at each moment, so the audit can say who could steer which board when.
 
 ## Sessions and revocation
 - Server-side only: a session is a random id → `{user, scope, created, expires, boards}`. Forward-auth checks it on
   every call, with no cache and no stateless token, so a revoke takes effect on the next request.
 - Revoking a grant deletes that person's sessions; `/revoke all` deletes every session but the owner's current one.
-- Roles: `owner` (one Telegram id, from the machine's inputs), `member`, `viewer`. Viewers are read-only on the board:
-  the board refuses every non-GET for a viewer assertion. **What a member may write is the owner's decision**: until
-  then, the gateway issues `member` as `viewer`.
+- Roles: `owner` (one Telegram id, from the machine's inputs), `member` (the default for a grant), `viewer`. Viewers
+  are read-only on the board: it refuses every non-GET for a viewer assertion.
 
 ## The store, and who may write it
 - `$MM_HOME/auth/`: 0700; `grants.json`, `sessions.json`, `signing.key`, all 0600. Only the gateway process writes
