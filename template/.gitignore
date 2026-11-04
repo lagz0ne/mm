@@ -26,6 +26,7 @@ secrets/
 .run/
 .dolt/
 .health.json
+.sentinel.json
 .releases
 .wake-state.json
 .deploy.lock
