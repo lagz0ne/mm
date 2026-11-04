@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
-import { getPath, loadConfig, saveConfig, setPath } from './config'
+import { getPath, held, loadConfig, saveConfig, setPath } from './config'
 import { DIRS, HOME, run } from './env'
 import { expand, machineInputs } from './inputs'
 import { listProjects, readAnswers } from './project'
@@ -162,6 +162,7 @@ export type SyncOpts = { dryRun?: boolean; push?: boolean; fresh?: boolean; forc
 export function sync(o: SyncOpts = {}): { steps: Step[]; ok: boolean; commit?: string } {
   const steps: Step[] = [], fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return { steps, ok: false } }
   if (!existsSync(join(CHECKOUT, '.git'))) return fail('checkout', `no mastermind checkout yet: mm sync init <repo> (${tl(CHECKOUT)})`)
+  if (held()) return fail('hold', 'this box is a restore on hold: it must not write to mastermind while the old box may still be up (mm restore --release)')
   if (!vault.ready()) return fail('vault', 'no vault on this machine yet (mm vault init): mastermind is sealed to its recipients')
   if (o.fresh && !o.force) return fail('fresh', `--fresh replaces mastermind's whole history on ${remote()} (${branch()}) with one new commit. It's a t2 step: add --force once it's approved.`)
   const dirty = git(['status', '--porcelain']).out.trim()

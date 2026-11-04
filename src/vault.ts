@@ -79,6 +79,9 @@ function decrypt(name: string, identity = KEY): Buffer {
   return r.stdout as Buffer
 }
 
+/** Does a sealed secret open with this machine's key (digest checked)? The value stays in memory and is dropped. */
+export function canOpen(name: string): true { decrypt(name).fill(0); return true }
+
 /** Where a project's opened secrets live while its services run: a memory-backed folder, 0700. */
 export function runtimeDir(project: string) {
   const base = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 0}`

@@ -4,9 +4,15 @@
 // Plaintext only ever lives in memory or in a 0700 work folder under $MM_HOME/state, removed at the end.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync, writeSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { held, loadConfig, saveConfig, setPath, unsetPath } from './config'
 import { DIRS, HOME, run } from './env'
+import { install } from './install'
+import { type Install, manifest } from './manifest'
+import { onboard } from './onboard'
+import { pcRunning } from './pc'
+import { installTools, processes, readAnswers, up } from './project'
 import { ALLOW } from './sync'
 import * as vault from './vault'
 
@@ -20,13 +26,15 @@ export type RestoreOpts = {
   identity: string            // the human's recovery identity: a file they name (read by age only, never copied)
   accept?: string             // the HEAD hash, typed by the human, to restore commits no signed tag covers
   allowedSigners?: string     // ssh allowed_signers for the human's tag key
-  drill?: boolean             // a throwaway box: nothing outward-facing will start (the next part)
+  drill?: boolean             // a throwaway box: nothing outward-facing ever starts here
+  dataOnly?: boolean          // stop once the data is in place (no onboard, nothing started)
 }
 
 /** Which commit to restore: the newest tag the human signed, or HEAD if they typed its hash. Lists what is unsigned. */
 export function trust(dir: string, o: Pick<RestoreOpts, 'accept' | 'allowedSigners'>): { commit?: string; steps: Step[] } {
   const g = (a: string[]) => run(['git', '-C', dir, ...a], { timeoutMs: 120_000 })
-  const steps: Step[] = [], head = g(['rev-parse', 'HEAD']).out.trim()
+  const steps: Step[] = [], h = g(['rev-parse', '-q', '--verify', 'HEAD^{commit}']), head = h.out.trim()
+  if (!h.ok || !head) return { steps: [{ step: 'trust', status: 'fail', detail: 'mastermind has no commit on its branch (an empty repo, or HEAD names a branch that is not there)' }] }
   let signed: { tag: string; commit: string } | undefined
   if (o.allowedSigners) { // every tag is checked; of the valid ones, the one on the newest commit (most history) wins
     let depth = -1
@@ -99,19 +107,27 @@ function recoveryPublic(dir: string, identity: string): string {
  * Restore the machine's data from mastermind onto a blank box (`mm restore <repo>`). Refuses a box that already has
  * mm's state. The layout is always one-root: a restore is also how a legacy box moves.
  */
-export function restoreMachine(src: string, o: RestoreOpts): { steps: Step[]; ok: boolean; boards: string[] } {
+export async function restoreMachine(src: string, o: RestoreOpts): Promise<{ steps: Step[]; ok: boolean; boards: string[] }> {
   const steps: Step[] = [], boards: string[] = []
   const fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return { steps, ok: false, boards } }
   const there = [DIRS.config, DIRS.brain, DIRS.system, DIRS.projects, join(DIRS.vault, 'key'), join(HOME, 'projects'), join(HOME, 'brain')].filter(existsSync)
   if (there.length) return fail('blank box', `this box already has mm's state (${there.map(tl).join(', ')}): restore only onto a blank box`)
   if (!o.identity || !existsSync(o.identity)) return fail('identity', 'give the recovery identity as a file you name (--identity <file>); it is read by age only, never copied')
 
+  // a blank box has no age yet, and everything in mastermind is sealed: the signed distro package first (the manifest)
+  if (!run(['sh', '-c', 'command -v age && command -v age-keygen']).ok) {
+    try { steps.push({ step: 'age', status: 'ok', detail: await install('age', (manifest.machine.tools as Record<string, { install: Install }>).age.install) }) }
+    catch (e) { return fail('age', `age is needed to open mastermind: ${(e as Error).message}`) }
+  }
   mkdirSync(dirname(RESTORE_CHECKOUT), { recursive: true, mode: 0o700 })
   if (!existsSync(join(RESTORE_CHECKOUT, '.git'))) {
     const c = run(['git', 'clone', '-q', src, RESTORE_CHECKOUT], { timeoutMs: 900_000 })
     if (!c.ok) return fail('clone', short(c))
   }
   chmodSync(RESTORE_CHECKOUT, 0o700)
+  // the remote's HEAD may name a branch mm sync never pushed (a bare repo made with another default): take mastermind.branch's
+  if (!run(['git', '-C', RESTORE_CHECKOUT, 'rev-parse', '-q', '--verify', 'HEAD^{commit}']).ok)
+    for (const b of ['main', 'master']) if (run(['git', '-C', RESTORE_CHECKOUT, 'checkout', '-q', '-B', b, `origin/${b}`]).ok) break
   const t = trust(RESTORE_CHECKOUT, o); steps.push(...t.steps)
   if (!t.commit) return { steps, ok: false, boards }
   const co = run(['git', '-C', RESTORE_CHECKOUT, 'checkout', '-q', '--detach', t.commit])
@@ -126,8 +142,11 @@ export function restoreMachine(src: string, o: RestoreOpts): { steps: Step[]; ok
     // 1. config.yaml (always one-root: this process already runs with one-root paths on a blank box)
     const cfg = Buffer.from(open(join(M, 'config.yaml.age'), o.identity)).toString('utf8')
     const layout = /^layout:\s*["']?([\w-]+)/m.exec(cfg)?.[1]
-    writeFileSync(DIRS.config, /^layout:/m.test(cfg) ? cfg.replace(/^layout:.*$/m, 'layout: one-root') : `${cfg.trimEnd()}\nlayout: one-root\n`, { mode: 0o600 })
-    steps.push({ step: 'config', status: 'ok', detail: `${tl(DIRS.config)}${layout && layout !== 'one-root' ? ` (was ${layout}; now one-root)` : ''}` })
+    writeFileSync(DIRS.config, cfg, { mode: 0o600 })
+    // the hold goes in before anything can start: nothing outward-facing until the human says the old box is down
+    const c = loadConfig(); setPath(c, 'layout', 'one-root'); setPath(c, 'restore', { hold: true, drill: !!o.drill, from: t.commit, at: new Date().toISOString() }); saveConfig(c)
+    chmodSync(DIRS.config, 0o600)
+    steps.push({ step: 'config', status: 'ok', detail: `${tl(DIRS.config)}${layout && layout !== 'one-root' ? ` (was ${layout}; now one-root)` : ''}; restore hold on` })
     // 2. the vault: the sealed files, then a new machine key; everything resealed to it and the recovery key
     mkdirSync(DIRS.vault, { recursive: true, mode: 0o700 }); chmodSync(DIRS.vault, 0o700)
     for (const f of readdirSync(join(M, 'vault'))) if (vault.exportable(f) && f !== 'recipients.txt') { copyFileSync(join(M, 'vault', f), join(DIRS.vault, f)); chmodSync(join(DIRS.vault, f), 0o600) }
@@ -159,11 +178,108 @@ export function restoreMachine(src: string, o: RestoreOpts): { steps: Step[]; ok
       boards.push(a.project)
       steps.push({ step: `board ${a.project}`, status: 'ok', detail: `${tl(root)}: config${existsSync(join(root, 'code', '.git')) ? ' + product' : ''} repo, board data staged (${items} record(s))` })
     }
-    steps.push({ step: 'start', status: 'skip', detail: o.drill ? 'drill: data restored and checked; nothing started' : 'next: the boards are brought up (onboard, tools, board database), outward-facing services only after you confirm the old box is down' })
-    return { steps, ok: true, boards }
+    if (o.dataOnly) { steps.push({ step: 'start', status: 'skip', detail: '--data-only: data in place; nothing started' }); return { steps, ok: true, boards } }
+
+    // 5. the machine (tools, process manager, observability), then each board, inward only (the hold)
+    const ob = await onboard({ yes: true })
+    const missing = ob.checks.filter((x) => (x as { status?: string }).status === 'fail').map((x) => (x as { item?: string }).item).filter(Boolean)
+    if (!pcRunning()) return fail('onboard', 'the process manager is not running after onboard (mm doctor)')
+    steps.push({ step: 'onboard', status: 'ok', detail: missing.length ? `done; still missing (yours: mm needs): ${missing.join(', ')}` : 'done' })
+    const report: string[] = []
+    for (const project of boards) {
+      const root = findBoard(project)
+      const r = await bringUp(root, work); steps.push(...r.steps)
+      report.push(`${project}: ${r.items}/${r.expected} item record(s)${r.ready ? ', board answers' : ', board NOT ready'}`)
+      if (!r.ok) return { steps, ok: false, boards }
+    }
+    // 6. the drill's checks: every sealed input opens (to memory only); then the report
+    const opened = vault.list().filter((x) => { try { vault.canOpen(x.name); return true } catch { return false } })
+    steps.push({ step: 'secrets', status: opened.length === vault.list().length ? 'ok' : 'fail', detail: `${opened.length}/${vault.list().length} sealed input(s) open with the new machine key (to memory only)` })
+    steps.push({ step: 'report', status: steps.some((x) => x.status === 'fail') ? 'fail' : 'ok', detail: report.join('; ') })
+    steps.push({ step: 'hold', status: 'skip', detail: o.drill ? 'drill box: nothing outward-facing starts here, ever (no public routes, no leads, no sync)' : 'on: once the old box is down (or this is a move), run `mm restore --release` yourself' })
+    return { steps, ok: !steps.some((x) => x.status === 'fail'), boards }
   } catch (e) {
     return fail('restore', (e as Error).message)
   } finally {
     rmSync(work, { recursive: true, force: true })
   }
+}
+
+/** The restored board's folder by its project id (system, or projects/<client>/<name>). */
+function findBoard(project: string): string {
+  if (project === 'system') return DIRS.system
+  for (const c of existsSync(DIRS.projects) ? readdirSync(DIRS.projects) : []) for (const n of readdirSync(join(DIRS.projects, c))) {
+    try { if (readAnswers(join(DIRS.projects, c, n)).project === project) return join(DIRS.projects, c, n) } catch {}
+  }
+  throw new Error(`restored board ${project} not found`)
+}
+
+/**
+ * A restored board's first start: its tools, a fresh Beads database replaced by the backup (Dolt keeps history), the
+ * board's build, the lead worktrees, then its services (on hold: inward only). Counts the items against the backup.
+ */
+async function bringUp(root: string, work: string): Promise<{ steps: Step[]; ok: boolean; items: number; expected: number; ready: boolean }> {
+  const a = readAnswers(root), stage = join(root, '.restore'), steps: Step[] = []
+  const res = (ok: boolean, items = 0, ready = false) => ({ steps, ok, items, expected, ready })
+  const lines = (f: string) => (existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter(Boolean).length : 0)
+  const expected = lines(join(stage, 'board.jsonl'))
+  const must = (step: string, r: { ok: boolean; out: string; err: string }) => { steps.push({ step: `${a.project}: ${step}`, status: r.ok ? 'ok' : 'fail', detail: r.ok ? (r.out.trim().split('\n').pop() || 'done').slice(0, 120) : short(r) }); return r.ok }
+  try { for (const s of await installTools(root)) steps.push({ ...s, step: `${a.project}: ${s.step}` }) } catch (e) { steps.push({ step: `${a.project}: tools`, status: 'fail', detail: (e as Error).message }); return res(false) }
+  if (!must('board database (bin/init)', run([join(root, 'bin', 'init'), a.short], { cwd: root, timeoutMs: 300_000 }))) return res(false)
+  const db = JSON.parse(readFileSync(join(root, 'control', '.beads', 'metadata.json'), 'utf8')).dolt_database as string
+  const denv = { DOLT_ROOT_PATH: join(root, '.dolt-root'), XDG_CONFIG_HOME: join(root, '.config') }
+  if (!must(`board data -> ${db} (dolt backup restore)`, run([join(root, 'tools', 'dolt'), 'backup', 'restore', '--force', `file://${join(stage, 'board.dolt')}`, db], { cwd: join(root, 'control', '.beads', 'dolt'), env: denv, timeoutMs: 600_000 }))) return res(false)
+  // the restored database keeps the old box's project identity (its metadata table); bin/init wrote a new one into
+  // metadata.json, and bd refuses to connect on a mismatch: take the database's
+  const q = run([join(root, 'tools', 'dolt'), 'sql', '-r', 'csv', '-q', "select value from metadata where `key` = '_project_id'"], { cwd: join(root, 'control', '.beads', 'dolt', db), env: denv })
+  const pid = q.out.trim().split('\n').pop()?.trim() || ''
+  if (!q.ok || !/^[0-9a-f-]{36}$/.test(pid)) { steps.push({ step: `${a.project}: project identity`, status: 'fail', detail: `the restored database names no project id (${short(q)})` }); return res(false) }
+  const mf = join(root, 'control', '.beads', 'metadata.json'), meta = JSON.parse(readFileSync(mf, 'utf8'))
+  if (meta.project_id !== pid) { meta.project_id = pid; writeFileSync(mf, JSON.stringify(meta, null, 2) + '\n') }
+  steps.push({ step: `${a.project}: project identity`, status: 'ok', detail: `${pid} (the database's)` })
+  if (existsSync(join(root, 'site', 'package.json')) && !must('board build', run(['sh', '-c', 'npm ci --no-audit --no-fund --silent && npm run build --silent'], { cwd: join(root, 'site'), timeoutMs: 900_000 }))) return res(false)
+  if (existsSync(join(root, 'bin', 'config-check'))) {
+    if (!must('governance check', run([join(root, 'bin', 'config-check'), '--render'], { cwd: root }))) return res(false)
+    if (run(['git', '-C', root, 'status', '--porcelain', '--untracked-files=no']).out.trim())
+      run(['git', '-C', root, 'commit', '-qam', 'mm restore: rendered for this box'], { env: { SETUP_HUMAN: '1' } })
+  }
+  try {
+    const roles = JSON.parse(readFileSync(join(root, 'leads', 'roles.json'), 'utf8')).roles as { id: string; workers?: boolean }[]
+    if (existsSync(join(root, 'code', '.git'))) for (const r of roles.filter((x) => !x.workers)) run([join(root, 'bin', 'wt'), `lead-${r.id}`], { cwd: root })
+  } catch {}
+  for (const s of up(root)) steps.push({ ...s, step: `${a.project}: ${s.step}` })
+  let ready = false
+  for (let i = 0; i < 90 && !ready; i++) { ready = processes(a.project).some((p) => p.name === `${a.project}.board` && p.is_ready === 'Ready'); if (!ready) Bun.sleepSync(2000) }
+  const out = join(work, `${a.project}.export.jsonl`)
+  const ex = run([join(root, 'bin', 'bd'), 'export', '--all', '-o', out], { cwd: join(root, 'control'), timeoutMs: 120_000 })
+  // every record of the backup must be back (the box may already have added its own, e.g. the watchdog's incidents)
+  const ids = (f: string) => new Set(existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return String(JSON.parse(l).id) } catch { return '' } }) : [])
+  const want = ids(join(stage, 'board.jsonl')), have = ex.ok ? ids(out) : new Set<string>()
+  const items = [...want].filter((x) => have.has(x)).length, extra = have.size - items, all = ready && items === expected
+  steps.push({ step: `${a.project}: items`, status: all ? 'ok' : 'fail', detail: `${items} of the backup's ${expected} on the board${extra > 0 ? ` (+${extra} new since)` : ''}${ready ? '' : '; the board is not ready'}` })
+  if (all) rmSync(stage, { recursive: true, force: true })
+  return res(all, items, ready)
+}
+
+/** `mm restore --release`: the human, at a terminal, says the old box is down; the hold ends and every board starts fully. */
+export function release(): Step[] {
+  const c = loadConfig()
+  if (!held(c)) return [{ step: 'release', status: 'skip', detail: 'no restore hold on this box' }]
+  if ((c.restore as { drill?: boolean }).drill) return [{ step: 'release', status: 'fail', detail: 'a drill box never goes outward: throw it away' }]
+  const phrase = 'the old box is down'
+  const said = typed(`This starts the leads, public routes and mastermind sync on this box.\nIf the old box still runs, both would act at once.\nType "${phrase}" to go on: `)
+  if (said !== phrase) return [{ step: 'release', status: 'fail', detail: 'not confirmed; the hold stays' }]
+  unsetPath(c, 'restore.hold'); setPath(c, 'restore.released', new Date().toISOString()); saveConfig(c)
+  const steps: Step[] = [{ step: 'release', status: 'ok', detail: 'hold lifted' }]
+  for (const root of [DIRS.system, ...(existsSync(DIRS.projects) ? readdirSync(DIRS.projects).flatMap((x) => readdirSync(join(DIRS.projects, x)).map((n) => join(DIRS.projects, x, n))) : [])])
+    if (existsSync(join(root, '.mm-answers.yaml'))) for (const s of up(root)) steps.push({ ...s, step: `${readAnswers(root).project}: ${s.step}` })
+  return steps
+}
+
+/** A line the human types at the terminal (not stdin, not an agent). */
+function typed(question: string): string {
+  if (process.env.CLAUDECODE || process.env.PASEO_AGENT_ID) throw new Error('this needs the human at a terminal, not an agent')
+  let fd: number
+  try { fd = openSync('/dev/tty', 'r+') } catch { throw new Error('no terminal: run it yourself, in a terminal') }
+  try { writeSync(fd, question); const b = Buffer.alloc(256), n = readSync(fd, b, 0, 256, null); return b.subarray(0, n).toString().trim() } finally { closeSync(fd) }
 }

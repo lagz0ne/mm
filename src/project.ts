@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { getPath, loadConfig } from './config'
+import { getPath, held, loadConfig } from './config'
 import { DIRS, engineDirs, HOME, run, toolPath, which } from './env'
 import { obsEndpoints } from './obs'
 import { publicKeyPem } from './auth'
@@ -50,8 +50,29 @@ function hashPort(key: string): number {
 }
 
 // ---------- mm new ----------
-type Step = { step: string; status: 'ok' | 'fail'; detail: string }
+type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
 export type NewOpts = { short?: string; profile?: string; root?: string; project?: string; throwaway?: boolean }
+/** The project-local tools (bd, dolt) from tools.json, checksums verified. Used by mm new and mm restore. */
+export async function installTools(root: string): Promise<Step[]> {
+  const steps: Step[] = []
+  const tools = JSON.parse(readFileSync(join(root, 'tools.json'), 'utf8'))
+  mkdirSync(join(root, 'tools'), { recursive: true })
+  for (const t of ['bd', 'dolt']) {
+    const spec = tools[t]['linux-x64']
+    const buf = new Uint8Array(await (await fetch(spec.url, { redirect: 'follow' })).arrayBuffer())
+    const got = new Bun.CryptoHasher('sha256').update(buf).digest('hex')
+    if (got !== spec.sha256) throw new Error(`${t}: checksum mismatch (${got})`)
+    const tmp = join(root, `.tools-${t}.tar.gz`)
+    writeFileSync(tmp, buf)
+    const x = run(['tar', '-xzf', tmp, '-C', join(root, 'tools'), spec.extract])
+    run(['rm', '-f', tmp])
+    if (!x.ok) throw new Error(`${t}: ${x.err}`)
+    if (spec.extract !== t) run(['mv', join(root, 'tools', spec.extract), join(root, 'tools', t)])
+    steps.push({ step: `tool ${t}`, status: 'ok', detail: `${tools[t].version} (sha256 ok)` })
+  }
+  return steps
+}
+
 export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answers: Answers; steps: Step[] }> {
   const { client, name } = parseRef(ref)
   const profile = o.profile || 'project', product = profile === 'project'
@@ -93,21 +114,7 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
   }
 
   // 3. project-local tools (bd, dolt), verified against tools.json
-  const tools = JSON.parse(readFileSync(join(root, 'tools.json'), 'utf8'))
-  mkdirSync(join(root, 'tools'), { recursive: true })
-  for (const t of ['bd', 'dolt']) {
-    const spec = tools[t]['linux-x64']
-    const buf = new Uint8Array(await (await fetch(spec.url, { redirect: 'follow' })).arrayBuffer())
-    const got = new Bun.CryptoHasher('sha256').update(buf).digest('hex')
-    if (got !== spec.sha256) throw new Error(`${t}: checksum mismatch (${got})`)
-    const tmp = join(root, `.tools-${t}.tar.gz`)
-    writeFileSync(tmp, buf)
-    const x = run(['tar', '-xzf', tmp, '-C', join(root, 'tools'), spec.extract])
-    run(['rm', '-f', tmp])
-    if (!x.ok) throw new Error(`${t}: ${x.err}`)
-    if (spec.extract !== t) run(['mv', join(root, 'tools', spec.extract), join(root, 'tools', t)])
-    step(`tool ${t}`, `${tools[t].version} (sha256 ok)`)
-  }
+  steps.push(...await installTools(root))
 
   // 4. board database, data, board build
   must('control (bin/init)', run([join(root, 'bin', 'init'), answers.short], { cwd: root, timeoutMs: 300_000 }))
@@ -133,7 +140,7 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
 
 // ---------- services.yaml -> process-compose project file + .run/ ----------
 type Svc = { about?: string; command: string; secrets?: string[]; workdir?: string; env?: Record<string, string>; port?: 'http' | 'internal' | 'none'
-  public?: { name: string; auth: string }; depends_on?: Record<string, string>; ready?: { http?: string; socket?: string }; restart?: string; optional?: boolean }
+  public?: { name: string; auth: string }; depends_on?: Record<string, string>; ready?: { http?: string; socket?: string }; restart?: string; optional?: boolean; outward?: boolean }
 
 /** Does this board's server have the gateway-checked public side (BOARD_PUBLIC_PORT)? Older templates don't. */
 function boardHasPublicSide(root: string) {
@@ -184,7 +191,13 @@ export function up(root: string): Step[] {
     ...(obs.traces ? { MM_OBS_TRACES: obs.traces, MM_OBS_METRICS: obs.metrics } : {}) }
   const processes: Record<string, unknown> = {}
   const pdeath = run(['sh', '-c', 'command -v setpriv']).ok ? 'setpriv --pdeathsig TERM ' : ''
+  // a restored box on hold (until the human says the old box is down): only what stays inside the box starts.
+  // `outward: false` declares it; mm's own board engine counts as inward; anything else (wake starts leads, the app
+  // slot, public routes) is held back, so an unknown service is never let out by default
+  const hold = held(), held_back: string[] = []
+  const inward = (n: string, s: Svc) => s.outward === false || (s.outward === undefined && ['dolt', 'bd-serve', 'board'].includes(n))
   for (const [n, s] of Object.entries(services)) {
+    if (hold && !inward(n, s)) { held_back.push(n); continue }
     let cmd = s.command.replaceAll('$PORT', '$$$$PORT') // keep $PORT for the service's shell (process-compose would expand it)
     // the service dies with its wrapper (portless): no orphan keeps the port after a crash or kill
     // secrets the service declares: opened at every start (the runtime folder is memory-backed: gone after a reboot)
@@ -208,6 +221,7 @@ export function up(root: string): Step[] {
   for (const [n, s] of Object.entries(services)) {
     const bind = s.public_bind, port = s.public_port
     if (!port || !bind || /^(127\.|localhost$|::1$)/.test(bind)) continue
+    if (hold) { held_back.push(`${n}-public`); continue }
     processes[`${a.project}.${n}-public`] = {
       namespace: a.project, command: `${pdeath}socat TCP-LISTEN:${port},bind=${bind},reuseaddr,fork TCP:127.0.0.1:${port}`, working_dir: root,
       log_location: join(root, '.run', 'logs', `${n}-public.log`),
@@ -225,13 +239,14 @@ export function up(root: string): Step[] {
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
   writeFileSync(join(root, '.run', 'endpoints.json'), JSON.stringify(ep, null, 2))
   steps.push({ step: 'services', status: 'ok', detail: `${Object.keys(processes).length} processes, namespace ${a.project}` })
+  if (hold) steps.push({ step: 'held', status: 'skip', detail: `restore hold: not started: ${held_back.join(', ') || 'nothing'}; no public routes (mm restore --release)` })
   if (!pcRunning()) { steps.push({ step: 'process manager', status: 'fail', detail: 'not running and could not be started: run `mm onboard`' }); return steps }
   const r = loadAll()
   steps.push({ step: 'process manager', status: r.ok ? 'ok' : 'fail', detail: r.ok ? 'loaded (project update)' : r.err.trim().slice(0, 200) })
   run(['process-compose', '-U', '-u', DIRS.socket, 'namespace', 'start', a.project])
   // public routes (domain mode): the machine's `expose` tool writes the router entry
   for (const [, s] of Object.entries(services)) {
-    if (!s.public_port || !s.public) continue
+    if (!s.public_port || !s.public || hold) continue
     if (!run(['sh', '-c', 'command -v expose']).ok) { steps.push({ step: `public ${s.public.name}`, status: 'fail', detail: 'no `expose` tool on this machine' }); continue }
     const r = run(['expose', s.public.name, String(s.public_port), ...(s.public.auth === 'required' ? ['--auth'] : [])], { timeoutMs: 30_000 })
     steps.push({ step: `public ${s.public.name}`, status: r.ok ? 'ok' : 'fail', detail: r.ok ? `${s.public_url}${s.public.auth === 'required' ? ' (password)' : ''}` : (r.err || r.out).trim().slice(0, 160) })

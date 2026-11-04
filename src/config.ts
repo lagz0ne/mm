@@ -37,3 +37,7 @@ export function when(expr: string | undefined, c: Config): boolean {
   const v = String(getPath(c, m[1]) ?? '')
   return m[2] === '==' ? v === m[3] : v !== m[3]
 }
+
+/** A restored box holds back everything outward-facing until the human says the old box is down (docs/restore.md):
+ *  `restore.hold` in config.yaml, set by mm restore, lifted only by `mm restore --release` (never on a drill box). */
+export const held = (c: Config = loadConfig()) => getPath(c, 'restore.hold') === true

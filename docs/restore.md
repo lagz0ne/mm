@@ -1,8 +1,8 @@
 # mm sync, whole-machine restore, and the drill
 
-Design (sy-240; review's conditions sy-fto and sy-4in; the vault, docs/vault.md). Status: `mm sync` **built** (`src/sync.ts`, `test/sync.sh`). `mm restore <repo>` **built up to the data**
-(`src/restore.ts`, `test/restore.sh`: trust, MANIFEST, unseal, reseal, repos and board data in place, nothing started).
-Bringing the boards up, the outward gate and the container drill: **design**.
+Design (sy-240; review's conditions sy-fto and sy-4in; the vault, docs/vault.md). Status: **built.** `mm sync` (`src/sync.ts`, `test/sync.sh`); `mm restore <repo>` with the restore hold and
+`--release` (`src/restore.ts`, `test/restore.sh`); the container drill (`test/restore-drill.sh`). Still design: the
+hidden prompt for the recovery identity (today: `--identity <file>`), and a production drill, which is the human's.
 
 ## What mastermind holds
 A private git repo (the machine's backup), laid out like `$MM_HOME` but only what can't be rebuilt:
@@ -71,21 +71,33 @@ So restore applies only what it can verify:
    file (`--identity`), read by `age` only; its public key must be the recovery key in `vault/recipients.txt`. The
    hidden prompt comes with the next part. A box with any of mm's state on it is refused: restore is for a blank box,
    and it always lays out one-root (a restore is also how a legacy box moves);
-3. opens `config.yaml`, lays out `$MM_HOME`, runs `mm onboard` (tools, process manager, observability);
+3. opens `config.yaml`, lays out `$MM_HOME`, runs `mm onboard` (tools, process manager, observability). **Built:**
+   a blank box has no `age` yet, so restore installs it first from the signed distro package the manifest names.
+   The **restore hold** (`restore.hold` in `config.yaml`) is written with the config, before anything can start;
 4. reseals the vault to a new machine key (`resealWith`, docs/vault.md); the identity is dropped from memory;
 5. restores the brain (clone from its bundle; the human applies its migrations, which are root), then the system board
    and every project (`mm restore` of each: config repo, board data, code) and starts them. **Built:** each repo
    comes back from its bundle with every branch (`mm-template` too) and no remote; the answers' `root:` is pointed at
    the new folder; the board data (Dolt backup, JSONL, releases) is staged in `<root>/.restore` (0700) for the board's
-   first start, which is the next part;
+   first start. Then each board comes up: its tools (checksums), a fresh Beads database (`bin/init`) replaced by the
+   backup (`dolt backup restore --force`, history included), the database's own project identity written back into
+   `control/.beads/metadata.json` (bd refuses to connect on a mismatch, and `bin/init` made a new one), the board
+   build, the governance render, the lead worktrees, and its services. Every record of the backup's JSONL must be on
+   the board again (the box may add its own meanwhile, e.g. the watchdog's incidents); `.restore` is removed then. `--data-only` stops before onboard (the hermetic test);
 6. **before anything outward-facing** (public routes, the tunnel, the Telegram bot, leads, git push): stops and asks
-   the human to confirm the old box is down, or that this is a migration. Typed only (sy-4in 3).
+   the human to confirm the old box is down, or that this is a migration. Typed only (sy-4in 3). **Built:** while the
+   hold is on, `mm up` starts only what stays inside the box: services that declare `outward: false`, and mm's own
+   board engine (`dolt`, `bd-serve`, `board`); anything else (`wake`, which starts leads; the `app` slot; any unknown
+   service) is held back and listed, and there are no public routes or forwarders. `mm sync` refuses (the old box may
+   still be writing mastermind). `mm restore --release` lifts the hold: it reads a typed phrase from the terminal
+   (`/dev/tty`, not stdin; refused inside an agent), then starts every board fully. The tunnel and the Telegram
+   bridge are the brain's services (its migrations, which the human applies), so they wait for the human anyway.
 
 ## The drill (sy-4in)
 `mm restore --drill <mastermind>` in a throwaway box:
-- the same steps, except that **nothing outward-facing starts**: services declare `outward: true` (anything unknown counts
-  as outward) and are listed as suppressed; no leads start; no push. Each sealed file is opened to a hash only and
-  compared with `MANIFEST` and `vault/digests.txt`;
+- the same steps, except that **nothing outward-facing starts, ever**: the hold is marked `restore.drill`, and
+  `--release` refuses on a drill box. Every sealed file is checked against `MANIFEST`, every vault secret is opened
+  with the new machine key to memory only (`vault/digests.txt` checked first);
 - the report: boards up (each answers), items there (counts per board vs the backup), each sealed input opened, what was
   suppressed, the teardown (tmpfs and decrypted copies gone);
 - `test/restore-drill.sh` runs it in a container on this machine against a **synthetic** mastermind (a throwaway vault

@@ -42,7 +42,7 @@ EOF
 }
 board "$MM_HOME/system" mm box system system 0
 board "$MM_HOME/projects/acme/shop" acme shop acme-shop project 1
-git init -q --bare "$R"
+git init -q --bare --initial-branch=master "$R"   # its HEAD names a branch mm sync never pushes (seen on a real box)
 age-keygen -o "$T/recovery.key" 2>/dev/null; REC=$(age-keygen -y "$T/recovery.key"); age-keygen -o "$T/other.key" 2>/dev/null
 ssh-keygen -q -t ed25519 -N '' -C human -f "$T/human"; ssh-keygen -q -t ed25519 -N '' -C mallory -f "$T/mallory"
 echo "human namespaces=\"git\" $(cat "$T/human.pub")" >"$T/allowed_signers"
@@ -64,11 +64,11 @@ check "a wrong typed hash: refused" bash -c "! mm restore '$R' --identity '$T/re
 check "a short typed hash (under 12): refused" bash -c "! mm restore '$R' --identity '$T/recovery.key' --accept '${C2:0:8}'"
 check "the wrong identity: refused, nothing written" bash -c "mm restore '$R' --identity '$T/other.key' --accept '$C2' 2>&1 | tee -a '$LOG' | grep -q 'not the recovery key' && ! test -e '$MM_HOME/vault/key' && ! test -e '$MM_HOME/config.yaml'"
 box b2
-mm restore "$R" --identity "$T/recovery.key" --allowed-signers "$T/allowed_signers" -o json >"$T/b2.json" 2>>"$LOG" && ok "with the human's allowed signers: restored" || { bad "restore (signed)"; tail -5 "$LOG"; cat "$T/b2.json" | tail -5; }
+mm restore --data-only "$R" --identity "$T/recovery.key" --allowed-signers "$T/allowed_signers" -o json >"$T/b2.json" 2>>"$LOG" && ok "with the human's allowed signers: restored" || { bad "restore (signed)"; tail -5 "$LOG"; cat "$T/b2.json" | tail -5; }
 check "...the human's signed tag, not the newer one signed by someone else" bash -c "jq -e '[.[] | .detail] | (map(select(test(\"drill-2: no valid signature\"))) | length == 1) and (map(select(test(\"signed tag drill-1\"))) | length == 1)' '$T/b2.json'"
 check "...c1's content (the unsigned c2 listed, not applied)" bash -c "! grep -q more '$MM_HOME/brain/memory/fact.md' && jq -e '[.[] | .detail] | map(select(test(\"unsigned commit.*not applied\"))) | length == 1' '$T/b2.json'"
 box c
-mm restore "$R" --identity "$T/recovery.key" --accept "$C2" -o json >"$T/c.json" 2>>"$LOG" && ok "with the typed HEAD hash: restored" || { bad "restore (typed)"; tail -5 "$LOG"; tail -5 "$T/c.json"; }
+mm restore --data-only "$R" --identity "$T/recovery.key" --accept "$C2" -o json >"$T/c.json" 2>>"$LOG" && ok "with the typed HEAD hash: restored" || { bad "restore (typed)"; tail -5 "$LOG"; tail -5 "$T/c.json"; }
 check "...HEAD's content" grep -q more "$MM_HOME/brain/memory/fact.md"
 
 echo '== what landed (box c)'
@@ -88,8 +88,18 @@ check "no work folder left (unsealed copies removed)" bash -c "! ls -d '$MM_HOME
 check "the identity is not copied anywhere on the box" bash -c "! grep -rqF \"\$(grep -v '^#' '$T/recovery.key')\" '$HOME'"
 check "no value in any output" bash -c "! grep -qF '$V' '$LOG' '$T/c.json' '$T/b2.json'"
 
+echo '== the hold (box c)'
+check "the restored box is on hold" bash -c "mm config get restore.hold | grep -qx true"
+check "mm sync refuses on a held box (the old box may still be up)" bash -c "mm sync 2>&1 | grep -q 'restore on hold'"
+check "--release needs a terminal: a pipe is not enough, the hold stays" bash -c "echo 'the old box is down' | mm restore --release; mm config get restore.hold | grep -qx true"
+if command -v script >/dev/null; then
+  check "--release with the wrong words: the hold stays" bash -c "printf 'yes\n' | script -qec 'mm restore --release' /dev/null; mm config get restore.hold | grep -qx true"
+  box e; mm restore --data-only --drill "$R" --identity "$T/recovery.key" --accept "$C2" >>"$LOG" 2>&1
+  check "a drill box can never be released, even with the right words" bash -c "printf 'the old box is down\n' | script -qec 'mm restore --release' /dev/null | grep -q 'never goes outward' && mm config get restore.hold | grep -qx true"
+fi
+
 echo '== a tampered mastermind'
-git clone -q "$R" "$T/evil" && printf 'x' >>"$T/evil/brain/repo.bundle.age" && git -C "$T/evil" commit -qam evil --no-verify && E=$(git -C "$T/evil" rev-parse HEAD)
+git clone -q -b main "$R" "$T/evil" && printf 'x' >>"$T/evil/brain/repo.bundle.age" && git -C "$T/evil" commit -qam evil --no-verify && E=$(git -C "$T/evil" rev-parse HEAD)
 box d
 check "a sealed file changed after MANIFEST: refused, even with the typed hash" bash -c "mm restore '$T/evil' --identity '$T/recovery.key' --accept '$E' 2>&1 | grep -q 'sha256 differs from MANIFEST' && ! test -e '$MM_HOME/config.yaml'"
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
