@@ -1,7 +1,7 @@
 # mm.auth: one sign-in for every board
 
-Design for the sign-in gateway (a machine service under mm, namespace `mm`). Identity comes from the owner's chat bot
-(one-time links); the gateway turns a link into a session, answers the router's forward-auth for each board, and tells
+Design for the sign-in gateway (a machine service under mm, namespace `mm`). Identity comes from the owner's chat bot:
+a code shown on the sign-in page is approved there; the gateway turns that approval into a session, answers the router's forward-auth for each board, and tells
 the board who is asking in a way the board can verify. Status: **design, for review before it is built.**
 
 ## Hosts and cookies
@@ -13,22 +13,35 @@ the board who is asking in a way the board can verify. Status: **design, for rev
   (`*.b.<domain>`) is still recommended, because it keeps product code from ever being same-site with a board. That
   choice is the machine's routing and DNS, not the gateway's.
 
-## Sign-in flow
-1. The bot (owner or granted person) asks the gateway, over its local socket, for a one-time token bound to their id
-   and boards. It sends `https://auth.<domain>/#t=<token>&b=<board host>`.
-2. The sign-in page reads the fragment **first** and calls `history.replaceState` to drop it. It loads no third-party
-   script and is served with `Content-Security-Policy: default-src 'self'; script-src 'self'`,
-   `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. It POSTs the token in the body.
-3. The gateway **burns the token atomically**: lookup by sha256(token), with a constant-time compare of the stored hash
-   and delete in the same step of a single-writer store. Two posts of one token can't both win. It is valid for 5 min.
-   On success it rotates the session id and sets `mm_auth`.
-4. For each board, it sends a **302 to `https://<board host>/_mm/auth/callback?c=<code>`**. The code is single-use,
-   30 s, and bound to that board host and that session. The board route sends `/_mm/auth/*` to the gateway, which
-   burns the code and sets `mm_board` on the board host. It then redirects to `/`.
-5. Later visits: if a board request has no or a stale `mm_board`, the gateway's forward-auth answers 302 to
-   `auth.<domain>/s?b=<host>`. With a live `mm_auth` that is immediate (step 4 again, no new link); without one, the
-   page says "ask the bot for /ui". A tap on a link in the chat app is cross-site, so `mm_board` (Strict) is not sent,
-   but `mm_auth` (Lax) is: one redirect hop, no new sign-in.
+## Sign-in flow: a code on the screen, approved over Telegram
+No token in a link, no password. The code grants nothing by itself; only an approval in the chat does.
+1. A visitor without a session reaches `https://auth.<domain>/s?b=<board host>` (forward-auth sends them there). The
+   page creates a **pending sign-in**: a random id (32 bytes) in a host-only cookie on the auth host (`mm_pending`,
+   HttpOnly, Secure, SameSite=Lax, 5 min), and an **8-character code** shown on the screen, `XXXX-XXXX` from an
+   alphabet without look-alikes (Crockford base32: no 0/O, 1/I/L, U). The code is stored hashed, bound to that pending
+   id (so to that browser), single use, and lives 5 min. The page loads no third-party script and is served with
+   `Content-Security-Policy: default-src 'self'`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+2. The page waits: it asks the gateway every 2 s, with its `mm_pending` cookie, whether the code was approved.
+3. **Approval** comes over the gateway's local socket from the bot, in one of two ways:
+   - **self:** a granted person sends the code to the bot. Before approving, the bot shows what is asking, "Sign in
+     to <board> on <browser, OS, approximate place, time>? [This is me] [No]", and approves only on the tap. That is
+     the defence against code phishing (someone sending you *their* code to approve): never approve on paste alone.
+     Identity = the sender's Telegram account; scope = their grants.
+   - **by the owner:** `/approve <code> as <name> for <scope> <duration>` from the owner's Telegram id. That grants a
+     named guest on the spot (even someone without Telegram) and approves this one code. The name follows the
+     member naming rules below; the grant is recorded like any other (and revocable).
+4. The gateway **burns the code atomically**: lookup by sha256(code), constant-time compare of the stored hash, and
+   delete in the same step of the single-writer store, so two approvals of one code can't both win. Then the waiting
+   page's next poll turns its pending id into a **session**: a new session id (rotated, never the pending id), and the
+   `mm_auth` cookie (host-only, see above). The pending cookie is deleted.
+5. **Limits:** codes are 40 bits and live 5 min; the gateway allows at most 5 wrong codes per Telegram id per 10 min
+   and 100 per hour in all, and logs each refusal. A pending sign-in that isn't approved in 5 min is gone; the page
+   offers a new code.
+6. **Then each board** (unchanged): a **302 to `https://<board host>/_mm/auth/callback?c=<one-time code>`**, single
+   use, 30 s, bound to that board host and that session. The board route sends `/_mm/auth/*` to the gateway, which
+   burns it and sets `mm_board` on the board host, then redirects to `/`. Later visits with a live `mm_auth` repeat
+   this step at once; a tap on a chat link is cross-site, so `mm_board` (Strict) is not sent but `mm_auth` (Lax) is:
+   one redirect hop, no new code.
 
 ## What the board trusts
 - The router strips every client `X-Board-*` and `X-Mm-Assertion` header **before** forward-auth (a headers middleware
@@ -90,8 +103,9 @@ at `warn` for refusals. The logs carry no token, code, cookie or session id, onl
 They are shipped to the logs store; review audits them.
 
 ## Tests (before any route uses it)
-- Token: single use under two concurrent posts, expiry, wrong board, fragment removed (history), headers on the
-  sign-in page.
+- Code: single use under two concurrent approvals, expiry, bound to its browser (another browser's poll gets
+  nothing), the wrong-code limits, headers on the sign-in page; an owner approval creates a named grant; the bot
+  refuses to approve without the "This is me" tap.
 - Board trust: a request straight to a board port with forged `X-Board-*` and no assertion gets the sign-in page; a
   valid assertion for another board is refused; an expired one is refused; a viewer's POST is refused.
 - Cookies: host-only attributes; `mm_board` replayed on another board host is refused; revoke takes effect on the next
