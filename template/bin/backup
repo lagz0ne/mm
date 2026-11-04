@@ -21,7 +21,7 @@ DB=$(sed -n 's/.*"dolt_database": *"\([^"]*\)".*/\1/p' "$P/control/.beads/metada
 export DOLT_ROOT_PATH="$P/.dolt-root" XDG_CONFIG_HOME="$P/.config" DOLT_CLI_PASSWORD=""
 "$P/tools/dolt" --host 127.0.0.1 --port "$PORT" --no-tls -u root --use-db "$DB" sql -q "CALL dolt_backup('sync-url', 'file://$D/board.dolt')" >/dev/null
 (cd "$P/control" && "$P/bin/bd" export --all -o "$D/board.jsonl" >/dev/null 2>&1 || "$P/bin/bd" export --all > "$D/board.jsonl")
-git -C "$P/code" bundle create -q "$D/code.bundle" --all
+[ ! -d "$P/code/.git" ] || git -C "$P/code" bundle create -q "$D/code.bundle" --all   # boards without a product repo (system) have no code/
 git -C "$P" bundle create -q "$D/config.bundle" --all
 [ -f "$P/.releases" ] && cp "$P/.releases" "$D/releases"
 ls -1d "$ROOT"/20*/ 2>/dev/null | head -n -14 | xargs -r rm -rf
