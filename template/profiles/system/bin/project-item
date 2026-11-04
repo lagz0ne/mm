@@ -17,7 +17,9 @@ try { root = JSON.parse(execFileSync('mm', ['inspect', ref, '-o', 'json'], { enc
 }
 const self = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 if (path.resolve(root) === self) { console.error('project-item: that is this board; use bd create'); process.exit(2) }
-const role = (process.cwd().match(/\/leads\/([\w-]+)/) || [])[1] || 'human'
+// who asks: a lead (its folder), or the human at the system board (the board passes their name), else `human`
+const role = (process.env.PROJECT_ITEM_ACTOR && /^[a-z][\w.-]{0,31}$/.test(process.env.PROJECT_ITEM_ACTOR) && process.env.PROJECT_ITEM_ACTOR)
+  || (process.cwd().match(/\/leads\/([\w-]+)/) || [])[1] || 'human'
 const args = ['create', title, '-d', opt('-d', ''), '-t', opt('-t', 'task'), '-p', opt('-p', '2'), '--actor', `system/${role}`, '--json']
 const who = opt('--assignee'); if (who) args.push('--assignee', who)
 const out = JSON.parse(execFileSync(path.join(root, 'bin', 'bd'), args, { cwd: root, encoding: 'utf8' }))

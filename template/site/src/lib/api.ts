@@ -75,6 +75,7 @@ export interface Meta {
   roles?: import('@/lib/board').RoleDef[]
   raci?: { activities: { id: string; title: string; raci: Record<string, string> }[] } | null
   last: Record<string, { author: string; at: string }>
+  panels?: string[] // turned on by the board's env (BOARD_PANELS), e.g. the system board's machine panel
 }
 
 export const api = {

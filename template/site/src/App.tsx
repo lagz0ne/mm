@@ -17,6 +17,8 @@ import { CardPresence, NowStrip, PresenceBar, PresenceContext, RowPresence, useP
 const loadDetail = () => import('@/Detail'), loadLeads = () => import('@/Leads')
 const Detail = lazy(() => loadDetail().then((m) => ({ default: m.Detail })))
 const Leads = lazy(() => loadLeads().then((m) => ({ default: m.Leads })))
+const Machine = lazy(() => import('@/Machine').then((m) => ({ default: m.Machine })))
+const viewOf = (h: string) => (h === '#leads' ? 'leads' : h === '#machine' ? 'machine' : 'board')
 if (typeof window !== 'undefined') window.addEventListener('load', () => setTimeout(() => { loadDetail(); loadLeads() }, 1500))
 const EMPTY_META: Meta = { project: '', leads: {}, creators: {}, last: {} }
 const SLOW_MIN = 15 // a ready item nobody picked up for this long turns red
@@ -36,7 +38,7 @@ export default function App() {
   const [creating, setCreating] = useState(false)
   const [meta, setMeta] = useState<Meta>(EMPTY_META)
   const presence = usePresenceFeed()
-  const [view, setView] = useState(() => (window.location.hash === '#leads' ? 'leads' : 'board'))
+  const [view, setView] = useState(() => viewOf(window.location.hash))
   const [, setNow] = useState(0) // re-render each poll so "waiting 3m" ages
   const [tick, setTick] = useState(0) // bumps when anything changes, so an open detail reloads
   const search = useRef<HTMLInputElement>(null)
@@ -84,7 +86,7 @@ export default function App() {
   }, [load])
 
   useEffect(() => {
-    const onHash = () => setView(window.location.hash === '#leads' ? 'leads' : 'board')
+    const onHash = () => setView(viewOf(window.location.hash))
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
@@ -151,8 +153,8 @@ export default function App() {
         <div className="col-span-12 flex items-end gap-6 md:col-span-5">
           <h1 className="text-4xl leading-none font-bold tracking-tight">{meta.project || '…'}</h1>
           <nav className="flex gap-4 pb-0.5 text-[13px] font-semibold">
-            {(['board', 'leads'] as const).map((v) => (
-              <a key={v} href={v === 'board' ? '#' : '#leads'}
+            {(['board', 'leads', ...(meta.panels?.includes('machine') ? ['machine' as const] : [])] as const).map((v) => (
+              <a key={v} href={v === 'board' ? '#' : `#${v}`}
                 className={cn('border-b-2 pb-0.5 capitalize', view === v ? 'border-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>{v}</a>
             ))}
             {links.map((l) => (
@@ -177,7 +179,7 @@ export default function App() {
         </dl>
       </header>
 
-      {view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
+      {view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
       <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-6 py-2.5">
         <ToggleGroup type="single" value={role} onValueChange={(v) => v && setRole(v)} variant="outline" size="sm" spacing={0}>
           <ToggleGroupItem value="all">All</ToggleGroupItem>

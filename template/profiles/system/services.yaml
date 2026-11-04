@@ -22,7 +22,7 @@ services:
   board:
     about: The system board (web UI + API proxy). Not public.
     command: "node {root}/site/server.mjs"
-    env: { HOST: 127.0.0.1, BD_SERVE: "{url:bd-serve}", MERMAN_BIN: merman-cli }
+    env: { HOST: 127.0.0.1, BD_SERVE: "{url:bd-serve}", MERMAN_BIN: merman-cli, BOARD_PANELS: machine }   # the machine panel (template site)
     port: http
     depends_on: { bd-serve: ready }
     ready: { http: /api/whoami }

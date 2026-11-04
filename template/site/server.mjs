@@ -12,7 +12,7 @@ import { configApi } from './config-api.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const DIST = path.join(here, 'dist')
-import { projectName, requireUrl, servicesDef, svcPublic } from '../bin/lib/svc.mjs'
+import { dirs, projectName, requireUrl, servicesDef, svcPublic } from '../bin/lib/svc.mjs'
 // PORT is assigned by the process manager (portless); HOST is where the machine wants services bound.
 const PORT = Number(process.env.PORT || process.env.BOARD_PORT)
 if (!PORT) { console.error('board: set PORT'); process.exit(2) }
@@ -200,8 +200,61 @@ async function sendMeta(res) {
     try { personas = JSON.parse(readText('leads/personas.json') || 'null') } catch {}
     let raci = null
     try { raci = JSON.parse(readText('leads/raci.json') || 'null') } catch {}
-    send(res, 200, { project: PROJECT, leads: l, creators: meta.creators, last: meta.last, personas, roles: ROLE_DEFS, raci })
+    send(res, 200, { project: PROJECT, leads: l, creators: meta.creators, last: meta.last, personas, roles: ROLE_DEFS, raci, panels: PANELS })
   } catch (e) { send(res, 502, { title: 'meta failed', detail: e.message }) }
+}
+
+// ---------- panels (off unless the board's env turns them on: BOARD_PANELS=machine; the system profile does) ----------
+// machine: the box's state (brain status + score, observability) and one row per project (mm ls + mm obs status), with a
+// row action that files an item on that project's own board (bin/project-item; the system never edits a project).
+const PANELS = (process.env.BOARD_PANELS || '').split(',').map((x) => x.trim()).filter(Boolean)
+const MM_BIN = process.env.MM_BIN || 'mm'
+const sh = (cmd, args, timeout = 60000) => new Promise((ok) => execFile(cmd, args, { timeout, maxBuffer: 4 << 20 }, (err, out, errOut) =>
+  ok({ ok: !err, code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, out: String(out || ''), err: String(errOut || '').slice(0, 500) })))
+const jsonOf = (r) => { try { return JSON.parse(r.out) } catch { return null } }
+let machineCache = { at: 0, data: null, pending: null }
+async function machine() {
+  const brainBin = path.join(dirs().brain, 'bin', 'brain'), hasBrain = fs.existsSync(brainBin)
+  const [st, sc, ls, obs] = await Promise.all([hasBrain ? sh(brainBin, ['status'], 120000) : null, hasBrain ? sh(brainBin, ['score', '--json'], 120000) : null,
+    sh(MM_BIN, ['ls', '-o', 'json']), sh(MM_BIN, ['obs', 'status', '-o', 'json'], 30000)])
+  const lines = st ? st.out.split('\n').filter((l) => l.startsWith('[brain] ')).map((l) => l.slice(8)) : []
+  const kind = (l) => (/^(ALERT|LINT ERROR|UNCOVERED|ACTIVE RUN|WEEKLY HOUSEKEEPING DUE)\b/.exec(l)?.[1] || 'info').toLowerCase()
+  const o = jsonOf(obs) || {}, byProject = Object.fromEntries((o.projects || []).map((r) => [r.project, r]))
+  return {
+    at: new Date().toISOString(),
+    brain: hasBrain ? { ok: !!st?.ok, lines: lines.map((text) => ({ kind: kind(text), text })), score: jsonOf(sc), error: st?.ok ? undefined : st?.err } : null,
+    obs: { ok: obs.ok, stores: o.stores || [] },
+    projects: (jsonOf(ls) || []).map((p) => ({ ...p, self: p.project === PROJECT, ...(byProject[p.project] ? { logs: Number(byProject[p.project].logs), errors: Number(byProject[p.project].errors), spans: Number(byProject[p.project].spans), failed_spans: Number(byProject[p.project].failed_spans) } : {}) })),
+  }
+}
+async function sendMachine(res) {
+  const now = Date.now()
+  if (!machineCache.data || now - machineCache.at > 30000) {
+    machineCache.pending ||= machine().then((d) => { machineCache = { at: Date.now(), data: d, pending: null } }).catch((e) => { machineCache.pending = null; throw e })
+    if (!machineCache.data) await machineCache.pending // first load waits; later ones serve the last answer while refreshing
+  }
+  send(res, 200, machineCache.data)
+}
+// File an item on a project's own board, as the human at this board (system/<name>), through bin/project-item.
+async function sendProjectItem(req, res) {
+  if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { title: 'JSON only' })
+  const actor = who(req)
+  if (!validName(actor) || actor === ACTOR) return send(res, 401, { title: 'Name yourself on this board first (top right): the item says who asked.' })
+  let b
+  try { b = JSON.parse((await readBody(req)) || '{}') } catch { return send(res, 400, { title: 'Bad JSON' }) }
+  const title = String(b.title || '').trim(), desc = String(b.description || '').trim(), assignee = String(b.assignee || '').trim()
+  const type = ['task', 'bug', 'feature'].includes(b.type) ? b.type : 'task', prio = Number.isInteger(b.priority) && b.priority >= 0 && b.priority <= 4 ? b.priority : 2
+  if (!title || title.length > 200) return send(res, 400, { title: 'A title of 1–200 characters' })
+  if (desc.length > 8000) return send(res, 400, { title: 'Description too long (8000 max)' })
+  if (assignee && !/^[a-z][\w-]{0,31}$/.test(assignee)) return send(res, 400, { title: 'Assignee: a role id (e.g. setup)' })
+  const known = (jsonOf(await sh(MM_BIN, ['ls', '-o', 'json'])) || []).map((p) => p.project)
+  if (!known.includes(b.project) || b.project === PROJECT) return send(res, 400, { title: `Unknown project (or this board): ${String(b.project).slice(0, 40)}` })
+  const args = [b.project, title, '-d', desc, '-t', type, '-p', String(prio), ...(assignee ? ['--assignee', assignee] : [])]
+  const r = await new Promise((ok) => execFile(path.join(ROOT, 'bin', 'project-item'), args, { timeout: 60000, env: { ...process.env, PROJECT_ITEM_ACTOR: actor } },
+    (err, out, errOut) => ok({ ok: !err, out: String(out || '').trim(), err: String(errOut || '').trim().slice(0, 300) })))
+  if (!r.ok) return send(res, 502, { title: r.err || 'project-item failed' })
+  log('info', `project item ${r.out} by ${actor}`, { op: 'project-item', project: b.project, actor })
+  send(res, 200, { id: r.out.split(' ')[0], text: r.out })
 }
 
 // Lead settings: what each lead is told (CLAUDE.md chain + start message), its skills and permissions. Read-only.
@@ -514,6 +567,8 @@ async function handle(req, res) {
   const cm = /^\/api\/content\/([\w.-]+)$/.exec(url.pathname)
   if (cm && req.method === 'GET') return sendContent(res, cm[1]).catch((e) => send(res, 500, { title: e.message }))
   if (url.pathname.startsWith('/files/') && req.method === 'GET') return sendFile(res, decodeURIComponent(url.pathname.slice(7)), url.searchParams.get('rev'), url.searchParams.get('annotate') === '1')
+  if (PANELS.includes('machine') && url.pathname === '/api/machine' && req.method === 'GET') return sendMachine(res).catch((e) => send(res, 502, { title: e.message }))
+  if (PANELS.includes('machine') && url.pathname === '/api/project-item' && req.method === 'POST') return sendProjectItem(req, res).catch((e) => send(res, 500, { title: e.message }))
   if (url.pathname === '/api/settings' && req.method === 'GET') return sendSettings(res).catch((e) => send(res, 500, { title: e.message }))
   if (url.pathname.startsWith('/api/')) return proxy(req, res, url.pathname.slice(4), url.search)
   serveFile(res, url.pathname)

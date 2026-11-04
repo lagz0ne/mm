@@ -188,14 +188,16 @@ program.command('ship').description('(run by mm-pc) ship service log files to Vi
 
 const obs = program.command('obs').description('observability: the Victoria stack (metrics, logs, traces) and what it saw')
 obs.command('status').description('are the stores up; what came in during the last hour').action(async () => {
-  const o = fmt(), rows = await health()
-  print(rows, o, 'store')
-  if (rows.some((r) => r.status !== 'ok')) process.exit(1)
-  const logs = await logsql('_time:1h | stats by (project) count() as logs, count() if (level:error) as errors | sort by (project)', 100).catch(() => [])
-  const spans = await tracesql('_time:1h name:* | stats by ("resource_attr:service.namespace") count() as spans, count() if (status_code:2) as failed', 100).catch(() => [])
+  const o = fmt(), rows = await health(), down = rows.some((r) => r.status !== 'ok')
+  const logs = down ? [] : await logsql('_time:1h | stats by (project) count() as logs, count() if (level:error) as errors | sort by (project)', 100).catch(() => [])
+  const spans = down ? [] : await tracesql('_time:1h name:* | stats by ("resource_attr:service.namespace") count() as spans, count() if (status_code:2) as failed', 100).catch(() => [])
   const sp = Object.fromEntries(spans.map((r) => [r['resource_attr:service.namespace'] || 'mm', r]))
+  const projects = logs.map((r) => ({ project: r.project, logs: r.logs, errors: r.errors, spans: sp[r.project]?.spans ?? 0, failed_spans: sp[r.project]?.failed ?? 0 }))
+  if (o.format !== 'table') { console.log(o.format === 'json' ? JSON.stringify({ stores: rows, projects }, null, 2) : Bun.YAML.stringify({ stores: rows, projects }, null, 2)); process.exit(down ? 1 : 0) }
+  print(rows, o, 'store')
+  if (down) process.exit(1)
   console.log('')
-  print(logs.map((r) => ({ project: r.project, logs: r.logs, errors: r.errors, spans: sp[r.project]?.spans ?? 0, failed_spans: sp[r.project]?.failed ?? 0 })), o, 'project')
+  print(projects, o, 'project')
 })
 obs.command('errors').description('errors and failed operations, grouped (what the brain reads)')
   .option('--since <dur>', 'window, e.g. 15m 1h 1d', '1h').option('-p, --project <project>', 'one project (client-name)')
