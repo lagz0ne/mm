@@ -115,6 +115,43 @@ async function readBody(req) {
   return Buffer.concat(chunks).toString('utf8')
 }
 
+// The rails on the public side (people signed in through the gateway; leads write with bd, never through here):
+// members steer like the owner (create, prioritise, assign, comment, close, reopen), but only the owner gives the T2 go
+// (`approved`) or changes a risk tier (t1/t2/t3), and only the leads sign off or audit. Each write carries its
+// author's role: `by:<role>` on a new item, a `[<role>]` prefix on a comment. Unknown label fields: refused.
+const OWNER_ONLY = new Set(['approved', 't1', 't2', 't3']), LEADS_ONLY = new Set(['signed-off', 'audit'])
+function railRefusal(role, added, removed) {
+  for (const l of [...added, ...removed]) {
+    if (LEADS_ONLY.has(l)) return `only the leads change "${l}"`
+    if (OWNER_ONLY.has(l) && role !== 'owner') return `only the owner changes "${l}" (the T2 go and the risk tiers are the owner's)`
+    if (/^by:/.test(l)) return 'the author role label is set by the board'
+  }
+  return null
+}
+async function currentLabels(id) {
+  const r = await fetch(new URL(`/v0/beads/issues/${encodeURIComponent(id)}`, BD)).then((x) => x.json()).catch(() => null)
+  return Array.isArray(r?.labels) ? r.labels : null
+}
+async function rails(req, apiPath, data) {
+  const g = req.gateway; if (!g) return null // the local side: as before
+  if (req.method === 'POST' && apiPath === '/v0/beads/issues') {
+    const why = railRefusal(g.r, data.labels || [], []); if (why) return why
+    data.labels = [...new Set([...(data.labels || []), `by:${g.r}`])]
+  } else if (req.method === 'PATCH') {
+    const patch = data.patch || {}, keys = Object.keys(patch).filter((k) => /label/i.test(k))
+    if (keys.some((k) => !['labels', 'add_labels', 'remove_labels'].includes(k))) return 'unknown label field'
+    let added = [...(patch.add_labels || [])], removed = [...(patch.remove_labels || [])]
+    if (patch.labels) {
+      const cur = await currentLabels(apiPath.split('/').pop()); if (!cur) return 'could not read the item to check its labels'
+      added = added.concat(patch.labels.filter((l) => !cur.includes(l))); removed = removed.concat(cur.filter((l) => !patch.labels.includes(l)))
+    }
+    const why = railRefusal(g.r, added, removed); if (why) return why
+  } else if (apiPath.endsWith('/comments')) {
+    data.text = `[${g.r}] ${String(data.text || '')}`
+  }
+  return null
+}
+
 async function proxy(req, res, apiPath, search) {
   if (!ALLOW.some(([m, re]) => m === req.method && re.test(apiPath))) {
     return send(res, 403, { title: 'Not allowed from the board', path: apiPath })
@@ -124,6 +161,8 @@ async function proxy(req, res, apiPath, search) {
     let data = {}
     try { data = JSON.parse((await readBody(req)) || '{}') } catch { return send(res, 400, { title: 'Bad JSON' }) }
     const actor = who(req)
+    const refused = await rails(req, apiPath, data)
+    if (refused) { log('info', `refused on the public side: ${refused}`, { op: 'rails', actor, role: req.gateway?.r, path: apiPath }); return send(res, 403, { title: `Not allowed: ${refused}.` }) }
     if (apiPath.endsWith('/comments')) { data.author = actor; delete data.actor } else { data.actor = actor }
     if (req.method === 'POST' && apiPath === '/v0/beads/issues') data.owner = actor
     body = JSON.stringify(data)
