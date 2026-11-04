@@ -10,7 +10,7 @@ import { pcRunning, writeBase } from './pc'
 import { renderTo, template, templateCommit } from './template'
 import pkg from '../package.json'
 
-export interface Answers { client: string; name: string; project: string; short: string; root: string; template_version: string; created: string }
+export interface Answers { client: string; name: string; project: string; short: string; root: string; template_version: string; created: string; profile?: string }
 const ID = /^[a-z][a-z0-9-]{0,30}$/
 export const PROJECTS_PC = join(DIRS.pc, 'projects')
 
@@ -25,7 +25,7 @@ export const rootOf = (client: string, name: string) => join(DIRS.projects, clie
 export function findRoot(ref: string): string {
   const m = /^([a-z][a-z0-9-]{0,30})\/([a-z][a-z0-9-]{0,30})$/.exec(ref || '')
   if (m && existsSync(join(rootOf(m[1], m[2]), '.mm-answers.yaml'))) return rootOf(m[1], m[2])
-  const dirs: string[] = []
+  const dirs: string[] = [join(DIRS.brain, 'system')]
   for (const a of existsSync(DIRS.projects) ? readdirSync(DIRS.projects) : []) {
     dirs.push(join(DIRS.projects, a))
     try { for (const b of readdirSync(join(DIRS.projects, a))) dirs.push(join(DIRS.projects, a, b)) } catch {}
@@ -50,23 +50,26 @@ function hashPort(key: string): number {
 
 // ---------- mm new ----------
 type Step = { step: string; status: 'ok' | 'fail'; detail: string }
-export async function newProject(ref: string, short?: string): Promise<{ answers: Answers; steps: Step[] }> {
+export type NewOpts = { short?: string; profile?: string; root?: string; project?: string }
+export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answers: Answers; steps: Step[] }> {
   const { client, name } = parseRef(ref)
-  const root = rootOf(client, name)
-  if (existsSync(root)) throw new Error(`${root.replace(HOME, '~')} already exists`)
+  const profile = o.profile || 'project', product = profile === 'project'
+  const root = o.root || rootOf(client, name)
+  if (existsSync(join(root, '.mm-answers.yaml')) || (existsSync(root) && readdirSync(root).length)) throw new Error(`${root.replace(HOME, '~')} already exists`)
+  const short = o.short
   const steps: Step[] = []
   const step = (s: string, detail: string) => steps.push({ step: s, status: 'ok', detail })
   const must = (s: string, r: { ok: boolean; out: string; err: string }) => { if (!r.ok) throw new Error(`${s}: ${(r.err || r.out).trim().split('\n').slice(-3).join(' ')}`); step(s, (r.out.trim().split('\n').pop() || 'done').slice(0, 100)) }
   const answers: Answers = {
-    client, name, project: `${client}-${name}`, short: short || name.replace(/[^a-z]/g, '').slice(0, 2) || 'pj',
-    root, template_version: pkg.version, created: new Date().toISOString(),
+    client, name, project: o.project || `${client}-${name}`, short: short || name.replace(/[^a-z]/g, '').slice(0, 2) || 'pj',
+    root, template_version: pkg.version, created: new Date().toISOString(), ...(product ? {} : { profile }),
   }
   if (!/^[a-z]{1,8}$/.test(answers.short)) throw new Error('short (item id prefix) must be 1-8 letters')
 
   // 1. render the template
   const t = template()
   answers.template_version = t.version
-  const vars: Record<string, string> = { client, name, project: answers.project, short: answers.short, root, home: HOME }
+  const vars: Record<string, string> = { client, name, project: answers.project, short: answers.short, root, home: HOME, profile }
   renderTo(root, vars, t)
   writeFileSync(join(root, '.mm-answers.yaml'), `# Answers mm new used for this project (mm update renders the template again with these).\n${Bun.YAML.stringify(answers, null, 2)}\n`)
   step('template', `${t.files.length} files, version ${answers.template_version}`)
@@ -78,13 +81,15 @@ export async function newProject(ref: string, short?: string): Promise<{ answers
   // the pure render is main's first commit and the mm-template branch: the base for every later `mm update`
   const base = templateCommit(root, vars, `template ${t.version}`, undefined, t)
   must('template baseline', git(['reset', '-q', base])); git(['branch', 'mm-template', base])
-  mkdirSync(join(root, 'code'), { recursive: true })
-  const code = join(root, 'code')
-  git(['init', '-q', '-b', 'main'], code); git(['config', 'user.name', 'mm'], code); git(['config', 'user.email', `mm@${answers.project}.local`], code)
-  writeFileSync(join(code, '.gitignore'), 'node_modules/\ndata/\n.claude/settings.local.json\n')
-  writeFileSync(join(code, 'README.md'), `# ${name}\n\nProduct repo of ${answers.project}. Leads land work here; see ../CLAUDE.md.\n`)
-  git(['add', '-A'], code)
-  must('product repo', git(['commit', '-q', '-m', 'init'], code))
+  if (product) { // the product repo (code/); the system profile has none: its leads work on the machine's own repos
+    mkdirSync(join(root, 'code'), { recursive: true })
+    const code = join(root, 'code')
+    git(['init', '-q', '-b', 'main'], code); git(['config', 'user.name', 'mm'], code); git(['config', 'user.email', `mm@${answers.project}.local`], code)
+    writeFileSync(join(code, '.gitignore'), 'node_modules/\ndata/\n.claude/settings.local.json\n')
+    writeFileSync(join(code, 'README.md'), `# ${name}\n\nProduct repo of ${answers.project}. Leads land work here; see ../CLAUDE.md.\n`)
+    git(['add', '-A'], code)
+    must('product repo', git(['commit', '-q', '-m', 'init'], code))
+  }
 
   // 3. project-local tools (bd, dolt), verified against tools.json
   const tools = JSON.parse(readFileSync(join(root, 'tools.json'), 'utf8'))
@@ -110,13 +115,15 @@ export async function newProject(ref: string, short?: string): Promise<{ answers
   must('board build', run(['sh', '-c', 'npm ci --no-audit --no-fund --silent && npm run build --silent'], { cwd: join(root, 'site'), timeoutMs: 900_000 }))
   must('governance check', run([join(root, 'bin', 'config-check'), '--render'], { cwd: root }))
   git(['add', '-A'])
-  must('config commit', run(['git', 'commit', '-q', '-m', `mm new ${client}/${name} (template ${answers.template_version})`], { cwd: root, env: { SETUP_HUMAN: '1' } }))
+  must('config commit', run(['git', 'commit', '-q', '-m', `mm new ${client}/${name}${product ? '' : ` (profile ${profile})`} (template ${answers.template_version})`], { cwd: root, env: { SETUP_HUMAN: '1' } }))
   git(['config', 'core.hooksPath', 'ops/githooks'])
 
   // 5. lead worktrees (roles without workers)
-  const roles = JSON.parse(readFileSync(join(root, 'leads', 'roles.json'), 'utf8')).roles as { id: string; workers?: boolean }[]
-  for (const r of roles.filter((x) => !x.workers)) run([join(root, 'bin', 'wt'), `lead-${r.id}`], { cwd: root })
-  step('worktrees', roles.filter((x) => !x.workers).map((x) => `lead-${x.id}`).join(' '))
+  if (product) {
+    const roles = JSON.parse(readFileSync(join(root, 'leads', 'roles.json'), 'utf8')).roles as { id: string; workers?: boolean }[]
+    for (const r of roles.filter((x) => !x.workers)) run([join(root, 'bin', 'wt'), `lead-${r.id}`], { cwd: root })
+    step('worktrees', roles.filter((x) => !x.workers).map((x) => `lead-${x.id}`).join(' '))
+  }
 
   // 6. services into the machine's process manager
   steps.push(...up(root))

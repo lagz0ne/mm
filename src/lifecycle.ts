@@ -12,7 +12,7 @@ const short = (r: { out: string; err: string }) => (r.err || r.out).trim().split
 
 function varsOf(root: string) {
   const a = readAnswers(root)
-  return { a, vars: { client: a.client, name: a.name, project: a.project, short: a.short, root, home: HOME } as Record<string, string> }
+  return { a, vars: { client: a.client, name: a.name, project: a.project, short: a.short, root, home: HOME, profile: a.profile || 'project' } as Record<string, string> }
 }
 
 // ---------- mm update ----------

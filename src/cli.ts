@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 // mm: set up the stack on a machine, and stamp projects from the template.
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { Command, Option } from 'commander'
 import { getPath, loadConfig, saveConfig, setPath, unsetPath } from './config'
 import { doctor } from './doctor'
-import { DIRS, HOME } from './env'
+import { DIRS, HOME, run } from './env'
 import { manifest } from './manifest'
 import { onboard } from './onboard'
 import { archive, restore, update } from './lifecycle'
@@ -74,7 +76,7 @@ program.command('new <project>').description('stamp a project from the template:
   .action(async (ref: string, opts) => {
     const o = fmt()
     try {
-      const { answers, steps } = await newProject(ref, opts.short)
+      const { answers, steps } = await newProject(ref, { short: opts.short })
       if (o.format !== 'table') return console.log(o.format === 'json' ? JSON.stringify({ answers, steps }, null, 2) : Bun.YAML.stringify({ answers, steps }, null, 2))
       print(steps, o)
       const { services } = resolve(answers.root)
@@ -131,7 +133,24 @@ program.command('archive <project>').description('clean removal: stop + unload, 
 program.command('restore <tarball>').description('unpack an archived project and start it').action((tb: string) => {
   const o = fmt(), r = restore(tb); print(r.steps, o); process.exit(r.ok ? 0 : 1)
 })
-for (const [name, desc] of [['brain <action>', 'brain status|pull|push'], ['client <action>', 'client ls|add']] as const) {
+const sys = program.command('system').description('the system project: the machine\'s own board and leads (ops, review, platform, setup), in ~/brain/system')
+sys.command('init').description('make the system project (profile system) next to the brain')
+  .option('--name <host>', 'machine name (default: hostname -s)')
+  .action(async (opts) => {
+    const o = fmt()
+    if (!existsSync(DIRS.brain)) { console.error(`mm system init: ${DIRS.brain.replace(HOME, '~')} missing (the brain repo comes first)`); process.exit(1) }
+    const host = (opts.name || run(['hostname', '-s']).out.trim() || 'box').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^[^a-z]+/, '') || 'box'
+    const root = join(DIRS.brain, 'system')
+    if (run(['git', '-C', DIRS.brain, 'rev-parse', '--git-dir']).ok && !run(['git', '-C', DIRS.brain, 'check-ignore', '-q', 'system/']).ok)
+      console.error(`mm system init: note: add "/system/" to ${DIRS.brain.replace(HOME, '~')}/.gitignore (the system project is its own repo)`)
+    try {
+      const { answers, steps } = await newProject(`system/${host}`, { profile: 'system', root, project: 'system', short: 'sy' })
+      print(steps, o)
+      console.log(`\nsystem project at ${answers.root.replace(HOME, '~')}; start its leads: cd ${answers.root.replace(HOME, '~')} && for r in ops review platform setup; do bin/lead start $r; done`)
+      process.exit(steps.some((x) => x.status === 'fail') ? 1 : 0)
+    } catch (e) { console.error(`mm system init: ${(e as Error).message}`); process.exit(1) }
+  })
+for (const [name, desc] of [['client <action>', 'client ls|add']] as const) {
   program.command(name).description(`${desc} (not yet)`).action(() => { console.error(`mm ${name.split(' ')[0]}: not built yet`); process.exit(2) })
 }
 

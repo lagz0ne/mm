@@ -26,7 +26,7 @@ case "${1:-}" in
     for id in $(ids "$role"); do "$PASEO" archive "$id" >/dev/null && echo "archived previous $role lead $id"; done
     # its own worktree for docs/tests, unless it is setup or a role that works through workers
     workers=$(node -e "try{const r=require('$P/leads/roles.json').roles.find(x=>x.id==='$role');process.stdout.write(r&&r.workers?'1':'')}catch{}" 2>/dev/null)
-    [ "$role" = setup ] || [ -n "$workers" ] || "$P/bin/wt" "lead-$role" >/dev/null
+    [ "$role" = setup ] || [ -n "$workers" ] || [ ! -x "$P/bin/wt" ] || "$P/bin/wt" "lead-$role" >/dev/null  # no wt: a board without worktrees (system)
     "$P/bin/config-check" --render >/dev/null || { echo "lead: config-check failed; not starting $role" >&2; "$P/bin/config-check"; exit 1; }
     START=$P/leads/START.md; [ -f "$DIR/START.md" ] && START=$DIR/START.md
     name=$(node -e "try{process.stdout.write(require('$P/leads/personas.json').agents['$role'].name||'')}catch{}" 2>/dev/null)

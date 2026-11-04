@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // config-check — the governance rules, as code. Run by the setup agent and by the config repo's pre-commit hook.
 //   config-check            check the working tree
-//   config-check --staged   also refuse staged changes to setup/ (the setup agent's own brief/permissions; humans only)
+//   config-check --staged   also refuse staged changes to setup/ and governance.json (humans only)
 //   config-check --render   first write each .claude/settings.json from its settings.tmpl.json
 // Permission templates are written relative to the project root: `{root}` = this folder, `{home}` = $HOME, `{project}` = its name,
 // `{url:<service>}` = that service's URL at runtime. Read/Edit/Write
@@ -33,15 +33,33 @@ for (const r of DEF) {
 for (const d of fs.readdirSync(path.join(P, 'leads'), { withFileTypes: true })) if (d.isDirectory() && !ROLES.includes(d.name)) problems.push(`leads/${d.name}/ is not in roles.json`)
 
 /** Template → Claude Code settings: substitute {root}/{home}; make Read/Edit/Write paths absolute (`//…`). */
-function render(tmpl) {
+// Optional governance.json (humans only, like setup/): a stricter or wider profile than the default, as data.
+//   read: [path]          extra roots any lead may Read      write: {role: [path]}  extra roots that role may Edit/Write
+//   deny_all: [rule]      denies every role must keep        bash_ok: [regex]       allow rules exempt from the forbidden list
+//   hooks_required: [cmd] PreToolUse hook commands every role's settings must run
+// Paths and rules use {home}/{root}; Read/Edit/Write rules get Claude Code's // prefix like the templates.
+let G = {}
+try { G = JSON.parse(fs.readFileSync(path.join(P, 'governance.json'), 'utf8')) } catch (e) { if (fs.existsSync(path.join(P, 'governance.json'))) bad(`governance.json unreadable (${e.message})`) }
+const gfill = (v) => v.replaceAll('{root}', R).replaceAll('{home}', HOME)
+const grule = (r) => { const v = gfill(r); return /^(Read|Edit|Write)\(\//.test(v) ? v.replace(/^(Read|Edit|Write)\(\//, '$1(//') : v }
+const G_READ = (G.read || []).map(gfill), G_WRITE = Object.fromEntries(Object.entries(G.write || {}).map(([k, v]) => [k, v.map(gfill)]))
+const G_BASH_OK = (G.bash_ok || []).map((x) => new RegExp(x))
+function render(tmpl, role) {
   const fill = (v) => v.replaceAll('{root}', R).replaceAll('{home}', HOME).replaceAll('{project}', projectName())
     .replace(/\{url:([\w-]+)\}/g, (m, n) => svcUrl(n) || m) // where the process manager put that service
   const rule = (r) => { const m = /^(Read|Edit|Write)\((.*)\)$/.exec(r); const v = fill(r); return m && m[2].startsWith('{') ? v.replace(/^(Read|Edit|Write)\(\//, '$1(//') : v }
   const p = tmpl.permissions || {}
-  return { ...tmpl, permissions: { ...p,
+  // governance.json adds its denies and required hooks to every role, so no template can forget one
+  let hooks = tmpl.hooks ? JSON.parse(fill(JSON.stringify(tmpl.hooks))) : undefined
+  for (const h of (G.hooks_required || []).map(gfill)) {
+    if (JSON.stringify(hooks?.PreToolUse || []).includes(h)) continue
+    hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: 'Bash|Read|Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: h, timeout: 10 }] }] }
+  }
+  const govDeny = [...(role && ROLES.includes(role) ? mandatoryDeny(role) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
+  return { ...tmpl, ...(hooks ? { hooks } : {}), permissions: { ...p,
     ...(p.additionalDirectories ? { additionalDirectories: p.additionalDirectories.map(fill) } : {}),
     // a rule naming a service that doesn't run yet ({url:app} before the first deploy) is left out, not half-rendered
-    allow: (p.allow || []).map(rule).filter((r) => !r.includes('{url:')), deny: (p.deny || []).map(rule) } }
+    allow: (p.allow || []).map(rule).filter((r) => !r.includes('{url:')), deny: [...new Set([...(p.deny || []).map(rule), ...govDeny])] } }
 }
 const SETTINGS_DIRS = [...fs.readdirSync(path.join(P, 'leads'), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(P, 'leads', d.name)), path.join(P, 'setup')]
 for (const dir of SETTINGS_DIRS) {
@@ -50,7 +68,7 @@ for (const dir of SETTINGS_DIRS) {
   let tj
   try { tj = JSON.parse(fs.readFileSync(t, 'utf8')) } catch (e) { bad(`${path.relative(P, t)} is not valid JSON (${e.message})`); continue }
   if (JSON.stringify(tj).includes(R)) bad(`${path.relative(P, t)} hard-codes ${R}; write {root} instead`)
-  if (process.argv.includes('--render')) fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify(render(tj), null, 2) + '\n')
+  if (process.argv.includes('--render')) fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify(render(tj, path.basename(dir)), null, 2) + '\n')
 }
 
 function mandatoryDeny(role) {
@@ -59,6 +77,7 @@ function mandatoryDeny(role) {
     `Edit(/${R}/CLAUDE.md)`, `Write(/${R}/CLAUDE.md)`, `Edit(/${R}/worktrees/CLAUDE.md)`, `Write(/${R}/worktrees/CLAUDE.md)`,
     `Edit(/${R}/setup/**)`, `Write(/${R}/setup/**)`, `Edit(/${R}/release/**)`, `Write(/${R}/release/**)`]
   if (WORKERS.has(role)) d.push('mcp__paseo__get_agent_activity', `Edit(/${R}/worktrees/**)`, `Write(/${R}/worktrees/**)`)
+  d.push(...(G.deny_all || []).map(grule))
   return d
 }
 // Allow rules that would hand a lead arbitrary execution or reach outside its job. Project facts come from the folder
@@ -88,7 +107,13 @@ for (const role of ROLES) {
   try { j = JSON.parse(fs.readFileSync(f, 'utf8')) } catch (e) { bad(`${role}: settings.json is not valid JSON (${e.message})`); continue }
   const deny = new Set(j.permissions?.deny || [])
   for (const d of mandatoryDeny(role)) if (!deny.has(d)) bad(`${role}: settings.json lost the safety deny ${d}`)
-  for (const a of j.permissions?.allow || []) if (FORBIDDEN_ALLOW.some((re) => re.test(a))) bad(`${role}: forbidden allow rule ${a}`)
+  const under = (a, roots) => { const m = /^(Read|Edit|Write)\(\/(\/.*)\)$/.exec(a); return !!m && roots.some((r) => m[2].startsWith(r)) }
+  const okByGov = (a) => G_BASH_OK.some((re) => re.test(a)) || (/^Read\(/.test(a) && under(a, [...G_READ, ...(G_WRITE[role] || [])])) || (/^(Edit|Write)\(/.test(a) && under(a, G_WRITE[role] || []))
+  for (const a of j.permissions?.allow || []) if (FORBIDDEN_ALLOW.some((re) => re.test(a)) && !okByGov(a)) bad(`${role}: forbidden allow rule ${a}`)
+  // write roots of another role are never allowed (one writer per repo)
+  for (const [other, roots] of Object.entries(G_WRITE)) if (other !== role) for (const a of j.permissions?.allow || []) if (/^(Edit|Write)\(/.test(a) && under(a, roots)) bad(`${role}: writes ${other}'s area (${a})`)
+  const cmds = JSON.stringify(j.hooks?.PreToolUse || [])
+  for (const h of (G.hooks_required || []).map(gfill)) if (!cmds.includes(h)) bad(`${role}: settings.json must run the hook ${h}`)
   if (j.permissions?.defaultMode === 'bypassPermissions') bad(`${role}: bypassPermissions is not allowed`)
   const sk = path.join(P, 'leads', role, '.claude', 'skills')
   if (fs.existsSync(sk)) for (const name of fs.readdirSync(sk).filter((n) => !n.startsWith('.'))) {
@@ -128,12 +153,12 @@ if (fs.existsSync(rf)) {
     if (process.argv.includes('--render')) execFileSync(path.join(P, 'bin', 'raci'), ['render'], { cwd: P, stdio: 'ignore' })
   } catch (e) { bad(`raci.json unreadable (${e.message})`) }
 }
-for (const f of ['CLAUDE.md', 'leads/CLAUDE.md', 'leads/START.md', 'worktrees/CLAUDE.md']) if (!fs.existsSync(path.join(P, f))) bad(`missing ${f}`)
+for (const f of ['CLAUDE.md', 'leads/CLAUDE.md', 'leads/START.md', ...(WORKERS.size ? ['worktrees/CLAUDE.md'] : [])]) if (!fs.existsSync(path.join(P, f))) bad(`missing ${f}`)
 
 if (process.argv.includes('--staged')) {
   const staged = execFileSync('git', ['-C', P, 'diff', '--cached', '--name-only'], { encoding: 'utf8' }).split('\n').filter(Boolean)
-  const gov = staged.filter((f) => f.startsWith('setup/'))
-  if (gov.length && process.env.SETUP_HUMAN !== '1') bad(`setup/ changes are for humans only (${gov.join(', ')}); a human commits them with SETUP_HUMAN=1`)
+  const gov = staged.filter((f) => f.startsWith('setup/') || f === 'governance.json')
+  if (gov.length && process.env.SETUP_HUMAN !== '1') bad(`setup/ and governance.json are for humans only (${gov.join(', ')}); a human commits them with SETUP_HUMAN=1`)
 }
 
 if (problems.length) { console.error(`config-check: ${problems.length} problem(s)\n- ${problems.join('\n- ')}`); process.exit(1) }

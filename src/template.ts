@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { run } from './env'
 import packed from './template.gen.json'
-import { packDir, type Template } from './pack'
+import { packDir, type TFile, type Template } from './pack'
 export type { TFile, Template } from './pack'
 
 export function template(): Template {
@@ -12,10 +12,29 @@ export function template(): Template {
   return dir ? packDir(dir) : (packed as Template)
 }
 
-/** Write the rendered template under `dest`. Text files get {{var}} filled; binary files are copied as they are. */
+/**
+ * The files of one profile. `project` (default): the base template. Another profile `<p>` overlays
+ * `profiles/<p>/` on the base and drops the base paths listed in `profiles/<p>/profile.json` "omit" (prefixes).
+ * `profiles/` itself is never rendered.
+ */
+export function profileFiles(t: Template, profile = 'project'): TFile[] {
+  const base = t.files.filter((f) => !f.p.startsWith('profiles/'))
+  if (profile === 'project') return base
+  const pre = `profiles/${profile}/`
+  const own = t.files.filter((f) => f.p.startsWith(pre))
+  const spec = own.find((f) => f.p === `${pre}profile.json`)
+  if (!spec) throw new Error(`no template profile "${profile}"`)
+  const omit: string[] = JSON.parse(Buffer.from(spec.c, 'base64').toString('utf8')).omit || []
+  const over = own.filter((f) => f !== spec).map((f) => ({ ...f, p: f.p.slice(pre.length) }))
+  const mine = new Set(over.map((f) => f.p))
+  return [...base.filter((f) => !mine.has(f.p) && !omit.some((o) => f.p === o || f.p.startsWith(o.endsWith('/') ? o : `${o}/`))), ...over]
+}
+
+/** Write the rendered template under `dest`. Text files get {{var}} filled; binary files are copied as they are.
+ *  `vars.profile` picks the template profile (default `project`). */
 export function renderTo(dest: string, vars: Record<string, string>, t = template()) {
   const fill = (s: string) => s.replace(/\{\{(\w+)\}\}/g, (m, k) => vars[k] ?? m)
-  for (const f of t.files) {
+  for (const f of profileFiles(t, vars.profile)) {
     const out = join(dest, fill(f.p))
     mkdirSync(dirname(out), { recursive: true })
     const buf = Buffer.from(f.c, 'base64'), text = buf.toString('utf8')
