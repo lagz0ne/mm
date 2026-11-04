@@ -44,6 +44,24 @@ the board who is asking in a way the board can verify. Status: **design, for rev
 - The signing key: `auth/signing.key` (0600, gateway-only), sealed into the vault once the vault exists, so a restore
   keeps it. Rotating it invalidates every board session.
 
+## Members: names, what they may write, and `all`
+Enforced by the board's API from the verified assertion's role, never by the UI alone:
+- **Reserved labels:** a member or viewer can't add or remove `approved`, `signed-off`, `needs-you`, `t1`, `t2`, `t3`
+  or `audit`; can't set an assignee; and can't close or reopen an item they didn't create. `approved` is how the
+  owner's go shows on a board, so only `owner` may set it. The board answers 403 with the reason.
+- **Author role on every write:** the board stamps the assertion's role on each item and comment it creates (a
+  `by:<role>` label on items, and a `role` field on comments). Leads see it in `bd show`, and the template's lead brief
+  says to read it.
+- **Names:** the gateway derives a member's name from the grant (e.g. the chat display name, lower-cased, made
+  unique). It refuses any name that equals a role of any board on the machine, a system author (`wake`, `watchdog`,
+  `brain`, `ui`, `beads`, `smoke`, `system`, `admin`, `setup`) or the owner's name. The board refuses a self-chosen
+  name when the gateway is on: identity only comes from the assertion.
+- **`all`:** expanded into an explicit list of boards when it's granted. A project created later doesn't join a
+  grantee's scope by itself; the bot asks the owner. Client projects are included only when named. `all --as member`
+  means member on projects only; member on the system board needs its own `system --as member` grant.
+- **What a member's write may make a lead do** is the owner's decision (sy-wep). Until it's made, the gateway issues
+  `member` as `viewer`.
+
 ## Sessions and revocation
 - Server-side only: a session is a random id → `{user, scope, created, expires, boards}`. Forward-auth checks it on
   every call, with no cache and no stateless token, so a revoke takes effect on the next request.
