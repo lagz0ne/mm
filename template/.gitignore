@@ -14,6 +14,7 @@
 !/.mm-answers.yaml
 !/tools.json
 !/secrets.json
+!/governance.json
 
 leads/RACI.md
 # Generated from settings.tmpl.json by `bin/config-check --render` (absolute paths for this machine).

@@ -1,22 +1,83 @@
 {
   "_doc": "Profile system: wider reach than a project (the machine's repos and logs), stricter rules. Humans only (SETUP_HUMAN=1). One writer per repo: ops writes the brain, platform writes mm. Nobody writes projects: they change through mm and their own boards.",
-  "read": ["{home}/brain/", "{home}/mm/", "{home}/projects/", "{home}/.mm/", "{home}/.local/state/brain/", "{home}/.local/share/backups/",
-           "{home}/.config/systemd/", "/etc/", "/var/log/", "/proc/", "/tmp/"],
-  "write": { "ops": ["{home}/brain/"], "platform": ["{home}/mm/"] },
+  "read": [
+    "{home}/brain/",
+    "{home}/mm/",
+    "{home}/projects/",
+    "{home}/.mm/",
+    "{home}/.local/state/brain/",
+    "{home}/.local/share/backups/",
+    "{home}/.config/systemd/",
+    "/etc/",
+    "/var/log/",
+    "/proc/",
+    "/tmp/"
+  ],
+  "write": {
+    "ops": [
+      "{home}/brain/"
+    ],
+    "platform": [
+      "{home}/mm/"
+    ]
+  },
   "deny_all": [
-    "Read({home}/.config/secrets/**)", "Read({home}/brain/.keys/**)", "Read({home}/.ssh/id_*)", "Read({home}/.paseo/daemon-keypair.json)",
-    "Read({home}/.paseo/local-credential)", "Read({home}/.claude/.credentials.json)", "Read(/etc/shadow)", "Read(/etc/gshadow)",
-    "Edit({home}/projects/**)", "Write({home}/projects/**)",
-    "Edit({home}/brain/bin/**)", "Write({home}/brain/bin/**)", "Edit({home}/brain/program.md)", "Write({home}/brain/program.md)",
-    "Edit({home}/brain/CLAUDE.md)", "Write({home}/brain/CLAUDE.md)", "Edit({home}/brain/.claude/settings.json)", "Write({home}/brain/.claude/settings.json)",
-    "Edit({home}/brain/ops/githooks/**)", "Write({home}/brain/ops/githooks/**)",
-    "Edit({root}/governance.json)", "Write({root}/governance.json)",
-    "Bash(*--approved*)", "Bash(*--no-verify*)", "Bash(git push*)"
+    "Read({home}/.config/secrets/**)",
+    "Read({home}/brain/.keys/**)",
+    "Read({home}/.ssh/id_*)",
+    "Read({home}/.paseo/daemon-keypair.json)",
+    "Read({home}/.paseo/local-credential)",
+    "Read({home}/.claude/.credentials.json)",
+    "Read(/etc/shadow)",
+    "Read(/etc/gshadow)",
+    "Edit({home}/projects/**)",
+    "Write({home}/projects/**)",
+    "Edit({home}/brain/bin/**)",
+    "Write({home}/brain/bin/**)",
+    "Edit({home}/brain/program.md)",
+    "Write({home}/brain/program.md)",
+    "Edit({home}/brain/CLAUDE.md)",
+    "Write({home}/brain/CLAUDE.md)",
+    "Edit({home}/brain/.claude/settings.json)",
+    "Write({home}/brain/.claude/settings.json)",
+    "Edit({home}/brain/ops/githooks/**)",
+    "Write({home}/brain/ops/githooks/**)",
+    "Edit({root}/governance.json)",
+    "Write({root}/governance.json)",
+    "Bash(*--approved*)",
+    "Bash(*--no-verify*)",
+    "Bash(git push*)",
+    "mcp__paseo__archive_agent",
+    "mcp__paseo__archive_workspace",
+    "mcp__paseo__cancel_agent",
+    "mcp__paseo__create_agent",
+    "mcp__paseo__create_heartbeat",
+    "mcp__paseo__create_schedule",
+    "mcp__paseo__create_terminal",
+    "mcp__paseo__create_workspace",
+    "mcp__paseo__delete_heartbeat",
+    "mcp__paseo__delete_schedule",
+    "mcp__paseo__kill_agent",
+    "mcp__paseo__kill_terminal",
+    "mcp__paseo__pause_schedule",
+    "mcp__paseo__rename_workspace",
+    "mcp__paseo__respond_to_permission",
+    "mcp__paseo__resume_schedule",
+    "mcp__paseo__run_schedule_once",
+    "mcp__paseo__send_agent_prompt",
+    "mcp__paseo__send_terminal_keys",
+    "mcp__paseo__set_agent_mode",
+    "mcp__paseo__start_workspace_script",
+    "mcp__paseo__stop_workspace_script",
+    "mcp__paseo__update_agent",
+    "mcp__paseo__update_schedule"
   ],
   "bash_ok": [
     "^Bash\\(systemctl (--user )?(status|is-active|is-enabled|is-failed|list-units|list-timers|list-unit-files|cat|show)\\b",
     "^Bash\\(curl -s[fS]* http://127\\.0\\.0\\.1:",
     "^Bash\\(sudo -n (firewall-cmd --(list|state|get)|fail2ban-client (status|get)|journalctl|ss -)"
   ],
-  "hooks_required": ["{home}/brain/bin/guard"]
+  "hooks_required": [
+    "{home}/brain/bin/guard"
+  ]
 }
