@@ -122,6 +122,14 @@ for (const role of ROLES) {
   const under = (a, roots) => { const m = /^(Read|Edit|Write)\(\/(\/.*)\)$/.exec(a); return !!m && roots.some((r) => m[2].startsWith(r)) }
   const okByGov = (a) => G_BASH_OK.some((re) => re.test(a)) || (/^Read\(/.test(a) && under(a, [...G_READ, ...(G_WRITE[role] || [])])) || (/^(Edit|Write)\(/.test(a) && under(a, G_WRITE[role] || []))
   for (const a of j.permissions?.allow || []) if (FORBIDDEN_ALLOW.some((re) => re.test(a)) && !okByGov(a)) bad(`${role}: forbidden allow rule ${a}`)
+  // starting another lead: one exact rule per role (lead start fixes its folder, mode, labels and model), never itself
+  for (const a of j.permissions?.allow || []) {
+    const ls = /^Bash\(\s*(?:bin\/)?lead\s+start\b(.*)\)$/.exec(a)
+    if (!ls) continue
+    const target = ls[1].trim()
+    if (!/^[a-z][\w-]*$/.test(target) || ![...ROLES, 'setup'].includes(target)) bad(`${role}: ${a}: write one exact rule per role (Bash(lead start <role>)): no wildcard, no options, a real role`)
+    else if (target === role) bad(`${role}: ${a}: a lead may not restart itself`)
+  }
   // write roots of another role are never allowed (one writer per repo)
   for (const [other, roots] of Object.entries(G_WRITE)) if (other !== role) for (const a of j.permissions?.allow || []) if (/^(Edit|Write)\(/.test(a) && under(a, roots)) bad(`${role}: writes ${other}'s area (${a})`)
   const cmds = JSON.stringify(j.hooks?.PreToolUse || [])
