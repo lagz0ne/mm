@@ -1,6 +1,8 @@
 # mm sync, whole-machine restore, and the drill
 
-Design (sy-240; review's conditions sy-fto and sy-4in; the vault, docs/vault.md). Status: `mm sync` **built** (`src/sync.ts`, `test/sync.sh`); restore and the drill: **design**.
+Design (sy-240; review's conditions sy-fto and sy-4in; the vault, docs/vault.md). Status: `mm sync` **built** (`src/sync.ts`, `test/sync.sh`). `mm restore <repo>` **built up to the data**
+(`src/restore.ts`, `test/restore.sh`: trust, MANIFEST, unseal, reseal, repos and board data in place, nothing started).
+Bringing the boards up, the outward gate and the container drill: **design**.
 
 ## What mastermind holds
 A private git repo (the machine's backup), laid out like `$MM_HOME` but only what can't be rebuilt:
@@ -60,12 +62,22 @@ So restore applies only what it can verify:
 
 ## mm restore
 `curl …/bin/mm | MM_VERSION=vX sh -s -- restore git@github.com:<you>/mastermind.git` on a blank box:
-1. installs mm (pinned), clones mastermind, checks trust as above;
-2. asks for the recovery identity (a hidden prompt or a file the human names; refused inside an agent);
+1. installs mm (pinned), clones mastermind, checks trust as above. **Built:** every tag is verified against
+   `--allowed-signers`; of the valid ones, the one on the newest commit that HEAD contains wins. Newer commits are
+   listed and applied only with `--accept <HEAD hash>` (at least 12 characters). Then every tracked file is checked
+   against MANIFEST (sha256, allowlist, nothing missing), so a sealed file swapped after the sync is refused even
+   when the human typed the hash;
+2. asks for the recovery identity (a hidden prompt or a file the human names; refused inside an agent). **Built:** the
+   file (`--identity`), read by `age` only; its public key must be the recovery key in `vault/recipients.txt`. The
+   hidden prompt comes with the next part. A box with any of mm's state on it is refused: restore is for a blank box,
+   and it always lays out one-root (a restore is also how a legacy box moves);
 3. opens `config.yaml`, lays out `$MM_HOME`, runs `mm onboard` (tools, process manager, observability);
 4. reseals the vault to a new machine key (`resealWith`, docs/vault.md); the identity is dropped from memory;
 5. restores the brain (clone from its bundle; the human applies its migrations, which are root), then the system board
-   and every project (`mm restore` of each: config repo, board data, code) and starts them;
+   and every project (`mm restore` of each: config repo, board data, code) and starts them. **Built:** each repo
+   comes back from its bundle with every branch (`mm-template` too) and no remote; the answers' `root:` is pointed at
+   the new folder; the board data (Dolt backup, JSONL, releases) is staged in `<root>/.restore` (0700) for the board's
+   first start, which is the next part;
 6. **before anything outward-facing** (public routes, the tunnel, the Telegram bot, leads, git push): stops and asks
    the human to confirm the old box is down, or that this is a migration. Typed only (sy-4in 3).
 

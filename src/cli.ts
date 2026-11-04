@@ -13,6 +13,7 @@ import { archive, restore, update } from './lifecycle'
 import { cron } from './cron'
 import * as vaultMod from './vault'
 import * as syncMod from './sync'
+import { restoreMachine } from './restore'
 import { AUTH_SOCK, callApi, serve as authServe } from './auth'
 import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
 import { findRoot, listProjects, namespaceOp, newProject, processes, resolve, up } from './project'
@@ -163,8 +164,16 @@ program.command('archive <project>').description('clean removal: stop + unload, 
     print(r.steps, o); if (!opts.dryRun && r.ok) console.log(`\narchived: ${r.tarball}\nbring back: mm restore ${r.tarball}`)
     process.exit(r.ok ? 0 : 1)
   })
-program.command('restore <tarball>').description('unpack an archived project and start it').action((tb: string) => {
-  const o = fmt(), r = restore(tb); print(r.steps, o); process.exit(r.ok ? 0 : 1)
+program.command('restore <source>').description('an archived project (<tarball>.tar.gz), or a whole machine from mastermind onto a blank box (<repo>; docs/restore.md)')
+  .option('--identity <file>', 'mastermind: your recovery identity, a file you name (read by age only, never copied)')
+  .option('--accept <hash>', 'mastermind: restore HEAD although no signed tag covers it (type the hash restore showed you)')
+  .option('--allowed-signers <file>', 'mastermind: ssh allowed_signers with your tag-signing key')
+  .option('--drill', 'mastermind: a throwaway box; nothing outward-facing starts')
+  .action((src: string, opts) => {
+    const o = fmt()
+    if (/\.tar\.gz$/.test(src) && existsSync(src)) { const r = restore(src); print(r.steps, o); process.exit(r.ok ? 0 : 1) }
+    const r = restoreMachine(src, { identity: opts.identity, accept: opts.accept, allowedSigners: opts.allowedSigners, drill: opts.drill })
+    print(r.steps, o); process.exit(r.ok ? 0 : 1)
 })
 const sys = program.command('system').description('the system project: the machine\'s own board and leads (ops, review, platform, setup), in the brain\'s system folder (~/brain/system, or $MM_HOME/system on a one-root box)')
 sys.command('init').description('make the system project (profile system) next to the brain')
