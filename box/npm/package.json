@@ -1,0 +1,10 @@
+{
+  "name": "mm-box-tools",
+  "private": true,
+  "description": "The npm tools in the project box image, installed with npm ci from the committed lockfile (review sy-b15.15)",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.318",
+    "@getpaseo/cli": "0.13.0",
+    "portless": "0.15.13"
+  }
+}

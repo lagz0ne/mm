@@ -2,7 +2,7 @@
 # names (one anchored pattern per line, mounted read-only from $MM_HOME/egress/<project>/allow); IPv4 first, since the
 # proxy's network may have no IPv6 route. Every connection is logged (stdout), with the project in the container name.
 #   mm box build      (docker build -t mm-egress:<mm version> -f box/egress.Dockerfile box/)
-FROM ubuntu:24.04
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends tinyproxy ca-certificates && rm -rf /var/lib/apt/lists/* \
  && echo 'precedence ::ffff:0:0/96 100' >>/etc/gai.conf \

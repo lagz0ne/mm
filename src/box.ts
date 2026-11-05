@@ -14,6 +14,8 @@ import { DIRS, HOME, run } from './env'
 import { boxHook, readAnswers, resolve, serviceProcess } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
+import npmPackage from '../box/npm/package.json' with { type: 'text' }
+import npmLock from '../box/npm/package-lock.json' with { type: 'text' }
 import pkg from '../package.json'
 import * as vault from './vault'
 
@@ -56,6 +58,7 @@ export function build(): Step[] {
   const steps: Step[] = [], dir = mkdtempSync(join(tmpdir(), 'mm-box-build-'))
   try {
     writeFileSync(join(dir, 'Dockerfile'), boxDockerfile); writeFileSync(join(dir, 'egress.Dockerfile'), egressDockerfile)
+    mkdirSync(join(dir, 'npm')); writeFileSync(join(dir, 'npm', 'package.json'), String(npmPackage as unknown)); writeFileSync(join(dir, 'npm', 'package-lock.json'), String(npmLock as unknown))
     const uid = String(process.getuid?.() ?? 1000)
     for (const [tag, file, args] of [[IMAGE(), 'Dockerfile', ['--build-arg', `UID=${uid}`, '--build-arg', `HOME_DIR=${HOME}`]], [EGRESS_IMAGE(), 'egress.Dockerfile', []]] as const) {
       const r = docker('build', '-q', '-t', tag, '-f', join(dir, file), ...args, dir)
