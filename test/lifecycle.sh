@@ -12,6 +12,7 @@ CLIENT=${REF%/*}; NAME=${REF#*/}; PROJECT="$CLIENT-$NAME"; ROOT="$HOME/projects/
 PC="process-compose -U -u $HOME/.mm/pc.sock"
 export PATH="$HOME/.mm/bin:$HOME/.mm/npm/bin:$HOME/.local/bin:$PATH"
 unset PASEO_AGENT_ID PASEO_AGENT_CWD   # run from inside an agent: these would override `paseo run --cwd` (the probe must live in the project)
+export MM_TEST=lifecycle   # mm's records of this run are stamped: their expected failures never reach mm obs errors or the sentinel
 pass=0; fail=0; T0=$(date +%s)
 ok()   { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }
 bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }

@@ -184,7 +184,9 @@ export function mmSpan(name: string, attrs: Record<string, unknown>) {
   const traceId = randomBytes(16).toString('hex'), spanId = randomBytes(8).toString('hex'), start = Date.now()
   process.env.TRACEPARENT = `00-${traceId}-${spanId}-01` // children (bin/init, config-check, npm build, ...) join this trace
   return (ok: boolean, extra: Record<string, unknown> = {}) => {
-    const end = Date.now(), all = { ...attrs, ...extra, ok }
+    // a test run (MM_TEST=<test>, set by the test scripts) is stamped, so its expected failures (a refused mm shell on a
+    // throwaway box, ...) never reach mm obs errors or the sentinel
+    const end = Date.now(), all = { ...attrs, ...extra, ...(process.env.MM_TEST ? { test: String(process.env.MM_TEST).slice(0, 40) } : {}), ok }
     try { appendFileSync(join(DIRS.pc, 'mm.log'), JSON.stringify({ time: new Date(end).toISOString(), level: ok ? 'info' : 'error', msg: `${name} ${ok ? 'ok' : 'failed'}`, project: 'mm', service: 'mm', op: name, duration_ms: end - start, trace_id: traceId, ...all }) + '\n') } catch {}
     // MM_OBS_TRACES as in the engine (bin/lib/obs.mjs): unset = the stack's endpoint, empty = off (tests, throwaway homes)
     const ep = { traces: process.env.MM_OBS_TRACES ?? (obsEndpoints() as { traces?: string }).traces }

@@ -8,6 +8,7 @@ set -uo pipefail
 REF=${1:-qa/boxt}; PROJECT=${REF/\//-}
 export PATH="$HOME/.mm/bin:$HOME/.mm/npm/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
 export MM_DOCKER=${MM_DOCKER:-docker}
+export MM_TEST=box   # mm's records of this run are stamped: their expected failures never reach mm obs errors or the sentinel
 unset PASEO_AGENT_ID PASEO_AGENT_CWD CLAUDECODE
 pass=0; fail=0
 ok() { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }; bad() { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }

@@ -362,11 +362,12 @@ obs.command('errors').description('errors and failed operations, grouped (what t
   .option('--since <dur>', 'window, e.g. 15m 1h 1d', '1h').option('-p, --project <project>', 'one project (client-name)')
   .option('--by <group>', 'message (default) or service: one row per project/service with a few sample messages', 'message')
   .action(async (opts) => {
-    const o = fmt(), f = opts.project ? ` project:${JSON.stringify(opts.project)}` : ''
+    // test runs (MM_TEST: their records carry `test`) are left out: their failures are expected
+    const o = fmt(), f = `${opts.project ? ` project:${JSON.stringify(opts.project)}` : ''} -test:*`, ft = ' -"span_attr:test":*'
     if (opts.by === 'service') {
       // one row per service, whatever its messages say (ids and counters in messages make every line its own group)
       const logs = await logsql(`_time:${opts.since} level:error${f} | stats by (project, service) count() as n, max(_time) as last, uniq_values(_msg) limit 3 as sample | sort by (n desc) | limit 200`)
-      const spans = await tracesql(`_time:${opts.since} status_code:2${opts.project ? ` "resource_attr:service.namespace":${JSON.stringify(opts.project)}` : ''} | stats by ("resource_attr:service.name") count() as n, max(_time) as last, uniq_values(name) limit 3 as sample | sort by (n desc) | limit 200`)
+      const spans = await tracesql(`_time:${opts.since} status_code:2${opts.project ? ` "resource_attr:service.namespace":${JSON.stringify(opts.project)}` : ''}${ft} | stats by ("resource_attr:service.name") count() as n, max(_time) as last, uniq_values(name) limit 3 as sample | sort by (n desc) | limit 200`)
       const list = (v: unknown) => { try { return JSON.parse(String(v)) as string[] } catch { return [] } }
       const rows = [...logs.map((r) => ({ kind: 'log', project: r.project, service: r.service, n: Number(r.n), last: r.last, sample: list(r.sample) })),
         ...spans.map((r) => { const s = String(r['resource_attr:service.name'] || ''), i = s.indexOf('/')
@@ -375,7 +376,7 @@ obs.command('errors').description('errors and failed operations, grouped (what t
       return print(rows.map((r) => ({ kind: r.kind, project: r.project, service: r.service, n: r.n, last: r.last, sample: String(r.sample[0] || '').slice(0, 80) })), o)
     }
     const logs = await logsql(`_time:${opts.since} level:error${f} | stats by (project, service, _msg) count() as n, max(_time) as last | sort by (n desc) | limit 30`)
-    const spans = await tracesql(`_time:${opts.since} status_code:2${opts.project ? ` "resource_attr:service.namespace":${JSON.stringify(opts.project)}` : ''} | stats by ("resource_attr:service.name", name, status_message) count() as n, max(_time) as last | sort by (n desc) | limit 30`)
+    const spans = await tracesql(`_time:${opts.since} status_code:2${opts.project ? ` "resource_attr:service.namespace":${JSON.stringify(opts.project)}` : ''}${ft} | stats by ("resource_attr:service.name", name, status_message) count() as n, max(_time) as last | sort by (n desc) | limit 30`)
     if (o.format !== 'table') return console.log(JSON.stringify({ logs, spans }, null, 2))
     console.log(`error logs (${opts.since})`); print(logs.map((r) => ({ project: r.project, service: r.service, n: r.n, last: r.last, msg: String(r._msg).slice(0, 90) })), o)
     console.log(`\nfailed operations (${opts.since})`); print(spans.map((r) => ({ service: r['resource_attr:service.name'], op: r.name, n: r.n, last: r.last, why: String(r.status_message || '').slice(0, 70) })), o)
