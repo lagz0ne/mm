@@ -14,6 +14,7 @@
     "build:aot": "bun scripts/pack-template.ts && bun compile --trim src/cli.ts --outfile dist/mm"
   },
   "dependencies": {
+    "better-auth": "1.7.17",
     "commander": "^15.0.0"
   },
   "devDependencies": {
