@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# mm.auth, hermetic: a throwaway HOME and MM_HOME, a fake board's public name, curl as the browser, `mm auth` as the
-# approver. Proves the sign-in by a code approved elsewhere (no token, no password), single use under a race, the
-# board's own cookie, forward-auth with a signed assertion (verified with the public key), revoke at once, self /
-# owner / refused approvals, the rate limits, expiry, the store's modes, and that logs carry no code or cookie.
+# mm.auth on Better Auth, hermetic: a throwaway HOME and MM_HOME, a fake board's public name, curl as the browser,
+# `mm user|grant|revoke|token` as the owner. Proves: people with no password; a sign-in link that works once and
+# expires; one session that opens every board granted (each board its own host-only cookie, no parent-domain cookie);
+# the role from the project (designer/member/viewer; the owner everywhere); bearer tokens bound to one project;
+# sign-out, revoke and `mm user rm` end everything at once; forward-auth with a signed assertion; the board's public
+# side and its rails; the store's modes; logs with no link token and no cookie.
 #   test/auth.sh [mm command]       default: bun <repo>/src/cli.ts
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd); MMC=${1:-"bun $SRC/src/cli.ts"}
@@ -11,49 +13,57 @@ ok()   { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }
 bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
 check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 T=$(mktemp -d); GW=""; trap '[ -n "$GW" ] && kill $GW 2>/dev/null; rm -rf "$T"' EXIT
-export HOME="$T/home" MM_HOME="$T/home/.mm" MM_OBS_TRACES="" MM_AUTH_CODE_MS=6000
+export HOME="$T/home" MM_HOME="$T/home/.mm" MM_OBS_TRACES="" MM_AUTH_LINK_S=600
 unset PASEO_AGENT_ID PASEO_AGENT_CWD
-mkdir -p "$MM_HOME/pc/projects" "$T/proj/.run"
-PORT=$(( 39100 + RANDOM % 800 )); BOARD=board-shop-acme.example.org
-printf 'domain: example.org\naccess: domain\nauth_port: %s\nbind_host: 127.0.0.1\ntelegram:\n  owner_id: "777"\n' "$PORT" >"$MM_HOME/config.yaml"
-echo "# from $T/proj/services.yaml" >"$MM_HOME/pc/projects/acme-shop.yaml"
+mkdir -p "$MM_HOME/pc/projects" "$T/proj/.run" "$T/proj2/.run"
+PORT=$(( 39100 + RANDOM % 800 )); BOARD=board-shop-acme.example.org; AUTH=auth.example.org; BOARD2=board-other-acme.example.org
+printf 'domain: example.org\naccess: domain\nauth_port: %s\nbind_host: 127.0.0.1\nowner_name: boss\n' "$PORT" >"$MM_HOME/config.yaml"
+echo "# from $T/proj/services.yaml" >"$MM_HOME/pc/projects/acme-shop.yaml"; echo "# from $T/proj2/services.yaml" >"$MM_HOME/pc/projects/acme-other.yaml"
 echo "{\"project\":\"acme-shop\",\"services\":{\"board\":{\"public_url\":\"https://$BOARD\",\"public\":{\"name\":\"board-shop-acme\",\"auth\":\"required\"}}}}" >"$T/proj/.run/services.json"
+echo "{\"project\":\"acme-other\",\"services\":{\"board\":{\"public_url\":\"https://$BOARD2\",\"public\":{\"name\":\"board-other-acme\",\"auth\":\"required\"}}}}" >"$T/proj2/.run/services.json"
 mkdir -p "$T/bin"; printf '#!/bin/sh\nexec %s "$@"\n' "$MMC" >"$T/bin/mm"; chmod +x "$T/bin/mm"
 export PATH="$T/bin:$PATH"   # every check, including those in sh -c, runs this mm
 mm auth serve >"$T/gw.log" 2>&1 & GW=$!
-for _ in $(seq 1 50); do [ -S "$MM_HOME/run/auth.sock" ] && curl -s -o /dev/null "http://127.0.0.1:$PORT/s/app.js" && break; sleep 0.2; done
-G="http://127.0.0.1:$PORT"; J="$T/jar"
-sig() { curl -s -c "$J" -b "$J" -H "cf-connecting-ip: ${2:-10.0.0.1}" -D "$T/h" "$G/s?b=$BOARD&r=${1:-/items}" | sed -n 's/.*id="code"[^>]*>\([0-9A-Z-]*\)<.*/\1/p'; }
+for _ in $(seq 1 100); do [ -S "$MM_HOME/run/auth.sock" ] && curl -s -o /dev/null "http://127.0.0.1:$PORT/s" && break; sleep 0.2; done
+G="http://127.0.0.1:$PORT"
+# the browser on the gateway's host: the session cookie is __Secure- (https), so curl gets it by hand here
+gw() { curl -s -H "x-forwarded-host: $AUTH" -H 'x-forwarded-proto: https' "$@"; }
+sess() { sed -n 's/^set-cookie: \(__Secure-better-auth\.session_token=[^;]*\).*/\1/ip' "$1" | tail -1; }
+link_of() { mm user link "$1" -o json | jq -r .link; }
+open_link() { local p=${1#https://$AUTH}; gw -D "$2" -o /dev/null "$G$p"; }
+export -f gw sess; export G AUTH BOARD BOARD2 T MM_HOME
 
-echo '== a code on the screen'
-CODE=$(sig /items)
-check "the sign-in page shows a code (XXXX-XXXX)" bash -c "echo '$CODE' | grep -qE '^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}\$'"
-check "strict CSP, no-referrer, no-store" bash -c "grep -qi \"content-security-policy: default-src 'self'\" '$T/h' && grep -qi 'referrer-policy: no-referrer' '$T/h' && grep -qi 'cache-control: no-store' '$T/h'"
-check "a pending cookie, HttpOnly" bash -c "grep -qi 'set-cookie: mm_pending=.*HttpOnly' '$T/h'"
-check "the page waits" bash -c "curl -s -b '$J' $G/s/poll | grep -q waiting"
-check "mm auth pending shows what is asking" bash -c "mm auth pending $CODE -o json | jq -e '.board == \"$BOARD\" and .ip == \"10.0.0.1\"'"
-check "a forged X-Forwarded-For doesn't change the address shown (sy-lbe)" bash -c "rm -f '$T/jx'; C=\$(curl -s -c '$T/jx' -H 'x-forwarded-for: 6.6.6.6' -H 'cf-connecting-ip: 10.0.0.9' '$G/s?b=$BOARD' | sed -n 's/.*id=\"code\"[^>]*>\\([0-9A-Z-]*\\)<.*/\\1/p'); mm auth pending \$C -o json | jq -e '.ip == \"10.0.0.9\"'"
-check "...and with no CF-Connecting-IP it is the socket peer, not the header" bash -c "rm -f '$T/jx'; C=\$(curl -s -c '$T/jx' -H 'x-forwarded-for: 6.6.6.6' '$G/s?b=$BOARD' | sed -n 's/.*id=\"code\"[^>]*>\\([0-9A-Z-]*\\)<.*/\\1/p'); mm auth pending \$C -o json | jq -e '.ip == \"127.0.0.1\"'"
+echo '== people (no password)'
+check "the owner: mm user add boss --owner" bash -c "mm user add boss --owner -o json | jq -e '.owner == true'"
+check "a second owner: refused" bash -c "! mm user add carol --owner"
+check "mm user add alex" bash -c "mm user add alex -o json | jq -e '.name == \"alex\" and .owner == false'"
+check "the same name again: refused" bash -c "! mm user add alex"
+check "reserved names are refused (the owner's name, steward, bridge, mm, root, ops)" bash -c "for n in boss steward bridge mm root ops sentinel assistant; do ! mm user add \$n || exit 1; done"
+check "mm user ls: alex, no grants yet; boss the owner" bash -c "mm user ls -o json | jq -e '(.[] | select(.name==\"alex\") | .grants == \"\") and (.[] | select(.name==\"boss\") | .owner)'"
 
-echo '== approved by the owner, as a named guest'
-check "a wrong scope name is refused" bash -c "! mm auth approve $CODE --as ops --for acme-shop"
-check "reserved names are refused: the owner's name, steward, bridge, mm, root" bash -c "for n in owner steward bridge mm root sentinel assistant; do ! mm auth approve $CODE --as \$n --for acme-shop || exit 1; done"
-check "an approval with no end (days 0) is refused" bash -c "! mm auth approve $CODE --as alex --for acme-shop --days 0"
-check "mm auth approve --as alex --for acme-shop" bash -c "mm auth approve $CODE --as alex --for acme-shop -o json | jq -e '.user == \"alex\" and .role == \"member\"'"
-check "the same code again: refused (single use)" bash -c "! mm auth approve $CODE --as eve --for acme-shop"
-curl -s -c "$J" -b "$J" -D "$T/h2" "$G/s/poll" >"$T/poll.json"
-check "the page gets a session" jq -e '.state == "approved" and (.next | startswith("https://'"$BOARD"'/_mm/auth/callback?c="))' "$T/poll.json"
-check "...in a host-only cookie (no Domain=), HttpOnly, Lax" bash -c "grep -i 'set-cookie: mm_auth=' '$T/h2' | grep -qi 'HttpOnly' && ! grep -i 'set-cookie: mm_auth=' '$T/h2' | grep -qi 'domain='"
-NEXT=$(jq -r .next "$T/poll.json"); CB="${NEXT#https://$BOARD}"
+echo '== a link that works once'
+L=$(link_of alex)
+check "mm user link alex: a single-use link on the gateway's host" bash -c "echo '$L' | grep -q '^https://$AUTH/api/auth/magic-link/verify?token='"
+open_link "$L" "$T/h1"; S1=$(sess "$T/h1")
+check "opening it: a session (Secure, HttpOnly, host-only: no Domain=) and on to /s/done" bash -c "[ -n '$S1' ] && grep -i 'set-cookie: __Secure-better-auth.session_token' '$T/h1' | grep -qi httponly && ! grep -i 'set-cookie: __Secure-better-auth.session_token' '$T/h1' | grep -qi 'domain=' && grep -qi '^location: .*/s/done' '$T/h1'"
+open_link "$L" "$T/h1b"
+check "the same link again: no session" bash -c "[ -z \"\$(sess '$T/h1b')\" ]"
+check "/s/done: signed in as alex, no board yet" bash -c "gw -H 'cookie: $S1' $G/s/done | grep -q 'Signed in as <b>alex</b>' && gw -H 'cookie: $S1' $G/s/done | grep -q 'no board yet'"
+check "the board before a grant: no way in (the page says ask the owner)" bash -c "gw -D - -o '$T/p0' -H 'cookie: $S1' '$G/s?b=$BOARD&r=/items' | head -1 | grep -q 200 && grep -q 'no access' '$T/p0'"
+
+echo '== a grant: one session opens the board'
+check "mm grant alex acme-shop (member)" bash -c "mm grant alex acme-shop -o json | jq -e '.role == \"member\"'"
+CB=$(gw -D - -o /dev/null -H "cookie: $S1" "$G/s?b=$BOARD&r=/items" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
+check "the same session, the board: straight to its one-time callback, no new link" bash -c "echo '$CB' | grep -q '^/_mm/auth/callback?c='"
+check "/s/done lists the board" bash -c "gw -H 'cookie: $S1' $G/s/done | grep -q 'https://$BOARD/'"
 curl -s -c "$T/bj" -H "x-forwarded-host: $BOARD" -D "$T/h3" -o /dev/null "$G$CB"
-check "the board's callback sets its own cookie (Strict, host-only) and goes back to /items" bash -c "grep -i 'set-cookie: mm_board=' '$T/h3' | grep -qi 'SameSite=Strict' && grep -qi '^location: /items' '$T/h3'"
+check "the callback sets the board's own cookie (Strict, host-only) and goes back to /items" bash -c "grep -i 'set-cookie: mm_board=' '$T/h3' | grep -qi 'SameSite=Strict' && ! grep -i 'set-cookie: mm_board=' '$T/h3' | grep -qi 'domain=' && grep -qi '^location: /items' '$T/h3'"
 check "the callback code is single use" test "$(curl -s -o /dev/null -w '%{http_code}' -H "x-forwarded-host: $BOARD" "$G$CB")" = 403
-CB2=$(curl -s -b "$J" -D - -o /dev/null "$G/s?b=$BOARD&r=/" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
-check "a live session: the next board visit needs no new code" bash -c "echo '$CB2' | grep -q '^/_mm/auth/callback?c='"
-check "a callback on another host is refused" test "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-forwarded-host: board-other.example.org' "$G$CB2")" = 403
+CBX=$(gw -D - -o /dev/null -H "cookie: $S1" "$G/s?b=$BOARD&r=/" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
+check "a callback on another host is refused" test "$(curl -s -o /dev/null -w '%{http_code}' -H "x-forwarded-host: $BOARD2" "$G$CBX")" = 403
+check "a board with no grant (acme-other): no callback for it" bash -c "gw -D - -o /dev/null -H 'cookie: $S1' '$G/s?b=$BOARD2' | head -1 | grep -q 200"
 
 echo '== forward-auth'
-export J G BOARD T MM_HOME
 v() { curl -s -D - -o /dev/null -b "$T/bj" -H "x-forwarded-host: ${1:-$BOARD}" -H 'x-forwarded-uri: /items' -H 'x-forwarded-proto: https' "$G/verify"; }
 export -f v
 v >"$T/v1"
@@ -62,25 +72,59 @@ A=$(sed -n 's/^x-mm-assertion: \(.*\)\r$/\1/ip' "$T/v1")
 cat >"$T/verify.mjs" <<'EOF'
 import { createPrivateKey, createPublicKey, verify } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-const [a, keyFile, host] = process.argv.slice(2), [body, sig] = a.split('.')
+const [a, keyFile, host, user, role] = process.argv.slice(2), [body, sig] = a.split('.')
 const pub = createPublicKey(createPrivateKey(readFileSync(keyFile, 'utf8')))
 const good = verify(null, Buffer.from(body), pub, Buffer.from(sig, 'base64url'))
 const c = JSON.parse(Buffer.from(body, 'base64url').toString())
 const tampered = verify(null, Buffer.from(body.slice(0, -2) + 'AA'), pub, Buffer.from(sig, 'base64url'))
-process.exit(good && !tampered && c.u === 'alex' && c.r === 'member' && c.h === host && c.exp > Date.now() && c.exp < Date.now() + 61000 ? 0 : 1)
+process.exit(good && !tampered && c.u === user && c.r === role && c.h === host && c.exp > Date.now() && c.exp < Date.now() + 61000 ? 0 : 1)
 EOF
-check "the assertion verifies with the public key: alex, member, this host, 60 s; a changed one doesn't" node "$T/verify.mjs" "$A" "$MM_HOME/auth/signing.key" "$BOARD"
-check "the board cookie on another board host: sign in (302)" bash -c "v board-other.example.org | head -1 | grep -q 302"
-check "no cookie: 302 to the sign-in page, back to the same path" bash -c "curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' -H 'x-forwarded-uri: /items' $G/verify | grep -qi '^location: https://auth.example.org/s?b=$BOARD&r=%2Fitems'"
+check "the assertion verifies with the public key: alex, member, this host, 60 s; a changed one doesn't" node "$T/verify.mjs" "$A" "$MM_HOME/auth/signing.key" "$BOARD" alex member
+check "the board cookie on another board host: sign in (302)" bash -c "v $BOARD2 | head -1 | grep -q 302"
+check "no cookie: 302 to the sign-in page, back to the same path" bash -c "curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' -H 'x-forwarded-uri: /items' $G/verify | grep -qi '^location: https://$AUTH/s?b=$BOARD&r=%2Fitems'"
 check "the identity headers are always set (to '-') on a refusal (a client's copy can't pass)" bash -c "curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' $G/verify | grep -qiE '^x-board-role: -[[:space:]]*\$'"
-mm auth revoke alex >/dev/null
-check "revoke: the next request is refused at once" bash -c "v | head -1 | grep -q 302"
-check "...and alex has no sessions left" bash -c "! mm auth sessions -o json | jq -e '.[] | select(.user == \"alex\")'"
+mm grant alex acme-shop --as designer >/dev/null
+check "mm grant --as designer: the next assertion says designer" bash -c "node '$T/verify.mjs' \"\$(v | sed -n 's/^x-mm-assertion: \\(.*\\)\\r\$/\\1/ip')\" '$MM_HOME/auth/signing.key' '$BOARD' alex designer"
+mm grant alex acme-shop >/dev/null
+
+echo '== the owner'
+LB=$(link_of boss); open_link "$LB" "$T/hb"; SB=$(sess "$T/hb")
+CBB=$(gw -D - -o /dev/null -H "cookie: $SB" "$G/s?b=$BOARD2&r=/" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
+curl -s -c "$T/bjb" -H "x-forwarded-host: $BOARD2" -o /dev/null "$G$CBB"
+check "the owner opens any board with no grant (acme-other), as owner" bash -c "node '$T/verify.mjs' \"\$(curl -s -D - -o /dev/null -b '$T/bjb' -H 'x-forwarded-host: $BOARD2' $G/verify | sed -n 's/^x-mm-assertion: \\(.*\\)\\r\$/\\1/ip')\" '$MM_HOME/auth/signing.key' '$BOARD2' boss owner"
+check "a grant to the owner is refused (owner everywhere already)" bash -c "! mm grant boss acme-shop"
+
+echo '== tokens for tools'
+TK=$(mm token alex acme-shop -o json | jq -r .token)
+bv() { curl -s -D - -o /dev/null -H "x-forwarded-host: ${2:-$BOARD}" -H "authorization: Bearer $1" "$G/verify"; }
+export -f bv
+check "mm token alex acme-shop: shown once (mmt_…)" bash -c "echo '$TK' | grep -q '^mmt_'"
+check "Bearer: 200, an assertion for alex as member" bash -c "node '$T/verify.mjs' \"\$(bv '$TK' | sed -n 's/^x-mm-assertion: \\(.*\\)\\r\$/\\1/ip')\" '$MM_HOME/auth/signing.key' '$BOARD' alex member"
+check "...the same token on another project's board: 401" bash -c "bv '$TK' $BOARD2 | head -1 | grep -q 401"
+check "...a wrong token: 401, no sign-in redirect" bash -c "bv mmt_nope | head -1 | grep -q 401"
+check "a token for a project with no grant: refused" bash -c "! mm token alex acme-other"
+
+echo '== ending it'
+TK2=$(mm token alex acme-shop -o json | jq -r .token)
+mm revoke alex acme-shop >/dev/null
+check "mm revoke alex acme-shop: the board cookie gets no assertion at once" bash -c "v | head -1 | grep -q 302"
+check "...and the project's tokens end with it" bash -c "bv '$TK2' | head -1 | grep -q 401"
+mm grant alex acme-shop >/dev/null
+CB3=$(gw -D - -o /dev/null -H "cookie: $S1" "$G/s?b=$BOARD&r=/" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip'); curl -s -c "$T/bj" -H "x-forwarded-host: $BOARD" -o /dev/null "$G$CB3"
+check "granted again: the same session gets back in (no new link)" bash -c "v | head -1 | grep -q 200"
+gw -X POST -H "cookie: $S1" -H 'content-type: application/json' -d '{}' "$G/s/out" >/dev/null
+check "sign out: the session and its board sessions end at once" bash -c "v | head -1 | grep -q 302 && gw -H 'cookie: $S1' $G/s/done | grep -q 'expired'"
+L3=$(link_of alex); open_link "$L3" "$T/h5"; S5=$(sess "$T/h5")
+CB5=$(gw -D - -o /dev/null -H "cookie: $S5" "$G/s?b=$BOARD&r=/" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip'); curl -s -c "$T/bj" -H "x-forwarded-host: $BOARD" -o /dev/null "$G$CB5"
+TK3=$(mm token alex acme-shop -o json | jq -r .token)
+mm user rm alex >/dev/null
+check "mm user rm alex: the board cookie, the session and the token are dead at once" bash -c "v | head -1 | grep -q 302 && bv '$TK3' | head -1 | grep -q 401 && gw -H 'cookie: $S5' $G/s/done | grep -q expired"
+check "...and alex is gone from mm user ls" bash -c "! mm user ls -o json | jq -e '.[] | select(.name==\"alex\")'"
+mm user add alex >/dev/null; mm grant alex acme-shop >/dev/null   # back, for the board's public side below
 
 echo "== the board's public side (the template's board server, this gateway's key)"
 BP=$(( PORT + 1 )); BL=$(( PORT + 2 ))
 PUB=$(node -e "const c=require('crypto'),f=require('fs');process.stdout.write(c.createPublicKey(c.createPrivateKey(f.readFileSync(process.argv[1],'utf8'))).export({type:'spki',format:'pem'}))" "$MM_HOME/auth/signing.key")
-mm auth grant alex --for acme-shop >/dev/null   # back after the revoke above, for a fresh assertion
 # a fake bd-serve: records what the board forwards; serves item it-1 with labels [t2]
 BDP=$(( PORT + 3 ))
 cat >"$T/fakebd.mjs" <<'EOF'
@@ -119,7 +163,7 @@ export -f w; export BP BOARD
 check "a member creates an item: forwarded, with by:member" bash -c "[ \$(w POST '$MA' '' '{\"title\":\"x\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.labels | index(\"by:member\")'"
 check "a designer (a member who also edits Doop) steers the board like a member: by:designer" bash -c "[ \$(w POST '$(mk dee designer "$BOARD" 60000)' '' '{\"title\":\"d\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.labels | index(\"by:designer\")'"
 check "...but can't give the T2 go (approved stays the owner's)" test "$(w POST "$(mk dee designer "$BOARD" 60000)" '' '{"title":"d","labels":["approved"]}')" = 403
-check "mm auth grant --role designer: kept as designer" bash -c "mm auth grant dee --for acme-shop --role designer >/dev/null && mm auth grants -o json | jq -e '.[] | select(.name==\"dee\") | .role == \"designer\"'"
+check "mm grant --as designer: kept as designer" bash -c "mm user add dee >/dev/null && mm grant dee acme-shop --as designer >/dev/null && mm auth grants -o json | jq -e '.[] | select(.name==\"dee\" and .project==\"acme-shop\") | .role == \"designer\"'"
 check "a member can't create an item labelled approved (403)" test "$(w POST "$MA" '' '{"title":"x","labels":["approved"]}')" = 403
 check "a member can't add approved by a PATCH (403)" test "$(w PATCH "$MA" /it-1 '{"patch":{"labels":["t2","bug","approved"]}}')" = 403
 check "a member can't drop a tier (t2 -> none) (403)" test "$(w PATCH "$MA" /it-1 '{"patch":{"labels":["bug"]}}')" = 403
@@ -134,30 +178,18 @@ check "a comment carries its author's role" bash -c "[ \$(w POST '$MA' /it-1/com
 check "...and its author is the signed-in person, whatever the body says" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"x\",\"author\":\"owner\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.author == \"alex\"'"
 kill $BS $FB 2>/dev/null
 
-echo '== self approval, the owner, refusals'
-mm auth grant bob --for acme-shop --telegram 555 >/dev/null
-sock() { curl -s --unix-socket "$MM_HOME/run/auth.sock" -H 'content-type: application/json' -d "$2" "http://auth$1"; }
-export -f sock sig
-rm -f "$J"; C2=$(sig / 10.0.0.2)
-check "a granted person approves their own code (bob)" bash -c "sock /approve '{\"code\":\"$C2\",\"telegram_id\":\"555\",\"by\":\"bot\"}' | jq -e '.user == \"bob\"'"
-rm -f "$J"; C3=$(sig / 10.0.0.3)
-check "someone without a grant cannot (403)" bash -c "sock /approve '{\"code\":\"$C3\",\"telegram_id\":\"999\",\"by\":\"bot\"}' | jq -e '.error'"
-check "the owner, by their Telegram id: owner of all" bash -c "sock /approve '{\"code\":\"$C3\",\"telegram_id\":\"777\",\"by\":\"bot\"}' | jq -e '.role == \"owner\" and .scope == [\"all\"]'"
-check "an on-the-spot grant can't make an owner" bash -c "rm -f '$J'; C=\$(curl -s -c '$J' -H 'cf-connecting-ip: 10.0.0.4' '$G/s?b=$BOARD' | sed -n 's/.*id=\"code\"[^>]*>\\([0-9A-Z-]*\\)<.*/\\1/p'); mm auth approve \$C --as carol --for acme-shop --role owner -o json | jq -e '.role == \"member\"'"
-rm -f "$J"; C4=$(sig / 10.0.0.5)
-for i in 1 2 3 4 5; do sock /approve '{"code":"ZZZZ-ZZZZ","telegram_id":"888"}' >/dev/null; done
-check "5 wrong codes per identity, then limited (429), even for a right one" bash -c "sock /approve '{\"code\":\"$C4\",\"telegram_id\":\"888\"}' | jq -e '.error | test(\"too many\")'"
-check "a race: two approvals of one code, exactly one wins" bash -c "rm -f '$J'; C=\$(curl -s -c '$J' -H 'cf-connecting-ip: 10.0.0.6' '$G/s?b=$BOARD' | sed -n 's/.*id=\"code\"[^>]*>\\([0-9A-Z-]*\\)<.*/\\1/p'); (sock /approve \"{\\\"code\\\":\\\"\$C\\\",\\\"as\\\":\\\"dan\\\",\\\"scope\\\":\\\"acme-shop\\\"}\" > '$T/r1' &); sock /approve \"{\\\"code\\\":\\\"\$C\\\",\\\"as\\\":\\\"erin\\\",\\\"scope\\\":\\\"acme-shop\\\"}\" > '$T/r2'; sleep 0.5; [ \$(cat '$T/r1' '$T/r2' | grep -c '\"ok\":true') = 1 ]"
-for i in $(seq 1 10); do curl -s -o /dev/null -H 'cf-connecting-ip: 10.9.9.9' "$G/s?b=$BOARD"; done
-check "code issuing is limited per address (the 11th: 429)" test "$(curl -s -o /dev/null -w '%{http_code}' -H 'cf-connecting-ip: 10.9.9.9' "$G/s?b=$BOARD")" = 429
-rm -f "$J"; C5=$(sig / 10.0.0.7); sleep 7
-check "an expired code: refused, and the page says so" bash -c "! mm auth approve $C5 --as fay --for acme-shop && curl -s -b '$J' $G/s/poll | grep -q expired"
+echo '== a link expires'
+kill $GW 2>/dev/null; wait $GW 2>/dev/null
+MM_AUTH_LINK_S=2 mm auth serve >>"$T/gw.log" 2>&1 & GW=$!
+for _ in $(seq 1 100); do [ -S "$MM_HOME/run/auth.sock" ] && curl -s -o /dev/null "$G/s" && break; sleep 0.2; done
+LE=$(link_of alex); sleep 3; open_link "$LE" "$T/he"
+check "a link opened after its lifetime: no session" bash -c "[ -z \"\$(sess '$T/he')\" ]"
 
 echo '== the store, the logs'
-check "auth/ 0700, files 0600, the socket 0600" bash -c "[ \$(stat -c %a '$MM_HOME/auth') = 700 ] && [ -z \"\$(find '$MM_HOME/auth' -type f ! -perm 600)\" ] && [ \$(stat -c %a '$MM_HOME/run/auth.sock') = 600 ]"
-check "grants persist (bob, carol, the winner of the race)" bash -c "mm auth grants -o json | jq -e 'map(.name) | (index(\"bob\") and index(\"carol\"))'"
-check "the log has no full code and no cookie value" bash -c "! grep -q '$CODE' '$T/gw.log' && ! grep -qE 'mm_(auth|board|pending)=' '$T/gw.log'"
-check "every approval is logged (with its code's short hash)" bash -c "grep -c '\"approved\"' '$T/gw.log' | grep -qE '^[4-9]'"
-[ "$fail" = 0 ] || { echo "--- board.log"; tail -15 "$T/board.log"; }
+check "auth/ 0700, files 0600 (accounts.db, secret, signing.key), the socket 0600" bash -c "[ \$(stat -c %a '$MM_HOME/auth') = 700 ] && [ -z \"\$(find '$MM_HOME/auth' -type f ! -perm 600)\" ] && [ \$(stat -c %a '$MM_HOME/run/auth.sock') = 600 ]"
+TOK=$(echo "$L" | sed 's/.*token=\([^&]*\).*/\1/')
+check "the log has no link token, no token, no cookie value" bash -c "! grep -qF '$TOK' '$T/gw.log' && ! grep -qF '$TK' '$T/gw.log' && ! grep -qE 'session_token=|mm_board=' '$T/gw.log'"
+check "every sign-in by link and every grant is logged" bash -c "grep -q 'signed in by link' '$T/gw.log' && grep -q '\"granted\"' '$T/gw.log'"
+[ "$fail" = 0 ] || { echo "--- gw.log"; tail -8 "$T/gw.log"; echo "--- board.log"; tail -8 "$T/board.log" 2>/dev/null; }
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

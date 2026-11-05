@@ -35,7 +35,7 @@ try {
   const { runMigrations } = await getMigrations(auth.options); await runMigrations()
   ok('schema migrated on bun:sqlite', true)
   const ctx = await auth.$context
-  const alex = await ctx.internalAdapter.createUser({ email: 'alex@users.mm.invalid', name: 'alex', emailVerified: true })
+  const alex = await ctx.internalAdapter.createUser({ email: 'alex@users.mm.invalid', name: 'alex', emailVerified: true }, { method: 'admin' })
   ok('a user with no password (server side)', alex?.id)
   await auth.api.signInMagicLink({ body: { email: 'alex@users.mm.invalid', callbackURL: '/' }, headers: new Headers() })
   ok('a magic link, captured by mm (not mailed)', /\/magic-link\/verify\?token=/.test(lastLink))
@@ -48,7 +48,7 @@ try {
   const cookieHdr = cookie.split(';')[0]
   const s = await auth.api.getSession({ headers: new Headers({ cookie: cookieHdr }) })
   ok('the cookie is alex\'s session', s?.user?.name === 'alex')
-  const owner = await ctx.internalAdapter.createUser({ email: 'owner@users.mm.invalid', name: 'owner', emailVerified: true })
+  const owner = await ctx.internalAdapter.createUser({ email: 'owner@users.mm.invalid', name: 'owner', emailVerified: true }, { method: 'admin' })
   const org = await auth.api.createOrganization({ body: { name: 'acme-shop', slug: 'acme-shop', userId: owner.id } })
   ok('an organization per project, made on the server', org?.id)
   await auth.api.addMember({ body: { userId: alex.id, organizationId: org!.id, role: 'designer' } })

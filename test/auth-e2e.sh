@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # mm.auth end to end (sy-nwp) in a throwaway container: a fresh box in domain mode with the gateway on, a real project
-# (mm new), and curl playing both the browser and the web proxy (Traefik's forward-auth). A code shown on the sign-in
-# page, approved with `mm auth approve`, reaches the real board's public side as that person; nothing gets there
-# without the gateway. A stub `expose` stands in for the machine's router tool. Nothing on the host is touched.
+# (mm new), and curl playing both the browser and the web proxy (Traefik's forward-auth). A single-use link from
+# `mm user link` (after `mm grant`) gives a session that reaches the real board's public side as that person; nothing
+# gets there without the gateway. A stub `expose` stands in for the machine's router tool. Nothing on the host is touched.
 #
 #   test/auth-e2e.sh --local dist/mm   [--image ubuntu:24.04] [--keep]      DOCKER="sudo -n docker" if needed
 set -uo pipefail
@@ -51,15 +51,15 @@ check "the board's public side, no assertion: 401" test "$(pub)" = 401
 check "...a forged identity header: 401" test "$(pub -H 'x-board-user: owner' -H 'x-board-role: owner')" = 401
 check "forward-auth with no session: to the sign-in page" sh -c "curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' -H 'x-forwarded-uri: /' $G/verify | grep -qi '^location: https://auth.$D/s?b=$BOARD'"
 
-echo "== a code, approved elsewhere"
-J=/tmp/jar
-CODE=$(curl -s -c $J -b $J -H 'x-forwarded-for: 10.1.1.1' "$G/s?b=$BOARD&r=/" | sed -n 's/.*id="code"[^>]*>\([0-9A-Z-]*\)<.*/\1/p')
-check "the sign-in page shows a code" sh -c "echo '$CODE' | grep -qE '^[0-9A-Z]{4}-[0-9A-Z]{4}$'"
-check "the page waits until it is approved" sh -c "curl -s -b $J $G/s/poll | grep -q waiting"
-check "mm auth approve --as alice --for acme-shop" sh -c "mm auth approve $CODE --as alice --for acme-shop -o json | jq -e '.user == \"alice\" and .role == \"member\"'"
-curl -s -c $J -b $J "$G/s/poll" >/tmp/poll.json
-check "the page gets a session and the board's callback" jq -e '.state == "approved" and (.next | startswith("https://'"$BOARD"'/_mm/auth/callback?c="))' /tmp/poll.json
-NEXT=$(jq -r .next /tmp/poll.json); CB=${NEXT#https://$BOARD}
+echo "== a person, a grant, a link that works once"
+check "mm user add boss --owner; mm user add alice; mm grant alice acme-shop" sh -c "mm user add boss --owner >/dev/null && mm user add alice >/dev/null && mm grant alice acme-shop -o json | jq -e '.role == \"member\"'"
+L=$(mm user link alice -o json | jq -r .link); AH=auth.example.test
+check "mm user link alice: a single-use link on the gateway's host" sh -c "echo '$L' | grep -q '^https://$AH/api/auth/magic-link/verify?token='"
+curl -s -D /tmp/l.h -o /dev/null -H "x-forwarded-host: $AH" -H 'x-forwarded-proto: https' "$G${L#https://$AH}"
+S=$(sed -n 's/^set-cookie: \(__Secure-better-auth\.session_token=[^;]*\).*/\1/ip' /tmp/l.h | tail -1)
+check "opening it: a session on the gateway's host" sh -c "[ -n '$S' ]"
+CB=$(curl -s -D - -o /dev/null -H "x-forwarded-host: $AH" -H 'x-forwarded-proto: https' -H "cookie: $S" "$G/s?b=$BOARD&r=/" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
+check "the session opens the board: its one-time callback" sh -c "echo '$CB' | grep -q '^/_mm/auth/callback?c='"
 curl -s -c /tmp/bj -H "x-forwarded-host: $BOARD" -o /dev/null "$G$CB"
 check "the board's own cookie (host-only)" grep -q mm_board /tmp/bj
 curl -s -D /tmp/v.h -o /dev/null -b /tmp/bj -H "x-forwarded-host: $BOARD" -H 'x-forwarded-uri: /api/whoami' -H 'x-forwarded-proto: https' $G/verify
@@ -73,9 +73,9 @@ check "the assertion is bound to its host (another board: 401)" test "$(curl -s 
 check "the local side is unchanged (portless name)" curl -sf -o /dev/null http://board.acme-shop.localhost:1355/api/whoami
 
 echo "== revoke"
-check "mm auth revoke alice" mm auth revoke alice
+check "mm revoke alice (every project)" mm revoke alice
 check "...her board cookie gets no assertion any more" sh -c "! curl -s -D - -o /dev/null -b /tmp/bj -H 'x-forwarded-host: $BOARD' -H 'x-forwarded-uri: /' $G/verify | head -1 | grep -q 200"
-check "no code or cookie in the gateway's log" sh -c "! grep -qF '$CODE' ~/.mm/pc/*.log ~/.mm/run/*.log 2>/dev/null"
+check "no link token or cookie in any log" sh -c "! grep -qF '$(echo "$L" | sed 's/.*token=\([^&]*\).*/\1/')' ~/.mm/pc/*.log 2>/dev/null && ! grep -qE 'session_token=|mm_board=' ~/.mm/pc/*.log 2>/dev/null"
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]
 EOF
 chmod 644 "$WORK"/*.sh

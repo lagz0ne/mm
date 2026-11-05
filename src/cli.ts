@@ -202,20 +202,29 @@ for (const [name, desc] of [['client <action>', 'client ls|add']] as const) {
   program.command(name).description(`${desc} (not yet)`).action(() => { console.error(`mm ${name.split(' ')[0]}: not built yet`); process.exit(2) })
 }
 
-const auth = program.command('auth').description('sign-in for every board: a code on the screen, approved here or over the chat bot (docs/auth-gateway.md)')
-auth.command('serve').description('(run by mm-pc as mm.auth) the sign-in gateway').action(() => { authServe() })
+const auth = program.command('auth').description('the sign-in gateway for every board: people, grants per project, sign-in links, tokens for tools (docs/auth-gateway.md)')
+auth.command('serve').description('(run by mm-pc as mm.auth) the sign-in gateway').action(async () => { await authServe() })
 const authOut = (r: { status: number; data: unknown }) => { const o = fmt(); if (o.format !== 'table') console.log(JSON.stringify(r.data, null, 2)); else if (Array.isArray(r.data)) print(r.data as Record<string, unknown>[], o); else console.log(JSON.stringify(r.data)); process.exit(r.status < 300 ? 0 : 1) }
 const authCall = async (path: string, body?: Record<string, unknown>) => { try { authOut(await callApi(path, body)) } catch (e) { console.error(`mm auth: the gateway does not answer on ${tilde(AUTH_SOCK)} (${(e as Error).message})`); process.exit(1) } }
-auth.command('approve <code>').description("approve a code someone shows you: --as <name> grants them on the spot (the owner's step)")
-  .option('--as <name>', 'their name on the boards').option('--for <scope>', 'project id(s), comma-separated, or all', '').option('--role <role>', 'member, designer (a member who also edits the project\'s Doop) or viewer', 'member').option('--days <n>', 'how long the grant lasts', '7')
-  .action((code: string, o) => authCall('/approve', { code, ...(o.as ? { as: o.as, scope: o.for, role: o.role, days: Number(o.days) } : {}), by: 'cli' }))
-auth.command('pending <code>').description('what is asking with this code (board, browser, address, age), before approving').action((code: string) => authCall(`/pending?code=${encodeURIComponent(code)}`))
-auth.command('grant <name>').description('give someone focus: --for <scope> [--role member|viewer] [--telegram <id>] [--days n]')
-  .option('--for <scope>', 'project id(s), comma-separated, or all', '').option('--role <role>', 'member, designer (a member who also edits the project\'s Doop) or viewer', 'member').option('--telegram <id>', 'their Telegram user id (they then approve their own codes)').option('--days <n>', '0 = no end', '0')
-  .action((name: string, o) => authCall('/grant', { name, scope: o.for, role: o.role, telegram_id: o.telegram, days: Number(o.days), by: 'cli' }))
-auth.command('revoke <name> [scope]').description('end a grant (or one scope of it) and its sessions at once; "all" ends every session').action((name: string, scope?: string) => authCall('/revoke', { name, scope, by: 'cli' }))
-auth.command('grants').description('who may see and steer which boards').action(() => authCall('/grants'))
 auth.command('sessions').description('who is signed in where').action(() => authCall('/sessions'))
+auth.command('grants').description('every grant: person, project, role').action(() => authCall('/grants'))
+// people and access (the owner's steps): a person, a role per project, a single-use link that opens all of it
+const user = program.command('user').description('people who sign in to the boards: mm user add | link | rm | ls')
+user.command('add <name>').description('a person (no password; they sign in with a link from mm user link)')
+  .option('--owner', 'the owner: every project, as owner (only from this machine)')
+  .action((name: string, o) => authCall('/user/add', { name, owner: !!o.owner, by: 'cli' }))
+user.command('link <name>').description('a sign-in link that works once (24 h); send it to them yourself. One session opens every board they are granted')
+  .action((name: string) => authCall('/user/link', { name, by: 'cli' }))
+user.command('rm <name>').description('remove a person: their grants, sessions and tokens end at once').action((name: string) => authCall('/user/rm', { name, by: 'cli' }))
+user.command('ls').description('people: owner or not, grants, sessions, tokens').action(() => authCall('/user/ls'))
+program.command('grant <name> <project>').description('give a person a role on a project (the owner\'s step)')
+  .option('--as <role>', 'designer (a member who also edits the project\'s Doop), member or viewer', 'member')
+  .action((name: string, project: string, o) => authCall('/grant', { name, project, role: o.as, by: 'cli' }))
+program.command('revoke <name> [project]').description('end a person\'s grant on a project (or on every project, and their sessions); their tokens there end too')
+  .action((name: string, project?: string) => authCall('/revoke', { name, project, by: 'cli' }))
+program.command('token <name> <project>').description('a bearer token for a tool, for one person on one project (shown once)')
+  .option('--days <n>', 'how long it lasts (1 to 365)', '30').option('--label <text>', 'what it is for')
+  .action((name: string, project: string, o) => authCall('/token', { name, project, days: Number(o.days), label: o.label, by: 'cli' }))
 
 program.command('sync').description('seal what can\'t be rebuilt into the mastermind repo and push it (docs/restore.md)')
   .option('--init <repo>', 'first time: clone the mastermind repo into ~/.mm/state/mastermind and remember it')
@@ -314,8 +323,8 @@ program.hook('preAction', (_p, cmd) => {
   const name = [cmd.parent?.name() !== 'mm' ? cmd.parent?.name() : '', cmd.name()].filter(Boolean).join(' ')
   if (name === 'ship' || name === 'cron' || name.startsWith('obs')) return
   // fill: the name only, never what follows it (a secret typed on the command line by mistake must not reach a trace).
-  // auth approve / pending: a sign-in code is a credential until it is used, so it never reaches a trace either.
-  const args = name === 'fill' ? String(cmd.args[0] ?? '') : /^auth (approve|pending)$/.test(name) ? ['(code)', ...cmd.args.slice(1)].join(' ') : cmd.args.join(' ')
+  // (user, grant, revoke and token take no secret: a sign-in link or token is only ever printed, never an argument)
+  const args = name === 'fill' ? String(cmd.args[0] ?? '') : cmd.args.join(' ')
   const done = mmSpan(`mm ${name}`, { args })
   process.on('exit', (code) => done(code === 0, { exit_code: code }))
 })

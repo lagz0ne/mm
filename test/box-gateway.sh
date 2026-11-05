@@ -2,7 +2,7 @@
 # Project box, the way in (sy-9il step 0 (d)): a real Traefik in front of a box's board, with forward-auth to the
 # sign-in gateway, as ops' `expose` makes the route. Throwaway containers and network only; the live Traefik is not
 # touched. curl is the browser and talks to Traefik only (https, Traefik's default certificate). Proves: no session
-# -> the sign-in page; a code approved with `mm auth approve` -> the board knows the person; a client's own
+# -> the sign-in page; a single-use link from `mm user link` (after `mm grant`) -> the board knows the person; a client's own
 # X-MM-Assertion or X-Board-* never gets through; revoke ends it.
 #   test/box-gateway.sh --local dist/mm   [--keep]        DOCKER="sudo -n docker" if needed
 set -uo pipefail
@@ -93,16 +93,17 @@ J=/tmp/jar
 echo "== through Traefik"
 check "no session: Traefik sends the browser to the sign-in page" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -D - -o /dev/null https://$BOARD/api/whoami | grep -qi '^location: https://$AUTH/s?b=$BOARD'"
 check "...a client's own X-MM-Assertion and X-Board-User don't get through" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; [ \"\$(B -o /dev/null -w '%{http_code}' -H 'x-mm-assertion: forged.forged' -H 'x-board-user: owner' -H 'x-board-role: owner' https://$BOARD/api/whoami)\" = 302 ]"
-CODE=$(B -c $J -b $J "https://$AUTH/s?b=$BOARD&r=/api/whoami" | sed -n 's/.*id="code"[^>]*>\([0-9A-Z-]*\)<.*/\1/p')
-check "the sign-in page (through Traefik) shows a code" sh -c "echo '$CODE' | grep -qE '^[0-9A-Z]{4}-[0-9A-Z]{4}$'"
-check "mm auth approve --as alice (in the box)" sh -c "$DOCKER exec -u dev $BOX sh -c 'PATH=\$HOME/.mm/bin:\$PATH mm auth approve $CODE --as alice --for acme-shop' >/dev/null"
-NEXT=$(B -c $J -b $J "https://$AUTH/s/poll" | sed -n 's/.*"next":"\([^"]*\)".*/\1/p')
-check "the page gets a session and the board's callback" sh -c "echo '$NEXT' | grep -q '^https://$BOARD/_mm/auth/callback?c='"
-B -c $J -b $J -o /dev/null "$NEXT"
+MM_IN() { $DOCKER exec -u dev "$BOX" sh -c "export PATH=\$HOME/.mm/bin:\$PATH; $*"; }
+check "in the box: mm user add boss --owner; mm user add alice; mm grant alice acme-shop" sh -c "$(declare -f MM_IN); BOX=$BOX DOCKER='$DOCKER'; MM_IN 'mm user add boss --owner && mm user add alice && mm grant alice acme-shop' >/dev/null"
+L=$(MM_IN 'mm user link alice -o json' | jq -r .link)
+check "mm user link alice: a single-use link on the gateway's host" sh -c "echo '$L' | grep -q '^https://$AUTH/api/auth/magic-link/verify?token='"
+B -c $J -b $J -o /dev/null "$L"
+check "the link (through Traefik): a session, then the board opens with no new link (callback, the board's cookie)" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -L -c $J -b $J https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\"'"
+check "the same link again: no new session" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; ! B -D - -o /dev/null '$L' | grep -qi 'set-cookie: __Secure-better-auth.session_token'"
 check "the board knows alice, through Traefik and the gateway" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\".*\"source\":\"gateway\"'"
 check "alice sees the board's items" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J 'https://$BOARD/api/v0/beads/issues?limit=20' | grep -q 'seen through Traefik'"
 check "...and her forged role header changes nothing (Traefik takes the gateway's)" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J -H 'x-board-role: owner' -H 'x-mm-assertion: forged.forged' https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\"'"
-check "mm auth revoke alice: the next request goes back to sign-in" sh -c "$DOCKER exec -u dev $BOX sh -c 'PATH=\$HOME/.mm/bin:\$PATH mm auth revoke alice' >/dev/null && $(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; [ \"\$(B -b $J -o /dev/null -w '%{http_code}' https://$BOARD/api/whoami)\" = 302 ]"
+check "mm revoke alice (every project): the next request goes back to sign-in" sh -c "$DOCKER exec -u dev $BOX sh -c 'PATH=\$HOME/.mm/bin:\$PATH mm revoke alice' >/dev/null && $(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; [ \"\$(B -b $J -o /dev/null -w '%{http_code}' https://$BOARD/api/whoami)\" = 302 ]"
 echo; echo "$pass passed, $fail failed"
 [ -n "$KEEP" ] && echo "kept: $DOCKER exec -it -u dev $BOX bash"
 [ "$fail" = 0 ]
