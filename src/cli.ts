@@ -125,7 +125,7 @@ program.command('ls').description('list projects').action(() => { const o = fmt(
 program.command('inspect <project>').description('a project: answers, services, URLs').action((ref: string) => {
   const o = fmt(), root = findRoot(ref)
   const { answers, services } = resolve(root), ps = answers.box ? boxMod.processes(root) : processes(answers.project)
-  if (answers.box && o.format === 'table') { const b = boxMod.status(root); console.log(`box ${b.box}: ${b.running ? 'running' : 'stopped'}${b.ip ? ` at ${b.ip}` : ''}; egress proxy ${b.proxy ? 'running' : 'stopped'}; image ${b.image || '-'}`) }
+  if (answers.box && o.format === 'table') { const b = boxMod.status(root); console.log(`box ${b.box}: ${b.running ? 'running' : 'stopped'}${b.ip ? ` at ${b.ip}` : ''}; egress proxy ${b.proxy ? 'running' : 'stopped'}; image ${b.image || '-'}${b.paseo ? `\npaseo ${b.paseo} (password: ${tilde(b.password_file)}, for the system Paseo's host add)` : ''}`) }
   const rows = Object.entries(services).map(([n, s]) => { const p = ps.find((x) => x.name === `${answers.project}.${n}`)
     return { service: n, status: p?.status ?? 'not loaded', ready: p?.is_ready ?? '', restarts: p?.restarts ?? '', url: (s as { url?: string }).url ?? '' } })
   if (o.format !== 'table') return print([{ ...answers, services: rows }] as unknown as Record<string, unknown>[], o)

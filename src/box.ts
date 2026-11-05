@@ -4,7 +4,8 @@
 // project folder is mounted at the same path (so every generated path stays right); the kernel and every file that
 // decides what the box may do are mounted read-only on top (review sy-b15.6). The box's network is `internal`: the
 // only way out is the project's own egress proxy, with its allowlist (the base list + the project's `egress:`).
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -14,6 +15,7 @@ import { boxHook, readAnswers, resolve, serviceProcess } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
 import pkg from '../package.json'
+import * as vault from './vault'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
 const short = (r: { out: string; err: string }) => (r.err || r.out).trim().split('\n').slice(-3).join(' ').slice(0, 240)
@@ -26,6 +28,28 @@ export const EGRESS_IMAGE = () => String(getPath(loadConfig(), 'box.egress_image
 const BASE_EGRESS = ['github.com', 'api.github.com', 'codeload.github.com', 'objects.githubusercontent.com', 'registry.npmjs.org']
 const names = (project: string) => ({ box: `mm-box-${project}`, net: `mm-net-${project}`, proxy: `mm-egress-${project}` })
 const BOX_PATH = '/usr/local/bin:/usr/bin:/bin'
+const PASEO_PORT = 6767
+/** A fixed subnet for the project's network (10.231.<n>.0/24) and a fixed address for its box (.10), so the system
+ *  Paseo's entry for the box stays right when the box is made again. A taken subnet moves to the next n. */
+function netOf(project: string, net: string): { subnet: string; ip: string } | null {
+  const have = docker('network', 'inspect', '-f', '{{(index .IPAM.Config 0).Subnet}}', net).out.trim()
+  if (have) return { subnet: have, ip: have.replace(/\.0\/24$/, '.10') }
+  const start = createHash('sha256').update(project).digest()[0] % 240
+  for (let i = 0; i < 240; i++) {
+    const nn = 10 + ((start + i) % 240), subnet = `10.231.${nn}.0/24`
+    const r = docker('network', 'create', '--internal', '--subnet', subnet, '--gateway', `10.231.${nn}.1`, '--label', `mm.project=${project}`, net)
+    if (r.ok) return { subnet, ip: `10.231.${nn}.10` }
+    if (!/overlap|in use/i.test(r.err)) return null
+  }
+  return null
+}
+/** The box's Paseo password: made by mm once, kept on the host (0600); the box sees it only in its tmpfs mount. */
+export function paseoPasswordFile(project: string) {
+  const d = join(DIRS.mm, 'paseo'); mkdirSync(d, { recursive: true, mode: 0o700 }); chmodSync(d, 0o700)
+  const f = join(d, `${project}.password`)
+  if (!existsSync(f)) writeFileSync(f, randomBytes(24).toString('base64url'), { mode: 0o600 })
+  return f
+}
 
 /** Build both images from the Dockerfiles inside this mm binary. */
 export function build(): Step[] {
@@ -57,12 +81,19 @@ const allowPatterns = (hosts: string[]) => hosts.map((h) => `^${h.startsWith('*.
 function boxProcesses(root: string, proxy: string) {
   const { answers: a, services, socket, pp } = resolve(root)
   const out = `http://${proxy}:8888`
-  const env = { PATH: BOX_PATH, HOME, MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0',
+  const paseoHome = join(DIRS.mm, 'paseo', a.project)
+  const env = { PATH: BOX_PATH, HOME, MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0', PASEO_HOME: paseoHome,
     HTTPS_PROXY: out, HTTP_PROXY: out, https_proxy: out, http_proxy: out, NO_PROXY: 'localhost,127.0.0.1,.localhost', no_proxy: 'localhost,127.0.0.1,.localhost' }
   const processes: Record<string, unknown> = {
     [`${a.project}.portless`]: { namespace: a.project, command: `portless proxy start --foreground --port ${pp} --no-tls`, environment: Object.entries(env).map(([k, v]) => `${k}=${v}`),
       log_location: join(root, '.run', 'logs', 'portless.log'), availability: { restart: 'always', backoff_seconds: 3 },
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${pp}/` }, period_seconds: 3, failure_threshold: 20 } },
+    // the box's own Paseo: runs the project's leads as the box user; only on the box network, with mm's password; no
+    // relay and no web UI (only the system Paseo has the relay; review sy-b15.8)
+    [`${a.project}.paseo`]: { namespace: a.project, command: `sh -c 'PASEO_PASSWORD="$$(cat /run/mm/secrets/paseo.password)" exec paseo daemon run'`,
+      environment: Object.entries({ ...env, PASEO_LISTEN: `0.0.0.0:${PASEO_PORT}`, PASEO_RELAY_ENABLED: 'false', PASEO_WEB_UI_ENABLED: 'false' }).map(([k, v]) => `${k}=${v}`),
+      log_location: join(root, '.run', 'logs', 'paseo.log'), availability: { restart: 'always', backoff_seconds: 3 },
+      readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${PASEO_PORT}/` }, period_seconds: 3, failure_threshold: 40 } },
   }
   for (const [n, s] of Object.entries(services)) {
     const p = serviceProcess(root, a.project, n, s, services, { env, socket, pdeath: 'setpriv --pdeathsig TERM ', secretsDir: '/run/mm/secrets' }) as Record<string, unknown>
@@ -78,8 +109,8 @@ export function up(root: string): Step[] {
   const fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return steps }
   if (!docker('image', 'inspect', IMAGE()).ok || !docker('image', 'inspect', EGRESS_IMAGE()).ok) return fail('image', `missing ${IMAGE()} or ${EGRESS_IMAGE()}: mm box build`)
   // 1. the network: internal, no route out
-  if (!exists('network', n.net)) { const r = docker('network', 'create', '--internal', '--label', `mm.project=${a.project}`, n.net); if (!r.ok) return fail('network', short(r)) }
-  steps.push({ step: 'network', status: 'ok', detail: `${n.net} (internal)` })
+  const net = netOf(a.project, n.net); if (!net) return fail('network', `could not make ${n.net}`)
+  steps.push({ step: 'network', status: 'ok', detail: `${n.net} (internal, ${net.subnet}; the box at ${net.ip})` })
   // 2. the egress proxy: on the bridge (out) and on the box's network; its list is read-only to it
   const edir = join(DIRS.mm, 'egress', a.project); mkdirSync(edir, { recursive: true, mode: 0o700 })
   const hosts = egressList(root); writeFileSync(join(edir, 'allow'), allowPatterns(hosts), { mode: 0o644 })
@@ -95,12 +126,23 @@ export function up(root: string): Step[] {
   mkdirSync(cfg, { recursive: true }); mkdirSync(sock, { recursive: true }); mkdirSync(join(root, '.run', 'logs'), { recursive: true }); mkdirSync(join(root, '.dolt'), { recursive: true })
   const bp = boxProcesses(root, n.proxy)
   writeFileSync(join(cfg, 'pc.yaml'), `# Generated by mm for the box ${n.box}. Do not edit.\nversion: "0.5"\n${Bun.YAML.stringify({ processes: bp.processes }, null, 2)}\n`)
-  // 4. the box
+  // 4. what the box may know: its Paseo password, and the vault's values its services declare, in a tmpfs folder on
+  // the host that the box sees read-only (gone at the host's reboot; mm opens it again at every up)
+  const sec = vault.runtimeDir(a.project)
+  copyFileSync(paseoPasswordFile(a.project), join(sec, 'paseo.password')); chmodSync(join(sec, 'paseo.password'), 0o600)
+  const declared = [...new Set(Object.values(resolve(root).services).flatMap((x) => x.secrets || []))]
+  if (declared.length) {
+    if (!vault.ready()) return fail('secrets', `the services declare ${declared.join(', ')}, and this machine has no vault (mm vault init)`)
+    vault.openFor(a.project, declared.map((x) => vault.projectSecretName(a.project, x)))
+  }
+  steps.push({ step: 'secrets', status: 'ok', detail: `${declared.length} value(s) + the Paseo password, read-only in the box (tmpfs)` })
+  const paseoHome = join(DIRS.mm, 'paseo', a.project); mkdirSync(paseoHome, { recursive: true, mode: 0o700 })
+  // 5. the box
   if (exists('container', n.box)) docker('rm', '-f', n.box)
   const ro = (p: string) => (existsSync(p) ? ['-v', `${p}:${p}:ro`] : [])
   const claude = join(DIRS.mm, 'claude', a.project); mkdirSync(claude, { recursive: true, mode: 0o700 })
   const lim = (k: string, d: string) => String(getPath(loadConfig(), `box.${k}`) || d)
-  const r = docker('run', '-d', '--name', n.box, '--hostname', a.project, '--label', `mm.project=${a.project}`, '--network', n.net, '--restart', 'unless-stopped',
+  const r = docker('run', '-d', '--name', n.box, '--hostname', a.project, '--label', `mm.project=${a.project}`, '--network', n.net, '--ip', net.ip, '--restart', 'unless-stopped',
     // no DNS out (review sy-b15.7: lookups are a way out): Docker's own resolver still answers the names on the box's
     // network (its proxy), and forwards everything else to 127.0.0.1, where nothing answers
     '--dns', '127.0.0.1',
@@ -111,7 +153,7 @@ export function up(root: string): Step[] {
     // the kernel and what decides what the box may do: read-only on top (they change only through mm)
     ...['bin', 'ops', 'setup', 'tools', '.git/hooks', '.git/config', 'code/.git/hooks', 'code/.git/config', 'services.yaml', '.mm-answers.yaml', 'secrets.json', 'governance.json', '.run/box/cfg']
       .flatMap((p) => ro(join(root, p))),
-    '-v', `${claude}:${claude}`,
+    '-v', `${claude}:${claude}`, '-v', `${paseoHome}:${paseoHome}`, '-v', `${sec}:/run/mm/secrets:ro`,
     '-w', root, IMAGE(), 'process-compose', 'up', '-t=false', '--keep-project', '-U', '-u', join(sock, 'pc.sock'), '-L', join(root, '.run', 'box', 'pc.log'), '-f', join(cfg, 'pc.yaml'))
   if (!r.ok) return fail('box', short(r))
   steps.push({ step: 'box', status: 'ok', detail: `${n.box} (read-only root, cap-drop ALL, no-new-privileges)` })
@@ -134,7 +176,8 @@ export function processes(root: string) {
 export function status(root: string) {
   const n = names(readAnswers(root).project)
   const ip = docker('inspect', '-f', `{{(index .NetworkSettings.Networks "${n.net}").IPAddress}}`, n.box).out.trim()
-  return { box: n.box, running: running(n.box), proxy: running(n.proxy), ip, image: docker('inspect', '-f', '{{.Config.Image}}', n.box).out.trim() }
+  return { box: n.box, running: running(n.box), proxy: running(n.proxy), ip, image: docker('inspect', '-f', '{{.Config.Image}}', n.box).out.trim(),
+    paseo: ip ? `tcp://${ip}:${PASEO_PORT}` : '', password_file: paseoPasswordFile(readAnswers(root).project) }
 }
 /** A command in the box, as the box user (mm shell). */
 export function execArgs(root: string, cmd: string[]) {
