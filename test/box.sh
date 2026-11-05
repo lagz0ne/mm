@@ -15,7 +15,7 @@ check() { local d=$1; shift; if "$@" >/tmp/box-test.out 2>&1; then ok "$d"; else
 BOX=mm-box-$PROJECT; PX=mm-egress-$PROJECT; NET=mm-net-$PROJECT; MM_HOME_DIR=${MM_HOME:-$HOME/.mm}
 D() { $MM_DOCKER "$@"; }
 IN() { D exec "$BOX" sh -c "umask 002; $*"; }   # as mm shell does
-cleanup() { [ -n "${KEEP:-}" ] && return; mm archive "$REF" >/dev/null 2>&1; [ -n "${BKP:-}" ] && rm -rf "$BKP";D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1; }
+cleanup() { [ -n "${KEEP:-}" ] && return; mm archive "$REF" >/dev/null 2>&1; [ -n "${BKP:-}" ] && rm -rf "$BKP"; [ -n "${CAN:-}" ] && rm -rf "$CAN"; D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1; }
 trap cleanup EXIT
 export -f D IN; export BOX PX NET MM_DOCKER
 
@@ -44,9 +44,31 @@ check "no Docker socket" sh -c "! IN 'test -e /var/run/docker.sock'"
 echo "== what the box may write"
 check "the root file system is read-only" sh -c "! IN 'touch /usr/x'"
 check "the project folder is writable (memory/, the board's data)" IN "touch $ROOT/memory/.box-probe && rm $ROOT/memory/.box-probe"
-for f in services.yaml .mm-answers.yaml secrets.json bin/land .git/config .run/box/cfg/pc.yaml; do
+for f in services.yaml .mm-answers.yaml secrets.json bin/land .git/config; do
   check "read-only in the box: $f" sh -c "! IN 'echo x >> $ROOT/$f' && ! grep -q '^x\$' '$ROOT/$f'"
 done
+HD="$MM_HOME_DIR/box/$PROJECT"
+check "read-only in the box: its process-compose file (/run/mm/cfg, kept by mm outside the project)" sh -c "! IN 'echo x >> /run/mm/cfg/pc.yaml' && ! grep -q '^x\$' '$HD/cfg/pc.yaml'"
+
+echo "== what the box can't change around its read-only files (review sy-b15.6 2)"
+CAN=$(mktemp -d /tmp/mm-canary.XXXXXX); echo "canary-$$-text" > "$CAN/config"; mkdir "$CAN/hooks"; chmod 755 "$CAN"; chmod 644 "$CAN/config"
+check "the project's top level is the host's: the box can't add to it, or rename .git or bin away" sh -c "! IN 'touch $ROOT/.new-top' && ! IN 'mv $ROOT/.git $ROOT/.git-moved' && ! IN 'mv $ROOT/bin $ROOT/bin-moved' && ! IN 'ln -s $CAN/config $ROOT/governance2.json' && test -d '$ROOT/.git' && test -d '$ROOT/bin'"
+if [ -d "$ROOT/code/.git" ]; then
+  # code/ is the box's (its product repo): it can move code/.git away, around its read-only hooks and config
+  IN "mv $ROOT/code/.git $ROOT/code/.git-real && ln -s $CAN $ROOT/code/.git" >/dev/null 2>&1
+  check "a symlink the box planted on the way to a read-only file: the next mm up refuses it, and mounts nothing of it" sh -c "! mm up '$REF' >/tmp/box-up-link.out 2>&1 && grep -q 'goes through a symlink' /tmp/box-up-link.out && ! D inspect '$BOX' >/dev/null 2>&1"
+  { rm "$ROOT/code/.git" && mv "$ROOT/code/.git-real" "$ROOT/code/.git"; } || bad "put code/.git back"
+  mm up "$REF" >/tmp/box-up-again.out 2>&1 || { bad "mm up again"; tail -5 /tmp/box-up-again.out; }
+  for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
+fi
+IN "rm -f $ROOT/.run/services.json && ln -s $CAN/config $ROOT/.run/services.json && ln -s $CAN/config $ROOT/.run/logs/leak.log" >/dev/null 2>&1
+IN "printf '%s\n' '{\"project\":\"another-project\",\"level\":\"error\",\"msg\":\"forged-$$\"}' >> $ROOT/.run/logs/forge.log" >/dev/null 2>&1
+check "a run file the box made a symlink: mm up writes the file itself, not through the link" sh -c "mm up '$REF' >/tmp/box-up-run.out 2>&1; grep -qx 'canary-$$-text' '$CAN/config' && [ ! -L '$ROOT/.run/services.json' ] && jq -e .services '$ROOT/.run/services.json' >/dev/null"
+for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
+mm ship --dry-run > /tmp/box-ship.out 2>&1
+check "the shipper: a box's log that is a symlink is not read (the canary's text is not shipped)" sh -c "! grep -q 'canary-$$-text' /tmp/box-ship.out"
+check "...and a box's line naming another project is shipped as the box's own" sh -c "grep 'forged-$$' /tmp/box-ship.out | jq -e 'select(.project == \"$PROJECT\")' >/dev/null && ! grep 'forged-$$' /tmp/box-ship.out | jq -e 'select(.project == \"another-project\")' >/dev/null"
+IN "rm -f $ROOT/.run/logs/leak.log $ROOT/.run/logs/forge.log" >/dev/null 2>&1
 
 echo "== the way out"
 check "no DNS for an outside name in the box (getent example.com fails)" sh -c "! IN 'getent hosts example.com'"
@@ -59,7 +81,7 @@ check "the services get the proxy (HTTPS_PROXY in their environment)" sh -c "IN 
 check "the host's own services don't answer from the box (names proxy 1355, VictoriaMetrics 8428 on the docker bridge)" sh -c "! IN 'curl -s -o /dev/null --max-time 5 --noproxy \"*\" http://172.17.0.1:1355/' && ! IN 'curl -s -o /dev/null --max-time 5 --noproxy \"*\" http://172.17.0.1:8428/'"
 
 echo "== the box's own Paseo (M1-C)"
-PSOCK="$ROOT/.run/box/sock/pc.sock"; PW="$MM_HOME_DIR/paseo/$PROJECT.password"
+PSOCK="$HD/sock/pc.sock"; PW="$MM_HOME_DIR/paseo/$PROJECT.password"
 BIP=$(D inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$BOX")
 for _ in $(seq 1 60); do process-compose -U -u "$PSOCK" process list -o json 2>/dev/null | jq -e ".[] | select(.name==\"$PROJECT.paseo\") | .is_ready == \"Ready\"" >/dev/null && break; sleep 2; done
 check "the box's Paseo daemon runs and is ready (as the box user)" sh -c "process-compose -U -u '$PSOCK' process list -o json | jq -e '.[] | select(.name==\"$PROJECT.paseo\") | .is_ready == \"Ready\"' && [ \"\$(IN 'ps -o user= -C node | sort -u | head -1')\" != root ]"
@@ -80,7 +102,7 @@ check "mm cron --run $PROJECT/health: runs in the box, ok" mm cron --run "$PROJE
 check "mm cron --run $PROJECT/backup: ok" mm cron --run "$PROJECT/backup"
 LAST=$(ls -1d "$BKP"/20*/ 2>/dev/null | tail -1)
 check "...a backup on the host ($BKP/<date>), with the board's items in it" sh -c "[ -n '$LAST' ] && grep -q 'made in the box' '$LAST/board.jsonl' && test -d '$LAST/board.dolt' && test -s '$LAST/config.bundle'"
-check "...owned by the host's owner, and nothing of it left in the box's staging folder" sh -c "[ -z \"\$(find '$LAST' ! -uid $(id -u) -print -quit)\" ] && [ -z \"\$(ls -A '$ROOT/.run/box/backup')\" ]"
+check "...owned by the host's owner, and nothing of it left in the box's staging folder" sh -c "[ -z \"\$(find '$LAST' ! -uid $(id -u) -print -quit)\" ] && [ -z \"\$(ls -A '$HD/backup')\" ]"
 check "the box can't see the backups folder" sh -c "! IN 'ls $BK' && ! IN 'test -e $BKP'"
 
 echo "== mm box off, mm box on (a project moves between the host and its box)"
@@ -92,5 +114,5 @@ for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready"
 check "...its board is ready in the box, and the item made there before is still there" sh -c "mm inspect '$REF' | grep -q 'board .*Ready' && IN \"cd $ROOT && bin/bd list --json\" | grep -q 'made in the box'"
 
 echo "== archive"
-check "mm archive: the box and its proxy are gone" sh -c "mm archive '$REF' >/dev/null && ! D inspect '$BOX' >/dev/null 2>&1 && ! D inspect '$PX' >/dev/null 2>&1"
+check "mm archive: the box and its proxy are gone, and what mm kept for it" sh -c "mm archive '$REF' >/dev/null && ! D inspect '$BOX' >/dev/null 2>&1 && ! D inspect '$PX' >/dev/null 2>&1 && ! test -e '$HD'"
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]

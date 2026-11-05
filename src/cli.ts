@@ -272,7 +272,9 @@ program.command('sync').description('seal what can\'t be rebuilt into the master
 program.command('cron').description('(run by mm-pc) run every project\'s schedules (health, backup, ...)')
   .option('--run <project/job>', 'run one job now, once (e.g. acme-shop/backup), and exit with its code')
   .action(async (opts) => { if (opts.run) process.exit(await runOnce(opts.run)); await cron() })
-program.command('ship').description('(run by mm-pc) ship service log files to VictoriaLogs').action(async () => { await ship() })
+program.command('ship').description('(run by mm-pc) ship service log files to VictoriaLogs')
+  .option('--dry-run', 'one pass from the start of every file: print the records, send nothing')
+  .action(async (opts) => { await ship(2000, !!opts.dryRun) })
 
 const vaultCmd = program.command('vault').description('sealed secrets (age): two keys, opened only into memory-backed files at start (docs/vault.md)')
 vaultCmd.command('init').description("make this machine's vault key and record the human's recovery PUBLIC key (age1…)")

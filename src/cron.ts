@@ -6,7 +6,8 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DIRS, HOME, toolPath } from './env'
-import { jobArgs, landBackup } from './box'
+import { hostDir, jobArgs, landBackup } from './box'
+import { resolve } from './project'
 
 const STATE = join(DIRS.mm, 'data', 'cron.json')
 type Job = { project: string; root: string; name: string; every: string; command: string; box: boolean }
@@ -33,7 +34,9 @@ function jobs(): Job[] {
     if (!m) continue
     const root = m[1].replace(/^~(?=\/)/, HOME)
     try {
-      const s = JSON.parse(readFileSync(join(root, '.run', 'services.json'), 'utf8')) as { project: string; schedules?: Record<string, { every: string; command: string }> }
+      // a box's jobs from its services.yaml (read-only in the box), never from a file the box can write
+      const s = (box ? (() => { const r = resolve(root); return { project: r.answers.project, schedules: r.schedules } })()
+        : JSON.parse(readFileSync(join(root, '.run', 'services.json'), 'utf8'))) as { project: string; schedules?: Record<string, { every: string; command: string }> }
       for (const [name, j] of Object.entries(s.schedules || {})) if (j?.every && j?.command) out.push({ project: s.project, root, name, every: j.every, command: j.command, box })
     } catch {}
   }
@@ -63,7 +66,8 @@ export async function cron(tickMs = 10_000) {
 
 /** One run of a job: its line in <root>/.run/logs/cron.log. Resolves to the exit code and the output's tail. */
 async function runJob(j: Job): Promise<{ code: number; tail: string }> {
-  const t0 = Date.now(), log = join(j.root, '.run', 'logs', 'cron.log')
+  // a box's cron log is the host's (the host appends to it; in the project folder the box could make it a symlink)
+  const t0 = Date.now(), log = j.box ? join(hostDir(j.project), 'cron.log') : join(j.root, '.run', 'logs', 'cron.log')
   const jenv = { MM_PROJECT: j.project, TRACEPARENT: '' }
   const p = Bun.spawn(j.box ? jobArgs(j.root, j.name, j.command, jenv) : ['sh', '-c', j.command], { cwd: j.root, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
     env: { ...process.env, PATH: toolPath(), ...jenv } })
@@ -73,7 +77,7 @@ async function runJob(j: Job): Promise<{ code: number; tail: string }> {
   if (j.box && j.name === 'backup' && code === 0) try { out += `\nlanded ${landBackup(j.root)}` } catch (e) { code = 1; err += `\n${(e as Error).message}` }
   const tail = `${out}${err}`.trim().split('\n').slice(-5).join(' | ').slice(0, 1000)
   try {
-    mkdirSync(join(j.root, '.run', 'logs'), { recursive: true })
+    mkdirSync(join(log, '..'), { recursive: true })
     appendFileSync(log, JSON.stringify({ time: new Date().toISOString(), level: code ? 'error' : 'info', msg: `${j.name} ${code ? `failed (exit ${code})` : 'ok'}${tail ? `: ${tail}` : ''}`,
       project: j.project, service: `cron`, job: j.name, exit_code: code, duration_ms: Date.now() - t0 }) + '\n')
   } catch {}

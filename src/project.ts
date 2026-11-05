@@ -1,7 +1,8 @@
 // Projects: stamp from the template (mm new), load into the machine's process-compose as a namespace (mm up),
 // namespace operations (down/restart), listing and inspection.
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, engineDirs, HOME, run, toolPath, which } from './env'
@@ -219,15 +220,26 @@ export const boxHook: { up: ((root: string) => Step[]) | null; down: ((root: str
 
 /** What engine scripts read at runtime (.run/services.json, .run/endpoints.json), on the host or in a box (whose
  *  process manager has its own socket); the gateway reads services.json for each board's public name. */
+/**
+ * Write a file in a folder a box may write (review sy-b15.6 2): never through a symlink. The folder must be where it
+ * says (no symlink on the way from the project root); the file goes to a fresh temp name ('wx': not an existing name or
+ * link) and is renamed over the old name, which replaces a planted link instead of following it.
+ */
+export function writeInProject(root: string, rel: string, data: string) {
+  const dir = dirname(join(root, rel)), want = join(realpathSync(root), dirname(rel))
+  mkdirSync(dir, { recursive: true })
+  if (realpathSync(dir) !== want) throw new Error(`${dirname(rel)} in ${root} goes through a symlink: not writing ${rel}`)
+  const tmp = join(want, `.${rel.split('/').pop()}.${randomBytes(6).toString('hex')}.tmp`)
+  try { writeFileSync(tmp, data, { flag: 'wx' }); renameSync(tmp, join(want, rel.split('/').pop()!)) } catch (e) { rmSync(tmp, { force: true }); throw e }
+}
 export function writeRunFiles(root: string, pcSocket: string) {
   const { answers: a, services, schedules, dport } = resolve(root)
-  mkdirSync(join(root, '.run'), { recursive: true })
-  writeFileSync(join(root, '.run', 'services.json'), JSON.stringify({ project: a.project, dolt_port: dport, services, schedules }, null, 2))
+  writeInProject(root, '.run/services.json', JSON.stringify({ project: a.project, dolt_port: dport, services, schedules }, null, 2))
   const ep = { manager: 'process-compose (mm)', self_healing: true, restart: `process-compose -U -u ${pcSocket} process restart ${a.project}.{service}`,
     logs: `tail -n {lines} ${join(root, '.run', 'logs')}/{service}.log`, observability: obsEndpoints(), dirs: engineDirs(),
     ...(publicKeyPem() ? { auth: { public_key: publicKeyPem() } } : {}), // the gateway's key: boards verify its assertions
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
-  writeFileSync(join(root, '.run', 'endpoints.json'), JSON.stringify(ep, null, 2))
+  writeInProject(root, '.run/endpoints.json', JSON.stringify(ep, null, 2))
 }
 
 export function up(root: string): Step[] {

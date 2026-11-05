@@ -9,6 +9,7 @@ import { DIRS, HOME, run } from './env'
 import { expand, machineInputs } from './inputs'
 import { listProjects, readAnswers } from './project'
 import * as vault from './vault'
+import { jobArgs, landBackup } from './box'
 import pkg from '../package.json'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
@@ -70,7 +71,7 @@ export function init(url: string): Step[] {
   return [{ step: 'init', status: 'ok', detail: `${url} -> ${tl(CHECKOUT)} (hook installed)` }]
 }
 
-type Board = { id: string; root: string; dir: string } // dir: where its files go in mastermind
+type Board = { id: string; root: string; dir: string; box?: boolean } // dir: where its files go in mastermind
 /** The system board and every project that isn't a throwaway. */
 export function boards(): Board[] {
   const out: Board[] = []
@@ -81,14 +82,17 @@ export function boards(): Board[] {
     try {
       const a = readAnswers(root)
       if (a.profile === 'system') continue
-      out.push({ id: a.project, root, dir: `projects/${a.client}/${a.name}` })
+      out.push({ id: a.project, root, dir: `projects/${a.client}/${a.name}`, ...(a.box ? { box: true } : {}) })
     } catch {}
   }
   return out
 }
 
-/** A repo's fingerprint: its refs (a bundle of the same refs holds the same history). */
-const refsOf = (dir: string) => sha(run(['git', '-C', dir, 'for-each-ref', '--format=%(objectname) %(refname)']).out + run(['git', '-C', dir, 'symbolic-ref', '-q', 'HEAD']).out)
+/** A repo's fingerprint: its refs (a bundle of the same refs holds the same history). A box's repos: read in the box
+ *  (the box can write its .git, so the host runs no git on it; review sy-b15.6 2-3). */
+const refsOf = (dir: string, box?: Board) => box
+  ? sha(run(jobArgs(box.root, 'refs', `git -C '${dir}' for-each-ref --format='%(objectname) %(refname)'; git -C '${dir}' symbolic-ref -q HEAD`, {})).out)
+  : sha(run(['git', '-C', dir, 'for-each-ref', '--format=%(objectname) %(refname)']).out + run(['git', '-C', dir, 'symbolic-ref', '-q', 'HEAD']).out)
 
 type Item = { path: string; from: string; fp: () => string; bytes: () => Buffer | Uint8Array; plain?: boolean }
 /** What mastermind should hold now. Board items need a fresh backup (made lazily, once per board). */
@@ -107,15 +111,22 @@ function plan(work: string, steps: Step[]): Item[] {
     const backup = () => {
       if (bk) return bk
       const dest = join(work, b.id)
+      if (b.box) { // its backup runs in the box and lands in the machine's backups folder (as the nightly one); copy it
+        const r = run(jobArgs(b.root, 'backup', join(b.root, 'bin', 'backup'), { MM_PROJECT: b.id }), { timeoutMs: 900_000 })
+        if (!r.ok) throw new Error(`${b.id}: bin/backup in the box failed: ${short(r)}`)
+        const landed = landBackup(b.root), from = landed.split(' -> ').pop()!, made = landed.split(' -> ')[0].split(', ').pop()!
+        steps.push({ step: `backup ${b.id}`, status: 'ok', detail: `in the box; ${made}` })
+        return (bk = join(from, made))
+      }
       const r = run([join(b.root, 'bin', 'backup')], { cwd: b.root, env: { BACKUP_DIR: dest }, timeoutMs: 900_000 })
       const made = existsSync(dest) ? readdirSync(dest).filter((d) => d.startsWith('20')).sort().pop() : undefined
       if (!r.ok || !made) throw new Error(`${b.id}: bin/backup failed: ${short(r)}`)
       steps.push({ step: `backup ${b.id}`, status: 'ok', detail: r.out.trim().split('\n').pop()?.replace(work, '<work>') || 'done' })
       return (bk = join(dest, made))
     }
-    items.push({ path: `${b.dir}/config.bundle.age`, from: `${tl(b.root)} (config repo)`, fp: () => refsOf(b.root), bytes: () => readFileSync(join(backup(), 'config.bundle')) })
+    items.push({ path: `${b.dir}/config.bundle.age`, from: `${tl(b.root)} (config repo)`, fp: () => refsOf(b.root, b.box ? b : undefined), bytes: () => readFileSync(join(backup(), 'config.bundle')) })
     if (existsSync(join(b.root, 'code', '.git')))
-      items.push({ path: `${b.dir}/code.bundle.age`, from: `${tl(join(b.root, 'code'))} (product repo)`, fp: () => refsOf(join(b.root, 'code')), bytes: () => readFileSync(join(backup(), 'code.bundle')) })
+      items.push({ path: `${b.dir}/code.bundle.age`, from: `${tl(join(b.root, 'code'))} (product repo)`, fp: () => refsOf(join(b.root, 'code'), b.box ? b : undefined), bytes: () => readFileSync(join(backup(), 'code.bundle')) })
     items.push({
       path: `${b.dir}/board.tar.age`, from: `${b.id} board (Dolt backup + JSONL + releases)`,
       fp: () => { const d = backup(); return sha(readFileSync(join(d, 'board.jsonl')) + (existsSync(join(d, 'releases')) ? readFileSync(join(d, 'releases'), 'utf8') : '')) },

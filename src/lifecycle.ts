@@ -175,6 +175,7 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   const pf = join(PROJECTS_PC, `${a.project}.yaml`)
   if (existsSync(pf)) rmSync(pf)
   rmSync(join(BOXES, `${a.project}.yaml`), { force: true }) // a box's registration
+  if (a.box) rmSync(join(DIRS.mm, 'box', a.project), { recursive: true, force: true }) // and what mm kept for it (src/box.ts hostDir)
   // the reload can race processes that are still stopping: try again briefly
   let l = loadAll()
   for (let i = 0; i < 5 && !l.ok; i++) { Bun.sleepSync(2000); l = loadAll() }

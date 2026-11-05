@@ -1,7 +1,7 @@
 // Observability: the machine's Victoria stack (metrics, logs, traces; loopback only, run by mm-pc in namespace mm),
 // the log shipper (`mm ship`), queries for people and the brain (`mm obs ...`), and mm's own spans.
 import { randomBytes } from 'node:crypto'
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, run, toolPath, which } from './env'
@@ -48,17 +48,36 @@ export function obsProcesses(): Record<string, unknown> {
 // ---------- mm ship: service log files -> VictoriaLogs ----------
 type Off = Record<string, { ino: number; off: number }>
 const SHIP_STATE = join(DATA, 'ship.json')
-/** The files to ship: the process manager's own logs and every project's .run/logs/*.log. */
-function shipFiles(): string[] {
-  const out: string[] = []
-  const add = (d: string) => { try { for (const f of readdirSync(d)) if (f.endsWith('.log')) out.push(join(d, f)) } catch {} }
+/**
+ * The files to ship: the process manager's own logs and every project's .run/logs/*.log. A box's (~/.mm/pc/boxes) are
+ * written by the box, so (review sy-b15.7 3, sy-b15.6 2): each one is opened only if it really is that file (no
+ * symlink, checked on the open file itself), and its records carry the box's project, whatever a line says. Its cron
+ * log is the host's own (~/.mm/box/<project>/cron.log).
+ */
+type ShipFile = { f: string; project?: string; inside?: string }
+function shipFiles(): ShipFile[] {
+  const out: ShipFile[] = []
+  const add = (d: string, project?: string, inside?: string) => { try { for (const f of readdirSync(d)) if (f.endsWith('.log')) out.push({ f: join(d, f), project, inside }) } catch {} }
   add(DIRS.pc)
-  const pdir = join(DIRS.pc, 'projects')
-  for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
+  for (const [pdir, box] of [[join(DIRS.pc, 'projects'), false], [join(DIRS.pc, 'boxes'), true]] as const) for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
     const m = /from (.+)\/services\.yaml/.exec(readFileSync(join(pdir, f), 'utf8'))
-    if (m) add(join(m[1].replace(/^~(?=\/)/, HOME), '.run', 'logs'))
+    if (!m) continue
+    const root = m[1].replace(/^~(?=\/)/, HOME), project = f.replace(/\.yaml$/, '')
+    if (!box) { add(join(root, '.run', 'logs')); continue }
+    let real = ''; try { real = join(realpathSync(root), '.run', 'logs') } catch { continue }
+    add(join(root, '.run', 'logs'), project, real)
+    add(join(DIRS.mm, 'box', project), project)
   }
   return out
+}
+/** Open a log for reading; for a box's file, only the real file at its own path (O_NOFOLLOW, then the open file's path). */
+function openLog(x: ShipFile): number | null {
+  try {
+    const fd = openSync(x.f, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    if (!x.inside || (fstatSync(fd).isFile() && readlinkSync(`/proc/self/fd/${fd}`) === join(x.inside, x.f.split('/').pop()!))) return fd
+    closeSync(fd)
+  } catch {}
+  return null
 }
 /** One log line -> one record. Process-compose lines carry {process, message}; engine lines are JSON themselves. */
 /** Lines a tool logs as errors that are not: Dolt's note that a client hung up (every restart and every bd command
@@ -92,25 +111,31 @@ export function toRecord(line: string, file: string): Record<string, unknown> | 
   }
   return rec
 }
-export async function ship(everyMs = 2000) {
+/** `dryRun`: one pass from the start of every file; print the records, send nothing, keep no state (for tests). */
+export async function ship(everyMs = 2000, dryRun = false) {
   const { logs } = obsPorts()
   const url = `http://127.0.0.1:${logs}/insert/jsonline?_stream_fields=project,service&_time_field=time&_msg_field=msg`
   let st: Off = {}
-  try { st = JSON.parse(readFileSync(SHIP_STATE, 'utf8')) } catch {}
+  if (!dryRun) try { st = JSON.parse(readFileSync(SHIP_STATE, 'utf8')) } catch {}
   for (;;) {
     const batch: string[] = [], next: Off = { ...st }
-    for (const f of shipFiles()) {
-      let s; try { s = statSync(f) } catch { continue }
-      let o = st[f] ?? { ino: s.ino, off: 0 }
-      if (o.ino !== s.ino || s.size < o.off) o = { ino: s.ino, off: 0 } // rotated or truncated
-      if (s.size === o.off) { next[f] = o; continue }
-      const len = Math.min(s.size - o.off, 4 << 20), buf = Buffer.alloc(len), fd = openSync(f, 'r')
-      try { readSync(fd, buf, 0, len, o.off) } finally { closeSync(fd) }
-      const text = buf.toString('utf8'), cut = text.lastIndexOf('\n')
+    for (const x of shipFiles()) {
+      const f = x.f, fd = openLog(x)
+      if (fd === null) continue
+      let text = '', o = st[f] ?? { ino: 0, off: 0 }, s
+      try {
+        s = fstatSync(fd)
+        if (o.ino !== s.ino || s.size < o.off) o = { ino: s.ino, off: 0 } // new, rotated or truncated
+        if (s.size === o.off) { next[f] = o; continue }
+        const len = Math.min(s.size - o.off, 4 << 20), buf = Buffer.alloc(len)
+        readSync(fd, buf, 0, len, o.off); text = buf.toString('utf8')
+      } catch { continue } finally { closeSync(fd) }
+      const cut = text.lastIndexOf('\n')
       if (cut < 0) { next[f] = o; continue }
-      for (const line of text.slice(0, cut).split('\n')) { const r = toRecord(line, f); if (r) batch.push(JSON.stringify(r)) }
+      for (const line of text.slice(0, cut).split('\n')) { const r = toRecord(line, f); if (r) { if (x.project) r.project = x.project; batch.push(JSON.stringify(r)) } }
       next[f] = { ino: s.ino, off: o.off + Buffer.byteLength(text.slice(0, cut + 1)) }
     }
+    if (dryRun) { if (batch.length) console.log(batch.join('\n')); return }
     let ok = true
     for (let i = 0; i < batch.length; i += 5000) {
       try { const r = await fetch(url, { method: 'POST', body: batch.slice(i, i + 5000).join('\n') + '\n', signal: AbortSignal.timeout(10_000) }); ok &&= r.ok; await r.arrayBuffer() } catch { ok = false }
