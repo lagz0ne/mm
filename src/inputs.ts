@@ -22,6 +22,22 @@ export interface Need { scope: string; name: string; kind: Input['kind']; status
 export const expand = (p: string) => p.replace(/^~(?=\/|$)/, HOME)
 const tilde = (p: string) => (p.startsWith(HOME) ? `~${p.slice(HOME.length)}` : p)
 export const machineInputs = () => manifest.machine.inputs as Record<string, Input>
+/**
+ * Where this machine keeps its secrets (review sy-5ag): every secret input's file in the manifest, and the folder it is in
+ * (never $HOME itself, never Claude's own folder), plus Paseo's home and Claude's own login. mm writes the list into each
+ * project's .run/endpoints.json; the template's config-check denies all of it to every role, so a new input is covered
+ * without a template change. Paths only, never a value.
+ */
+export function machineSecretPaths(): { files: string[]; dirs: string[] } {
+  const files = new Set<string>([join(HOME, '.claude', '.credentials.json')]), dirs = new Set<string>([join(HOME, '.paseo')])
+  for (const i of Object.values(machineInputs())) {
+    if (i.kind !== 'secret' || !i.path) continue
+    const f = expand(i.path), d = dirname(f)
+    files.add(f)
+    if (d !== HOME && d !== join(HOME, '.claude') && d.startsWith(`${HOME}/`)) dirs.add(d)
+  }
+  return { files: [...files].sort(), dirs: [...dirs].sort() }
+}
 export const configKey = (name: string, i: Input) => i.config || name
 /** A var's default, resolved ($(hostname -s), $HOME). */
 export function varDefault(i: Input): string | undefined {

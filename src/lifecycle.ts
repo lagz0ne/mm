@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'node:path'
 import { canon, DIRS, HOME, run, within } from './env'
-import { BOXES, boxHook, loadAll, PROJECTS_PC, readAnswers, resolve, up } from './project'
+import { BOXES, boxHook, loadAll, PROJECTS_PC, readAnswers, resolve, up, writeRunFiles } from './project'
 import { template, templateCommit } from './template'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
@@ -106,6 +106,8 @@ function finish(root: string, res: UpdateResult): UpdateResult {
     if (!b.ok) return fail('board build', b)
     steps.push({ step: 'board build', status: 'ok', detail: deps ? 'deps + build' : 'build' })
   }
+  // the run files first: config-check renders the denies from them (the machine's secret paths, sy-5ag); up() writes them again
+  writeRunFiles(root, readAnswers(root).box ? '/run/mm/sock/pc.sock' : DIRS.socket)
   const cc = run([join(root, 'bin', 'config-check'), '--render'], { cwd: root })
   if (!cc.ok) return fail('governance check', cc)
   steps.push({ step: 'governance check', status: 'ok', detail: cc.out.trim().split('\n').pop() || 'ok' })

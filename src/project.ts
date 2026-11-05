@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, engineDirs, HOME, run, toolPath, which } from './env'
 import { obsEndpoints } from './obs'
+import { machineSecretPaths } from './inputs'
 import { publicKeyPem } from './auth'
 import { pcRunning, writeBase } from './pc'
 import { renderTo, template, templateCommit } from './template'
@@ -140,6 +141,8 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
   const themes = ['birds', 'scientists', 'mythology', 'cities', 'gems', 'stars']
   must('personas', run(['node', join(root, 'bin', 'persona'), 'theme', themes[Math.floor(Math.random() * themes.length)]], { cwd: root }))
   must('board build', run(['sh', '-c', 'npm ci --no-audit --no-fund --silent && npm run build --silent'], { cwd: join(root, 'site'), timeoutMs: 900_000 }))
+  // the run files first: config-check renders the denies from them (the machine's secret paths, sy-5ag); up() writes them again
+  writeRunFiles(root, answers.box ? '/run/mm/sock/pc.sock' : DIRS.socket)
   must('governance check', run([join(root, 'bin', 'config-check'), '--render'], { cwd: root }))
   git(['add', '-A'])
   must('config commit', run(['git', 'commit', '-q', '-m', `mm new ${client}/${name}${product ? '' : ` (profile ${profile})`} (template ${answers.template_version})`], { cwd: root, env: { SETUP_HUMAN: '1' } }))
@@ -266,6 +269,7 @@ export function writeRunFiles(root: string, pcSocket: string) {
   const ep = { manager: 'process-compose (mm)', self_healing: true, restart: `process-compose -U -u ${pcSocket} process restart ${a.project}.{service}`,
     logs: `tail -n {lines} ${join(root, '.run', 'logs')}/{service}.log`, observability: obsEndpoints(), dirs: engineDirs(),
     ...(publicKeyPem() ? { auth: { public_key: publicKeyPem() } } : {}), // the gateway's key: boards verify its assertions
+    machine_secrets: machineSecretPaths(), // where the machine's secrets are (paths only): config-check denies them to every role (sy-5ag)
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
   writeInProject(root, '.run/endpoints.json', JSON.stringify(ep, null, 2))
 }

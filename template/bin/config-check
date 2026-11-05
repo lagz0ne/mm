@@ -34,7 +34,15 @@ const OWNER_ONLY = ['Bash(mm user*)', 'Bash(mm grant*)', 'Bash(mm token*)', 'Bas
   'Read(/{mm}/auth/**)', 'Edit(/{mm}/auth/**)', 'Read(/{mm}/paseo/**)', 'Edit(/{mm}/paseo/**)',
   'Bash(mm ai budget*)', 'Bash(*ai.sock*)', 'Read(/{mm}/ai/**)', 'Edit(/{mm}/ai/**)',
   `Read(/${HOME}/.config/secrets/ai-upstream.key)`, `Edit(/${HOME}/.config/secrets/ai-upstream.key)`]
-const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm fill*)', ...BD_QUIET, ...OWNER_ONLY]
+// The machine's secrets (review sy-5ag): every path mm lists in .run/endpoints.json (machine_secrets: each secret input's
+// file and folder in the manifest, Paseo's home, Claude's login), so a new input is covered without a template change; a
+// fixed list when an older mm wrote none. Read and Edit, and any Bash command that names one (absolute, ~ or $HOME form).
+const MS = (() => { try { return JSON.parse(fs.readFileSync(path.join(P, '.run', 'endpoints.json'), 'utf8')).machine_secrets } catch { return null } })()
+  || { files: [`${HOME}/.claude/.credentials.json`], dirs: [`${HOME}/brain/.keys`, `${HOME}/.config/secrets`, `${HOME}/.paseo`, `${HOME}/.ssh`] }
+const named = (p) => [p, ...(p.startsWith(`${HOME}/`) ? [`~${p.slice(HOME.length)}`, `$HOME${p.slice(HOME.length)}`] : [])].map((x) => `Bash(*${x}*)`)
+const SECRET_DENY = [...(MS.files || []).flatMap((f) => [`Read(/${f})`, `Edit(/${f})`, ...named(f)]),
+  ...(MS.dirs || []).flatMap((d) => [`Read(/${d}/**)`, `Edit(/${d}/**)`, ...named(d)])]
+const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm fill*)', ...BD_QUIET, ...OWNER_ONLY, ...SECRET_DENY]
 // Assistants (assistants/<user>/, system profile): no tool that acts or reads on its own (bin/lib/assist.mjs); a tool
 // that is not allowed is refused without asking (defaultMode dontAsk), so no permission request ever reaches a
 // human's phone from an assistant.
@@ -60,7 +68,10 @@ let G = {}
 try { G = JSON.parse(fs.readFileSync(path.join(P, 'governance.json'), 'utf8')) } catch (e) { if (fs.existsSync(path.join(P, 'governance.json'))) bad(`governance.json unreadable (${e.message})`) }
 // {brain} {projects} {mm}: the machine's folders, from mm (one-root boxes keep them under $MM_HOME)
 const D = dirs()
-const gfill = (v) => v.replaceAll('{root}', R).replaceAll('{home}', HOME).replaceAll('{brain}', D.brain).replaceAll('{projects}', D.projects).replaceAll('{mm}', D.mm)
+// a project has no business in the brain (review sy-5ag): all of it is denied to a board outside it (the system board
+// lives in it, and keeps its own rules)
+const BRAIN_DENY = (P + '/').startsWith(D.brain + '/') ? [] : [`Read(/${D.brain}/**)`, `Edit(/${D.brain}/**)`, ...named(D.brain)]
+const gfill =(v) => v.replaceAll('{root}', R).replaceAll('{home}', HOME).replaceAll('{brain}', D.brain).replaceAll('{projects}', D.projects).replaceAll('{mm}', D.mm)
 const grule = (r) => { const v = gfill(r); return /^(Read|Edit|Write)\(\//.test(v) ? v.replace(/^(Read|Edit|Write)\(\//, '$1(//') : v }
 const G_READ = (G.read || []).map(gfill), G_WRITE = Object.fromEntries(Object.entries(G.write || {}).map(([k, v]) => [k, v.map(gfill)]))
 const G_BASH_OK = (G.bash_ok || []).map((x) => new RegExp(x))
@@ -75,7 +86,7 @@ function render(tmpl, role, assistant = false) {
     if (JSON.stringify(hooks?.PreToolUse || []).includes(h)) continue
     hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: 'Bash|Read|Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: h, timeout: 10 }] }] }
   }
-  const govDeny = [...ALWAYS_DENY.map(gfill), ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? mandatoryDeny(role) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
+  const govDeny = [...ALWAYS_DENY.map(gfill), ...BRAIN_DENY, ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? mandatoryDeny(role) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
   return { ...tmpl, ...(hooks ? { hooks } : {}), permissions: { ...p,
     ...(p.additionalDirectories ? { additionalDirectories: p.additionalDirectories.map(fill) } : {}),
     // a rule naming a service that doesn't run yet ({url:app} before the first deploy) is left out, not half-rendered
