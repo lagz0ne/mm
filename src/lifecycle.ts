@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'node:path'
 import { canon, DIRS, HOME, run, within } from './env'
-import { loadAll, PROJECTS_PC, readAnswers, resolve, up } from './project'
+import { boxHook, loadAll, PROJECTS_PC, readAnswers, resolve, up } from './project'
 import { template, templateCommit } from './template'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
@@ -166,6 +166,8 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
     `archive ${agents.length} agent(s)`, `pack ${root.replace(HOME, '~')} -> ${tarball.replace(HOME, '~')}`, `delete ${root.replace(HOME, '~')}`]
   if (o.dryRun) return { steps: plan.map((p) => ({ step: 'plan', status: 'ok', detail: p })), tarball, ok: true }
 
+  // 0. a project box: its containers go first (the box and its egress proxy)
+  if (a.box && boxHook.down) steps.push(...boxHook.down(root))
   // 1. processes: stop, then reload process-compose without the project file (removes its processes)
   const s = pc('namespace', 'stop', a.project)
   steps.push({ step: 'stop', status: s.ok || /not found|no process/i.test(short(s)) ? 'ok' : 'fail', detail: s.ok ? `namespace ${a.project}` : short(s) })

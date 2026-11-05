@@ -5,6 +5,9 @@
 FROM ubuntu:24.04
 
 ARG UID=1000
+# the box user's home = the host owner's home path, so the project mounted at its own path is inside that home
+# (bd refuses a workspace under /home/ outside the current user's home, by the account database)
+ARG HOME_DIR=/home/box
 ARG NODE=24.21.0
 ARG NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
 ARG PROCESS_COMPOSE=1.124.0
@@ -40,8 +43,9 @@ RUN cd /tmp \
 RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code@${CLAUDE_CODE} @getpaseo/cli@${PASEO} portless@${PORTLESS} \
  && npm cache clean --force && claude --version && paseo --version && portless --version
 
-RUN userdel -r ubuntu 2>/dev/null; useradd -m -u ${UID} -s /bin/bash box
+RUN userdel -r ubuntu 2>/dev/null; mkdir -p "$(dirname ${HOME_DIR})" && useradd -u ${UID} -d ${HOME_DIR} -M -s /bin/bash box
+ENV HOME=${HOME_DIR}
 USER box
-WORKDIR /home/box
+WORKDIR /tmp
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["sleep", "infinity"]

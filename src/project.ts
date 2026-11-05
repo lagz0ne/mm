@@ -11,7 +11,7 @@ import { pcRunning, writeBase } from './pc'
 import { renderTo, template, templateCommit } from './template'
 import pkg from '../package.json'
 
-export interface Answers { client: string; name: string; project: string; short: string; root: string; template_version: string; created: string; profile?: string; throwaway?: boolean }
+export interface Answers { client: string; name: string; project: string; short: string; root: string; template_version: string; created: string; profile?: string; throwaway?: boolean; box?: boolean }
 const ID = /^[a-z][a-z0-9-]{0,30}$/
 export const PROJECTS_PC = join(DIRS.pc, 'projects')
 
@@ -51,7 +51,7 @@ function hashPort(key: string): number {
 
 // ---------- mm new ----------
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
-export type NewOpts = { short?: string; profile?: string; root?: string; project?: string; throwaway?: boolean }
+export type NewOpts = { short?: string; profile?: string; root?: string; project?: string; throwaway?: boolean; box?: boolean }
 /** The project-local tools (bd, dolt) from tools.json, checksums verified. Used by mm new and mm restore. */
 export async function installTools(root: string): Promise<Step[]> {
   const steps: Step[] = []
@@ -84,7 +84,7 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
   const must = (s: string, r: { ok: boolean; out: string; err: string }) => { if (!r.ok) throw new Error(`${s}: ${(r.err || r.out).trim().split('\n').slice(-3).join(' ')}`); step(s, (r.out.trim().split('\n').pop() || 'done').slice(0, 100)) }
   const answers: Answers = {
     client, name, project: o.project || `${client}-${name}`, short: short || name.replace(/[^a-z]/g, '').slice(0, 2) || 'pj',
-    root, template_version: pkg.version, created: new Date().toISOString(), ...(product ? {} : { profile }), ...(o.throwaway ? { throwaway: true } : {}),
+    root, template_version: pkg.version, created: new Date().toISOString(), ...(product ? {} : { profile }), ...(o.throwaway ? { throwaway: true } : {}), ...(o.box ? { box: true } : {}),
   }
   if (!/^[a-z]{1,8}$/.test(answers.short)) throw new Error('short (item id prefix) must be 1-8 letters')
 
@@ -182,7 +182,39 @@ export function resolve(root: string) {
   return { answers: a, services, schedules, socket, url, pp, dport }
 }
 
+type SvcResolved = ReturnType<typeof resolve>['services'][string]
+/** One service as a process-compose process, on the host or in a project box. Host: secrets through `mm vault run`.
+ *  Box (secretsDir): mm isn't in the box, so the service gets <NAME>_FILE paths in the read-only secrets mount. */
+export function serviceProcess(root: string, project: string, n: string, s: SvcResolved, services: Record<string, SvcResolved>,
+  o: { env: Record<string, string | undefined>; socket: string; pdeath: string; secretsDir?: string }): Record<string, unknown> {
+  let cmd = s.command.replaceAll('$PORT', '$$$$PORT') // keep $PORT for the service's shell (process-compose would expand it)
+  const files: Record<string, string> = {}
+  // secrets the service declares: opened at every start (the runtime folder is memory-backed: gone after a reboot)
+  if (s.secrets?.length && o.secretsDir) for (const x of s.secrets) files[`${x.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_FILE`] = join(o.secretsDir, `${project}.${x.toLowerCase()}`)
+  else if (s.secrets?.length) cmd = `${which('mm') || join(DIRS.bin, 'mm')} vault run ${project} ${s.secrets.join(',')} -- sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
+  // the service dies with its wrapper (portless): no orphan keeps the port after a crash or kill
+  if (s.port === 'http') cmd = `portless ${n}.${project} ${o.pdeath}sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
+  const probe = s.ready?.http ? { exec: { command: `curl -sf -o /dev/null --max-time 3 ${s.url}${s.ready.http}` } }
+    : s.ready?.socket ? { exec: { command: `test -S ${o.socket}` } } : undefined
+  return {
+    namespace: project, command: cmd, working_dir: s.workdir || root,
+    environment: Object.entries({ ...o.env, MM_SERVICE: n, ...files, ...s.env }).filter(([, v]) => v !== undefined).map(([k, v]) => `${k}=${v}`),
+    log_location: join(root, '.run', 'logs', `${n}.log`),
+    log_configuration: { add_timestamp: true, timestamp_format: '2006-01-02T15:04:05.000Z07:00', flush_each_line: true, rotation: { max_size_mb: 20, max_backups: 3 } },
+    availability: { restart: s.restart === 'on_failure' ? 'on_failure' : 'always', backoff_seconds: 3 },
+    ...(probe ? { readiness_probe: { ...probe, initial_delay_seconds: 1, period_seconds: 3, timeout_seconds: 4, failure_threshold: 20 } } : {}),
+    // hung (running, not answering) for ~1 min: the manager restarts it (health only reports)
+    ...(s.ready?.http ? { liveness_probe: { ...probe, initial_delay_seconds: 30, period_seconds: 10, timeout_seconds: 5, failure_threshold: 6 } } : {}),
+    ...(s.depends_on ? { depends_on: Object.fromEntries(Object.keys(s.depends_on).filter((d) => services[d]).map((d) => [`${project}.${d}`, { condition: services[d].ready ? 'process_healthy' : 'process_started' }])) } : {}),
+  }
+}
+
+/** A project with `box: true` runs in its own container (src/box.ts registers this when it loads): every caller of up()
+ *  (mm up, new, update, restore) gets the box without a second code path. */
+export const boxHook: { up: ((root: string) => Step[]) | null; down: ((root: string) => Step[]) | null } = { up: null, down: null }
+
 export function up(root: string): Step[] {
+  if (boxHook.up && readAnswers(root).box) return boxHook.up(root)
   const { answers: a, services, schedules, socket, pp, dport } = resolve(root)
   const steps: Step[] = []
   mkdirSync(join(root, '.run', 'logs'), { recursive: true }); mkdirSync(join(root, '.dolt'), { recursive: true }); mkdirSync(PROJECTS_PC, { recursive: true })
@@ -198,24 +230,7 @@ export function up(root: string): Step[] {
   const inward = (n: string, s: Svc) => s.outward === false || (s.outward === undefined && ['dolt', 'bd-serve', 'board'].includes(n))
   for (const [n, s] of Object.entries(services)) {
     if (hold && !inward(n, s)) { held_back.push(n); continue }
-    let cmd = s.command.replaceAll('$PORT', '$$$$PORT') // keep $PORT for the service's shell (process-compose would expand it)
-    // the service dies with its wrapper (portless): no orphan keeps the port after a crash or kill
-    // secrets the service declares: opened at every start (the runtime folder is memory-backed: gone after a reboot)
-    if (s.secrets?.length) cmd = `${which('mm') || join(DIRS.bin, 'mm')} vault run ${a.project} ${s.secrets.join(',')} -- sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
-    if (s.port === 'http') cmd = `portless ${n}.${a.project} ${pdeath}sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
-    const probe = s.ready?.http ? { exec: { command: `curl -sf -o /dev/null --max-time 3 ${s.url}${s.ready.http}` } }
-      : s.ready?.socket ? { exec: { command: `test -S ${socket}` } } : undefined
-    processes[`${a.project}.${n}`] = {
-      namespace: a.project, command: cmd, working_dir: s.workdir || root,
-      environment: Object.entries({ ...env, MM_SERVICE: n, ...s.env }).map(([k, v]) => `${k}=${v}`),
-      log_location: join(root, '.run', 'logs', `${n}.log`),
-      log_configuration: { add_timestamp: true, timestamp_format: '2006-01-02T15:04:05.000Z07:00', flush_each_line: true, rotation: { max_size_mb: 20, max_backups: 3 } },
-      availability: { restart: s.restart === 'on_failure' ? 'on_failure' : 'always', backoff_seconds: 3 },
-      ...(probe ? { readiness_probe: { ...probe, initial_delay_seconds: 1, period_seconds: 3, timeout_seconds: 4, failure_threshold: 20 } } : {}),
-      // hung (running, not answering) for ~1 min: the manager restarts it (health only reports)
-      ...(s.ready?.http ? { liveness_probe: { ...probe, initial_delay_seconds: 30, period_seconds: 10, timeout_seconds: 5, failure_threshold: 6 } } : {}),
-      ...(s.depends_on ? { depends_on: Object.fromEntries(Object.keys(s.depends_on).filter((d) => services[d]).map((d) => [`${a.project}.${d}`, { condition: services[d].ready ? 'process_healthy' : 'process_started' }])) } : {}),
-    }
+    processes[`${a.project}.${n}`] = serviceProcess(root, a.project, n, s, services, { env, socket, pdeath })
   }
   // public services: a forwarder from bind_host to the service's loopback port (the web proxy runs in docker)
   for (const [n, s] of Object.entries(services)) {

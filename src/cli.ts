@@ -16,7 +16,8 @@ import * as syncMod from './sync'
 import { release, restoreMachine } from './restore'
 import { AUTH_SOCK, callApi, serve as authServe } from './auth'
 import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
-import { findRoot, listProjects, namespaceOp, newProject, processes, resolve, up } from './project'
+import { findRoot, listProjects, namespaceOp, newProject, processes, readAnswers, resolve, up } from './project'
+import * as boxMod from './box'
 import { type Format, print } from './out'
 import pkg from '../package.json'
 
@@ -107,10 +108,11 @@ program.command('status').description('short machine status').action(() => {
 program.command('new <project>').description('stamp a project from the template: <client>/<name>')
   .option('--short <prefix>', 'item id prefix (default: first 2 letters of the name)')
   .option('--throwaway', 'a short-lived test project (QA): marked in its answers; the system board raises no incidents for it')
+  .option('--box', 'run it in its own container (a project box: plans/project-box.md); needs mm box build once')
   .action(async (ref: string, opts) => {
     const o = fmt()
     try {
-      const { answers, steps } = await newProject(ref, { short: opts.short, throwaway: !!opts.throwaway })
+      const { answers, steps } = await newProject(ref, { short: opts.short, throwaway: !!opts.throwaway, box: !!opts.box })
       if (o.format !== 'table') return console.log(o.format === 'json' ? JSON.stringify({ answers, steps }, null, 2) : Bun.YAML.stringify({ answers, steps }, null, 2))
       print(steps, o)
       const { services } = resolve(answers.root)
@@ -122,7 +124,8 @@ program.command('new <project>').description('stamp a project from the template:
 program.command('ls').description('list projects').action(() => { const o = fmt(); print(listProjects(), o, 'project') })
 program.command('inspect <project>').description('a project: answers, services, URLs').action((ref: string) => {
   const o = fmt(), root = findRoot(ref)
-  const { answers, services } = resolve(root), ps = processes(answers.project)
+  const { answers, services } = resolve(root), ps = answers.box ? boxMod.processes(root) : processes(answers.project)
+  if (answers.box && o.format === 'table') { const b = boxMod.status(root); console.log(`box ${b.box}: ${b.running ? 'running' : 'stopped'}${b.ip ? ` at ${b.ip}` : ''}; egress proxy ${b.proxy ? 'running' : 'stopped'}; image ${b.image || '-'}`) }
   const rows = Object.entries(services).map(([n, s]) => { const p = ps.find((x) => x.name === `${answers.project}.${n}`)
     return { service: n, status: p?.status ?? 'not loaded', ready: p?.is_ready ?? '', restarts: p?.restarts ?? '', url: (s as { url?: string }).url ?? '' } })
   if (o.format !== 'table') return print([{ ...answers, services: rows }] as unknown as Record<string, unknown>[], o)
@@ -134,9 +137,19 @@ program.command('up <project>').description('load (or reload) a project into the
 })
 for (const [cmd, op] of [['down', 'stop'], ['restart', 'restart']] as const) {
   program.command(`${cmd} <project>`).description(`${op} a project's processes (namespace)`).action((ref: string) => {
+    const root = findRoot(ref)
+    if (readAnswers(root).box) { const st = op === 'stop' ? boxMod.down(root) : up(root); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) }
     const r = namespaceOp(ref, op); console.log((r.out || r.err).trim()); process.exit(r.ok ? 0 : 1)
   })
 }
+
+const boxCmd = program.command('box').description('project boxes: each project in its own container (plans/project-box.md)')
+boxCmd.command('build').description('build the box image and the egress proxy image (pinned tools) from this mm').action(() => { const st = boxMod.build(); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })
+program.command('shell <project> [cmd...]').description('a shell (or a command) in a project box, as the box user').action((ref: string, cmd: string[]) => {
+  const root = findRoot(ref)
+  if (!readAnswers(root).box) { console.error(`mm shell: ${ref} is not a box project`); process.exit(2) }
+  const p = Bun.spawnSync(boxMod.execArgs(root, cmd), { stdio: ['inherit', 'inherit', 'inherit'] }); process.exit(p.exitCode ?? 1)
+})
 
 program.command('update [project]').description('bring a project (default: every project) up to the current template; three-way merge, project edits kept')
   .option('-n, --dry-run', 'show what would change and what would conflict; change nothing')
