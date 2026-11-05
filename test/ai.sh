@@ -24,7 +24,7 @@ cat >"$T/up.mjs" <<'EOF'
 import http from 'node:http'; import fs from 'node:fs'
 const [port, out] = process.argv.slice(2)
 http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', async () => {
-  fs.appendFileSync(out, JSON.stringify({ path: req.url, key: req.headers['x-api-key'] || '', auth: req.headers.authorization || '', version: req.headers['anthropic-version'] || '' }) + '\n')
+  fs.appendFileSync(out, JSON.stringify({ path: req.url, key: req.headers['x-api-key'] || '', auth: req.headers.authorization || '', version: req.headers['anthropic-version'] || '', beta: req.headers['anthropic-beta'] || '' }) + '\n')
   if (req.headers['x-api-key'] !== 'upstream-secret-1') { res.writeHead(401); return res.end('{"type":"error"}') }
   const j = b ? JSON.parse(b) : {}
   if (req.url.startsWith('/v1/messages/count_tokens')) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"input_tokens":42}') }
@@ -66,7 +66,7 @@ usage_json() { mm ai usage -o json; }
 export -f call code; export S1 S2 K1 K2 KA MSG STREAM T
 
 echo '== one socket per box'
-check "a socket for each registered box (acme-shop, acme-other), 0666 in the box's own folder" bash -c "[ \"\$(stat -c %a '$S1')\" = 666 ] && [ -S '$S2' ]"
+check "a socket for each registered box (acme-shop, acme-other): 0660 in a 0750 folder (the owner and its group; review sy-b15.18)" bash -c "[ \"\$(stat -c %a '$S1')\" = 660 ] && [ \"\$(stat -c %a \"\$(dirname '$S1')\")\" = 750 ] && [ -S '$S2' ]"
 check "...and no TCP port: the gateway listens on nothing else" bash -c "! ss -Hltnp 2>/dev/null | grep -q \"pid=$GW,\""
 
 echo '== keys'
@@ -88,6 +88,25 @@ sleep 0.3
 check "the stream's use is counted at Opus 5.5's price (1000 in, 500 out, 2000 cache read, 100 cache write = \$0.0149)" bash -c "mm ai usage -o json | jq -e '.[0].rows[] | select(.project==\"acme-shop\" and .model==\"claude-opus-5-5\") | .input==1000 and .output==500 and .cache_read==2000 and .cache_write==100 and .usd==0.0149'"
 check "...and the plain answers at Sonnet 5.5's (2 calls: 200 in, 20 out = \$0.0006)" bash -c "mm ai usage -o json | jq -e '.[0].rows[] | select(.project==\"acme-shop\" and .model==\"claude-sonnet-5-5\") | .calls==2 and .usd==0.0006'"
 check "a model with no price is counted at the dearest (never under-counted)" bash -c "bun -e \"import { cost } from '$SRC/src/ai.ts'; process.exit(cost('some-new-model', { input: 1e6, output: 0, cache_read: 0, cache_write: 0 }) === 10 ? 0 : 1)\""
+
+echo "== the model's own way out: server-side tools (review sy-b15.18)"
+# a request with one extra field, in a file (no shell quoting in the checks)
+body() { printf '{"model":"claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}],%s}' "$2" >"$T/b-$1.json"; }
+for t in web_search_20260209 web_fetch_20260209 code_execution_20260521 mcp_toolset; do body "$t" "\"tools\":[{\"type\":\"$t\",\"name\":\"x\"}]"; done
+body mcp '"mcp_servers":[{"type":"url","url":"https://evil.example/mcp","name":"x"}]'; body container '"container":{"skills":[]}'
+body local '"tools":[{"name":"mine","input_schema":{"type":"object"}},{"type":"custom","name":"c","input_schema":{"type":"object"}},{"type":"bash_20250124","name":"bash"},{"type":"text_editor_20250728","name":"str_replace_based_edit_tool"},{"type":"memory_20250818","name":"memory"}]'
+printf 'not json' >"$T/b-bad.json"
+N=$(wc -l <"$T/up.jsonl")
+for t in web_search_20260209 web_fetch_20260209 code_execution_20260521 mcp_toolset; do
+  check "a server tool, $t: 400, and it says how the owner allows it" bash -c "call '$S1' '$K1' -d @'$T/b-$t.json' http://ai/v1/messages | grep -q 'ai.server_tools'"
+done
+check "...mcp_servers and a container: 400; and a server tool on count_tokens too" bash -c "call '$S1' '$K1' -d @'$T/b-mcp.json' http://ai/v1/messages | grep -q mcp_servers && call '$S1' '$K1' -d @'$T/b-container.json' http://ai/v1/messages | grep -q container && call '$S1' '$K1' -d @'$T/b-web_search_20260209.json' http://ai/v1/messages/count_tokens | grep -q invalid_request_error"
+check "...and none of them reached the upstream" bash -c "[ \$(wc -l <'$T/up.jsonl') = $N ]"
+check "tools that run in the box pass: the caller's own, custom, bash, text editor, memory" bash -c "[ \"\$(code '$S1' '$K1' -d @'$T/b-local.json' http://ai/v1/messages)\" = 200 ]"
+check "a beta that turns on provider-side egress is dropped; the others pass" bash -c "call '$S1' '$K1' -H 'anthropic-beta: interleaved-thinking-2025-05-14,mcp-client-2025-11-20,code-execution-2025-08-25,files-api-2025-04-14' -d '$MSG' http://ai/v1/messages >/dev/null && tail -1 '$T/up.jsonl' | grep -q '\"beta\":\"interleaved-thinking-2025-05-14\"'"
+printf 'ai:\n  enabled: true\n  upstream: http://127.0.0.1:%s\n  max_parallel: 2\n  server_tools:\n    acme-shop: [web_search]\ntelegram:\n  owner_id: "4242"\n' "$UPP" >"$MM_HOME/config.yaml"
+check "the owner allows web_search for acme-shop (ai.server_tools): it passes there; web_fetch still doesn't; nor does web_search elsewhere" bash -c "[ \"\$(code '$S1' '$K1' -d @'$T/b-web_search_20260209.json' http://ai/v1/messages)\" = 200 ] && [ \"\$(code '$S1' '$K1' -d @'$T/b-web_fetch_20260209.json' http://ai/v1/messages)\" = 400 ] && [ \"\$(code '$S2' '$K2' -d @'$T/b-web_search_20260209.json' http://ai/v1/messages)\" = 400 ]"
+check "a body that isn't JSON: 400" bash -c "[ \"\$(code '$S1' '$K1' -d @'$T/b-bad.json' http://ai/v1/messages)\" = 400 ]"
 
 echo '== budgets'
 check "an agent may not set a budget (the owner's to allow)" bash -c "! CLAUDECODE=1 mm ai budget acme-shop 100"

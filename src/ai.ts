@@ -119,7 +119,40 @@ export function report(d: Database, since = monthStart()) {
 type KeyRow = { project: string; person: string; kind: string; expires: number; revoked: number }
 const apiError = (status: number, type: string, message: string, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify({ type: 'error', error: { type, message: `mm.ai: ${message}` } }), { status, headers: { 'content-type': 'application/json', ...extra } })
-const PASS_HEADERS = ['content-type', 'accept', 'anthropic-version', 'anthropic-beta', 'anthropic-dangerous-direct-browser-access']
+const PASS_HEADERS = ['content-type', 'accept', 'anthropic-version', 'anthropic-dangerous-direct-browser-access']
+
+// ---------- the model's own way out (review sy-b15.18) ----------
+// The Messages API has tools that run on the provider's side and reach the internet from there (web search and fetch,
+// code execution, MCP servers, skills in a container): a way out of the box that its egress list never sees. So a tool
+// passes only when it runs in the box: a tool the caller defines (no type, or `custom`), or one Anthropic defines that
+// the caller runs itself (bash, text editor, computer, memory, tool search). Anything else, `mcp_servers` and
+// `container` are refused (400), unless the owner allows that server tool for the project:
+//   ai.server_tools: { <project>: [web_search, web_fetch, code_execution, mcp, container] }
+const CLIENT_TOOL = /^(custom|bash|text_editor|computer|computer_toolset|memory|tool_search_tool_(regex|bm25))(_\d{8})?$/
+const toolBase = (t: string) => t.replace(/_\d{8}$/, '').replace(/^(web_search|web_fetch|code_execution|mcp)_?.*$/, '$1')
+// beta values that turn on provider-side egress: dropped unless allowed (the body check is the real control; this is a
+// second one). Every other beta passes, so a new Claude Code release that sends a new one keeps working.
+const EGRESS_BETA = /^(mcp-client|code-execution|web-fetch|web-search|files-api|skills|container)-/
+export function serverToolsAllowed(project: string): Set<string> {
+  const all = (getPath(loadConfig(), 'ai.server_tools') || {}) as Record<string, unknown>
+  const v = all[project]; return new Set(Array.isArray(v) ? v.map(String) : [])
+}
+/** Why a request may not go upstream, or null. */
+export function egressRefusal(body: Record<string, unknown>, allowed: Set<string>): string | null {
+  for (const t of (Array.isArray(body.tools) ? body.tools : []) as { type?: string; name?: string }[]) {
+    if (!t || typeof t !== 'object' || t.type === undefined || CLIENT_TOOL.test(String(t.type))) continue
+    const base = toolBase(String(t.type))
+    if (!allowed.has(base)) return `the tool ${t.type} runs on the provider's side and can reach the internet outside this box's egress list; the owner can allow ${base} for this project (ai.server_tools)`
+  }
+  if (body.mcp_servers !== undefined && !allowed.has('mcp')) return 'mcp_servers reach remote MCP servers from the provider\'s side, outside this box\'s egress list; the owner can allow mcp for this project (ai.server_tools)'
+  if (body.container !== undefined && !allowed.has('container')) return 'a container (skills, code execution) runs on the provider\'s side; the owner can allow container for this project (ai.server_tools)'
+  return null
+}
+export function betaHeader(v: string | null, allowed: Set<string>): string | null {
+  if (!v) return null
+  const keep = v.split(',').map((x) => x.trim()).filter(Boolean).filter((b) => !EGRESS_BETA.test(b) || allowed.size > 0)
+  return keep.length ? keep.join(',') : null
+}
 
 /** Read the token counts out of an answer: a JSON body, or the SSE stream's message_start and message_delta events. */
 export function usageOf(u: Record<string, number | undefined> | undefined, into: Usage) {
@@ -187,6 +220,11 @@ export async function serve() {
     }
     const key = upstreamKey()
     if (!key) { log('error', 'no upstream key (mm fill ai-upstream-key)'); return apiError(503, 'api_error', 'the machine has no upstream key yet (the owner: mm fill ai-upstream-key)') }
+    const body = req.method === 'POST' ? await req.arrayBuffer() : undefined
+    let parsed: Record<string, unknown> = {}
+    if (body) { try { parsed = JSON.parse(new TextDecoder().decode(body)) } catch { return apiError(400, 'invalid_request_error', 'the body is not JSON') } }
+    const serverOk = serverToolsAllowed(project), why = body ? egressRefusal(parsed, serverOk) : null
+    if (why) { log('warn', 'server tool refused', { box: project, person: k.person || undefined, why: why.split(';')[0] }); return apiError(400, 'invalid_request_error', why) }
     if (messages) {
       for (const who of k.person ? ['', k.person] : ['']) {
         const b = budgetOf(d, project, who)
@@ -202,9 +240,9 @@ export async function serve() {
     }
     const headers = new Headers()
     for (const n of PASS_HEADERS) { const v = req.headers.get(n); if (v) headers.set(n, v) }
+    const beta = betaHeader(req.headers.get('anthropic-beta'), serverOk); if (beta) headers.set('anthropic-beta', beta)
     if (String(getPath(cfg(), 'ai.upstream_auth') || 'x-api-key') === 'bearer') headers.set('authorization', `Bearer ${key}`); else headers.set('x-api-key', key)
-    const body = req.method === 'POST' ? await req.arrayBuffer() : undefined
-    let model = ''; if (messages && body) try { model = String(JSON.parse(new TextDecoder().decode(body)).model || '') } catch {}
+    let model = messages ? String(parsed.model || '') : ''
     if (messages) inflight.set(project, (inflight.get(project) || 0) + 1)
     let released = false
     const release = () => { if (messages && !released) { released = true; inflight.set(project, Math.max(0, (inflight.get(project) || 1) - 1)) } }
@@ -250,10 +288,12 @@ export async function serve() {
     for (const [p, s] of servers) if (!want.has(p)) { s.stop(true); servers.delete(p); rmSync(aiSocket(p), { force: true }); log('info', 'socket closed', { box: p }) }
     for (const p of want) {
       if (servers.has(p)) continue
-      const sock = aiSocket(p); mkdirSync(join(sock, '..'), { recursive: true, mode: 0o755 }); rmSync(sock, { force: true })
+      const sock = aiSocket(p), dir = join(sock, '..'); mkdirSync(dir, { recursive: true, mode: 0o750 }); chmodSync(dir, 0o750); rmSync(sock, { force: true })
       try {
         servers.set(p, Bun.serve({ unix: sock, fetch: (req) => handle(req, p) }))
-        chmodSync(sock, 0o666) // the box's proxy (another uid) connects; the folders above it keep everyone else out ($HOME 0700)
+        // only the owner and its group: the box's proxy connects with the owner's group (box.ts, --group-add); the box
+        // itself never mounts this folder (review sy-b15.18)
+        chmodSync(sock, 0o660)
         log('info', 'socket open', { box: p })
       } catch (e) { log('error', 'socket failed', { box: p, error: (e as Error).message }) }
     }

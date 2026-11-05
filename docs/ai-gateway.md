@@ -47,6 +47,30 @@ Only `POST /v1/messages`, `POST /v1/messages/count_tokens` and `GET /v1/models[/
 the old completions API) gets 404 and never reaches the upstream. Only the headers the Messages API needs are passed
 on: `anthropic-version`, `anthropic-beta`, `content-type` and `accept`. The box's key is never passed on.
 
+## The model's own way out (review sy-b15.18)
+
+Some Messages API tools run on the provider's side and reach the internet from there: web search and web fetch, code
+execution, MCP servers (`mcp_servers`, `mcp_toolset`), and skills in a `container`. That is a way out of the box that
+its egress list never sees. So mm.ai lets a tool through only when it runs in the box: one the caller defines (no
+`type`, or `custom`), or one Anthropic defines that the caller runs itself (bash, text editor, computer, memory, tool
+search). Anything else, `mcp_servers` and `container` get `400 invalid_request_error`, with the reason.
+
+The owner can allow one for a project, like an egress host:
+
+```yaml
+ai:
+  server_tools:
+    <project>: [web_search]          # web_search, web_fetch, code_execution, mcp, container
+```
+
+`anthropic-beta` values that turn these on (`mcp-client-*`, `code-execution-*`, `web-fetch-*`, `web-search-*`,
+`files-api-*`, `skills-*`, `container-*`) are dropped for a project with none allowed. Every other beta passes, so a new
+Claude Code release that sends a new beta keeps working. The body check is the real control; this is a second one.
+
+Note: a client feature that is built on a server tool (for example a web search that sends `web_search` to the API)
+fails in a box with that 400 until the owner allows the tool. Tools that fetch from the box itself go through the
+box's egress proxy and its list, as before.
+
 ## Turning it on (ops, t2)
 
 1. The owner fills the upstream key: `mm fill ai-upstream-key`. This is an Anthropic API key, or the key of an
