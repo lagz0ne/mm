@@ -112,6 +112,21 @@ export function doctor(): Check[] {
         : { layer: 'board', item: `bd quiet ${id}`, status: 'ok', detail: 'no bd hook; no-hooks set; metrics off' })
   }
 
+  // the wall the boxes' shared group relies on (review sy-b15.16): a box's uid has the host owner's group, so the owner's
+  // home and runtime folder must not let a group in, and nothing of the owner's in the shared temp folders may be
+  // group- or world-writable (a box, or any local user, could plant something the owner runs)
+  const uid = process.getuid?.() ?? 1000
+  for (const d of [HOME, `/run/user/${uid}`]) {
+    if (!existsSync(d)) continue
+    const m = statSync(d).mode & 0o777
+    out.push((m & 0o077) === 0 ? { layer: 'machine', item: `mode ${d.replace(HOME, '~')}`, status: 'ok', detail: `0${m.toString(8)}` }
+      : { layer: 'machine', item: `mode ${d.replace(HOME, '~')}`, status: 'fail', detail: `0${m.toString(8)}: wider than 0700 (the boxes share the owner's group)`, fix: `chmod 700 ${d.replace(HOME, '~')}` })
+  }
+  const loose = run(['find', '/tmp', '/var/tmp', '/dev/shm', '-xdev', '-user', String(uid), '-not', '-type', 'l', '-perm', '/022', '-print'], { timeoutMs: 30_000 }).out.trim().split('\n').filter(Boolean)
+  out.push(loose.length
+    ? { layer: 'machine', item: 'shared temp folders', status: 'warn', detail: `${loose.length} path(s) of yours are group- or world-writable: ${loose.slice(0, 5).join(', ')}${loose.length > 5 ? ', …' : ''}`, fix: 'chmod go-w them (or remove them)' }
+    : { layer: 'machine', item: 'shared temp folders', status: 'ok', detail: 'nothing of yours is group- or world-writable in /tmp, /var/tmp, /dev/shm' })
+
   // the vault (docs/vault.md): modes and digests; where opened secrets go (a tmpfs; swap, sy-suk 5)
   for (const c of vault.check()) out.push({ layer: 'vault', item: 'vault', status: c.ok ? 'ok' : 'fail', detail: c.detail, fix: c.ok ? undefined : 'chmod 700 ~/.mm/vault, 600 the files; a digest mismatch: restore the file from mastermind' })
   if (vault.ready()) {
