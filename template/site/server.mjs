@@ -595,7 +595,7 @@ function assertion(req) {
     if (!crypto.verify(null, Buffer.from(body), key, Buffer.from(sig, 'base64url'))) return null
     const c = JSON.parse(Buffer.from(body, 'base64url').toString())
     const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim()
-    if (c.h !== host || !(c.exp > Date.now()) || !['owner', 'member', 'viewer'].includes(c.r) || !validGatewayName(c.u)) return null
+    if (c.h !== host || !(c.exp > Date.now()) || !['owner', 'designer', 'member', 'viewer'].includes(c.r) || !validGatewayName(c.u)) return null
     return c
   } catch { return null }
 }

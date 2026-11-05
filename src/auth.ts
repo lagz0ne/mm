@@ -17,7 +17,9 @@ export const AUTH_DIR = join(DIRS.mm, 'auth')
 export const AUTH_SOCK = join(DIRS.mm, 'run', 'auth.sock')
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ' // Crockford base32: no I, L, O, U
 const CODE_MS = Number(process.env.MM_AUTH_CODE_MS) || 5 * 60e3, SESSION_MS = 12 * 3600e3, BOARD_CODE_MS = 30e3, ASSERT_MS = 60e3
-const ROLES = ['owner', 'member', 'viewer'] as const
+// designer = a member who also edits the project's Doop (the owner, 2026-11-05; plans/ui-access.md, doop.md)
+const ROLES = ['owner', 'designer', 'member', 'viewer'] as const
+const guestRole = (r: unknown): Role => (r === 'viewer' ? 'viewer' : r === 'designer' ? 'designer' : 'member') // never owner
 type Role = typeof ROLES[number]
 export interface Grant { name: string; telegram_id?: string; scope: string[]; role: Role; expires?: string; created: string; by: string }
 interface Session { user: string; role: Role; scope: string[]; created: number; expires: number; host?: string; parent?: string }
@@ -200,7 +202,7 @@ export function gateway() {
       if (b.as) { // the owner approves someone on the spot: a named grant
         const name = String(b.as)
         if (!NAME.test(name) || RESERVED.has(name)) return json({ error: `${name}: not a usable name` }, 400)
-        role = (b.role === 'viewer' ? 'viewer' : 'member') as Role; scope = String(b.scope || '').split(',').filter(Boolean) // never owner
+        role = guestRole(b.role); scope = String(b.scope || '').split(',').filter(Boolean) // never owner
         if (!scope.length) return json({ error: 'scope: a project, several (a,b) or all' }, 400)
         // an on-the-spot grant always ends: no days given = 7; 0 (no end) is refused here, as by the bridge. Only
         // /grant, the owner's deliberate grant, may have no end (days 0).
@@ -219,7 +221,7 @@ export function gateway() {
       return json({ ok: true, user, role, scope, board: p.board })
     }
     if (u.pathname === '/grant') {
-      const name = String(b.name || ''), scope = String(b.scope || '').split(',').filter(Boolean), role = (b.role === 'viewer' ? 'viewer' : 'member') as Role
+      const name = String(b.name || ''), scope = String(b.scope || '').split(',').filter(Boolean), role = guestRole(b.role)
       if (!NAME.test(name) || RESERVED.has(name) || !scope.length) return json({ error: 'name and scope needed' }, 400)
       const days = Number(b.days || 0), g: Grant = { name, scope, role, created: new Date().toISOString(), by: caller, ...(b.telegram_id ? { telegram_id: String(b.telegram_id) } : {}), ...(days > 0 ? { expires: new Date(now() + days * 864e5).toISOString() } : {}) }
       grants = [...grants.filter((x) => x.name !== name), g]; save(); log('info', 'granted', { user: name, role, scope: scope.join(','), by: caller })
