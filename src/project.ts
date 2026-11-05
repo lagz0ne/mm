@@ -281,6 +281,33 @@ export function writeRunFiles(root: string, pcSocket: string) {
 }
 
 /**
+ * Host git on a project a box can write (review sy-b15.6 2): what the box wrote never steers what the host's git sees
+ * or runs. Replace objects off, no system or global config, no hooks, and safe.directory exactly this repo (the box owns
+ * its files). Empty for a host project (its own hooks, e.g. the config repo's pre-commit, keep running).
+ */
+export function hostGitEnv(root: string): Record<string, string> {
+  let box = false; try { box = !!readAnswers(root).box } catch {}
+  if (!box) return {}
+  return { GIT_NO_REPLACE_OBJECTS: '1', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_COUNT: '3',
+    GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: '/dev/null', GIT_CONFIG_KEY_1: 'safe.directory', GIT_CONFIG_VALUE_1: root,
+    GIT_CONFIG_KEY_2: 'safe.directory', GIT_CONFIG_VALUE_2: join(root, 'code') }
+}
+/** Why mm won't run git on this project, or null: a box-planted way to change what git sees (review sy-b15.6 2c). */
+export function gitRefusal(root: string): string | null {
+  for (const g of [join(root, '.git'), join(root, 'code', '.git')]) {
+    if (!existsSync(g)) continue
+    const rep = join(g, 'refs', 'replace')
+    if (existsSync(rep) && readdirSync(rep).length) return `${g}/refs/replace/ has entries (replace objects)`
+    if (existsSync(join(g, 'info', 'grafts'))) return `${g}/info/grafts exists`
+    for (const f of ['alternates', 'http-alternates']) {
+      const p = join(g, 'objects', 'info', f)
+      if (existsSync(p) && readFileSync(p, 'utf8').trim()) return `${g}/objects/info/${f} names another object store`
+    }
+  }
+  return null
+}
+
+/**
  * Turn an optional service (services.yaml `optional: true`, e.g. doop) on or off for a project: the answers record it
  * (committed), mm up starts or drops it, and config-check renders again (a role's MCP that needs the service, e.g. the
  * design lead's Doop, appears or goes with it).
@@ -295,7 +322,8 @@ export function setOptional(root: string, service: string, on: boolean): Step[] 
   const steps: Step[] = []
   if (body !== text) {
     writeFileSync(f, body)
-    const c = run(['git', '-C', root, 'commit', '-q', '-m', `mm ${service} ${on ? 'on' : 'off'}`, '.mm-answers.yaml'], { env: { SETUP_HUMAN: '1' } })
+    const why = gitRefusal(root); if (why) return [{ step: 'git', status: 'fail', detail: `refused: ${why}` }]
+    const c = run(['git', '-C', root, 'commit', '-q', '-m', `mm ${service} ${on ? 'on' : 'off'}`, '.mm-answers.yaml'], { env: { SETUP_HUMAN: '1', ...hostGitEnv(root) } })
     steps.push({ step: 'answers', status: c.ok ? 'ok' : 'fail', detail: c.ok ? `services_on: [${[...list].join(', ')}]` : (c.err || c.out).trim().slice(0, 160) })
   } else steps.push({ step: 'answers', status: 'skip', detail: `${service} already ${on ? 'on' : 'off'}` })
   steps.push(...up(root))

@@ -114,6 +114,14 @@ check "the shipper: a box's log that is a symlink is not read (the canary's text
 check "...and a box's line naming another project is shipped as the box's own" sh -c "grep 'forged-$$' /tmp/box-ship.out | jq -e 'select(.project == \"$PROJECT\")' >/dev/null && ! grep 'forged-$$' /tmp/box-ship.out | jq -e 'select(.project == \"another-project\")' >/dev/null"
 IN "rm -f $ROOT/.run/logs/leak.log $ROOT/.run/logs/forge.log" >/dev/null 2>&1
 
+echo "== what the box can't make the host's git see (review sy-b15.6 2)"
+check "the box can't write .git/info (grafts) or .git/objects/info (alternates)" sh -c "! IN 'echo x > $ROOT/.git/info/grafts' && ! IN 'echo /tmp > $ROOT/.git/objects/info/alternates' && ! test -e '$ROOT/.git/info/grafts'"
+IN "mkdir -p $ROOT/.git/refs/replace && git -C $ROOT rev-parse HEAD > $ROOT/.git/refs/replace/\$(git -C $ROOT rev-parse HEAD)" >/dev/null 2>&1
+check "a replace ref the box planted: mm up refuses, and says why" sh -c "! mm up '$REF' >/tmp/box-up-replace.out 2>&1 && grep -q 'refs/replace' /tmp/box-up-replace.out"
+IN "rm -rf $ROOT/.git/refs/replace" >/dev/null 2>&1
+check "...gone again: mm up works" sh -c "mm up '$REF' >/dev/null 2>&1"
+for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
+
 echo "== the way out"
 check "no DNS for an outside name in the box (getent example.com fails)" sh -c "! IN 'getent hosts example.com'"
 check "...but its own proxy's name resolves" IN "getent hosts $PX"

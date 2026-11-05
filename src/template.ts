@@ -48,12 +48,12 @@ export function renderTo(dest: string, vars: Record<string, string>, t = templat
  * the working tree or index. Returns the commit. The branch `mm-template` holds these commits: it is the merge base
  * `mm update` uses, so a project's own edits and the template's changes meet in an ordinary three-way merge.
  */
-export function templateCommit(root: string, vars: Record<string, string>, msg: string, parent?: string, t = template()): string {
+export function templateCommit(root: string, vars: Record<string, string>, msg: string, parent?: string, t = template(), gitEnv: Record<string, string> = {}): string {
   const scratch = join(root, '.git', 'mm-render'), index = join(root, '.git', 'mm-template.index')
   rmSync(scratch, { recursive: true, force: true }); rmSync(index, { force: true })
   try {
     renderTo(scratch, vars, t)
-    const env = { GIT_INDEX_FILE: index }
+    const env = { ...gitEnv, GIT_INDEX_FILE: index } // gitEnv: a box project's hardened host git (review sy-b15.6 2b)
     const git = (args: string[]) => {
       const r = run(['git', '-C', root, ...args], { env })
       if (!r.ok) throw new Error(`git ${args[0]}: ${(r.err || r.out).trim().slice(0, 200)}`)

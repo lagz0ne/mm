@@ -2,12 +2,13 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'node:path'
 import { canon, DIRS, HOME, run, within } from './env'
-import { BOXES, boxHook, loadAll, PROJECTS_PC, readAnswers, resolve, up, writeRunFiles } from './project'
+import { BOXES, boxHook, gitRefusal, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, resolve, up, writeRunFiles } from './project'
 import { template, templateCommit } from './template'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
 const pc = (...a: string[]) => run(['process-compose', '-U', '-u', DIRS.socket, ...a], { timeoutMs: 120_000 })
-const gitIn = (root: string) => (args: string[], env?: Record<string, string>) => run(['git', '-C', root, ...args], { env, timeoutMs: 120_000 })
+// host git on a project: for a box project, hardened (review sy-b15.6 2b: no replace objects, no outside config or hooks)
+const gitIn = (root: string) => (args: string[], env?: Record<string, string>) => run(['git', '-C', root, ...args], { env: { ...env, ...hostGitEnv(root) }, timeoutMs: 120_000 })
 const short = (r: { out: string; err: string }) => (r.err || r.out).trim().split('\n').slice(-3).join(' ').slice(0, 200)
 
 function varsOf(root: string) {
@@ -29,6 +30,7 @@ export function update(root: string, o: UpdateOpts = {}): UpdateResult {
   const git = gitIn(root), { a, vars } = varsOf(root), t = template()
   const steps: Step[] = [], res: UpdateResult = { steps, from: a.template_version, to: t.version, changed: [], conflicts: [], ok: false }
   const fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return res }
+  const why = gitRefusal(root); if (why) return fail('git', `refused: ${why} (review sy-b15.6 2c)`)
   const merging = git(['rev-parse', '-q', '--verify', 'MERGE_HEAD']).ok
 
   if (o.abort) {
@@ -49,7 +51,7 @@ export function update(root: string, o: UpdateOpts = {}): UpdateResult {
 
   const old = git(['rev-parse', '-q', '--verify', 'refs/heads/mm-template']).out.trim()
   if (!old && !o.adopt) return fail('baseline', 'no mm-template branch (project predates mm update). Adopt once with the template it was made from: MM_TEMPLATE_DIR=<old template> mm update <project> --adopt')
-  const next = templateCommit(root, vars, `template ${t.version}`, old || undefined, t)
+  const next = templateCommit(root, vars, `template ${t.version}`, old || undefined, t, hostGitEnv(root))
   if (old && git(['rev-parse', `${old}^{tree}`]).out === git(['rev-parse', `${next}^{tree}`]).out) {
     steps.push({ step: 'template', status: 'ok', detail: `already at ${a.template_version === t.version ? t.version : 'the current template'}` })
     res.ok = true; return res

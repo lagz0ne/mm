@@ -12,7 +12,7 @@ import { AI_PORT, aiEnabled, aiSocket, mintKey, revokeKeys, store as aiStore } f
 import { mkdtempSync, rmSync } from 'node:fs'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, run, which } from './env'
-import { BOXES, boxHook, loadAll, PROJECTS_PC, readAnswers, resolve, serviceProcess, up as projectUp, writeRunFiles } from './project'
+import { BOXES, boxHook, gitRefusal, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, resolve, serviceProcess, up as projectUp, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
 import paseoJoinScript from '../box/paseo-join.mjs' with { type: 'text' }
@@ -157,6 +157,8 @@ export function up(root: string): Step[] {
   const steps: Step[] = [], a = readAnswers(root), n = names(a.project)
   const fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return steps }
   if (!docker('image', 'inspect', IMAGE()).ok || !docker('image', 'inspect', EGRESS_IMAGE()).ok) return fail('image', `missing ${IMAGE()} or ${EGRESS_IMAGE()}: mm box build`)
+  // a box-planted change to what the host's git sees: refused before anything is mounted (review sy-b15.6 2c)
+  const why = gitRefusal(root); if (why) return fail('git', `refused: ${why}`)
   // 1. the network: internal, no route out
   const net = netOf(a.project, n.net); if (!net) return fail('network', `could not make ${n.net}`)
   steps.push({ step: 'network', status: 'ok', detail: `${n.net} (internal, ${net.subnet}; the box at ${net.ip})` })
@@ -219,7 +221,10 @@ export function up(root: string): Step[] {
   // 5. the box
   if (exists('container', n.box)) docker('rm', '-f', n.box)
   // each one only if it is really there, inside the project: no symlink on the way (Docker would follow it on the host)
-  const rootReal = realpathSync(root), roRel = ['bin', 'ops', 'setup', 'tools', '.git/hooks', '.git/config', 'code/.git/hooks', 'code/.git/config', 'services.yaml', '.mm-answers.yaml', 'secrets.json', 'governance.json']
+  // (.git/info and .git/objects/info too: grafts, alternates and the like would choose what the host's git sees; review
+  // sy-b15.6 2a)
+  const rootReal = realpathSync(root), roRel = ['bin', 'ops', 'setup', 'tools', '.git/hooks', '.git/config', '.git/info', '.git/objects/info',
+    'code/.git/hooks', 'code/.git/config', 'code/.git/info', 'code/.git/objects/info', 'services.yaml', '.mm-answers.yaml', 'secrets.json', 'governance.json']
   const there = roRel.filter((r) => { try { lstatSync(join(rootReal, r)); return true } catch { return false } })
   const linked = there.filter((r) => { try { return realpathSync(join(rootReal, r)) !== join(rootReal, r) } catch { return true } })
   if (linked.length) return fail('box', `refused: ${linked.join(', ')} goes through a symlink (the box may not choose what mm mounts)`)
@@ -355,9 +360,12 @@ export function off(root: string): Step[] {
 }
 /** The answers' `box:` line, committed in the project's config repo (as mm update commits its answers). */
 function setBox(root: string, on: boolean): Step {
+  const why = gitRefusal(root); if (why) return { step: 'answers', status: 'fail', detail: `refused: ${why}` }
+  // hardened as it is now, before the answers change (box off commits over the box's files; review sy-b15.6 2b)
+  const genv = hostGitEnv(root)
   const f = join(root, '.mm-answers.yaml'), t = readFileSync(f, 'utf8').replace(/^box:.*\n?/m, '')
   writeFileSync(f, on ? `${t.trimEnd()}\nbox: true\n` : t)
-  const c = run(['git', '-C', root, 'commit', '-q', '-m', `mm box ${on ? 'on' : 'off'}: the project runs ${on ? 'in its own box' : 'on the host'}`, '.mm-answers.yaml'], { env: { SETUP_HUMAN: '1' } })
+  const c = run(['git', '-C', root, 'commit', '-q', '-m', `mm box ${on ? 'on' : 'off'}: the project runs ${on ? 'in its own box' : 'on the host'}`, '.mm-answers.yaml'], { env: { SETUP_HUMAN: '1', ...genv } })
   return { step: 'answers', status: c.ok ? 'ok' : 'fail', detail: c.ok ? `box: ${on}` : short(c) }
 }
 boxHook.processes = processes
