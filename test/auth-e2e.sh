@@ -55,7 +55,9 @@ echo "== a person, a grant, a link that works once"
 check "mm user add boss --owner; mm user add alice; mm grant alice acme-shop" sh -c "mm user add boss --owner >/dev/null && mm user add alice >/dev/null && mm grant alice acme-shop -o json | jq -e '.role == \"member\"'"
 L=$(mm user link alice -o json | jq -r .link); AH=auth.example.test
 check "mm user link alice: a single-use link on the gateway's host" sh -c "echo '$L' | grep -q '^https://$AH/api/auth/magic-link/verify?token='"
-curl -s -D /tmp/l.h -o /dev/null -H "x-forwarded-host: $AH" -H 'x-forwarded-proto: https' "$G${L#https://$AH}"
+LQ=${L#*\?}; LT=$(printf '%s' "$LQ" | tr '&' '\n' | sed -n 's/^token=//p'); LC=$(printf '%s' "$LQ" | tr '&' '\n' | sed -n 's/^callbackURL=//p')
+check "opening the link: only a Continue page (no session yet)" sh -c "curl -s -D - -o /dev/null -H 'x-forwarded-host: $AH' -H 'x-forwarded-proto: https' '$G${L#https://$AH}' | { ! grep -qi set-cookie; }"
+curl -s -D /tmp/l.h -o /dev/null -H "x-forwarded-host: $AH" -H 'x-forwarded-proto: https' -H "origin: https://$AH" -d "t=$LT&c=$LC" "$G/s/l"
 S=$(sed -n 's/^set-cookie: \(__Secure-better-auth\.session_token=[^;]*\).*/\1/ip' /tmp/l.h | tail -1)
 check "opening it: a session on the gateway's host" sh -c "[ -n '$S' ]"
 CB=$(curl -s -D - -o /dev/null -H "x-forwarded-host: $AH" -H 'x-forwarded-proto: https' -H "cookie: $S" "$G/s?b=$BOARD&r=/" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')

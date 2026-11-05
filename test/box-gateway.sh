@@ -98,9 +98,12 @@ MM_IN() { $DOCKER exec -u dev "$BOX" sh -c "export PATH=\$HOME/.mm/bin:\$PATH; $
 check "in the box: mm user add boss --owner; mm user add alice; mm grant alice acme-shop" sh -c "$(declare -f MM_IN); BOX=$BOX DOCKER='$DOCKER'; MM_IN 'mm user add boss --owner && mm user add alice && mm grant alice acme-shop' >/dev/null"
 L=$(MM_IN 'mm user link alice -o json' | jq -r .link)
 check "mm user link alice: a single-use link on the gateway's host" sh -c "echo '$L' | grep -q '^https://$AUTH/api/auth/magic-link/verify?token='"
+# the link opens a Continue page (no session); its button POSTs from the gateway's page (review sy-g8v 2)
 B -c $J -b $J -o /dev/null "$L"
+LQ=${L#*\?}; LT=$(printf '%s' "$LQ" | tr '&' '\n' | sed -n 's/^token=//p'); LC=$(printf '%s' "$LQ" | tr '&' '\n' | sed -n 's/^callbackURL=//p')
+B -c $J -b $J -o /dev/null -H "origin: https://$AUTH" -d "t=$LT&c=$LC" "https://$AUTH/s/l"
 check "the link (through Traefik): a session, then the board opens with no new link (callback, the board's cookie)" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -L -c $J -b $J https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\"'"
-check "the same link again: no new session" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; ! B -D - -o /dev/null '$L' | grep -qi 'set-cookie: __Secure-better-auth.session_token'"
+check "the same link again: no new session" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; ! B -D - -o /dev/null -H 'origin: https://$AUTH' -d 't=$LT&c=$LC' 'https://$AUTH/s/l' | grep -qi 'set-cookie: __Secure-better-auth.session_token'"
 check "the board knows alice, through Traefik and the gateway" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\".*\"source\":\"gateway\"'"
 check "alice sees the board's items" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J 'https://$BOARD/api/v0/beads/issues?limit=20' | grep -q 'seen through Traefik'"
 check "...and her forged role header changes nothing (Traefik takes the gateway's)" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J -H 'x-board-role: owner' -H 'x-mm-assertion: forged.forged' https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\"'"

@@ -246,21 +246,38 @@ export async function gateway() {
       log('info', 'board session', { user: userById(bc.userId)?.name, host })
       return new Response(null, { status: 302, headers: { location: safeBack(bc.back), 'set-cookie': setCookie(req, 'mm_board', id, exp - now()), ...headers } })
     }
-    // Better Auth (the gateway's host): the link's verify step lands here, sets the session, goes to /s/done
+    // a sign-in link (review sy-g8v 2): opening it only shows a Continue button. Chat previews (Telegram) and mail
+    // scanners open links; a GET that signed in would use the single-use link up, or sign the fetcher in. Only the
+    // button's POST, from this host's own page, runs Better Auth's verify step.
+    if (path === '/api/auth/magic-link/verify') {
+      if (req.method !== 'GET' && req.method !== 'HEAD') return new Response('use the link\'s page', { status: 405, headers })
+      return html(continuePage(u.searchParams.get('token') || '', u.searchParams.get('callbackURL') || '/s/done'))
+    }
+    if (path === '/s/l') {
+      if (req.method !== 'POST') return new Response(null, { status: 302, headers: { location: '/s/done', ...headers } })
+      const ip = clientIp(req, srv)
+      if (limited(`ba:${ip}`, 60, 60e3)) return json({ error: 'too many requests' }, 429)
+      let from = ''; try { from = new URL(req.headers.get('origin') || '').host } catch {}
+      if (from !== authHost) { log('warn', 'link post refused (not from the link page)', { ip, origin: req.headers.get('origin') || undefined }); return html(page('Open the sign-in link itself, then press Continue.'), 403) }
+      const f = await req.formData().catch(() => null), t = String(f?.get('t') || ''), c = String(f?.get('c') || '/s/done')
+      const hdrs = new Headers(req.headers); hdrs.delete('cf-connecting-ip'); hdrs.delete('content-type'); hdrs.delete('content-length'); hdrs.set('x-mm-client-ip', ip)
+      const r = await auth.handler(new Request(`https://${authHost}/api/auth/magic-link/verify?${new URLSearchParams({ token: t, callbackURL: c })}`, { method: 'GET', headers: hdrs }))
+      { // a link was used: who, from where (the owner sees it in mm user ls and the log)
+        const set = r.headers.getSetCookie?.().find((x) => /session_token=/.test(x)), tok = set && decodeURIComponent(set.split(';')[0].split('=').slice(1).join('=')).split('.')[0]
+        const who = tok ? (db.query('SELECT u.name AS name FROM session s JOIN user u ON u.id = s.userId WHERE s.token = ?').get(tok) as { name: string } | null)?.name : null
+        if (tok) db.run('UPDATE session SET ipAddress = ? WHERE token = ?', [ip, tok])
+        log(tok ? 'info' : 'warn', tok ? 'signed in by link' : 'link refused', { user: who || undefined, ip, link: short(t) })
+        if (tok) tellOwner(`${who || 'someone'} signed in with a link, from ${ip}. If that wasn't them: mm revoke ${who || '<name>'}`)
+      }
+      return r
+    }
+    // Better Auth's other routes (the gateway's host)
     if (path.startsWith('/api/auth/')) {
       const ip = clientIp(req, srv)
       if (limited(`ba:${ip}`, 60, 60e3)) return json({ error: 'too many requests' }, 429)
       const hdrs = new Headers(req.headers); hdrs.delete('cf-connecting-ip'); hdrs.set('x-mm-client-ip', ip) // only mm says where it came from
       const inner = new Request(`https://${authHost}${path}${u.search}`, { method: req.method, headers: hdrs, body: req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.arrayBuffer() })
-      const r = await auth.handler(inner)
-      if (path === '/api/auth/magic-link/verify') { // a link was used: who, from where (the owner sees it in mm user ls and the log)
-        const set = r.headers.getSetCookie?.().find((x) => /session_token=/.test(x)), tok = set && decodeURIComponent(set.split(';')[0].split('=').slice(1).join('=')).split('.')[0]
-        const who = tok ? (db.query('SELECT u.name AS name FROM session s JOIN user u ON u.id = s.userId WHERE s.token = ?').get(tok) as { name: string } | null)?.name : null
-        if (tok) db.run('UPDATE session SET ipAddress = ? WHERE token = ?', [ip, tok])
-        log(tok ? 'info' : 'warn', tok ? 'signed in by link' : 'link refused', { user: who || undefined, ip, link: short(u.searchParams.get('token') || '') })
-        if (tok) tellOwner(`${who || 'someone'} signed in with a link, from ${ip}. If that wasn't them: mm revoke ${who || '<name>'}`)
-      }
-      return r
+      return auth.handler(inner)
     }
     if (path === '/s') {
       const board = u.searchParams.get('b') || '', back = safeBack(u.searchParams.get('r')), p = await personOf(req)
@@ -446,9 +463,18 @@ function codePage(code: string, board: string) {
 <script src="/s/app.js"></script>`
 }
 const CODE_JS = `(function poll(){fetch('/s/poll',{credentials:'same-origin'}).then(function(r){return r.json().then(function(j){
-if(j.state==='approved'){document.getElementById('state').textContent='Approved. Signing you in…';location.href=j.next;return}
+if(j.state==='approved'){document.getElementById('state').textContent='Approved. Signing you in…';var u=new URL(j.next,location.href),f=document.createElement('form');f.method='post';f.action='/s/l';
+[['t',u.searchParams.get('token')||''],['c',u.searchParams.get('callbackURL')||'/s/done']].forEach(function(x){var i=document.createElement('input');i.type='hidden';i.name=x[0];i.value=x[1];f.appendChild(i)});document.body.appendChild(f);f.submit();return}
 if(j.state==='expired'){document.getElementById('state').textContent='This code has expired. Reload the page for a new one.';return}
 setTimeout(poll,2000)})}).catch(function(){setTimeout(poll,4000)})})()`
+/** What a sign-in link opens: a button. Its POST signs in (a preview or a scanner only sees this page). No script. */
+function continuePage(token: string, callbackURL: string) {
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Sign in</title>
+<body style="font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;line-height:1.5"><h1 style="font-size:1.4rem">Sign in</h1>
+<p>This link signs you in once. Press Continue to use it.</p>
+<form method="post" action="/s/l"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="c" value="${esc(callbackURL)}">
+<button type="submit" style="font-size:1.1rem;padding:.5rem 1.4rem">Continue</button></form>`
+}
 function page(text: string) {
   return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in</title>
 <body style="font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;line-height:1.5"><h1 style="font-size:1.4rem">Sign in</h1><p>${text}</p>`

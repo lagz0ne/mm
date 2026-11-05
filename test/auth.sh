@@ -41,7 +41,9 @@ G="http://127.0.0.1:$PORT"
 gw() { curl -s -H "x-forwarded-host: $AUTH" -H 'x-forwarded-proto: https' "$@"; }
 sess() { sed -n 's/^set-cookie: \(__Secure-better-auth\.session_token=[^;]*\).*/\1/ip' "$1" | tail -1; }
 link_of() { mm user link "$1" -o json | jq -r .link; }
-open_link() { local p=${1#https://$AUTH}; gw -D "$2" -o /dev/null "$G$p"; }
+# a link opens a Continue page; its button POSTs the link's token from the gateway's own page (review sy-g8v 2)
+qs() { printf '%s' "${1#*\?}" | tr '&' '\n' | sed -n "s/^$2=//p"; }
+open_link() { gw -D "$2" -o /dev/null -H "origin: https://$AUTH" -d "t=$(qs "$1" token)&c=$(qs "$1" callbackURL)" "$G/s/l"; }
 export -f gw sess; export G AUTH BOARD BOARD2 T MM_HOME
 
 echo '== people (no password)'
@@ -58,12 +60,15 @@ check "...--ttl 10m: a 10-minute link (for the bridge)" bash -c "E=\$(mm user li
 check "...--ttl 2h for more; more than 7 days is refused" bash -c "E=\$(mm user link alex --ttl 2h -o json | jq -r .expires); d=\$(( \$(date -d \"\$E\" +%s) - \$(date +%s) )); [ \$d -gt 7100 ] && ! mm user link alex --ttl 8d"
 L=$(link_of alex)
 check "mm user link alex: a single-use link on the gateway's host" bash -c "echo '$L' | grep -q '^https://$AUTH/api/auth/magic-link/verify?token='"
+LP=${L#https://$AUTH}
+check "opening the link (as a chat preview or a mail scanner does): a Continue page, no session, nothing used" bash -c "gw -D '$T/pv' -o '$T/pvb' '$G$LP'; head -1 '$T/pv' | grep -q 200 && ! grep -qi 'set-cookie' '$T/pv' && grep -q 'action=\"/s/l\"' '$T/pvb' && gw -o /dev/null -w '%{http_code}' '$G$LP' | grep -q 200"
+check "...its POST from another site (no Origin, or a foreign one): refused, and the link stays unused" bash -c "[ \"\$(gw -o /dev/null -w '%{http_code}' -d 't=$(qs "$L" token)&c=/s/done' $G/s/l)\" = 403 ] && [ \"\$(gw -o /dev/null -w '%{http_code}' -H 'origin: https://evil.example' -d 't=$(qs "$L" token)&c=/s/done' $G/s/l)\" = 403 ]"
 open_link "$L" "$T/h1"; S1=$(sess "$T/h1")
 check "opening it: a session (Secure, HttpOnly, host-only: no Domain=) and on to /s/done" bash -c "[ -n '$S1' ] && grep -i 'set-cookie: __Secure-better-auth.session_token' '$T/h1' | grep -qi httponly && ! grep -i 'set-cookie: __Secure-better-auth.session_token' '$T/h1' | grep -qi 'domain=' && grep -qi '^location: .*/s/done' '$T/h1'"
 open_link "$L" "$T/h1b"
 check "the same link again: no session" bash -c "[ -z \"\$(sess '$T/h1b')\" ]"
 check "/s/done: signed in as alex, no board yet" bash -c "gw -H 'cookie: $S1' $G/s/done | grep -q 'Signed in as <b>alex</b>' && gw -H 'cookie: $S1' $G/s/done | grep -q 'no board yet'"
-check "the board before a grant: no way in (the page says ask the owner)" bash -c "gw -D - -o '$T/p0' -H 'cookie: $S1' '$G/s?b=$BOARD&r=/items' | head -1 | grep -q 200 && grep -q 'no access' '$T/p0'"
+check "the board before a grant: no way in (the page says ask the owner)" bash -c "gw -D '$T/p0h' -o '$T/p0' -H 'cookie: $S1' '$G/s?b=$BOARD&r=/items'; head -1 '$T/p0h' | grep -q 200 && grep -q 'no access' '$T/p0'"
 
 echo '== a grant: one session opens the board'
 check "mm grant alex acme-shop (member)" bash -c "mm grant alex acme-shop -o json | jq -e '.role == \"member\"'"
@@ -193,7 +198,7 @@ check "a comment carries its author's role" bash -c "[ \$(w POST '$MA' /it-1/com
 check "...and its author is the signed-in person, whatever the body says" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"x\",\"author\":\"owner\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.author == \"alex\"'"
 kill $BS $FB 2>/dev/null
 
-LF=$(link_of alex); gw -o /dev/null -H 'cf-connecting-ip: 6.6.6.6' "$G${LF#https://$AUTH}"
+LF=$(link_of alex); gw -o /dev/null -H 'cf-connecting-ip: 6.6.6.6' -H "origin: https://$AUTH" -d "t=$(qs "$LF" token)&c=$(qs "$LF" callbackURL)" "$G/s/l"
 check "a CF-Connecting-IP from an untrusted peer is ignored: the sign-in is logged from the real peer (review sy-b15.14 4)" bash -c "grep 'signed in by link' '$T/gw.log' | tail -1 | grep -q '\"ip\":\"127.0.0.1\"' && ! grep -q '6.6.6.6' '$T/gw.log'"
 check "mm user ls shows the last sign-in" bash -c "mm user ls -o json | jq -e '.[] | select(.name==\"alex\") | .last_signin != null'"
 
