@@ -100,6 +100,14 @@ check "the box has a fixed address on its network (10.231.<n>.10)" sh -c "echo '
 check "its password: on the host only (0600); the box sees it read-only" sh -c "[ \"\$(stat -c %a '$PW')\" = 600 ] && ! IN 'echo x >> /run/mm/secrets/paseo.password'"
 check "the host reaches the box's Paseo with the password (paseo ls)" sh -c "PASEO_PASSWORD=\"\$(cat '$PW')\" paseo --host 'tcp://$BIP:6767' ls --json | jq -e 'type == \"array\"'"
 check "...and is refused with a wrong one" sh -c "! PASEO_PASSWORD=wrong-password paseo --host 'tcp://$BIP:6767' ls --json"
+# what the box's Paseo starts (a terminal here; an agent's tools the same way) runs as the box user, inside the box's
+# walls (sy-b15.2 2, the part that needs no model: an agent itself waits for B2's gateway)
+BP() { PASEO_PASSWORD="$(cat "$PW")" paseo --host "tcp://$BIP:6767" "$@"; }
+TID=$(BP terminal create --cwd "$ROOT" --name qa-walls --json 2>/dev/null | jq -r '.id // .terminalId // .terminal.id // empty')
+[ -n "$TID" ] && BP terminal send-keys "$TID" 'echo "uid=$(id -u)"; sudo -n true 2>/dev/null || echo NO-"SUDO"; touch /usr/x 2>/dev/null || echo RO-"ROOT"; curl -s --max-time 5 --noproxy "*" https://example.com >/dev/null || echo NO-"WAY-OUT"' Enter >/dev/null 2>&1
+sleep 8; TOUT=$( [ -n "$TID" ] && BP terminal capture "$TID" 2>/dev/null)
+check "a terminal the box's Paseo starts: the box user, no sudo, read-only root, no way out but the proxy" sh -c "echo \"\$0\" | grep -qE 'uid=2[0-9]{5}' && echo \"\$0\" | grep -q NO-SUDO && echo \"\$0\" | grep -q RO-ROOT && echo \"\$0\" | grep -q NO-WAY-OUT" "$TOUT"
+[ -n "$TID" ] && BP terminal kill "$TID" >/dev/null 2>&1
 GW=$(echo "$BIP" | sed 's/\.10$/.1/')
 check "the box can't reach the system Paseo (6767 on its network's gateway, the host)" sh -c "! IN 'curl -s -o /dev/null --max-time 5 --noproxy \"*\" http://$GW:6767/'"
 # another box: a stand-in on its own internal network (as mm makes them), listening on Paseo's port (review sy-b15.8 4)
