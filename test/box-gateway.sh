@@ -92,6 +92,7 @@ J=/tmp/jar
 
 echo "== through Traefik"
 check "no session: Traefik sends the browser to the sign-in page" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -D - -o /dev/null https://$BOARD/api/whoami | grep -qi '^location: https://$AUTH/s?b=$BOARD'"
+check "no session, through Traefik: /_mm/auth/../api/…, %2e%2e and ..%2f never reach the board (review sy-b15.14 3)" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; for u in '/_mm/auth/../api/v0/beads/issues' '/_mm/auth/%2e%2e/api/v0/beads/issues' '/_mm/auth/..%2fapi/v0/beads/issues'; do out=\$(B --path-as-is \"https://$BOARD\$u\"); echo \"\$out\" | grep -q 'seen through Traefik' && exit 1; echo \"\$out\" | grep -q '\"actor\"' && exit 1; done; exit 0"
 check "...a client's own X-MM-Assertion and X-Board-User don't get through" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; [ \"\$(B -o /dev/null -w '%{http_code}' -H 'x-mm-assertion: forged.forged' -H 'x-board-user: owner' -H 'x-board-role: owner' https://$BOARD/api/whoami)\" = 302 ]"
 MM_IN() { $DOCKER exec -u dev "$BOX" sh -c "export PATH=\$HOME/.mm/bin:\$PATH; $*"; }
 check "in the box: mm user add boss --owner; mm user add alice; mm grant alice acme-shop" sh -c "$(declare -f MM_IN); BOX=$BOX DOCKER='$DOCKER'; MM_IN 'mm user add boss --owner && mm user add alice && mm grant alice acme-shop' >/dev/null"

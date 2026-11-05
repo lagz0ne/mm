@@ -13,7 +13,7 @@ ok()   { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }
 bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
 check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 T=$(mktemp -d); GW=""; trap '[ -n "$GW" ] && kill $GW 2>/dev/null; rm -rf "$T"' EXIT
-export HOME="$T/home" MM_HOME="$T/home/.mm" MM_OBS_TRACES="" MM_AUTH_LINK_S=600
+export HOME="$T/home" MM_HOME="$T/home/.mm" MM_OBS_TRACES=""
 unset PASEO_AGENT_ID PASEO_AGENT_CWD
 mkdir -p "$MM_HOME/pc/projects" "$T/proj/.run" "$T/proj2/.run"
 PORT=$(( 39100 + RANDOM % 800 )); BOARD=board-shop-acme.example.org; AUTH=auth.example.org; BOARD2=board-other-acme.example.org
@@ -42,6 +42,8 @@ check "reserved names are refused (the owner's name, steward, bridge, mm, root, 
 check "mm user ls: alex, no grants yet; boss the owner" bash -c "mm user ls -o json | jq -e '(.[] | select(.name==\"alex\") | .grants == \"\") and (.[] | select(.name==\"boss\") | .owner)'"
 
 echo '== a link that works once'
+check "a link lives 1 h by default (review sy-b15.14)" bash -c "E=\$(mm user link alex -o json | jq -r .expires); d=\$(( \$(date -d \"\$E\" +%s) - \$(date +%s) )); [ \$d -gt 3500 ] && [ \$d -le 3600 ]"
+check "...--ttl 2h for more; more than 7 days is refused" bash -c "E=\$(mm user link alex --ttl 2h -o json | jq -r .expires); d=\$(( \$(date -d \"\$E\" +%s) - \$(date +%s) )); [ \$d -gt 7100 ] && ! mm user link alex --ttl 8d"
 L=$(link_of alex)
 check "mm user link alex: a single-use link on the gateway's host" bash -c "echo '$L' | grep -q '^https://$AUTH/api/auth/magic-link/verify?token='"
 open_link "$L" "$T/h1"; S1=$(sess "$T/h1")
@@ -82,6 +84,7 @@ EOF
 check "the assertion verifies with the public key: alex, member, this host, 60 s; a changed one doesn't" node "$T/verify.mjs" "$A" "$MM_HOME/auth/signing.key" "$BOARD" alex member
 check "the board cookie on another board host: sign in (302)" bash -c "v $BOARD2 | head -1 | grep -q 302"
 check "no cookie: 302 to the sign-in page, back to the same path" bash -c "curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' -H 'x-forwarded-uri: /items' $G/verify | grep -qi '^location: https://$AUTH/s?b=$BOARD&r=%2Fitems'"
+check "only the exact callback path skips forward-auth: /_mm/auth/../api/items, %2e%2e, ..%2f need a session (302)" bash -c "for u in '/_mm/auth/../api/items' '/_mm/auth/%2e%2e/api/items' '/_mm/auth/..%2fapi/items' '/_mm/auth/x'; do curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' -H \"x-forwarded-uri: \$u\" $G/verify | head -1 | grep -q 302 || exit 1; done; curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' -H 'x-forwarded-uri: /_mm/auth/callback?c=x' $G/verify | head -1 | grep -q 200"
 check "the identity headers are always set (to '-') on a refusal (a client's copy can't pass)" bash -c "curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' $G/verify | grep -qiE '^x-board-role: -[[:space:]]*\$'"
 mm grant alex acme-shop --as designer >/dev/null
 check "mm grant --as designer: the next assertion says designer" bash -c "node '$T/verify.mjs' \"\$(v | sed -n 's/^x-mm-assertion: \\(.*\\)\\r\$/\\1/ip')\" '$MM_HOME/auth/signing.key' '$BOARD' alex designer"
@@ -177,6 +180,10 @@ check "not even the owner signs off for review (403)" test "$(w PATCH "$OA" /it-
 check "a comment carries its author's role" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"looks good\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.text == \"[member] looks good\" and .b.author == \"alex\"'"
 check "...and its author is the signed-in person, whatever the body says" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"x\",\"author\":\"owner\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.author == \"alex\"'"
 kill $BS $FB 2>/dev/null
+
+LF=$(link_of alex); gw -o /dev/null -H 'cf-connecting-ip: 6.6.6.6' "$G${LF#https://$AUTH}"
+check "a CF-Connecting-IP from an untrusted peer is ignored: the sign-in is logged from the real peer (review sy-b15.14 4)" bash -c "grep 'signed in by link' '$T/gw.log' | tail -1 | grep -q '\"ip\":\"127.0.0.1\"' && ! grep -q '6.6.6.6' '$T/gw.log'"
+check "mm user ls shows the last sign-in" bash -c "mm user ls -o json | jq -e '.[] | select(.name==\"alex\") | .last_signin != null'"
 
 echo '== a link expires'
 kill $GW 2>/dev/null; wait $GW 2>/dev/null

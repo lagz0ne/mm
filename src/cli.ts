@@ -226,8 +226,12 @@ const user = program.command('user').description('people who sign in to the boar
 user.command('add <name>').description('a person (no password; they sign in with a link from mm user link)')
   .option('--owner', 'the owner: every project, as owner (only from this machine)')
   .action((name: string, o) => authCall('/user/add', { name, owner: !!o.owner, by: 'cli' }))
-user.command('link <name>').description('a sign-in link that works once (24 h); send it to them yourself. One session opens every board they are granted')
-  .action((name: string) => authCall('/user/link', { name, by: 'cli' }))
+user.command('link <name>').description('a sign-in link that works once (1 h by default); send it to them yourself. One session opens every board they are granted')
+  .option('--ttl <time>', 'how long it stays valid: 30m, 2h, 1d (default 1h, at most 7d)')
+  .action((name: string, o) => {
+    if (o.ttl === undefined) return authCall('/user/link', { name, by: 'cli' }) // the gateway's default (1 h)
+    const m = /^(\d+)([smhd])$/.exec(String(o.ttl)); if (!m) { console.error('mm user link: --ttl like 30m, 2h, 1d'); process.exit(2) }
+    return authCall('/user/link', { name, ttl: Number(m[1]) * ({ s: 1, m: 60, h: 3600, d: 86400 } as Record<string, number>)[m[2]], by: 'cli' }) })
 user.command('rm <name>').description('remove a person: their grants, sessions and tokens end at once').action((name: string) => authCall('/user/rm', { name, by: 'cli' }))
 user.command('ls').description('people: owner or not, grants, sessions, tokens').action(() => authCall('/user/ls'))
 program.command('grant <name> <project>').description('give a person a role on a project (the owner\'s step)')

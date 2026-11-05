@@ -27,7 +27,9 @@ import { DIRS } from './env'
 
 export const AUTH_DIR = join(DIRS.mm, 'auth')
 export const AUTH_SOCK = join(DIRS.mm, 'run', 'auth.sock')
-const SESSION_S = 12 * 3600, BOARD_CODE_MS = 30e3, ASSERT_MS = 60e3, LINK_S = Number(process.env.MM_AUTH_LINK_S) || 24 * 3600, TOKEN_DAYS = 30
+// a sign-in link is a bearer link that may travel through chat apps: 1 h by default (review sy-b15.14), `--ttl` for more,
+// up to the plugin's ceiling (each link's own row is set to its ttl after it is made)
+const SESSION_S = 12 * 3600, BOARD_CODE_MS = 30e3, ASSERT_MS = 60e3, LINK_S = Number(process.env.MM_AUTH_LINK_S) || 3600, LINK_MAX_S = 7 * 86400, TOKEN_DAYS = 30
 // designer = a member who also edits the project's Doop (the owner, 2026-11-05; plans/ui-access.md, doop.md)
 const ROLES = ['owner', 'designer', 'member', 'viewer'] as const
 type Role = typeof ROLES[number]
@@ -80,11 +82,12 @@ function makeAuth(db: Database, authHost: string, links: Map<string, string>) {
     telemetry: { enabled: false }, database: db, emailAndPassword: { enabled: false },
     session: { expiresIn: SESSION_S, updateAge: 3600 },
     // host-only cookies (no crossSubDomainCookies): the session lives on the gateway's host only (sy-p2i)
-    advanced: { useSecureCookies: true, ipAddress: { ipAddressHeaders: ['cf-connecting-ip'] } },
+    // the client address comes only from mm (x-mm-client-ip, set by the gateway from a trusted proxy or the peer)
+    advanced: { useSecureCookies: true, ipAddress: { ipAddressHeaders: ['x-mm-client-ip'] } },
     plugins: [
       admin(),
       organization({ ac, roles: ORG_ROLES, allowUserToCreateOrganization: false }),
-      magicLink({ expiresIn: LINK_S, disableSignUp: true, sendMagicLink: async ({ email, url }) => { links.set(email, url) } }), // mm prints it
+      magicLink({ expiresIn: LINK_MAX_S, disableSignUp: true, sendMagicLink: async ({ email, url }) => { links.set(email, url) } }), // mm prints it
       bearer(),
     ],
   })
@@ -98,6 +101,14 @@ export async function gateway() {
   const cfg = loadConfig(), domain = String(getPath(cfg, 'domain') ?? '')
   const authHost = String(getPath(cfg, 'auth_host') ?? (domain ? `auth.${domain}` : 'auth.localhost'))
   const ownerName = String(getPath(cfg, 'owner_name') ?? 'owner')
+  // the browser's address: CF-Connecting-IP only when the TCP peer is a trusted proxy (auth.trusted_proxies: the web
+  // proxy's address, which takes it only from Cloudflare), else the peer itself (review sy-b15.14 4, sy-b15.7 2)
+  const trusted = new Set(([] as string[]).concat(getPath(cfg, 'auth.trusted_proxies') as string[] || []).map(String))
+  const clientIp = (req: Request, srv?: { requestIP?: (r: Request) => { address: string } | null }) => {
+    const peer = (srv?.requestIP?.(req)?.address || '').replace(/^::ffff:/, '')
+    const cf = req.headers.get('cf-connecting-ip')?.trim()
+    return peer && trusted.has(peer) && cf ? cf : peer || 'unknown'
+  }
   const db = new Database(join(AUTH_DIR, 'accounts.db'), { create: true })
   db.exec('PRAGMA journal_mode = WAL')
   const links = new Map<string, string>()
@@ -176,12 +187,13 @@ export async function gateway() {
     return new Response(null, { status: 200, headers: { 'x-mm-assertion': signAssertion(u.name, role, host), 'x-board-user': u.name, 'x-board-role': role } })
   }
 
-  async function http(req: Request): Promise<Response> {
+  async function http(req: Request, srv?: { requestIP?: (r: Request) => { address: string } | null }): Promise<Response> {
     const u = new URL(req.url), host = req.headers.get('x-forwarded-host') || u.host, path = u.pathname
     // forward-auth: the web proxy asks for every request to a board host
     if (path === '/verify') {
       const fwdUri = req.headers.get('x-forwarded-uri') || '/'
-      if (fwdUri.startsWith('/_mm/auth/')) return new Response(null, { status: 200 }) // the callback itself goes to us
+      // the board's callback is ours (no assertion needed): exactly that path, raw, so no `..` or encoding gets past it
+      if (fwdUri.split('?')[0] === '/_mm/auth/callback') return new Response(null, { status: 200 })
       const project = projectOf(host)
       const bearerTok = /^Bearer\s+(\S+)$/i.exec(req.headers.get('authorization') || '')?.[1]
       if (bearerTok) { // a tool: its token is for one project; nothing else is tried
@@ -211,10 +223,17 @@ export async function gateway() {
     }
     // Better Auth (the gateway's host): the link's verify step lands here, sets the session, goes to /s/done
     if (path.startsWith('/api/auth/')) {
-      if (limited(`ba:${req.headers.get('cf-connecting-ip') || 'local'}`, 60, 60e3)) return json({ error: 'too many requests' }, 429)
-      const inner = new Request(`https://${authHost}${path}${u.search}`, { method: req.method, headers: req.headers, body: req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.arrayBuffer() })
+      const ip = clientIp(req, srv)
+      if (limited(`ba:${ip}`, 60, 60e3)) return json({ error: 'too many requests' }, 429)
+      const hdrs = new Headers(req.headers); hdrs.delete('cf-connecting-ip'); hdrs.set('x-mm-client-ip', ip) // only mm says where it came from
+      const inner = new Request(`https://${authHost}${path}${u.search}`, { method: req.method, headers: hdrs, body: req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.arrayBuffer() })
       const r = await auth.handler(inner)
-      if (path === '/api/auth/magic-link/verify') log(r.headers.getSetCookie?.().some((x) => /session_token=/.test(x)) ? 'info' : 'warn', r.headers.getSetCookie?.().some((x) => /session_token=/.test(x)) ? 'signed in by link' : 'link refused', { link: short(u.searchParams.get('token') || '') })
+      if (path === '/api/auth/magic-link/verify') { // a link was used: who, from where (the owner sees it in mm user ls and the log)
+        const set = r.headers.getSetCookie?.().find((x) => /session_token=/.test(x)), tok = set && decodeURIComponent(set.split(';')[0].split('=').slice(1).join('=')).split('.')[0]
+        const who = tok ? (db.query('SELECT u.name AS name FROM session s JOIN user u ON u.id = s.userId WHERE s.token = ?').get(tok) as { name: string } | null)?.name : null
+        if (tok) db.run('UPDATE session SET ipAddress = ? WHERE token = ?', [ip, tok])
+        log(tok ? 'info' : 'warn', tok ? 'signed in by link' : 'link refused', { user: who || undefined, ip, link: short(u.searchParams.get('token') || '') })
+      }
       return r
     }
     if (path === '/s') {
@@ -261,12 +280,18 @@ export async function gateway() {
     }
     if (u.pathname === '/user/link') { // a single-use link; one session from it opens every board granted
       const usr = userByName(name); if (!usr) return json({ error: `no user ${name} (mm user add ${name})` }, 404)
+      const ttl = b.ttl ? Number(b.ttl) : LINK_S
+      if (b.ttl && !(ttl >= 60 && ttl <= LINK_MAX_S)) return json({ error: `ttl: 60 s to ${LINK_MAX_S / 86400} days` }, 400)
       links.delete(emailOf(name))
+      const before = new Set((db.query('SELECT id FROM verification').all() as { id: string }[]).map((x) => x.id))
       await auth.api.signInMagicLink({ body: { email: emailOf(name), callbackURL: '/s/done' }, headers: new Headers() })
       const link = links.get(emailOf(name)); links.delete(emailOf(name))
-      if (!link) return json({ error: 'no link was made' }, 500)
-      log('info', 'link made', { user: name, link: short(new URL(link).searchParams.get('token') || ''), by: caller })
-      return json({ ok: true, name, link, expires: new Date(now() + LINK_S * 1000).toISOString(), note: 'works once; send it to them yourself' })
+      const made = (db.query('SELECT id FROM verification').all() as { id: string }[]).filter((x) => !before.has(x.id))
+      if (!link || made.length !== 1) return json({ error: 'no link was made' }, 500)
+      const exp = new Date(now() + ttl * 1000).toISOString()
+      db.run('UPDATE verification SET expiresAt = ? WHERE id = ?', [exp, made[0].id]) // this link's own lifetime
+      log('info', 'link made', { user: name, ttl_s: ttl, link: short(new URL(link).searchParams.get('token') || ''), by: caller })
+      return json({ ok: true, name, link, expires: exp, note: 'works once; send it to them yourself' })
     }
     if (u.pathname === '/user/rm') {
       const usr = userByName(name); if (!usr) return json({ error: `no user ${name}` }, 404)
@@ -278,7 +303,8 @@ export async function gateway() {
       const rows = db.query('SELECT id, name, role, createdAt FROM user ORDER BY name').all() as { id: string; name: string; role?: string; createdAt: string }[]
       return json(rows.map((x) => ({ name: x.name, owner: x.role === 'admin',
         grants: x.role === 'admin' ? 'owner (every project)' : (db.query('SELECT o.slug AS p, m.role AS r FROM member m JOIN organization o ON o.id = m.organizationId WHERE m.userId = ? ORDER BY o.slug').all(x.id) as { p: string; r: string }[]).map((g) => `${g.p}:${g.r}`).join(', '),
-        sessions: (db.query('SELECT COUNT(*) AS n FROM session WHERE userId = ? AND expiresAt > ?').get(x.id, now()) as { n: number }).n,
+        sessions: (db.query('SELECT COUNT(*) AS n FROM session WHERE userId = ? AND expiresAt > ?').get(x.id, new Date().toISOString()) as { n: number }).n,
+        last_signin: (db.query('SELECT createdAt AS t, ipAddress AS ip FROM session WHERE userId = ? ORDER BY createdAt DESC LIMIT 1').get(x.id) as { t: string; ip: string } | null)?.t || null,
         tokens: (db.query('SELECT COUNT(*) AS n FROM mm_token WHERE user_id = ?').get(x.id) as { n: number }).n })))
     }
     if (u.pathname === '/grant') {
@@ -330,7 +356,7 @@ export async function serve() {
   const g = await gateway(), c = loadConfig()
   const port = Number(getPath(c, 'auth_port') ?? 9440), bind = String(getPath(c, 'bind_host') ?? '127.0.0.1')
   const hosts = [...new Set(['127.0.0.1', bind])]
-  for (const hostname of hosts) Bun.serve({ hostname, port, fetch: (req) => g.http(req) })
+  for (const hostname of hosts) Bun.serve({ hostname, port, fetch: (req, srv) => g.http(req, srv) })
   rmSync(AUTH_SOCK, { force: true })
   Bun.serve({ unix: AUTH_SOCK, fetch: (req) => g.api(req) })
   chmodSync(AUTH_SOCK, 0o600)
