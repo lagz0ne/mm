@@ -154,6 +154,7 @@ printf '#!/bin/sh\nexec bd hooks run pre-commit "$@"\n' >"$ROOT/control/.git/hoo
 check "...a bd hook planted in control/: doctor fails, naming it" sh -c "mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item == \"bd quiet $REF\") | .status == \"fail\" and (.detail | test(\"control/.git/hooks/pre-commit\"))'"
 rm -f "$ROOT/control/.git/hooks/pre-commit"
 check "a lead may not install bd hooks or turn metrics on (rendered denies)" sh -c "jq -e '.permissions.deny | index(\"Bash(bd hooks*)\") and index(\"Bash(bin/bd config set metrics*)\") and index(\"Bash(bd init*)\")' '$ROOT/leads/qa/.claude/settings.json'"
+check "a lead may not make people, links, grants or tokens, nor reach the gateway's socket or store (review sy-b15.13)" sh -c "jq -e --arg mm \"/\${MM_HOME:-$HOME/.mm}\" '.permissions.deny | index(\"Bash(mm user*)\") and index(\"Bash(mm grant*)\") and index(\"Bash(mm token*)\") and index(\"Bash(*auth.sock*)\") and index(\"Read(\(\$mm)/auth/**)\")' '$ROOT/leads/qa/.claude/settings.json'"
 
 step "archive: dry run, then clean removal"
 check "dry run" mm archive "$REF" --dry-run

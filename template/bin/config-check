@@ -26,7 +26,11 @@ const HOME = process.env.HOME || os.homedir()
 // bd stays quiet (the owner, sy-8s1): no agent installs bd's git hooks, runs its setup or init, or turns hooks, metrics
 // or its git operations back on, whichever way it calls bd.
 const BD_QUIET = ['bd', 'bin/bd', 'tools/bd'].flatMap((b) => ['hooks', 'setup', 'init', 'config set no-hooks', 'config set metrics', 'config set no-git-ops'].map((c) => `Bash(${b} ${c}*)`))
-const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm fill*)', ...BD_QUIET]
+// Access is the owner's (review sy-b15.13): no agent makes people, sign-in links, grants or tokens, talks to the
+// gateway's socket, or reads its store or a box's Paseo password. `mm revoke` stays free (it only takes access away).
+const OWNER_ONLY = ['Bash(mm user*)', 'Bash(mm grant*)', 'Bash(mm token*)', 'Bash(mm auth*)', 'Bash(*auth.sock*)',
+  'Read(/{mm}/auth/**)', 'Edit(/{mm}/auth/**)', 'Read(/{mm}/paseo/**)', 'Edit(/{mm}/paseo/**)']
+const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm fill*)', ...BD_QUIET, ...OWNER_ONLY]
 // Assistants (assistants/<user>/, system profile): no tool that acts or reads on its own (bin/lib/assist.mjs); a tool
 // that is not allowed is refused without asking (defaultMode dontAsk), so no permission request ever reaches a
 // human's phone from an assistant.
@@ -67,7 +71,7 @@ function render(tmpl, role, assistant = false) {
     if (JSON.stringify(hooks?.PreToolUse || []).includes(h)) continue
     hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: 'Bash|Read|Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: h, timeout: 10 }] }] }
   }
-  const govDeny = [...ALWAYS_DENY, ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? mandatoryDeny(role) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
+  const govDeny = [...ALWAYS_DENY.map(gfill), ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? mandatoryDeny(role) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
   return { ...tmpl, ...(hooks ? { hooks } : {}), permissions: { ...p,
     ...(p.additionalDirectories ? { additionalDirectories: p.additionalDirectories.map(fill) } : {}),
     // a rule naming a service that doesn't run yet ({url:app} before the first deploy) is left out, not half-rendered

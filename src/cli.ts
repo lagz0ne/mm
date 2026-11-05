@@ -218,7 +218,12 @@ for (const [name, desc] of [['client <action>', 'client ls|add']] as const) {
 const auth = program.command('auth').description('the sign-in gateway for every board: people, grants per project, sign-in links, tokens for tools (docs/auth-gateway.md)')
 auth.command('serve').description('(run by mm-pc as mm.auth) the sign-in gateway').action(async () => { await authServe() })
 const authOut = (r: { status: number; data: unknown }) => { const o = fmt(); if (o.format !== 'table') console.log(JSON.stringify(r.data, null, 2)); else if (Array.isArray(r.data)) print(r.data as Record<string, unknown>[], o); else console.log(JSON.stringify(r.data)); process.exit(r.status < 300 ? 0 : 1) }
-const authCall = async (path: string, body?: Record<string, unknown>) => { try { authOut(await callApi(path, body)) } catch (e) { console.error(`mm auth: the gateway does not answer on ${tilde(AUTH_SOCK)} (${(e as Error).message})`); process.exit(1) } }
+// what gives access (people, links, grants, tokens) is the owner's: refused from an agent's shell (review sy-b15.13 3).
+// A brake, not a wall (a process can still reach the socket): the guard, the denies and the owner's notice are the rest
+const GIVES_ACCESS = /^\/(user\/(add|link|rm)|grant|token)$/
+const authCall = async (path: string, body?: Record<string, unknown>) => {
+  if (GIVES_ACCESS.test(path) && (process.env.CLAUDECODE || process.env.PASEO_AGENT_ID)) { console.error('mm: people, links, grants and tokens are the owner\'s to make: run it yourself, in your own terminal'); process.exit(1) }
+  try { authOut(await callApi(path, body)) } catch (e) { console.error(`mm auth: the gateway does not answer on ${tilde(AUTH_SOCK)} (${(e as Error).message})`); process.exit(1) } }
 auth.command('sessions').description('who is signed in where').action(() => authCall('/sessions'))
 auth.command('grants').description('every grant: person, project, role').action(() => authCall('/grants'))
 // people and access (the owner's steps): a person, a role per project, a single-use link that opens all of it

@@ -12,12 +12,23 @@ pass=0; fail=0
 ok()   { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }
 bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
 check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
-T=$(mktemp -d); GW=""; trap '[ -n "$GW" ] && kill $GW 2>/dev/null; rm -rf "$T"' EXIT
+T=$(mktemp -d); GW=""; TG=""; trap '[ -n "$GW" ] && kill $GW 2>/dev/null; [ -n "$TG" ] && kill $TG 2>/dev/null; rm -rf "$T"' EXIT
 export HOME="$T/home" MM_HOME="$T/home/.mm" MM_OBS_TRACES=""
-unset PASEO_AGENT_ID PASEO_AGENT_CWD
+# this test plays the owner on a throwaway store, so it lifts the agent brake (CLAUDECODE); one check sets it again
+unset PASEO_AGENT_ID PASEO_AGENT_CWD CLAUDECODE
 mkdir -p "$MM_HOME/pc/projects" "$T/proj/.run" "$T/proj2/.run"
 PORT=$(( 39100 + RANDOM % 800 )); BOARD=board-shop-acme.example.org; AUTH=auth.example.org; BOARD2=board-other-acme.example.org
-printf 'domain: example.org\naccess: domain\nauth_port: %s\nbind_host: 127.0.0.1\nowner_name: boss\n' "$PORT" >"$MM_HOME/config.yaml"
+printf 'domain: example.org\naccess: domain\nauth_port: %s\nbind_host: 127.0.0.1\nowner_name: boss\ntelegram:\n  owner_id: "4242"\n' "$PORT" >"$MM_HOME/config.yaml"
+# a fake Telegram: records what the gateway tells the owner (the bot token is a test value, at the input's path)
+TGP=$(( PORT + 7 )); mkdir -p "$HOME/brain/.keys"; printf 'test-bot-token-9911' >"$HOME/brain/.keys/.telebot"; chmod 600 "$HOME/brain/.keys/.telebot"
+cat >"$T/faketg.mjs" <<'EOF'
+import http from 'node:http'; import fs from 'node:fs'
+const [port, out] = process.argv.slice(2)
+http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => { fs.appendFileSync(out, JSON.stringify({ path: req.url, body: JSON.parse(b || '{}') }) + '\n'); res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}') }) }).listen(Number(port), '127.0.0.1')
+EOF
+node "$T/faketg.mjs" $TGP "$T/tg.jsonl" & TG=$!
+export MM_TELEGRAM_API="http://127.0.0.1:$TGP"
+told() { sleep 0.5; grep -F "$1" "$T/tg.jsonl" | grep -q '"chat_id":"4242"'; }
 echo "# from $T/proj/services.yaml" >"$MM_HOME/pc/projects/acme-shop.yaml"; echo "# from $T/proj2/services.yaml" >"$MM_HOME/pc/projects/acme-other.yaml"
 echo "{\"project\":\"acme-shop\",\"services\":{\"board\":{\"public_url\":\"https://$BOARD\",\"public\":{\"name\":\"board-shop-acme\",\"auth\":\"required\"}}}}" >"$T/proj/.run/services.json"
 echo "{\"project\":\"acme-other\",\"services\":{\"board\":{\"public_url\":\"https://$BOARD2\",\"public\":{\"name\":\"board-other-acme\",\"auth\":\"required\"}}}}" >"$T/proj2/.run/services.json"
@@ -191,6 +202,22 @@ MM_AUTH_LINK_S=2 mm auth serve >>"$T/gw.log" 2>&1 & GW=$!
 for _ in $(seq 1 100); do [ -S "$MM_HOME/run/auth.sock" ] && curl -s -o /dev/null "$G/s" && break; sleep 0.2; done
 LE=$(link_of alex); sleep 3; open_link "$LE" "$T/he"
 check "a link opened after its lifetime: no session" bash -c "[ -z \"\$(sess '$T/he')\" ]"
+
+echo '== the owner hears every access change (review sy-b15.13)'
+check "a person added: told, with the undo" told 'a person added: alex. Undo: mm user rm alex'
+check "a link made: told (who, how long, the undo)" told 'a sign-in link was made for alex'
+check "a link used: told (who, from where)" told 'alex signed in with a link, from 127.0.0.1'
+check "a grant: told, with the undo" told 'alex was granted acme-shop as member. Undo: mm revoke alex acme-shop'
+check "a token: told, with the undo" told 'a token for tools was made for alex on acme-shop'
+check "a revoke and a removal: told" bash -c "grep -q \"alex's access to acme-shop was revoked\" '$T/tg.jsonl' && grep -q 'alex was removed' '$T/tg.jsonl'"
+check "to the owner's chat only, through the bot's API" bash -c "jq -e -s 'all(.body.chat_id == \"4242\" and (.path | startswith(\"/bot\")))' '$T/tg.jsonl'"
+check "the bot token is never in the gateway's log" bash -c "! grep -q 'test-bot-token-9911' '$T/gw.log'"
+echo '== from an agent'"'"'s shell: refused (review sy-b15.13 3)'
+N0=$(grep -c 'a sign-in link was made' "$T/tg.jsonl")
+check "CLAUDECODE=1: mm user link, mm token, mm grant, mm user add are refused" bash -c "for c in 'user link alex' 'token alex acme-shop' 'grant alex acme-other' 'user add zed'; do CLAUDECODE=1 mm \$c 2>&1 | grep -q \"the owner's to make\" || exit 1; done"
+check "...and nothing was made (no new link, no zed)" bash -c "sleep 0.5; [ \$(grep -c 'a sign-in link was made' '$T/tg.jsonl') = '$N0' ] && ! mm user ls -o json | jq -e '.[] | select(.name==\"zed\")'"
+check "...mm revoke stays free (it only takes access away)" bash -c "CLAUDECODE=1 mm revoke dee acme-shop"
+kill $TG 2>/dev/null
 
 echo '== the store, the logs'
 check "auth/ 0700, files 0600 (accounts.db, secret, signing.key), the socket 0600" bash -c "[ \$(stat -c %a '$MM_HOME/auth') = 700 ] && [ -z \"\$(find '$MM_HOME/auth' -type f ! -perm 600)\" ] && [ \$(stat -c %a '$MM_HOME/run/auth.sock') = 600 ]"

@@ -23,6 +23,7 @@ import { getMigrations } from 'better-auth/db/migration'
 import { admin, bearer, magicLink, organization } from 'better-auth/plugins'
 import { createAccessControl } from 'better-auth/plugins/access'
 import { getPath, loadConfig } from './config'
+import { expand, machineInputs } from './inputs'
 import { DIRS } from './env'
 
 export const AUTH_DIR = join(DIRS.mm, 'auth')
@@ -101,6 +102,18 @@ export async function gateway() {
   const cfg = loadConfig(), domain = String(getPath(cfg, 'domain') ?? '')
   const authHost = String(getPath(cfg, 'auth_host') ?? (domain ? `auth.${domain}` : 'auth.localhost'))
   const ownerName = String(getPath(cfg, 'owner_name') ?? 'owner')
+  // the owner hears every access change, on Telegram, in fixed text with the undo (review sy-b15.13 4): the same-user
+  // limit stays (a process can still reach the socket), so this is the control that catches a change nobody asked for.
+  // The bot token is read by path at send time, never logged (the URL carries it, so errors are logged without it).
+  const tellOwner = (text: string) => {
+    const chat = String(getPath(loadConfig(), 'telegram.owner_id') ?? ''), tf = expand(String(machineInputs()['telegram-bot-token']?.path || ''))
+    let token = ''; try { token = readFileSync(tf, 'utf8').trim() } catch {}
+    if (!chat || !token) { log('warn', 'owner not told (no Telegram bot token or owner id)', { notice: text }); return }
+    const api = process.env.MM_TELEGRAM_API || 'https://api.telegram.org'
+    fetch(`${api}/bot${token}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: chat, text: `mm: ${text}` }), signal: AbortSignal.timeout(10000) })
+      .then((r) => log(r.ok ? 'info' : 'warn', r.ok ? 'owner told' : 'owner not told', { notice: text, ...(r.ok ? {} : { status: r.status }) }))
+      .catch((e) => log('warn', 'owner not told', { notice: text, error: (e as Error).name }))
+  }
   // the browser's address: CF-Connecting-IP only when the TCP peer is a trusted proxy (auth.trusted_proxies: the web
   // proxy's address, which takes it only from Cloudflare), else the peer itself (review sy-b15.14 4, sy-b15.7 2)
   const trusted = new Set(([] as string[]).concat(getPath(cfg, 'auth.trusted_proxies') as string[] || []).map(String))
@@ -233,6 +246,7 @@ export async function gateway() {
         const who = tok ? (db.query('SELECT u.name AS name FROM session s JOIN user u ON u.id = s.userId WHERE s.token = ?').get(tok) as { name: string } | null)?.name : null
         if (tok) db.run('UPDATE session SET ipAddress = ? WHERE token = ?', [ip, tok])
         log(tok ? 'info' : 'warn', tok ? 'signed in by link' : 'link refused', { user: who || undefined, ip, link: short(u.searchParams.get('token') || '') })
+        if (tok) tellOwner(`${who || 'someone'} signed in with a link, from ${ip}. If that wasn't them: mm revoke ${who || '<name>'}`)
       }
       return r
     }
@@ -275,7 +289,7 @@ export async function gateway() {
       if (userByName(name)) return json({ error: `${name} exists (mm user link ${name} for a new link)` }, 409)
       if (owner && (db.query("SELECT 1 FROM user WHERE role = 'admin'").get())) return json({ error: 'there is an owner already' }, 409)
       const usr = await ctx.internalAdapter.createUser({ email: emailOf(name), name, emailVerified: true, ...(owner ? { role: 'admin' } : {}) }, { method: 'admin' })
-      log('info', 'user added', { user: name, owner, by: caller })
+      log('info', 'user added', { user: name, owner, by: caller }); tellOwner(`${owner ? 'the owner' : 'a person'} added: ${name}. Undo: mm user rm ${name}`)
       return json({ ok: true, name, owner, id: usr.id })
     }
     if (u.pathname === '/user/link') { // a single-use link; one session from it opens every board granted
@@ -290,14 +304,14 @@ export async function gateway() {
       if (!link || made.length !== 1) return json({ error: 'no link was made' }, 500)
       const exp = new Date(now() + ttl * 1000).toISOString()
       db.run('UPDATE verification SET expiresAt = ? WHERE id = ?', [exp, made[0].id]) // this link's own lifetime
-      log('info', 'link made', { user: name, ttl_s: ttl, link: short(new URL(link).searchParams.get('token') || ''), by: caller })
+      log('info', 'link made', { user: name, ttl_s: ttl, link: short(new URL(link).searchParams.get('token') || ''), by: caller }); tellOwner(`a sign-in link was made for ${name} (valid ${Math.round(ttl / 60)} min, works once). If that wasn't you: mm revoke ${name}`)
       return json({ ok: true, name, link, expires: exp, note: 'works once; send it to them yourself' })
     }
     if (u.pathname === '/user/rm') {
       const usr = userByName(name); if (!usr) return json({ error: `no user ${name}` }, 404)
       endSessions(usr.id); db.run('DELETE FROM mm_token WHERE user_id = ?', [usr.id]); db.run('DELETE FROM member WHERE userId = ?', [usr.id])
       await ctx.internalAdapter.deleteUser(usr.id)
-      log('info', 'user removed', { user: name, by: caller }); return json({ ok: true })
+      log('info', 'user removed', { user: name, by: caller }); tellOwner(`${name} was removed (grants, sessions and tokens ended)`); return json({ ok: true })
     }
     if (u.pathname === '/user/ls') {
       const rows = db.query('SELECT id, name, role, createdAt FROM user ORDER BY name').all() as { id: string; name: string; role?: string; createdAt: string }[]
@@ -321,7 +335,7 @@ export async function gateway() {
       const m = db.query('SELECT id FROM member WHERE organizationId = ? AND userId = ?').get(org!.id, usr.id) as { id: string } | null
       if (m) db.run('UPDATE member SET role = ? WHERE id = ?', [role, m.id])
       else await auth.api.addMember({ body: { userId: usr.id, organizationId: org!.id, role } })
-      log('info', 'granted', { user: name, project, role, by: caller }); return json({ ok: true, name, project, role })
+      log('info', 'granted', { user: name, project, role, by: caller }); tellOwner(`${name} was granted ${project} as ${role}. Undo: mm revoke ${name} ${project}`); return json({ ok: true, name, project, role })
     }
     if (u.pathname === '/revoke') {
       const project = b.project ? String(b.project) : null, usr = userByName(name)
@@ -331,7 +345,7 @@ export async function gateway() {
         if (!n) return json({ error: `no grant for ${name} on ${project}` }, 404)
         db.run('DELETE FROM mm_token WHERE user_id = ? AND project = ?', [usr.id, project])
       } else { db.run('DELETE FROM member WHERE userId = ?', [usr.id]); db.run('DELETE FROM mm_token WHERE user_id = ?', [usr.id]); endSessions(usr.id) }
-      log('info', 'revoked', { user: name, project: project || 'all', by: caller }); return json({ ok: true })
+      log('info', 'revoked', { user: name, project: project || 'all', by: caller }); tellOwner(`${name}'s access to ${project || 'every project'} was revoked`); return json({ ok: true })
     }
     if (u.pathname === '/token') {
       const project = String(b.project || ''), days = Number(b.days || TOKEN_DAYS), usr = userByName(name)
@@ -340,7 +354,7 @@ export async function gateway() {
       if (!(days >= 1 && days <= 365)) return json({ error: 'days: 1 to 365' }, 400)
       const t = `mmt_${randomBytes(32).toString('base64url')}`, exp = now() + days * 864e5
       db.run('INSERT INTO mm_token (hash, user_id, project, label, created, expires) VALUES (?, ?, ?, ?, ?, ?)', [h(t), usr.id, project, b.label ? String(b.label).slice(0, 60) : null, now(), exp])
-      log('info', 'token made', { user: name, project, days, token: short(t), by: caller })
+      log('info', 'token made', { user: name, project, days, token: short(t), by: caller }); tellOwner(`a token for tools was made for ${name} on ${project} (${days} days). If that wasn't you: mm revoke ${name} ${project}`)
       return json({ ok: true, token: t, project, expires: new Date(exp).toISOString(), note: 'shown once' })
     }
     if (u.pathname === '/grants') return json(db.query('SELECT u.name AS name, o.slug AS project, m.role AS role FROM member m JOIN organization o ON o.id = m.organizationId JOIN user u ON u.id = m.userId ORDER BY o.slug, u.name').all())
