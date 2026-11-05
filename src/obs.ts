@@ -67,6 +67,9 @@ function shipFiles(): ShipFile[] {
     let real = ''; try { real = join(realpathSync(root), '.run', 'logs') } catch { continue }
     add(join(root, '.run', 'logs'), project, real)
     add(join(DIRS.mm, 'box', project), project)
+    // its egress proxy's connection log (every site allowed or refused; sy-b15.1): the proxy writes it, so it is opened
+    // the same careful way, and stamped with the box's project
+    const eg = join(DIRS.mm, 'box', project, 'egress'); add(eg, project, eg)
   }
   return out
 }

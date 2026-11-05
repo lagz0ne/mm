@@ -131,6 +131,9 @@ check "through its proxy: a site on its list (github.com)" IN "curl -s -o /dev/n
 check "through its proxy: a site off its list is refused (example.com)" sh -c "! IN 'curl -s -o /dev/null --max-time 20 -x http://$PX:8888 https://example.com/'"
 check "the services get the proxy (HTTPS_PROXY in their environment)" sh -c "IN 'cat /proc/\$(pgrep -f \"site/server.mjs\" | head -1)/environ' | tr '\\0' '\\n' | grep -q '^HTTPS_PROXY=http://$PX:8888'"
 check "the host's own services don't answer from the box (names proxy 1355, VictoriaMetrics 8428 on the docker bridge)" sh -c "! IN 'curl -s -o /dev/null --max-time 5 --noproxy \"*\" http://172.17.0.1:1355/' && ! IN 'curl -s -o /dev/null --max-time 5 --noproxy \"*\" http://172.17.0.1:8428/'"
+ELOG="$MM_HOME_DIR/box/$PROJECT/egress/egress.log"
+check "every connection is logged on the host, for this project (the site on the list, and the one refused)" sh -c "grep -q 'github.com' '$ELOG' && grep -qi 'example.com' '$ELOG' && ! IN 'test -e $MM_HOME_DIR/box/$PROJECT/egress'"
+check "...and the shipper takes that log, stamped with the box's project" sh -c "mm ship --dry-run 2>/dev/null | grep 'example.com' | jq -e 'select(.project == \"$PROJECT\")' >/dev/null"
 
 echo "== the box's own Paseo (M1-C)"
 PSOCK="$HD/sock/pc.sock"; PW="$MM_HOME_DIR/paseo/$PROJECT.password"

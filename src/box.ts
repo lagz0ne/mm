@@ -4,7 +4,7 @@
 // project folder is mounted at the same path (so every generated path stays right); the kernel and every file that
 // decides what the box may do are mounted read-only on top (review sy-b15.6). The box's network is `internal`: the
 // only way out is the project's own egress proxy, with its allowlist (the base list + the project's `egress:`).
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -170,10 +170,17 @@ export function up(root: string): Step[] {
   // this box's own socket of mm.ai (the folder mounted here, nowhere else). The socket names the project to the gateway.
   // (0750 and its socket 0660: the proxy gets the owner's group to reach it; review sy-b15.18)
   const pip = net.ip.replace(/\.10$/, '.2'), aiDir = dirname(aiSocket(a.project)); mkdirSync(aiDir, { recursive: true, mode: 0o750 }); chmodSync(aiDir, 0o750)
-  const fwd = `while :; do socat TCP-LISTEN:${AI_PORT},bind=${pip},fork,reuseaddr UNIX-CONNECT:/run/mm/ai/ai.sock 2>/dev/null; sleep 1; done & exec tinyproxy -d -c /etc/tinyproxy/tinyproxy.conf`
+  // its connection log (every allowed and refused site) into a host folder the shipper reads, stamped with the project
+  // by mm, never by the line (sy-b15.1: each connection logged per project)
+  const elog = join(hostDir(a.project), 'egress'); mkdirSync(elog, { recursive: true, mode: 0o770 }); chmodSync(elog, 0o770)
+  // the file made here, group-writable: the proxy (root with no capabilities, plus the owner's group) appends to it,
+  // also after mm box off has given the box's files back to the owner
+  const ef = join(elog, 'egress.log')
+  try { if (!existsSync(ef)) writeFileSync(ef, '', { mode: 0o660 }); if (statSync(ef).uid === process.getuid?.()) chmodSync(ef, 0o660) } catch {}
+  const fwd = `while :; do socat TCP-LISTEN:${AI_PORT},bind=${pip},fork,reuseaddr UNIX-CONNECT:/run/mm/ai/ai.sock 2>/dev/null; sleep 1; done & exec tinyproxy -d -c /etc/tinyproxy/tinyproxy.conf >>/run/mm/log/egress.log 2>&1`
   const px = docker('run', '-d', '--name', n.proxy, '--label', `mm.project=${a.project}`, '--restart', 'unless-stopped', '--init', '--read-only', '--tmpfs', '/run:size=8m', '--tmpfs', '/var/log/tinyproxy:size=8m',
     '--cap-drop', 'ALL', '--cap-add', 'SETUID', '--cap-add', 'SETGID', '--security-opt', 'no-new-privileges', '--pids-limit', '256', '--memory', '256m',
-    '--group-add', String(process.getgid?.() ?? 1000), '-v', `${join(edir, 'allow')}:/etc/mm/allow:ro`, '-v', `${aiDir}:/run/mm/ai`, EGRESS_IMAGE(), 'sh', '-c', fwd)
+    '--group-add', String(process.getgid?.() ?? 1000), '-v', `${join(edir, 'allow')}:/etc/mm/allow:ro`, '-v', `${aiDir}:/run/mm/ai`, '-v', `${elog}:/run/mm/log`, EGRESS_IMAGE(), 'sh', '-c', fwd)
   if (!px.ok) return fail('egress proxy', short(px))
   const cn = docker('network', 'connect', '--ip', pip, n.net, n.proxy); if (!cn.ok) return fail('egress proxy', short(cn))
   steps.push({ step: 'egress proxy', status: 'ok', detail: `${n.proxy}: ${hosts.length} name(s) (${hosts.slice(0, 4).join(', ')}${hosts.length > 4 ? ', …' : ''})` })
