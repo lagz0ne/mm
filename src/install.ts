@@ -82,11 +82,12 @@ export async function install(name: string, spec: Install): Promise<string> {
     case 'npm': {
       if (!which('npm')) throw new Error('npm is needed first (node)')
       mkdirSync(DIRS.npm, { recursive: true })
-      const r = run(['npm', 'install', '-g', '--prefix', DIRS.npm, '--no-audit', '--no-fund', spec.package], { timeoutMs: 600_000 })
-      if (!r.ok) throw new Error(`npm install ${spec.package}: ${r.err.trim().split('\n').slice(-2).join(' ')}`)
+      const pkg = spec.version ? `${spec.package}@${spec.version}` : spec.package
+      const r = run(['npm', 'install', '-g', '--prefix', DIRS.npm, '--no-audit', '--no-fund', pkg], { timeoutMs: 600_000 })
+      if (!r.ok) throw new Error(`npm install ${pkg}: ${r.err.trim().split('\n').slice(-2).join(' ')}`)
       const nbin = join(DIRS.npm, 'bin')
       for (const b of existsSync(nbin) ? readdirSync(nbin) : []) link(join(nbin, b), b)
-      return `${spec.package} -> ~/.mm/npm`
+      return `${pkg} -> ~/.mm/npm`
     }
     case 'script': {
       const body = await download(spec.url)

@@ -4,7 +4,7 @@ import manifestText from '../manifest.yaml' with { type: 'text' }
 export type Install =
   | { kind: 'system'; packages: Record<'dnf' | 'apt' | 'apk', string> }
   | { kind: 'node-dist'; version: string }
-  | { kind: 'npm'; package: string }
+  | { kind: 'npm'; package: string; version?: string } // version: pinned (npm's latest can be broken for a while)
   | { kind: 'script'; url: string; root?: boolean; note?: string }
   | { kind: 'github-release'; repo: string; tag: string; asset: string; checksums?: string; checksum_suffix?: string; binary: string }
 

@@ -82,7 +82,7 @@ machine:
     claude:     { required: true, tested: "2.1.317", version: ["claude", "--version"],
                   install: { kind: script, url: "https://claude.ai/install.sh", note: "installs ~/.local/bin/claude" } }
     paseo:      { required: true, tested: "0.13.0", version: ["paseo", "--version"],
-                  install: { kind: npm, package: "@getpaseo/cli" } }
+                  install: { kind: npm, package: "@getpaseo/cli", version: "0.13.0" } }   # pinned: the tested one
     portless:   { required: true, tested: "0.15.13", version: ["portless", "--version"],         # HTTP names + PORT
                   install: { kind: npm, package: "portless@0.15.13" } }
     process-compose: { required: true, version: ["process-compose", "version", "--short"], tested: "1.124.0",
