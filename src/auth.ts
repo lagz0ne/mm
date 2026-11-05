@@ -31,6 +31,7 @@ export const AUTH_SOCK = join(DIRS.mm, 'run', 'auth.sock')
 // a sign-in link is a bearer link that may travel through chat apps: 1 h by default (review sy-b15.14), `--ttl` for more,
 // up to the plugin's ceiling (each link's own row is set to its ttl after it is made)
 const SESSION_S = 12 * 3600, BOARD_CODE_MS = 30e3, ASSERT_MS = 60e3, LINK_S = Number(process.env.MM_AUTH_LINK_S) || 3600, LINK_MAX_S = 7 * 86400, TOKEN_DAYS = 30
+const CODE_MS = Number(process.env.MM_AUTH_CODE_MS) || 5 * 60e3, CODE_LINK_S = 120 // a code lives 5 min; its link 2 min
 // designer = a member who also edits the project's Doop (the owner, 2026-11-05; plans/ui-access.md, doop.md)
 const ROLES = ['owner', 'designer', 'member', 'viewer'] as const
 type Role = typeof ROLES[number]
@@ -133,11 +134,20 @@ export async function gateway() {
   db.exec(`CREATE TABLE IF NOT EXISTS mm_token (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, project TEXT NOT NULL, label TEXT, created INTEGER NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS mm_board_session (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, parent TEXT NOT NULL, host TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL)`)
   const boardCodes = new Map<string, { parent: string; userId: string; host: string; back: string; exp: number }>() // sha256(code) -> …
+  // a sign-in by code (for the bridge): the page shows a short code, bound to that browser by a pending cookie; an
+  // approve (socket) for a named person turns it into a 2-minute single-use link that only that browser receives
+  type Pending = { code: string; board: string; back: string; created: number; ip: string; ua: string; link?: string; user?: string }
+  const pending = new Map<string, Pending>()   // sha256(pending id) -> …
+  const byCode = new Map<string, string>()      // sha256(code) -> sha256(pending id)
+  const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ' // Crockford base32: no I, L, O, U
+  const newCode = () => { const r = randomBytes(8); let c = ''; for (let i = 0; i < 8; i++) c += ALPHABET[r[i] & 31]; return `${c.slice(0, 4)}-${c.slice(4)}` }
+  const normCode = (c: string) => String(c || '').toUpperCase().replace(/[^0-9A-Z]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1').replace(/^(.{4})(.{4})$/, '$1-$2')
   const hits = new Map<string, number[]>()
   const limited = (k: string, n: number, ms: number) => { const t = now(), a = (hits.get(k) || []).filter((x) => t - x < ms); a.push(t); hits.set(k, a); return a.length > n }
   setInterval(() => {
     const t = now()
     for (const [k, c] of boardCodes) if (c.exp < t) boardCodes.delete(k)
+    for (const [k, p] of pending) if (t - p.created > CODE_MS) { pending.delete(k); byCode.delete(h(p.code)) }
     db.run('DELETE FROM mm_token WHERE expires < ?', [t]); db.run('DELETE FROM mm_board_session WHERE expires < ?', [t])
   }, 30e3).unref?.()
 
@@ -176,6 +186,8 @@ export async function gateway() {
   const secure = (req: Request) => (req.headers.get('x-forwarded-proto') === 'https' || new URL(req.url).protocol === 'https:' ? '; Secure' : '')
   const setCookie = (req: Request, name: string, value: string, maxAgeMs: number) =>
     `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(maxAgeMs / 1000)}${secure(req)}`
+  // the pending cookie is Lax: the page that holds the code may be opened from a chat (a cross-site link)
+  const setPendingCookie = (req: Request, id: string) => `mm_pending=${encodeURIComponent(id)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(CODE_MS / 1000)}${secure(req)}`
   const headers = { 'content-security-policy': "default-src 'self'; frame-ancestors 'none'", 'referrer-policy': 'no-referrer', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }
   const json = (o: unknown, status = 200, extra: Record<string, string> = {}) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json', ...headers, ...extra } })
   const html = (body: string, status = 200) => new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', ...headers } })
@@ -254,8 +266,22 @@ export async function gateway() {
       const board = u.searchParams.get('b') || '', back = safeBack(u.searchParams.get('r')), p = await personOf(req)
       const next = p && callbackFor(p, board, back)
       if (next) return new Response(null, { status: 302, headers: { location: next, ...headers } })
-      return html(page(p ? `Signed in as <b>${esc(p.name)}</b>, but you have no access to ${esc(board || 'this board')}. Ask the owner.`
-        : 'You are not signed in. Ask the owner for a sign-in link (it works once).'))
+      if (p) return html(page(`Signed in as <b>${esc(p.name)}</b>, but you have no access to ${esc(board || 'this board')}. Ask the owner.`))
+      // not signed in: a code on the screen, bound to this browser, for the owner to approve (or a link from them)
+      const ip = clientIp(req, srv)
+      if (limited(`code:${ip}`, 10, 10 * 60e3)) { log('warn', 'code issuing limited', { ip }); return html(page('Too many sign-in attempts from here. Wait a few minutes.'), 429) }
+      const id = randomBytes(32).toString('base64url'), code = newCode()
+      pending.set(h(id), { code, board, back, created: now(), ip, ua: (req.headers.get('user-agent') || '').slice(0, 160) }); byCode.set(h(code), h(id))
+      log('info', 'code issued', { board, code: short(code), ip })
+      const r = html(codePage(code, board)); r.headers.append('set-cookie', setPendingCookie(req, id)); return r
+    }
+    if (path === '/s/app.js') return new Response(CODE_JS, { headers: { 'content-type': 'text/javascript', ...headers } })
+    if (path === '/s/poll') {
+      const v = cookies(req).mm_pending, k = v ? h(v) : '', pp = k ? pending.get(k) : undefined
+      if (!pp || now() - pp.created > CODE_MS) return json({ state: 'expired' }, 410)
+      if (!pp.link) return json({ state: 'waiting' })
+      pending.delete(k); byCode.delete(h(pp.code)) // the link goes to this browser only, once
+      return json({ state: 'approved', next: pp.link }, 200, { 'set-cookie': 'mm_pending=; Path=/; Max-Age=0' })
     }
     if (path === '/s/done') {
       const p = await personOf(req)
@@ -280,6 +306,19 @@ export async function gateway() {
     for (const s of db.query('SELECT token FROM session WHERE userId = ?').all(userId) as { token: string }[]) db.run('DELETE FROM mm_board_session WHERE parent = ?', [s.token])
     db.run('DELETE FROM session WHERE userId = ?', [userId])
   }
+  /** A single-use sign-in link for a person (Better Auth's magic link; mm captures it), with its own lifetime. */
+  async function mintLink(name: string, ttl: number, callbackURL: string): Promise<{ link: string; expires: string } | null> {
+    links.delete(emailOf(name))
+    const before = new Set((db.query('SELECT id FROM verification').all() as { id: string }[]).map((x) => x.id))
+    await auth.api.signInMagicLink({ body: { email: emailOf(name), callbackURL }, headers: new Headers() })
+    const link = links.get(emailOf(name)); links.delete(emailOf(name))
+    const made = (db.query('SELECT id FROM verification').all() as { id: string }[]).filter((x) => !before.has(x.id))
+    if (!link || made.length !== 1) return null
+    const expires = new Date(now() + ttl * 1000).toISOString()
+    db.run('UPDATE verification SET expiresAt = ? WHERE id = ?', [expires, made[0].id]) // this link's own lifetime
+    return { link, expires }
+  }
+
   async function api(req: Request): Promise<Response> {
     const u = new URL(req.url), b = req.method === 'POST' ? await req.json().catch(() => ({})) as Record<string, unknown> : {}
     const caller = String(b.by || u.searchParams.get('by') || 'cli'), name = String(b.name || '').trim().toLowerCase()
@@ -296,16 +335,10 @@ export async function gateway() {
       const usr = userByName(name); if (!usr) return json({ error: `no user ${name} (mm user add ${name})` }, 404)
       const ttl = b.ttl ? Number(b.ttl) : LINK_S
       if (b.ttl && !(ttl >= 60 && ttl <= LINK_MAX_S)) return json({ error: `ttl: 60 s to ${LINK_MAX_S / 86400} days` }, 400)
-      links.delete(emailOf(name))
-      const before = new Set((db.query('SELECT id FROM verification').all() as { id: string }[]).map((x) => x.id))
-      await auth.api.signInMagicLink({ body: { email: emailOf(name), callbackURL: '/s/done' }, headers: new Headers() })
-      const link = links.get(emailOf(name)); links.delete(emailOf(name))
-      const made = (db.query('SELECT id FROM verification').all() as { id: string }[]).filter((x) => !before.has(x.id))
-      if (!link || made.length !== 1) return json({ error: 'no link was made' }, 500)
-      const exp = new Date(now() + ttl * 1000).toISOString()
-      db.run('UPDATE verification SET expiresAt = ? WHERE id = ?', [exp, made[0].id]) // this link's own lifetime
-      log('info', 'link made', { user: name, ttl_s: ttl, link: short(new URL(link).searchParams.get('token') || ''), by: caller }); tellOwner(`a sign-in link was made for ${name} (valid ${Math.round(ttl / 60)} min, works once). If that wasn't you: mm revoke ${name}`)
-      return json({ ok: true, name, link, expires: exp, note: 'works once; send it to them yourself' })
+      const m = await mintLink(name, ttl, '/s/done')
+      if (!m) return json({ error: 'no link was made' }, 500)
+      log('info', 'link made', { user: name, ttl_s: ttl, link: short(new URL(m.link).searchParams.get('token') || ''), by: caller }); tellOwner(`a sign-in link was made for ${name} (valid ${Math.round(ttl / 60)} min, works once). If that wasn't you: mm revoke ${name}`)
+      return json({ ok: true, name, link: m.link, expires: m.expires, note: 'works once; send it to them yourself' })
     }
     if (u.pathname === '/user/rm') {
       const usr = userByName(name); if (!usr) return json({ error: `no user ${name}` }, 404)
@@ -357,6 +390,25 @@ export async function gateway() {
       log('info', 'token made', { user: name, project, days, token: short(t), by: caller }); tellOwner(`a token for tools was made for ${name} on ${project} (${days} days). If that wasn't you: mm revoke ${name} ${project}`)
       return json({ ok: true, token: t, project, expires: new Date(exp).toISOString(), note: 'shown once' })
     }
+    // sign-in by code (the bridge's /login and its Allow button): what is asking, then approve it for a named person
+    if (u.pathname === '/pending') {
+      const pid = byCode.get(h(normCode(String(u.searchParams.get('code') || '')))), p = pid ? pending.get(pid) : undefined
+      return p && now() - p.created <= CODE_MS && !p.link ? json({ board: p.board, ip: p.ip, ua: p.ua, age_s: Math.round((now() - p.created) / 1000) }) : json({ error: 'no such code (or expired, or used)' }, 404)
+    }
+    if (u.pathname === '/approve') {
+      const code = normCode(String(b.code || ''))
+      if (limited(`approve:${caller}`, 5, 10 * 60e3) || limited('approve:all', 100, 3600e3)) { log('warn', 'approvals limited', { by: caller }); return json({ error: 'too many attempts; wait' }, 429) }
+      const pid = byCode.get(h(code)), p = pid ? pending.get(pid) : undefined
+      if (!p || now() - p.created > CODE_MS || p.link) { log('warn', 'approval refused: unknown, expired or used code', { by: caller, code: short(code) }); return json({ error: 'no such code (or expired, or used)' }, 404) }
+      const usr = userByName(name); if (!usr || usr.banned) return json({ error: `no user ${name} (mm user add ${name})` }, 404)
+      byCode.delete(h(code)) // burnt now: a second approval finds nothing
+      const m = await mintLink(name, CODE_LINK_S, `/s?b=${encodeURIComponent(p.board)}&r=${encodeURIComponent(p.back)}`)
+      if (!m) return json({ error: 'no link was made' }, 500)
+      p.link = m.link; p.user = name
+      log('info', 'approved by code', { user: name, board: p.board, ip: p.ip, by: caller, code: short(code) })
+      tellOwner(`${name} was signed in by code on ${p.board || 'the gateway'} (from ${p.ip}), approved by ${caller}. If that wasn't them: mm revoke ${name}`)
+      return json({ ok: true, name, board: p.board })
+    }
     if (u.pathname === '/grants') return json(db.query('SELECT u.name AS name, o.slug AS project, m.role AS role FROM member m JOIN organization o ON o.id = m.organizationId JOIN user u ON u.id = m.userId ORDER BY o.slug, u.name').all())
     if (u.pathname === '/sessions') return json([
       ...(db.query('SELECT u.name AS user, s.expiresAt AS expires FROM session s JOIN user u ON u.id = s.userId WHERE s.expiresAt > ?').all(now()) as { user: string; expires: string }[]).map((s) => ({ user: s.user, host: authHost, expires: new Date(s.expires).toISOString() })),
@@ -384,6 +436,19 @@ export async function callApi(path: string, body?: Record<string, unknown>) {
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
+function codePage(code: string, board: string) {
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in</title>
+<body style="font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;line-height:1.5"><h1 style="font-size:1.4rem">Sign in${board ? ` to ${esc(board)}` : ''}</h1>
+<p>Give this code to the owner to approve, or open the sign-in link they sent you:</p>
+<p id="code" style="font:700 2.4rem ui-monospace,monospace;letter-spacing:.15em">${esc(code)}</p>
+<p id="state" style="color:#555">Waiting for approval… (valid ${Math.round(CODE_MS / 60e3)} minutes)</p>
+<p style="color:#555;font-size:.9rem">The code does nothing by itself. Only the owner can approve it.</p>
+<script src="/s/app.js"></script>`
+}
+const CODE_JS = `(function poll(){fetch('/s/poll',{credentials:'same-origin'}).then(function(r){return r.json().then(function(j){
+if(j.state==='approved'){document.getElementById('state').textContent='Approved. Signing you in…';location.href=j.next;return}
+if(j.state==='expired'){document.getElementById('state').textContent='This code has expired. Reload the page for a new one.';return}
+setTimeout(poll,2000)})}).catch(function(){setTimeout(poll,4000)})})()`
 function page(text: string) {
   return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in</title>
 <body style="font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;line-height:1.5"><h1 style="font-size:1.4rem">Sign in</h1><p>${text}</p>`

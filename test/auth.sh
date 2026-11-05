@@ -54,6 +54,7 @@ check "mm user ls: alex, no grants yet; boss the owner" bash -c "mm user ls -o j
 
 echo '== a link that works once'
 check "a link lives 1 h by default (review sy-b15.14)" bash -c "E=\$(mm user link alex -o json | jq -r .expires); d=\$(( \$(date -d \"\$E\" +%s) - \$(date +%s) )); [ \$d -gt 3500 ] && [ \$d -le 3600 ]"
+check "...--ttl 10m: a 10-minute link (for the bridge)" bash -c "E=\$(mm user link alex --ttl 10m -o json | jq -r .expires); d=\$(( \$(date -d \"\$E\" +%s) - \$(date +%s) )); [ \$d -gt 580 ] && [ \$d -le 600 ]"
 check "...--ttl 2h for more; more than 7 days is refused" bash -c "E=\$(mm user link alex --ttl 2h -o json | jq -r .expires); d=\$(( \$(date -d \"\$E\" +%s) - \$(date +%s) )); [ \$d -gt 7100 ] && ! mm user link alex --ttl 8d"
 L=$(link_of alex)
 check "mm user link alex: a single-use link on the gateway's host" bash -c "echo '$L' | grep -q '^https://$AUTH/api/auth/magic-link/verify?token='"
@@ -202,6 +203,25 @@ MM_AUTH_LINK_S=2 mm auth serve >>"$T/gw.log" 2>&1 & GW=$!
 for _ in $(seq 1 100); do [ -S "$MM_HOME/run/auth.sock" ] && curl -s -o /dev/null "$G/s" && break; sleep 0.2; done
 LE=$(link_of alex); sleep 3; open_link "$LE" "$T/he"
 check "a link opened after its lifetime: no session" bash -c "[ -z \"\$(sess '$T/he')\" ]"
+
+echo '== sign-in by code (for the bridge: /login and Allow)'
+JC="$T/jarc"; rm -f "$JC"
+CODE=$(gw -c "$JC" -b "$JC" "$G/s?b=$BOARD&r=/items" | sed -n 's/.*id="code"[^>]*>\([0-9A-Z-]*\)<.*/\1/p')
+check "no session: the page shows a code (XXXX-XXXX), bound to this browser (pending cookie)" bash -c "echo '$CODE' | grep -qE '^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}\$' && grep -q mm_pending '$JC'"
+check "the page waits" bash -c "gw -b '$JC' $G/s/poll | grep -q waiting"
+check "mm auth pending <code>: what is asking (board, age)" bash -c "mm auth pending $CODE -o json | jq -e '.board == \"$BOARD\" and .age_s >= 0'"
+check "approve for a person who doesn't exist: refused" bash -c "! mm auth approve $CODE --as nobody"
+check "mm auth approve <code> --as alex" bash -c "mm auth approve $CODE --as alex -o json | jq -e '.ok and .name == \"alex\"'"
+check "the same code again: refused (single use)" bash -c "! mm auth approve $CODE --as alex"
+check "another browser's poll gets nothing" bash -c "gw $G/s/poll | grep -q expired"
+NEXT=$(gw -b "$JC" -c "$JC" "$G/s/poll" | jq -r .next)
+check "the waiting browser gets a short single-use link, once" bash -c "echo '$NEXT' | grep -q '^https://$AUTH/api/auth/magic-link/verify?token=' && gw -b '$JC' $G/s/poll | grep -q expired"
+open_link "$NEXT" "$T/hc"; SC=$(sess "$T/hc")
+check "opening it: a session, and on to the board it asked for" bash -c "[ -n '$SC' ] && grep -qi '^location: .*/s?b=$BOARD' '$T/hc'"
+CBC=$(gw -D - -o /dev/null -H "cookie: $SC" "$G/s?b=$BOARD&r=/items" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
+check "...its one-time callback (no new code, no new link)" bash -c "echo '$CBC' | grep -q '^/_mm/auth/callback?c='"
+check "the owner was told (who, where, approved by whom)" told 'alex was signed in by code'
+check "CLAUDECODE=1: mm auth approve is refused" bash -c "C2=\$(gw '$G/s?b=$BOARD' | sed -n 's/.*id=\"code\"[^>]*>\\([0-9A-Z-]*\\)<.*/\\1/p'); CLAUDECODE=1 mm auth approve \$C2 --as alex 2>&1 | grep -q \"the owner's to make\""
 
 echo '== the owner hears every access change (review sy-b15.13)'
 check "a person added: told, with the undo" told 'a person added: alex. Undo: mm user rm alex'
