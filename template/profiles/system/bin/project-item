@@ -1,16 +1,26 @@
 #!/usr/bin/env node
 // project-item — the system's one way into a project: file an item on that project's own board (never edit its files).
-//   project-item <project> "title" [-d "description"] [--assignee setup|<role>] [-t task|bug|feature] [-p 0-4]
+//   project-item <project> "title" [-d "description" | -f <file>] [--assignee setup|<role>] [-t task|bug|feature] [-p 0-4]
 // <project> is a project id or <client>/<name> (see `mm ls`). The item is labelled from-system and authored by
-// system/<your role>, so the project's leads see who asked. Prints the new item id.
+// system/<your role>, so the project's leads see who asked. Prints the new item id. -f reads a long description from a
+// file (a lead can't pass one with -d in one plain command). Any other option is refused, never dropped (sy-lbl).
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { cli } from './lib/obs.mjs'
 
 cli('project-item')
+const USAGE = 'usage: project-item <project> "title" [-d desc | -f file] [--assignee role] [-t type] [-p prio]'
 const [ref, title, ...rest] = process.argv.slice(2)
-if (!ref || !title) { console.error('usage: project-item <project> "title" [-d desc] [--assignee role] [-t type] [-p prio]'); process.exit(2) }
-const opt = (k, d) => { const i = rest.indexOf(k); return i >= 0 ? rest[i + 1] : d }
+if (!ref || !title) { console.error(USAGE); process.exit(2) }
+const KNOWN = new Set(['-d', '-f', '--assignee', '-t', '-p']), opts = {}
+for (let i = 0; i < rest.length; i += 2) {
+  if (!KNOWN.has(rest[i]) || rest[i + 1] === undefined) { console.error(`project-item: ${KNOWN.has(rest[i]) ? `${rest[i]} needs a value` : `unknown option ${rest[i]}`}\n${USAGE}`); process.exit(2) }
+  opts[rest[i]] = rest[i + 1]
+}
+if (opts['-d'] !== undefined && opts['-f'] !== undefined) { console.error('project-item: -d or -f, not both'); process.exit(2) }
+if (opts['-f'] !== undefined) try { opts['-d'] = readFileSync(opts['-f'], 'utf8').trim() } catch (e) { console.error(`project-item: can't read ${opts['-f']} (${e.code || e.message})`); process.exit(2) }
+const opt = (k, d) => opts[k] ?? d
 let root
 try { root = JSON.parse(execFileSync('mm', ['inspect', ref, '-o', 'json'], { encoding: 'utf8' }))[0].root } catch (e) {
   console.error(`project-item: no project ${ref} (${String(e.message).split('\n')[0]})`); process.exit(1)
