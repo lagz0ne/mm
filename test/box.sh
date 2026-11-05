@@ -15,7 +15,7 @@ check() { local d=$1; shift; if "$@" >/tmp/box-test.out 2>&1; then ok "$d"; else
 BOX=mm-box-$PROJECT; PX=mm-egress-$PROJECT; NET=mm-net-$PROJECT; MM_HOME_DIR=${MM_HOME:-$HOME/.mm}
 D() { $MM_DOCKER "$@"; }
 IN() { D exec "$BOX" sh -c "umask 002; $*"; }   # as mm shell does
-cleanup() { [ -n "${AIGW:-}" ] && kill $AIGW 2>/dev/null; [ -n "${AIUP:-}" ] && kill $AIUP 2>/dev/null; [ -n "${AIT:-}" ] && rm -rf "$AIT"
+cleanup() { [ -n "${AIGW:-}" ] && kill $AIGW 2>/dev/null; [ -n "${SYSPID:-}" ] && kill $SYSPID 2>/dev/null; [ -n "${AIUP:-}" ] && kill $AIUP 2>/dev/null; [ -n "${AIT:-}" ] && rm -rf "$AIT"
   [ -n "${KEEP:-}" ] && return; mm archive "$REF" >/dev/null 2>&1; [ -n "${BKP:-}" ] && rm -rf "$BKP"; [ -n "${CAN:-}" ] && rm -rf "$CAN"; D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1; }
 trap cleanup EXIT
 export -f D IN; export BOX PX NET MM_DOCKER
@@ -44,6 +44,13 @@ http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); r
 EOF
 node "$AIT/up.mjs" $AIUPP "$AIT/up.jsonl" & AIUP=$!
 mm ai serve >"$AIT/ai.log" 2>&1 & AIGW=$!
+# a throwaway machine Paseo (the live one is never touched): mm up joins the box to it (sy-9q1)
+SYSP=$(( AIUPP + 7 )); export MM_PASEO_JOIN_HOME="$AIT/sys"; mkdir -p "$MM_PASEO_JOIN_HOME"
+PASEO_HOME="$MM_PASEO_JOIN_HOME" PASEO_LISTEN="127.0.0.1:$SYSP" PASEO_RELAY_ENABLED=false PASEO_WEB_UI_ENABLED=false paseo daemon run >"$AIT/sys.log" 2>&1 & SYSPID=$!
+SP() { paseo --home "$MM_PASEO_JOIN_HOME" "$@"; }
+for _ in $(seq 1 60); do SP ls --json >/dev/null 2>&1 && break; sleep 1; done
+joined() { SP host ls --json 2>/dev/null | jq -r --arg p "$PROJECT" '.[] | select(.label == $p) | .status' | head -1; }
+export -f SP joined; export PROJECT
 
 echo "== the images"
 check "mm box build: the box image and the egress proxy image" mm box build
@@ -141,6 +148,12 @@ ONET=mm-net-qa-other-$$; OBOX=mm-qa-other-$$
 D network create --internal --subnet 10.231.250.0/24 "$ONET" >/dev/null 2>&1 && D run -d --name "$OBOX" --network "$ONET" --ip 10.231.250.10 --user 200250 --cap-drop ALL "$(D inspect -f '{{.Config.Image}}' "$BOX")" socat TCP-LISTEN:6767,fork,reuseaddr SYSTEM:'echo other-box' >/dev/null 2>&1
 check "...nor another box's daemon (6767 on its network), directly or through its own egress proxy" sh -c "D exec '$OBOX' curl --http0.9 -s --max-time 5 http://10.231.250.10:6767/ | grep -q other-box && ! IN 'curl --http0.9 -s --max-time 5 --noproxy \"*\" http://10.231.250.10:6767/ | grep -q other-box' && ! IN 'curl --http0.9 -s --max-time 10 -x http://$PX:8888 http://10.231.250.10:6767/ | grep -q other-box'"
 D rm -f "$OBOX" >/dev/null 2>&1; D network rm "$ONET" >/dev/null 2>&1
+# the machine's Paseo has the box as a host (sy-9q1): mm up joined it, through Paseo's client library
+for _ in $(seq 1 30); do [ -n "$(joined)" ] && break; sleep 1; done
+check "mm up joined the box to the machine's Paseo (one host entry, labelled $PROJECT; now: $(joined))" sh -c "[ \"\$(SP host ls --json | jq --arg p '$PROJECT' '[.[] | select(.label == \$p)] | length')\" = 1 ]"
+for _ in $(seq 1 30); do joined | grep -qiE 'connect|online|ready|ok' && ! joined | grep -qi 'connecting' && break; sleep 1; done
+check "...and the machine's Paseo reaches it (status: $(joined))" sh -c "joined | grep -qiE 'connected|online|ready|^ok'"
+check "...the box's password went through no command line (mm runs Paseo's client library with the file's path only)" sh -c "! grep -rq \"\$(cat '$PW')\" /proc/[0-9]*/cmdline 2>/dev/null"
 
 echo "== models only through mm's AI gateway (sy-b15.10)"
 AIS="$MM_HOME_DIR/box/$PROJECT/ai/ai.sock"
@@ -179,10 +192,13 @@ for _ in $(seq 1 60); do process-compose -U -u "$HOME/.mm/pc.sock" process list 
 check "...its services run on the host again (board ready), and no file stays the box's" sh -c "process-compose -U -u $HOME/.mm/pc.sock process list -o json | jq -e '.[] | select(.name==\"$PROJECT.board\") | .is_ready == \"Ready\"' >/dev/null && [ -z \"\$(find '$ROOT' -uid +199999 -print -quit)\" ]"
 check "...on the host, its ports are the host's copy, not what the box wrote" sh -c "[ \"\$(jq .dolt_port '$ROOT/.run/services.json')\" = '$DP' ] && [ \"\$(jq .services.board.public_port '$ROOT/.run/services.json')\" != 40002 ]"
 check "...and mm shell refuses it (not a box project now)" sh -c "mm shell '$REF' true </dev/null; [ \$? = 2 ]"
+check "...and it left the machine's Paseo (on the host, its agents are that Paseo's own)" sh -c "[ -z \"\$(joined)\" ]"
 check "mm box on: back in the box; nothing of it on the host's process manager" sh -c "mm box on '$REF' >/tmp/box-on.out 2>&1 && grep -qx 'box: true' '$ROOT/.mm-answers.yaml' && D inspect '$BOX' >/dev/null && ! process-compose -U -u $HOME/.mm/pc.sock process list -o json | jq -e '.[] | select(.name | startswith(\"$PROJECT.\"))'"
 for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
 check "...its board is ready in the box, and the item made there before is still there" sh -c "mm inspect '$REF' | grep -q 'board .*Ready' && IN \"cd $ROOT && bin/bd list --json\" | grep -q 'made in the box'"
+check "...and it joined the machine's Paseo again (one entry)" sh -c "[ \"\$(SP host ls --json | jq --arg p '$PROJECT' '[.[] | select(.label == \$p)] | length')\" = 1 ]"
 
 echo "== archive"
 check "mm archive: the box and its proxy are gone, and what mm kept for it" sh -c "mm archive '$REF' >/dev/null && ! D inspect '$BOX' >/dev/null 2>&1 && ! D inspect '$PX' >/dev/null 2>&1 && ! D network inspect '$NET' >/dev/null 2>&1 && ! test -e '$HD' && ! test -e '$PW' && ! test -e '$MM_HOME_DIR/paseo/$PROJECT' && ! test -e '$MM_HOME_DIR/egress/$PROJECT'"
+check "...and it left the machine's Paseo" sh -c "[ -z \"\$(joined)\" ]"
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]

@@ -11,10 +11,11 @@ import { tmpdir } from 'node:os'
 import { AI_PORT, aiEnabled, aiSocket, mintKey, revokeKeys, store as aiStore } from './ai'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { getPath, loadConfig } from './config'
-import { DIRS, HOME, run } from './env'
+import { DIRS, HOME, run, which } from './env'
 import { BOXES, boxHook, loadAll, PROJECTS_PC, readAnswers, resolve, serviceProcess, up as projectUp, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
+import paseoJoinScript from '../box/paseo-join.mjs' with { type: 'text' }
 import npmPackage from '../box/npm/package.json' with { type: 'text' }
 import npmLock from '../box/npm/package-lock.json' with { type: 'text' }
 import pkg from '../package.json'
@@ -54,6 +55,31 @@ export function paseoPasswordFile(project: string) {
   const f = join(d, `${project}.password`)
   if (!existsSync(f)) writeFileSync(f, randomBytes(24).toString('base64url'), { mode: 0o600 })
   return f
+}
+
+/**
+ * The box's Paseo joins the machine's Paseo as a host (sy-9q1), so the app and the bridge see the box's agents; or
+ * leaves it. Through Paseo's client library (box/paseo-join.mjs): the password is read from its file there, never put
+ * on a command line. Off with `box.join_paseo: false`. MM_PASEO_JOIN_HOME points tests at a throwaway daemon.
+ */
+export function paseoJoin(project: string, address: string | null): Step {
+  const v = getPath(loadConfig(), 'box.join_paseo')
+  if (v === false || v === 'false') return { step: 'machine paseo', status: 'skip', detail: 'box.join_paseo is off' }
+  const bin = which('paseo'); if (!bin) return { step: 'machine paseo', status: 'skip', detail: 'no paseo on this machine' }
+  let cli = realpathSync(bin)
+  while (cli !== dirname(cli) && !(existsSync(join(cli, 'package.json')) && /"@getpaseo\/cli"/.test(readFileSync(join(cli, 'package.json'), 'utf8')))) cli = dirname(cli)
+  if (cli === dirname(cli)) return { step: 'machine paseo', status: 'fail', detail: `can't find Paseo's package from ${bin}` }
+  const home = process.env.MM_PASEO_JOIN_HOME || String(getPath(loadConfig(), 'paseo.home') || join(HOME, '.paseo'))
+  const dir = mkdtempSync(join(tmpdir(), 'mm-paseo-join-')), script = join(dir, 'join.mjs')
+  try {
+    writeFileSync(script, paseoJoinScript, { mode: 0o600 })
+    const args = address ? ['add', project, address, paseoPasswordFile(project)] : ['rm', project]
+    const r = run(['node', script, cli, home, ...args], { timeoutMs: 60_000 })
+    if (!r.ok) return { step: 'machine paseo', status: 'fail', detail: short(r) }
+    const o = JSON.parse(r.out.trim().split('\n').pop() || '{}') as { removed?: number; status?: string }
+    return { step: 'machine paseo', status: 'ok', detail: address ? `${project} joined as a host (${o.status || 'added'})` : `${project} left (${o.removed ?? 0} entr${o.removed === 1 ? 'y' : 'ies'})` }
+  } catch (e) { return { step: 'machine paseo', status: 'fail', detail: (e as Error).message } }
+  finally { rmSync(dir, { recursive: true, force: true }) }
 }
 
 /** Build both images from the Dockerfiles inside this mm binary. */
@@ -218,6 +244,8 @@ export function up(root: string): Step[] {
   mkdirSync(BOXES, { recursive: true }); writeFileSync(join(BOXES, `${a.project}.yaml`), `# from ${root}/services.yaml\n# a project box (${n.box}): it runs in its own container, not on this process manager\n`)
   for (let i = 0; i < 60 && !existsSync(join(sock, 'pc.sock')); i++) Bun.sleepSync(500)
   steps.push(existsSync(join(sock, 'pc.sock')) ? { step: 'process manager', status: 'ok', detail: `${Object.keys(bp.processes).length} processes in the box` } : { step: 'process manager', status: 'fail', detail: 'the box did not start its process manager (see .run/logs/process-compose.log)' })
+  // the machine's Paseo gets the box as a host (a new entry each up: the password may be new)
+  steps.push(paseoJoin(a.project, `${net.ip}:${PASEO_PORT}`))
   return steps
 }
 
@@ -276,10 +304,10 @@ export function landBackup(root: string): string {
 boxHook.reclaim = reclaim
 /** mm archive, after down and reclaim: the box's network goes too (its subnet is free again). */
 export function forget(root: string): Step[] {
-  const n = names(readAnswers(root).project)
-  if (!exists('network', n.net)) return [{ step: 'network', status: 'skip', detail: `${n.net}: none` }]
+  const p = readAnswers(root).project, n = names(p), left = paseoJoin(p, null) // ...and it leaves the machine's Paseo
+  if (!exists('network', n.net)) return [left, { step: 'network', status: 'skip', detail: `${n.net}: none` }]
   const r = docker('network', 'rm', n.net)
-  return [{ step: 'network', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `${n.net} removed` : short(r) }]
+  return [left, { step: 'network', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `${n.net} removed` : short(r) }]
 }
 boxHook.forget = forget
 
@@ -319,7 +347,7 @@ export function on(root: string): Step[] {
 export function off(root: string): Step[] {
   const a = readAnswers(root)
   if (!a.box) return [{ step: 'box off', status: 'skip', detail: `${a.project} is not a box` }]
-  const steps = [...down(root), ...reclaim(root)]
+  const steps = [...down(root), ...reclaim(root), paseoJoin(a.project, null)] // on the host, its agents are the machine Paseo's own
   rmSync(join(BOXES, `${a.project}.yaml`), { force: true })
   steps.push(setBox(root, false), ...projectUp(root))
   return steps
