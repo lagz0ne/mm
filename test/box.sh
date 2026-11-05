@@ -114,9 +114,14 @@ check "...owned by the host's owner, and nothing of it left in the box's staging
 check "the box can't see the backups folder" sh -c "! IN 'ls $BK' && ! IN 'test -e $BKP'"
 
 echo "== mm box off, mm box on (a project moves between the host and its box)"
+# the box rewrites its .run/services.json (it may): the ports mm gives out come from the host's copy (review sy-b15.17 4)
+PORTS="$HD/ports.json"; DP=$(jq -r .dolt_port "$PORTS" 2>/dev/null)
+IN "jq '.dolt_port = 40001 | .services.board.public_port = 40002' $ROOT/.run/services.json >$ROOT/.run/x.json && mv $ROOT/.run/x.json $ROOT/.run/services.json"
+check "the host keeps the box's ports ($PORTS, out of the box's sight), and the box rewrote its own copy" sh -c "[ -n '$DP' ] && [ '$DP' != null ] && ! IN 'test -e $PORTS' && [ \"\$(jq .dolt_port '$ROOT/.run/services.json')\" = 40001 ]"
 check "mm box off: the box stops; box: true leaves the answers (committed)" sh -c "mm box off '$REF' >/tmp/box-off.out 2>&1 && ! D inspect '$BOX' >/dev/null 2>&1 && ! grep -qx 'box: true' '$ROOT/.mm-answers.yaml' && git -C '$ROOT' diff --quiet -- .mm-answers.yaml"
 for _ in $(seq 1 60); do process-compose -U -u "$HOME/.mm/pc.sock" process list -o json 2>/dev/null | jq -e ".[] | select(.name==\"$PROJECT.board\") | .is_ready == \"Ready\"" >/dev/null && break; sleep 2; done
 check "...its services run on the host again (board ready), and no file stays the box's" sh -c "process-compose -U -u $HOME/.mm/pc.sock process list -o json | jq -e '.[] | select(.name==\"$PROJECT.board\") | .is_ready == \"Ready\"' >/dev/null && [ -z \"\$(find '$ROOT' -uid +199999 -print -quit)\" ]"
+check "...on the host, its ports are the host's copy, not what the box wrote" sh -c "[ \"\$(jq .dolt_port '$ROOT/.run/services.json')\" = '$DP' ] && [ \"\$(jq .services.board.public_port '$ROOT/.run/services.json')\" != 40002 ]"
 check "mm box on: back in the box; nothing of it on the host's process manager" sh -c "mm box on '$REF' >/tmp/box-on.out 2>&1 && grep -qx 'box: true' '$ROOT/.mm-answers.yaml' && D inspect '$BOX' >/dev/null && ! process-compose -U -u $HOME/.mm/pc.sock process list -o json | jq -e '.[] | select(.name | startswith(\"$PROJECT.\"))'"
 for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
 check "...its board is ready in the box, and the item made there before is still there" sh -c "mm inspect '$REF' | grep -q 'board .*Ready' && IN \"cd $ROOT && bin/bd list --json\" | grep -q 'made in the box'"

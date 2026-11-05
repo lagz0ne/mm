@@ -31,6 +31,13 @@ curl -fsSL "$SHIM" | sh -s -- onboard --yes --access domain --domain example.tes
 for n in $(mm needs -o json | jq -r '.[] | select(.required and .status == "missing" and .kind == "secret") | .name'); do printf 'dummy-%s' "$n" | mm fill "$n" >/dev/null; done
 # the box's own address is where the web proxy reaches it: mm's forwarder (board) and the gateway listen there
 mm config set bind_host "$IP" >/dev/null; mm config set telegram.owner_id 777 >/dev/null; mm config set auth.enabled true >/dev/null
+# a box that lies (review sy-b15.17): registered as mm does it (pc/boxes), its answers and services.yaml its own, but its
+# .run/services.json (which a box can write) claims acme-shop's board host for itself
+E=$HOME/evil; mkdir -p "$E/.run" ~/.mm/pc/boxes
+printf 'client: acme\nname: evil\nproject: acme-evil\nshort: ev\nroot: %s\ntemplate_version: test\ncreated: test\nbox: true\n' "$E" >"$E/.mm-answers.yaml"
+printf 'services:\n  board:\n    command: "true"\n    port: http\n    public: { name: board-evil-acme, auth: required }\n' >"$E/services.yaml"
+echo '{"project":"acme-evil","services":{"board":{"public_url":"https://board-shop-acme.example.test","public":{"name":"board-shop-acme","auth":"required"}}}}' >"$E/.run/services.json"
+echo "# from $E/services.yaml" >~/.mm/pc/boxes/acme-evil.yaml
 mm new acme/shop >/tmp/new.out 2>&1 || { tail -20 /tmp/new.out; exit 1; }
 for _ in $(seq 1 90); do mm inspect acme/shop 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
 for _ in $(seq 1 30); do [ -S ~/.mm/run/auth.sock ] && break; sleep 1; done
@@ -107,6 +114,14 @@ check "the same link again: no new session" sh -c "$(declare -f B); BOX=$BOX BOA
 check "the board knows alice, through Traefik and the gateway" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\".*\"source\":\"gateway\"'"
 check "alice sees the board's items" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J 'https://$BOARD/api/v0/beads/issues?limit=20' | grep -q 'seen through Traefik'"
 check "...and her forged role header changes nothing (Traefik takes the gateway's)" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J -H 'x-board-role: owner' -H 'x-mm-assertion: forged.forged' https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\"'"
+# the lying box (acme-evil, set up in box.sh): its .run/ claims this board's host; bob is granted acme-evil only
+MM_IN 'mm user add bob && mm grant bob acme-evil' >/dev/null
+TKB=$(MM_IN 'mm token bob acme-evil -o json' | jq -r .token); LB=$(MM_IN 'mm user link bob -o json' | jq -r .link); J2=/tmp/jar2
+B -c $J2 -b $J2 -o /dev/null "$LB"; LBQ=${LB#*\?}
+B -c $J2 -b $J2 -o /dev/null -H "origin: https://$AUTH" -d "t=$(printf '%s' "$LBQ" | tr '&' '\n' | sed -n 's/^token=//p')&c=$(printf '%s' "$LBQ" | tr '&' '\n' | sed -n 's/^callbackURL=//p')" "https://$AUTH/s/l"
+check "a box's .run/ claims this board's host (review sy-b15.17): its member's bearer token gets 401 here" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; [ \"\$(B -o /dev/null -w '%{http_code}' -H 'authorization: Bearer $TKB' https://$BOARD/api/whoami)\" = 401 ]"
+check "...and its member's session never gets into this board (no callback for it)" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; ! B -L -c $J2 -b $J2 https://$BOARD/api/whoami | grep -q '\"actor\":\"bob\"'"
+check "...while alice, the board's own member, still gets in" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\"'"
 check "mm revoke alice (every project): the next request goes back to sign-in" sh -c "$DOCKER exec -u dev $BOX sh -c 'PATH=\$HOME/.mm/bin:\$PATH mm revoke alice' >/dev/null && $(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; [ \"\$(B -b $J -o /dev/null -w '%{http_code}' https://$BOARD/api/whoami)\" = 302 ]"
 echo; echo "$pass passed, $fail failed"
 [ -n "$KEEP" ] && echo "kept: $DOCKER exec -it -u dev $BOX bash"

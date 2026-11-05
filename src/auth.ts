@@ -25,6 +25,7 @@ import { createAccessControl } from 'better-auth/plugins/access'
 import { getPath, loadConfig } from './config'
 import { expand, machineInputs } from './inputs'
 import { DIRS } from './env'
+import { resolve } from './project'
 
 export const AUTH_DIR = join(DIRS.mm, 'auth')
 export const AUTH_SOCK = join(DIRS.mm, 'run', 'auth.sock')
@@ -152,20 +153,32 @@ export async function gateway() {
   }, 30e3).unref?.()
 
   // a board host -> its project (from where mm put each board's public name); cached briefly
-  let hostMap: { at: number; map: Record<string, string>; hosts: Record<string, string> } = { at: 0, map: {}, hosts: {} }
+  const HOST_CACHE_MS = Number(process.env.MM_AUTH_HOST_CACHE_MS) || 30e3 // the tests make it short
+  let hostMap: { at: number; map: Record<string, string>; hosts: Record<string, string>; said: string } = { at: 0, map: {}, hosts: {}, said: '' }
   const loadHosts = () => {
-    if (now() - hostMap.at < 30e3) return hostMap
-    const map: Record<string, string> = {}, hosts: Record<string, string> = {}
-    // the host's projects and the project boxes (mm registers each box in pc/boxes)
+    if (now() - hostMap.at < HOST_CACHE_MS) return hostMap
+    const map: Record<string, string> = {}, hosts: Record<string, string> = {}, claims: Record<string, Set<string>> = {}, odd: string[] = []
+    // the host's projects and the project boxes (mm registers each box in pc/boxes). Never from <root>/.run/, which a
+    // box can write (review sy-b15.17): the project is the registry file's name (the host writes pc/), and its public
+    // names come from resolve() (services.yaml and .mm-answers.yaml, read-only in a box), as mm cron takes a box's jobs
     for (const pdir of [join(DIRS.pc, 'projects'), join(DIRS.pc, 'boxes')]) for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
+      const project = f.slice(0, -'.yaml'.length)
       const m = /from (.+)\/services\.yaml/.exec(readFileSync(join(pdir, f), 'utf8')); if (!m) continue
       try {
-        const s = JSON.parse(readFileSync(join(m[1].replace(/^~(?=\/)/, process.env.HOME || ''), '.run', 'services.json'), 'utf8'))
-        for (const sv of Object.values(s.services || {}) as { public_url?: string; public?: { auth?: string } }[])
-          if (sv.public_url && sv.public?.auth === 'required') { const host = new URL(sv.public_url).host; map[host] = s.project; hosts[s.project] ||= host }
+        const r = resolve(m[1].replace(/^~(?=\/)/, process.env.HOME || ''))
+        if (r.answers.project !== project) { odd.push(`${f}: the project's answers name ${r.answers.project}`); continue }
+        for (const sv of Object.values(r.services))
+          if (sv.public_url && sv.public?.auth === 'required') (claims[new URL(sv.public_url).host] ||= new Set()).add(project)
       } catch {}
     }
-    return (hostMap = { at: now(), map, hosts })
+    // a host two projects claim goes to neither (no "last one wins")
+    for (const [host, ps] of Object.entries(claims)) {
+      if (ps.size > 1) { odd.push(`${host}: claimed by ${[...ps].sort().join(', ')}`); continue }
+      const [p] = ps; map[host] = p; hosts[p] ||= host
+    }
+    const said = odd.sort().join('\n')
+    if (said && said !== hostMap.said) log('warn', 'board hosts refused', { refused: odd })
+    return (hostMap = { at: now(), map, hosts, said })
   }
   const projectOf = (host: string) => loadHosts().map[host] || null
   const userByName = (name: string) => db.query('SELECT * FROM user WHERE name = ?').get(name) as { id: string; name: string; role?: string; banned?: number } | null

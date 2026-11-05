@@ -169,9 +169,11 @@ export function resolve(root: string) {
   const a = readAnswers(root)
   const spec = Bun.YAML.parse(readFileSync(join(root, 'services.yaml'), 'utf8')) as { services: Record<string, Svc>; schedules?: Record<string, { every: string; command: string }> }
   // ports already given out stay put across reloads (the old process may still hold them while we decide)
+  // for a box, from the host's copy (a box can write its .run/: review sy-b15.17 4); and only a port number is taken
   let prev: { services?: Record<string, { public_port?: number }>; dolt_port?: number } = {}
-  try { prev = JSON.parse(readFileSync(join(root, '.run', 'services.json'), 'utf8')) } catch {}
-  const pp = portlessPort(), socket = join(root, '.dolt', 'mysql.sock'), dport = prev.dolt_port ?? hashPort(`${a.project}/dolt`)
+  try { prev = JSON.parse(readFileSync(prevPortsFile(root, a), 'utf8')) } catch {}
+  const okPort = (p: unknown) => Number.isInteger(p) && (p as number) >= 1024 && (p as number) <= 65535 ? p as number : undefined
+  const pp = portlessPort(), socket = join(root, '.dolt', 'mysql.sock'), dport = okPort(prev.dolt_port) ?? hashPort(`${a.project}/dolt`)
   const url = (s: string) => `http://${s}.${a.project}.localhost:${pp}`
   const fill = (v: string) => v.replaceAll('{root}', root).replaceAll('{home}', HOME).replaceAll('{project}', a.project)
     .replaceAll('{socket}', socket).replaceAll('{dolt_port}', String(dport)).replaceAll('{portless_port}', String(pp)).replace(/\{url:([\w-]+)\}/g, (_m, s) => url(s))
@@ -186,7 +188,7 @@ export function resolve(root: string) {
     // so nothing listens on every interface. bind_host on loopback (a proxy on the host itself): no forwarder needed.
     let pub: { public_url?: string; public_port?: number; public_bind?: string } = {}
     if (s.public && access === 'domain' && domain) {
-      const port = prev.services?.[n]?.public_port ?? hashPort(`${a.project}/${n}`)
+      const port = okPort(prev.services?.[n]?.public_port) ?? hashPort(`${a.project}/${n}`)
       // a service behind the gateway (auth: required, the boards) gets its own public listener on that port, if its
       // server has one (a board still on an older template doesn't: it keeps serving the public port itself until
       // `mm update` brings the listener, so its route never goes dark); an open one (the app slot) serves it itself
@@ -247,9 +249,20 @@ export function writeInProject(root: string, rel: string, data: string) {
   const tmp = join(want, `.${rel.split('/').pop()}.${randomBytes(6).toString('hex')}.tmp`)
   try { writeFileSync(tmp, data, { flag: 'wx' }); renameSync(tmp, join(want, rel.split('/').pop()!)) } catch (e) { rmSync(tmp, { force: true }); throw e }
 }
+/** Where resolve() finds the ports given out before: a box's .run/ is the box's to write, so its copy is on the host;
+ *  a project that was a box once (mm box off) keeps using that copy, never what the box left in .run/. */
+function prevPortsFile(root: string, a: Answers) {
+  const copy = join(DIRS.mm, 'box', a.project, 'ports.json')
+  return a.box || existsSync(copy) ? copy : join(root, '.run', 'services.json')
+}
 export function writeRunFiles(root: string, pcSocket: string) {
   const { answers: a, services, schedules, dport } = resolve(root)
   writeInProject(root, '.run/services.json', JSON.stringify({ project: a.project, dolt_port: dport, services, schedules }, null, 2))
+  const f = prevPortsFile(root, a)
+  if (f !== join(root, '.run', 'services.json')) { // the host's copy of the ports (review sy-b15.17 4), in a folder the box never sees
+    mkdirSync(dirname(f), { recursive: true, mode: 0o755 })
+    writeFileSync(f, JSON.stringify({ dolt_port: dport, services: Object.fromEntries(Object.entries(services).flatMap(([n, s]) => s.public_port ? [[n, { public_port: s.public_port }]] : [])) }, null, 2))
+  }
   const ep = { manager: 'process-compose (mm)', self_healing: true, restart: `process-compose -U -u ${pcSocket} process restart ${a.project}.{service}`,
     logs: `tail -n {lines} ${join(root, '.run', 'logs')}/{service}.log`, observability: obsEndpoints(), dirs: engineDirs(),
     ...(publicKeyPem() ? { auth: { public_key: publicKeyPem() } } : {}), // the gateway's key: boards verify its assertions

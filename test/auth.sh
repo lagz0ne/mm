@@ -30,11 +30,13 @@ node "$T/faketg.mjs" $TGP "$T/tg.jsonl" & TG=$!
 export MM_TELEGRAM_API="http://127.0.0.1:$TGP"
 told() { sleep 0.5; grep -F "$1" "$T/tg.jsonl" | grep -q '"chat_id":"4242"'; }
 echo "# from $T/proj/services.yaml" >"$MM_HOME/pc/projects/acme-shop.yaml"; echo "# from $T/proj2/services.yaml" >"$MM_HOME/pc/projects/acme-other.yaml"
-echo "{\"project\":\"acme-shop\",\"services\":{\"board\":{\"public_url\":\"https://$BOARD\",\"public\":{\"name\":\"board-shop-acme\",\"auth\":\"required\"}}}}" >"$T/proj/.run/services.json"
-echo "{\"project\":\"acme-other\",\"services\":{\"board\":{\"public_url\":\"https://$BOARD2\",\"public\":{\"name\":\"board-other-acme\",\"auth\":\"required\"}}}}" >"$T/proj2/.run/services.json"
+# a project as the gateway reads it (review sy-b15.17): its answers and its services.yaml, never its .run/
+fakeproj() { mkdir -p "$1/.run"; printf 'client: acme\nname: %s\nproject: %s\nshort: x\nroot: %s\ntemplate_version: test\ncreated: test\n' "${2#acme-}" "$2" "$1" >"$1/.mm-answers.yaml"
+  printf 'services:\n  board:\n    command: "true"\n    port: http\n    public: { name: %s, auth: required }\n' "$3" >"$1/services.yaml"; }
+fakeproj "$T/proj" acme-shop board-shop-acme; fakeproj "$T/proj2" acme-other board-other-acme
 mkdir -p "$T/bin"; printf '#!/bin/sh\nexec %s "$@"\n' "$MMC" >"$T/bin/mm"; chmod +x "$T/bin/mm"
 export PATH="$T/bin:$PATH"   # every check, including those in sh -c, runs this mm
-mm auth serve >"$T/gw.log" 2>&1 & GW=$!
+MM_AUTH_HOST_CACHE_MS=200 mm auth serve >"$T/gw.log" 2>&1 & GW=$!
 for _ in $(seq 1 100); do [ -S "$MM_HOME/run/auth.sock" ] && curl -s -o /dev/null "http://127.0.0.1:$PORT/s" && break; sleep 0.2; done
 G="http://127.0.0.1:$PORT"
 # the browser on the gateway's host: the session cookie is __Secure- (https), so curl gets it by hand here
@@ -123,6 +125,25 @@ check "Bearer: 200, an assertion for alex as member" bash -c "node '$T/verify.mj
 check "...the same token on another project's board: 401" bash -c "bv '$TK' $BOARD2 | head -1 | grep -q 401"
 check "...a wrong token: 401, no sign-in redirect" bash -c "bv mmt_nope | head -1 | grep -q 401"
 check "a token for a project with no grant: refused" bash -c "! mm token alex acme-other"
+
+echo "== board hosts: from what the host owns, never from a project's .run/ (review sy-b15.17)"
+mm user add bob >/dev/null; mm grant bob acme-other >/dev/null; TKB=$(mm token bob acme-other -o json | jq -r .token)
+check "bob's token (acme-other) opens acme-other's board, not acme-shop's" bash -c "bv '$TKB' $BOARD2 | head -1 | grep -q 200 && bv '$TKB' | head -1 | grep -q 401"
+# acme-other (a box can write its .run/) claims acme-shop's host and the gateway's; acme-shop's file claims acme-other's
+echo "{\"project\":\"acme-other\",\"services\":{\"board\":{\"public_url\":\"https://$BOARD\",\"public\":{\"name\":\"board-shop-acme\",\"auth\":\"required\"}},\"b2\":{\"public_url\":\"https://$AUTH\",\"public\":{\"name\":\"auth\",\"auth\":\"required\"}}}}" >"$T/proj2/.run/services.json"
+echo "{\"project\":\"acme-shop\",\"services\":{\"board\":{\"public_url\":\"https://$BOARD2\",\"public\":{\"name\":\"board-other-acme\",\"auth\":\"required\"}}}}" >"$T/proj/.run/services.json"
+sleep 0.5
+check "...a project's .run/services.json claims another board's host: nothing changes (bob 401 there, alex still 200)" bash -c "bv '$TKB' | head -1 | grep -q 401 && bv '$TK' | head -1 | grep -q 200 && bv '$TKB' $BOARD2 | head -1 | grep -q 200 && bv '$TK' $BOARD2 | head -1 | grep -q 401"
+# a registry file whose name isn't the project its answers name: no host from it
+mkdir -p "$MM_HOME/pc/boxes"; echo "# from $T/proj2/services.yaml" >"$MM_HOME/pc/boxes/acme-evil.yaml"; sleep 0.5
+check "a registry file named for another project: skipped and logged; acme-other still works" bash -c "bv '$TKB' $BOARD2 | head -1 | grep -q 200 && grep 'board hosts refused' '$T/gw.log' | grep -q 'acme-evil.yaml: the project.s answers name acme-other'"
+rm -f "$MM_HOME/pc/boxes/acme-evil.yaml"
+# two projects claim one host (in their own services.yaml): neither gets it, and the gateway says so
+fakeproj "$T/proj3" acme-third board-shop-acme; echo "# from $T/proj3/services.yaml" >"$MM_HOME/pc/boxes/acme-third.yaml"; sleep 0.5
+check "two projects claim one host: refused for both (alex 401), logged" bash -c "bv '$TK' | head -1 | grep -q 401 && grep 'board hosts refused' '$T/gw.log' | grep -q 'claimed by acme-shop, acme-third'"
+rm -f "$MM_HOME/pc/boxes/acme-third.yaml"; sleep 0.5
+check "...the second claim gone: acme-shop's board is its own again" bash -c "bv '$TK' | head -1 | grep -q 200"
+mm user rm bob >/dev/null
 
 echo '== ending it'
 TK2=$(mm token alex acme-shop -o json | jq -r .token)
