@@ -44,6 +44,14 @@ check "no capabilities (CapEff all zero)" sh -c "IN 'grep CapEff /proc/self/stat
 check "no new privileges" sh -c "IN 'grep NoNewPrivs /proc/self/status' | grep -q '1'"
 check "no Docker socket" sh -c "! IN 'test -e /var/run/docker.sock'"
 
+echo "== mm shell (a command, or a shell, in the box as the box user)"
+check "mm shell $REF id -u: the box user, not the host's owner" sh -c "u=\$(mm shell '$REF' id -u </dev/null); [ \"\$u\" -ge 200000 ] && [ \"\$u\" != '$(id -u)' ]"
+check "...in the project folder, with umask 002" sh -c "[ \"\$(mm shell '$REF' pwd </dev/null)\" = '$ROOT' ] && [ \"\$(mm shell '$REF' sh -c umask </dev/null)\" = 0002 ]"
+check "...with the services' environment (project, Paseo, the box's proxy)" sh -c "o=\$(mm shell '$REF' env </dev/null); echo \"\$o\" | grep -qx 'MM_PROJECT=$PROJECT' && echo \"\$o\" | grep -qx 'PASEO_HOME=$MM_HOME_DIR/paseo/$PROJECT' && echo \"\$o\" | grep -qx 'HTTPS_PROXY=http://$PX:8888'"
+check "...bd works from it (the board's items)" sh -c "mm shell '$REF' bin/bd list --json </dev/null | grep -q 'made in the box'"
+check "...its options are the command's, even the names mm uses itself (-q, -o, --json)" sh -c "[ \"\$(mm shell '$REF' printf '%s|' -q -o json --json </dev/null)\" = '-q|-o|json|--json|' ]"
+check "...and its exit code comes back" sh -c "mm shell '$REF' sh -c 'exit 7' </dev/null; [ \$? = 7 ]"
+
 echo "== what the box may write"
 check "the root file system is read-only" sh -c "! IN 'touch /usr/x'"
 check "the project folder is writable (memory/, the board's data)" IN "touch $ROOT/memory/.box-probe && rm $ROOT/memory/.box-probe"
@@ -122,6 +130,7 @@ check "mm box off: the box stops; box: true leaves the answers (committed)" sh -
 for _ in $(seq 1 60); do process-compose -U -u "$HOME/.mm/pc.sock" process list -o json 2>/dev/null | jq -e ".[] | select(.name==\"$PROJECT.board\") | .is_ready == \"Ready\"" >/dev/null && break; sleep 2; done
 check "...its services run on the host again (board ready), and no file stays the box's" sh -c "process-compose -U -u $HOME/.mm/pc.sock process list -o json | jq -e '.[] | select(.name==\"$PROJECT.board\") | .is_ready == \"Ready\"' >/dev/null && [ -z \"\$(find '$ROOT' -uid +199999 -print -quit)\" ]"
 check "...on the host, its ports are the host's copy, not what the box wrote" sh -c "[ \"\$(jq .dolt_port '$ROOT/.run/services.json')\" = '$DP' ] && [ \"\$(jq .services.board.public_port '$ROOT/.run/services.json')\" != 40002 ]"
+check "...and mm shell refuses it (not a box project now)" sh -c "mm shell '$REF' true </dev/null; [ \$? = 2 ]"
 check "mm box on: back in the box; nothing of it on the host's process manager" sh -c "mm box on '$REF' >/tmp/box-on.out 2>&1 && grep -qx 'box: true' '$ROOT/.mm-answers.yaml' && D inspect '$BOX' >/dev/null && ! process-compose -U -u $HOME/.mm/pc.sock process list -o json | jq -e '.[] | select(.name | startswith(\"$PROJECT.\"))'"
 for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
 check "...its board is ready in the box, and the item made there before is still there" sh -c "mm inspect '$REF' | grep -q 'board .*Ready' && IN \"cd $ROOT && bin/bd list --json\" | grep -q 'made in the box'"

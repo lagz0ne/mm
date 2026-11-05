@@ -153,10 +153,24 @@ const boxCmd = program.command('box').description('project boxes: each project i
 boxCmd.command('build').description('build the box image and the egress proxy image (pinned tools) from this mm').action(() => { const st = boxMod.build(); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })
 boxCmd.command('on <project>').description('move a host project into its own box (its host processes stop; the answers get box: true)').action((ref: string) => { const st = boxMod.on(findRoot(ref)); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })
 boxCmd.command('off <project>').description('move a box project back onto the host (the box stops; its files go back to the host owner)').action((ref: string) => { const st = boxMod.off(findRoot(ref)); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })
-program.command('shell <project> [cmd...]').description('a shell (or a command) in a project box, as the box user').action((ref: string, cmd: string[]) => {
+// `mm shell <project> <cmd...>`: the command is the box's, options and all (`id -u`, `sh -c ...`, even `-q` or `-o`,
+// which are mm's own options anywhere else). So it is cut off before mm parses its options (see shellCmd at the end).
+const shellSplit = (argv: string[]) => {
+  const valued = new Set(['-o', '--output', '--host']), word = (from: number) => {
+    for (let i = from; i < argv.length; i++) { if (valued.has(argv[i])) { i++; continue } if (!argv[i].startsWith('-')) return i }
+    return -1
+  }
+  const s = word(2); if (s < 0 || argv[s] !== 'shell') return null
+  const r = word(s + 1); if (r < 0) return null
+  const cmd = argv.slice(r + 1); if (cmd[0] === '--') cmd.shift()
+  return { argv: argv.slice(0, r + 1), cmd }
+}
+const shellCut = shellSplit(process.argv)
+if (shellCut) process.argv = shellCut.argv
+program.command('shell <project> [cmd...]').description('a shell (or a command) in a project box, as the box user; everything after <project> is the command').action((ref: string, cmd: string[]) => {
   const root = findRoot(ref)
   if (!readAnswers(root).box) { console.error(`mm shell: ${ref} is not a box project`); process.exit(2) }
-  const p = Bun.spawnSync(boxMod.execArgs(root, cmd), { stdio: ['inherit', 'inherit', 'inherit'] }); process.exit(p.exitCode ?? 1)
+  const p = Bun.spawnSync(boxMod.execArgs(root, shellCut?.cmd ?? cmd), { stdio: ['inherit', 'inherit', 'inherit'] }); process.exit(p.exitCode ?? 1)
 })
 
 program.command('update [project]').description('bring a project (default: every project) up to the current template; three-way merge, project edits kept')

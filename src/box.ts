@@ -281,8 +281,9 @@ export function status(root: string) {
 }
 /** A command in the box, as the box user (mm shell). */
 export function execArgs(root: string, cmd: string[]) {
-  // umask 002, as for the box's services: what a shell writes stays reachable by the host's owner (the group)
-  return [...dockerCmd(), 'exec', ...(process.stdin.isTTY ? ['-it'] : ['-i']), '-w', root, names(readAnswers(root).project).box,
+  // umask 002, as for the box's services: what a shell writes stays reachable by the host's owner (the group); and the
+  // services' environment (their PATH, names, Paseo, proxy), so a shell sees the box as its services do
+  return [...dockerCmd(), 'exec', ...(process.stdin.isTTY ? ['-it'] : ['-i']), '-w', root, ...Object.entries(boxEnv(root)).flatMap(([k, v]) => ['-e', `${k}=${v}`]), names(readAnswers(root).project).box,
     'sh', '-c', 'umask 002 && exec "$@"', 'sh', ...(cmd.length ? cmd : ['bash'])]
 }
 export const HOME_DIR = HOME
