@@ -156,8 +156,8 @@ export async function gateway() {
   const loadHosts = () => {
     if (now() - hostMap.at < 30e3) return hostMap
     const map: Record<string, string> = {}, hosts: Record<string, string> = {}
-    const pdir = join(DIRS.pc, 'projects')
-    for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
+    // the host's projects and the project boxes (mm registers each box in pc/boxes)
+    for (const pdir of [join(DIRS.pc, 'projects'), join(DIRS.pc, 'boxes')]) for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
       const m = /from (.+)\/services\.yaml/.exec(readFileSync(join(pdir, f), 'utf8')); if (!m) continue
       try {
         const s = JSON.parse(readFileSync(join(m[1].replace(/^~(?=\/)/, process.env.HOME || ''), '.run', 'services.json'), 'utf8'))

@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'node:path'
 import { canon, DIRS, HOME, run, within } from './env'
-import { boxHook, loadAll, PROJECTS_PC, readAnswers, resolve, up } from './project'
+import { BOXES, boxHook, loadAll, PROJECTS_PC, readAnswers, resolve, up } from './project'
 import { template, templateCommit } from './template'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
@@ -174,6 +174,7 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   steps.push({ step: 'stop', status: s.ok || /not found|no process/i.test(short(s)) ? 'ok' : 'fail', detail: s.ok ? `namespace ${a.project}` : short(s) })
   const pf = join(PROJECTS_PC, `${a.project}.yaml`)
   if (existsSync(pf)) rmSync(pf)
+  rmSync(join(BOXES, `${a.project}.yaml`), { force: true }) // a box's registration
   // the reload can race processes that are still stopping: try again briefly
   let l = loadAll()
   for (let i = 0; i < 5 && !l.ok; i++) { Bun.sleepSync(2000); l = loadAll() }

@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, run } from './env'
-import { boxHook, readAnswers, resolve, serviceProcess } from './project'
+import { BOXES, boxHook, loadAll, PROJECTS_PC, readAnswers, resolve, serviceProcess, up as projectUp, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
 import npmPackage from '../box/npm/package.json' with { type: 'text' }
@@ -176,6 +176,9 @@ export function up(root: string): Step[] {
     '-w', root, IMAGE(), 'sh', '-c', `umask 002 && exec process-compose up -t=false --keep-project -U -u '${join(sock, 'pc.sock')}' -L '${join(root, '.run', 'box', 'pc.log')}' -f '${join(cfg, 'pc.yaml')}'`)
   if (!r.ok) return fail('box', short(r))
   steps.push({ step: 'box', status: 'ok', detail: `${n.box} (read-only root, cap-drop ALL, no-new-privileges)` })
+  // what engine scripts and the gateway read, and the box's registration (mm ls, the gateway, the sentinel find it)
+  writeRunFiles(root, join(sock, 'pc.sock'))
+  mkdirSync(BOXES, { recursive: true }); writeFileSync(join(BOXES, `${a.project}.yaml`), `# from ${root}/services.yaml\n# a project box (${n.box}): it runs in its own container, not on this process manager\n`)
   for (let i = 0; i < 60 && !existsSync(join(sock, 'pc.sock')); i++) Bun.sleepSync(500)
   steps.push(existsSync(join(sock, 'pc.sock')) ? { step: 'process manager', status: 'ok', detail: `${Object.keys(bp.processes).length} processes in the box` } : { step: 'process manager', status: 'fail', detail: 'the box did not start its process manager (mm box logs)' })
   return steps
@@ -217,5 +220,33 @@ export function execArgs(root: string, cmd: string[]) {
     'sh', '-c', 'umask 002 && exec "$@"', 'sh', ...(cmd.length ? cmd : ['bash'])]
 }
 export const HOME_DIR = HOME
+/** `mm box on <project>`: a project on the host moves into its box (its host processes stop and unload first). */
+export function on(root: string): Step[] {
+  const a = readAnswers(root), steps: Step[] = []
+  if (a.box) return [{ step: 'box on', status: 'skip', detail: `${a.project} is a box already` }]
+  run(['process-compose', '-U', '-u', DIRS.socket, 'namespace', 'stop', a.project], { timeoutMs: 120_000 })
+  rmSync(join(PROJECTS_PC, `${a.project}.yaml`), { force: true })
+  const l = loadAll(); steps.push({ step: 'host', status: l.ok ? 'ok' : 'fail', detail: l.ok ? `${a.project} unloaded from the host's process manager` : short(l) })
+  if (!l.ok) return steps
+  steps.push(setBox(root, true), ...up(root))
+  return steps
+}
+/** `mm box off <project>`: back onto the host (the box stops, its files go back to the host's owner). */
+export function off(root: string): Step[] {
+  const a = readAnswers(root)
+  if (!a.box) return [{ step: 'box off', status: 'skip', detail: `${a.project} is not a box` }]
+  const steps = [...down(root), ...reclaim(root)]
+  rmSync(join(BOXES, `${a.project}.yaml`), { force: true })
+  steps.push(setBox(root, false), ...projectUp(root))
+  return steps
+}
+/** The answers' `box:` line, committed in the project's config repo (as mm update commits its answers). */
+function setBox(root: string, on: boolean): Step {
+  const f = join(root, '.mm-answers.yaml'), t = readFileSync(f, 'utf8').replace(/^box:.*\n?/m, '')
+  writeFileSync(f, on ? `${t.trimEnd()}\nbox: true\n` : t)
+  const c = run(['git', '-C', root, 'commit', '-q', '-m', `mm box ${on ? 'on' : 'off'}: the project runs ${on ? 'in its own box' : 'on the host'}`, '.mm-answers.yaml'], { env: { SETUP_HUMAN: '1' } })
+  return { step: 'answers', status: c.ok ? 'ok' : 'fail', detail: c.ok ? `box: ${on}` : short(c) }
+}
+boxHook.processes = processes
 boxHook.up = up
 boxHook.down = down

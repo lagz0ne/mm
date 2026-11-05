@@ -145,6 +145,8 @@ for (const [cmd, op] of [['down', 'stop'], ['restart', 'restart']] as const) {
 
 const boxCmd = program.command('box').description('project boxes: each project in its own container (plans/project-box.md)')
 boxCmd.command('build').description('build the box image and the egress proxy image (pinned tools) from this mm').action(() => { const st = boxMod.build(); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })
+boxCmd.command('on <project>').description('move a host project into its own box (its host processes stop; the answers get box: true)').action((ref: string) => { const st = boxMod.on(findRoot(ref)); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })
+boxCmd.command('off <project>').description('move a box project back onto the host (the box stops; its files go back to the host owner)').action((ref: string) => { const st = boxMod.off(findRoot(ref)); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })
 program.command('shell <project> [cmd...]').description('a shell (or a command) in a project box, as the box user').action((ref: string, cmd: string[]) => {
   const root = findRoot(ref)
   if (!readAnswers(root).box) { console.error(`mm shell: ${ref} is not a box project`); process.exit(2) }
