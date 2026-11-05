@@ -13,17 +13,41 @@ PASEO=${PASEO_BIN:-paseo}
 # otherwise make the lead that agent's sub-agent and use the caller's folder, brief and permissions.
 unset PASEO_AGENT_ID PASEO_AGENT_CWD
 ids() { "$PASEO" ls -g --label "project=$PROJECT" --label "role=$1" -q 2>/dev/null || true; }
+# Archive every lead of a role, and say so when one stays (sy-8n1: a silent failure left two leads of one role).
+# A lead in the middle of a turn refuses a plain archive: wait for it up to LEAD_ARCHIVE_WAIT seconds (default 30),
+# then interrupt it (--force). Returns 1, with paseo's reason, if any lead of the role is still there afterwards.
+archive_role() {
+  for id in $(ids "$1"); do
+    t=0; why=""; gone=""
+    while :; do
+      if why=$("$PASEO" archive "$id" 2>&1 >/dev/null); then echo "archived $2$1 lead $id"; gone=1; break; fi
+      [ "$t" -ge "${LEAD_ARCHIVE_WAIT:-30}" ] && break; sleep 3; t=$((t + 3))
+    done
+    [ -z "$gone" ] || continue
+    if why=$("$PASEO" archive --force "$id" 2>&1 >/dev/null); then echo "archived $2$1 lead $id (interrupted: it was busy for ${t}s)"
+    else echo "lead: could not archive $1 lead $id: ${why:-no reason given}" >&2; fi
+  done
+  left=$(ids "$1")
+  [ -z "$left" ] || { echo "lead: $1 lead(s) still there: $(echo $left)" >&2; return 1; }
+}
+# What the role has open on its board (in progress, blocked), for the new lead's first prompt: a restart must not
+# leave it idle (sy-8n1). Empty when the board can't be read; the lead still finds its items itself.
+open_items() {
+  "$P/bin/bd" list --assignee "$1" --status in_progress,blocked --json 2>/dev/null \
+    | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{for(const i of JSON.parse(s))console.log('- '+i.id+' ('+i.status+'): '+String(i.title).slice(0,100))}catch{}})" 2>/dev/null || true
+}
 case "${1:-}" in
   ls) "$PASEO" ls -g --label "project=$PROJECT" ;;
   stop) [ -n "${2:-}" ] || { echo "usage: bin/lead stop <role>" >&2; exit 2; }
-        for id in $(ids "$2"); do "$PASEO" archive "$id" >/dev/null && echo "archived $2 lead $id"; done ;;
+        archive_role "$2" "" || exit 1 ;;
   start)
     role=${2:-}; DIR=$P/leads/$role; [ "$role" = setup ] && DIR=$P/setup   # setup = the governance agent
     [ -n "$role" ] && [ -d "$DIR" ] || { echo "no such role: $role" >&2; exit 2; }
     # model: --model, else the role's `model` in leads/roles.json, else the default
     model=$(node -e "try{const r=require('$P/leads/roles.json').roles.find(x=>x.id==='$role');process.stdout.write((r&&r.model)||'')}catch{}" 2>/dev/null)
     model=${model:-claude/claude-opus-5-5}; [ "${3:-}" = --model ] && model=$4
-    for id in $(ids "$role"); do "$PASEO" archive "$id" >/dev/null && echo "archived previous $role lead $id"; done
+    # exactly one lead per role: the old one goes first, or this one doesn't start
+    archive_role "$role" "previous " || { echo "lead: not starting a second $role lead" >&2; exit 1; }
     # its own worktree for docs/tests, unless it is setup or a role that works through workers
     workers=$(node -e "try{const r=require('$P/leads/roles.json').roles.find(x=>x.id==='$role');process.stdout.write(r&&r.workers?'1':'')}catch{}" 2>/dev/null)
     [ "$role" = setup ] || [ -n "$workers" ] || [ ! -x "$P/bin/wt" ] || "$P/bin/wt" "lead-$role" >/dev/null  # no wt: a board without worktrees (system)
@@ -31,6 +55,11 @@ case "${1:-}" in
     START=$P/leads/START.md; [ -f "$DIR/START.md" ] && START=$DIR/START.md
     name=$(node -e "try{process.stdout.write(require('$P/leads/personas.json').agents['$role'].name||'')}catch{}" 2>/dev/null)
     prompt=$(sed -e "s/{role}/$role/g" -e "s/{project}/$PROJECT/g" -e "s/{name}/${name:-the $role lead}/g" "$START")
+    items=$(open_items "$role")
+    [ -z "$items" ] || prompt="$prompt
+
+Handover: a previous $role lead had these items open (in progress or blocked). Read each one's latest comments, then carry on with them; don't wait for a board update:
+$items"
     # its own Claude folder for this project (no global CLAUDE.md, settings or memory), with its folder trusted
     CDIR=$(MM_PROJECT="$PROJECT" node "$P/bin/lib/claude.mjs" trust "$DIR") || { echo "lead: could not prepare the Claude folder" >&2; exit 1; }
     "$PASEO" run --no-wait -q --title "$PROJECT · $role lead" --provider "$model" --mode auto --env "CLAUDE_CONFIG_DIR=$CDIR" \
