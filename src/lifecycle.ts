@@ -119,6 +119,11 @@ function finish(root: string, res: UpdateResult): UpdateResult {
 
   // apply: reload the service definitions, then restart what runs changed code (services.yaml changes restart via reload)
   steps.push(...up(root))
+  // bd stays quiet on boards made before bin/init did it (sy-8s1): no-hooks, metrics off, no-git-ops; idempotent
+  if (existsSync(join(root, 'bin', 'bd-quiet'))) {
+    const q = run([join(root, 'bin', 'bd-quiet')], { cwd: root, timeoutMs: 60_000 })
+    steps.push({ step: 'bd quiet', status: q.ok ? 'ok' : 'fail', detail: q.ok ? (q.out.trim().split('\n').join('; ') || 'already') : short(q) })
+  }
   const engine = changed.some((f) => f.startsWith('site/') || f.startsWith('bin/'))
   if (engine) {
     const { services } = resolve(root)

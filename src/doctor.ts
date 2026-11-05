@@ -1,9 +1,10 @@
 // mm doctor: check this machine against the manifest. Never changes anything.
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { type Config, getPath, loadConfig, when } from './config'
 import { DIRS, HOME, hasSystemdUser, isRoot, run, which } from './env'
 import { needs } from './inputs'
+import { listProjects } from './project'
 import { manifest, type Tool } from './manifest'
 import * as vault from './vault'
 
@@ -86,6 +87,30 @@ export function doctor(): Check[] {
     : { layer: 'agents', item: 'shared instructions', status: 'ok', detail: 'none above the projects' })
   const global = ['CLAUDE.md', 'settings.json'].map((f) => join(HOME, '.claude', f)).filter((f) => existsSync(f))
   if (global.length) out.push({ layer: 'agents', item: 'global Claude folder', status: 'warn', detail: `${global.map((f) => f.replace(HOME, '~')).join(', ')} reach any agent not started by mm (mm's agents use $MM_HOME/claude/<project>)` })
+
+  // bd stays quiet (the owner, sy-8s1): no bd git hook in a board's repos (config, control, product; the hooks folder
+  // git really uses, core.hooksPath included), bd's metrics off and no-hooks set on every board
+  const boardRoots = [...new Set([DIRS.system, ...listProjects().map((p) => expand(p.root))])].filter((r) => existsSync(join(r, '.mm-answers.yaml')))
+  for (const root of boardRoots) {
+    const id = basename(root) === 'system' || root === DIRS.system ? 'system' : basename(dirname(root)) + '/' + basename(root)
+    const hooks: string[] = []
+    for (const repo of [root, join(root, 'control'), join(root, 'code')]) {
+      if (!existsSync(join(repo, '.git'))) continue
+      const hp = run(['git', '-C', repo, 'rev-parse', '--git-path', 'hooks'], { timeoutMs: 10_000 }).out.trim()
+      const dir = hp.startsWith('/') ? hp : join(repo, hp)
+      for (const f of existsSync(dir) ? readdirSync(dir).filter((x) => !x.endsWith('.sample')) : []) {
+        try { if (/\bbd\b[^\n]*\bhooks?\b|\bbeads\b/i.test(readFileSync(join(dir, f), 'utf8'))) hooks.push(`${join(dir, f).replace(HOME, '~')}`) } catch {}
+      }
+    }
+    const get = (k: string) => run([join(root, 'bin', 'bd'), 'config', 'get', k], { cwd: join(root, 'control'), timeoutMs: 15_000 }).out.trim().split('\n').pop()
+    const metrics = get('metrics.disabled'), noHooks = get('no-hooks')
+    const bad = [...(hooks.length ? [`bd hook(s): ${hooks.join(', ')}`] : []), ...(metrics !== 'true' ? [`metrics.disabled is ${metrics || 'unreadable'}`] : [])]
+    out.push(bad.length
+      ? { layer: 'board', item: `bd quiet ${id}`, status: 'fail', detail: bad.join('; '), fix: `remove the hook(s); then ${root.replace(HOME, '~')}/bin/bd-quiet` }
+      : noHooks !== 'true'
+        ? { layer: 'board', item: `bd quiet ${id}`, status: 'warn', detail: 'no bd hook, metrics off, but no-hooks is not set (bd could install hooks)', fix: `${root.replace(HOME, '~')}/bin/bd-quiet (or mm update)` }
+        : { layer: 'board', item: `bd quiet ${id}`, status: 'ok', detail: 'no bd hook; no-hooks set; metrics off' })
+  }
 
   // the vault (docs/vault.md): modes and digests; where opened secrets go (a tmpfs; swap, sy-suk 5)
   for (const c of vault.check()) out.push({ layer: 'vault', item: 'vault', status: c.ok ? 'ok' : 'fail', detail: c.detail, fix: c.ok ? undefined : 'chmod 700 ~/.mm/vault, 600 the files; a digest mismatch: restore the file from mastermind' })

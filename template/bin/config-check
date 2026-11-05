@@ -23,7 +23,10 @@ cli('config-check')
 const HOME = process.env.HOME || os.homedir()
 // Every agent here, leads and setup, in every profile: no SSH keys (whatever they are named, the user's or root's), and
 // no filling machine or project inputs (a human's step: it never shows a value, but it can replace one).
-const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm fill*)']
+// bd stays quiet (the owner, sy-8s1): no agent installs bd's git hooks, runs its setup or init, or turns hooks, metrics
+// or its git operations back on, whichever way it calls bd.
+const BD_QUIET = ['bd', 'bin/bd', 'tools/bd'].flatMap((b) => ['hooks', 'setup', 'init', 'config set no-hooks', 'config set metrics', 'config set no-git-ops'].map((c) => `Bash(${b} ${c}*)`))
+const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm fill*)', ...BD_QUIET]
 // Assistants (assistants/<user>/, system profile): no tool that acts or reads on its own (bin/lib/assist.mjs); a tool
 // that is not allowed is refused without asking (defaultMode dontAsk), so no permission request ever reaches a
 // human's phone from an assistant.

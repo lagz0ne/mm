@@ -1,0 +1,13 @@
+#!/bin/sh
+# bd-quiet — bd stays quiet on this board (the owner, sy-8s1): no git hooks, no metrics, no git operations of its own.
+# Idempotent: bin/init runs it once, `mm update` after every update. Sets only what isn't set yet, and says so.
+[ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" bd-quiet -- "$0" "$@"
+set -eu
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+cd "$P/control"
+for kv in no-hooks=true metrics.disabled=true no-git-ops=true; do
+  k=${kv%%=*}; v=${kv#*=}
+  [ "$("$P/bin/bd" config get "$k" 2>/dev/null | tail -1)" = "$v" ] && continue
+  "$P/bin/bd" config set "$k" "$v" >/dev/null
+  echo "bd-quiet: $k = $v"
+done
