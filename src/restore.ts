@@ -225,6 +225,12 @@ async function restoreWith(src: string, o: RestoreOpts): Promise<{ steps: Step[]
     // 6. the drill's checks: every sealed input opens (to memory only); then the report
     const opened = vault.list().filter((x) => { try { vault.canOpen(x.name); return true } catch { return false } })
     steps.push({ step: 'secrets', status: opened.length === vault.list().length ? 'ok' : 'fail', detail: `${opened.length}/${vault.list().length} sealed input(s) open with the new machine key (to memory only)` })
+    // the teardown (sy-4in 2), checked rather than assumed: unsealed copies gone, nothing opened left in the tmpfs
+    rmSync(work, { recursive: true, force: true })
+    const base = vault.secretsBase(), inBase = existsSync(base) ? readdirSync(base) : []
+    const mine = inBase.filter((f) => f.startsWith('.restore-identity-') && f !== `.restore-identity-${process.pid}`) // the prompt's own file goes when restore returns
+    const held = inBase.filter((f) => !f.startsWith('.')).flatMap((d) => { try { return readdirSync(join(base, d)).map((f) => `${d}/${f}`) } catch { return [] } })
+    steps.push({ step: 'teardown', status: !existsSync(work) && !mine.length ? 'ok' : 'fail', detail: `unsealed copies removed: ${!existsSync(work) ? 'yes' : `no (${tl(work)})`}; stray identity files: ${mine.length || 'none'}; values opened by running services (tmpfs, gone at reboot): ${held.length ? held.join(', ') : 'none'}` })
     steps.push({ step: 'report', status: steps.some((x) => x.status === 'fail') ? 'fail' : 'ok', detail: report.join('; ') })
     steps.push({ step: 'hold', status: 'skip', detail: o.drill ? 'drill box: nothing outward-facing starts here, ever (no public routes, no leads, no sync)' : 'on: once the old box is down (or this is a move), run `mm restore --release` yourself' })
     return { steps, ok: !steps.some((x) => x.status === 'fail'), boards }

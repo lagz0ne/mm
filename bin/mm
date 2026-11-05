@@ -46,6 +46,10 @@ fetch() { # fetch <asset> <dest>: download and verify against <asset>.sha256
   chmod 755 "$2"
 }
 
+# A whole-machine restore runs what it installs as you, and the brain's migrations as root: never "latest" (sy-fto).
+if [ "${1:-}" = restore ] && [ -z "${MM_VERSION:-}" ]; then case "${2:-}" in *.tar.gz) ;; *)
+  die "a restore needs a pinned release: MM_VERSION=vX.Y.Z (and check this script's sha256 first: docs/restore.md)" ;; esac; fi
+
 if wanted; then
   command -v curl >/dev/null 2>&1 || die "needs curl"
   if [ "$VERSION" = latest ]; then BASE=https://github.com/$REPO/releases/latest/download

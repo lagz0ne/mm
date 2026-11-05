@@ -68,6 +68,7 @@ check "mm sync refuses here" sh -c 'mm sync 2>&1 | grep -q "restore on hold"'
 check "a drill box can't be released" sh -c 'printf "the old box is down\n" | script -qec "mm restore --release" /dev/null | grep -q "never goes outward"'
 check "a new machine key; the recovery key still opens the vault" sh -c 'test -s ~/.mm/vault/key && mm vault check'
 check "the staged board data and the work folder are gone" sh -c '! test -e ~/.mm/projects/acme/shop/.restore && ! ls -d ~/.mm/state/restore-work-* 2>/dev/null'
+check "the report states the teardown (sy-4in 2)" sh -c 'jq -e ".[] | select(.step==\"teardown\") | .status==\"ok\" and (.detail | test(\"unsealed copies removed: yes\"))" /tmp/drill.json'
 check "the identity was not copied onto the box" sh -c '! grep -rqF "$(grep -v "^#" ~/recovery.key)" ~/.mm'
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]
 EOF

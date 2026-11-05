@@ -57,8 +57,17 @@ So restore applies only what it can verify:
   `--allowed-signers`) and restores **that** commit;
 - anything newer than the newest signed tag is unsigned: restore lists it (commits, files) and applies it only after the
   human types the HEAD hash shown. With no signed tag, typing the hash is the only path;
-- `MM_VERSION=vX` is required (the shim installs that release), and the restore doc gives the shim's sha256 to check
-  first.
+- `MM_VERSION=vX` is required: the shim refuses `restore` without it (a project's `.tar.gz` restore excepted). The
+  shim itself is checked before it runs, against a sha256 you get from somewhere other than the download:
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/<mm repo>/vX.Y.Z/bin/mm -o mm-shim   # the tag, never main
+  sha256sum mm-shim     # compare with "shim sha256" in the vX.Y.Z release notes, read in your browser
+  MM_VERSION=vX.Y.Z sh mm-shim restore git@github.com:<you>/mastermind.git --allowed-signers <your file>
+  ```
+
+  The shim then checks the binary against the release's own checksums (integrity; the release notes and your
+  signed mastermind tag are the origin checks). Every release lists the shim's sha256 in its notes.
 
 ## mm restore
 `curl …/bin/mm | MM_VERSION=vX sh -s -- restore git@github.com:<you>/mastermind.git` on a blank box:
