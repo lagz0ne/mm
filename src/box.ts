@@ -90,13 +90,17 @@ export function egressList(root: string): string[] {
 }
 const allowPatterns = (hosts: string[]) => hosts.map((h) => `^${h.startsWith('*.') ? '(.+\\.)?' + h.slice(2).replace(/\./g, '\\.') : h.replace(/\./g, '\\.')}(:443)?$`).join('\n') + '\n'
 
+/** What every program in the box gets (its services, and the jobs mm cron runs there): its names, its Paseo, its proxy. */
+function boxEnv(root: string): Record<string, string> {
+  const { answers: a, pp } = resolve(root), out = `http://${names(a.project).proxy}:8888`
+  return { PATH: BOX_PATH, HOME, MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0', PASEO_HOME: join(DIRS.mm, 'paseo', a.project),
+    HTTPS_PROXY: out, HTTP_PROXY: out, https_proxy: out, http_proxy: out, NO_PROXY: 'localhost,127.0.0.1,.localhost', no_proxy: 'localhost,127.0.0.1,.localhost' }
+}
 /** The box's own process-compose file: portless (the names) and the project's services, as on the host. */
 function boxProcesses(root: string, proxy: string) {
   const { answers: a, services, socket, pp } = resolve(root)
-  const out = `http://${proxy}:8888`
-  const paseoHome = join(DIRS.mm, 'paseo', a.project)
-  const env = { PATH: BOX_PATH, HOME, MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0', PASEO_HOME: paseoHome,
-    HTTPS_PROXY: out, HTTP_PROXY: out, https_proxy: out, http_proxy: out, NO_PROXY: 'localhost,127.0.0.1,.localhost', no_proxy: 'localhost,127.0.0.1,.localhost' }
+  const env = boxEnv(root)
+  if (env.HTTPS_PROXY !== `http://${proxy}:8888`) throw new Error(`the box's proxy is ${proxy}, not ${env.HTTPS_PROXY}`)
   const processes: Record<string, unknown> = {
     [`${a.project}.portless`]: { namespace: a.project, command: `portless proxy start --foreground --port ${pp} --no-tls`, environment: Object.entries(env).map(([k, v]) => `${k}=${v}`),
       log_location: join(root, '.run', 'logs', 'portless.log'), availability: { restart: 'always', backoff_seconds: 3 },
@@ -230,7 +234,7 @@ export function reclaim(root: string): Step[] {
 export const backupStage = (root: string) => join(hostDir(readAnswers(root).project), 'backup')
 export function jobArgs(root: string, name: string, command: string, env: Record<string, string>) {
   // the box can't write the project's top level (sy-b15.6 2): its health state goes under .run
-  const stage = '/run/mm/backup', e = { HEALTH_STATE: join(root, '.run', 'health.json'), ...env, ...(name === 'backup' ? { BACKUP_DIR: stage } : {}) }
+  const stage = '/run/mm/backup', e = { ...boxEnv(root), HEALTH_STATE: join(root, '.run', 'health.json'), ...env, ...(name === 'backup' ? { BACKUP_DIR: stage } : {}) }
   const script = name === 'backup' ? `umask 002 && mkdir -p '${stage}' && find '${stage}' -mindepth 1 -delete && ${command}` : `umask 002 && ${command}`
   return [...dockerCmd(), 'exec', '-w', root, ...Object.entries(e).flatMap(([k, v]) => ['-e', `${k}=${v}`]), names(readAnswers(root).project).box, 'sh', '-c', script]
 }
@@ -253,6 +257,14 @@ export function landBackup(root: string): string {
   return `${got.join(', ')} -> ${dest}`
 }
 boxHook.reclaim = reclaim
+/** mm archive, after down and reclaim: the box's network goes too (its subnet is free again). */
+export function forget(root: string): Step[] {
+  const n = names(readAnswers(root).project)
+  if (!exists('network', n.net)) return [{ step: 'network', status: 'skip', detail: `${n.net}: none` }]
+  const r = docker('network', 'rm', n.net)
+  return [{ step: 'network', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `${n.net} removed` : short(r) }]
+}
+boxHook.forget = forget
 
 /** The box's processes, through its process-compose socket in the project folder. */
 export function processes(root: string) {

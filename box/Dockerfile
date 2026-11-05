@@ -18,11 +18,13 @@ ARG BUN_SHA256=bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq \
- && apt-get install -y -qq --no-install-recommends ca-certificates curl git jq tini bubblewrap socat xz-utils unzip less procps \
+ && apt-get install -y -qq --no-install-recommends ca-certificates curl git jq tini bubblewrap socat xz-utils unzip less procps libnss-myhostname \
+ # *.localhost is 127.0.0.1 for every program (Node too, not only curl), as on the host: the services' portless names
+ && sed -i 's/^hosts:.*/hosts:          files myhostname dns/' /etc/nsswitch.conf \
  && dpkg-query -W -f '${Package} ${Version}\n' >/etc/mm-box.packages && rm -rf /var/lib/apt/lists/*
 
 # node (nodejs.org, sha256 pinned here)
-RUN curl -fsSLo /tmp/node.tar.xz https://nodejs.org/dist/v${NODE}/node-v${NODE}-linux-x64.tar.xz \
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o /tmp/node.tar.xz https://nodejs.org/dist/v${NODE}/node-v${NODE}-linux-x64.tar.xz \
  && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
  && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --exclude='*/CHANGELOG.md' --exclude='*/README.md' \
  && rm /tmp/node.tar.xz && node --version
@@ -30,10 +32,10 @@ RUN curl -fsSLo /tmp/node.tar.xz https://nodejs.org/dist/v${NODE}/node-v${NODE}-
 # process-compose and bun (GitHub releases, sha256 pinned here: a checksum file from the same release proves only that
 # the download is whole, not who made it)
 RUN cd /tmp \
- && curl -fsSLO https://github.com/F1bonacc1/process-compose/releases/download/v${PROCESS_COMPOSE}/process-compose_linux_amd64.tar.gz \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O https://github.com/F1bonacc1/process-compose/releases/download/v${PROCESS_COMPOSE}/process-compose_linux_amd64.tar.gz \
  && echo "${PROCESS_COMPOSE_SHA256}  process-compose_linux_amd64.tar.gz" | sha256sum -c - \
  && tar -xzf process-compose_linux_amd64.tar.gz -C /usr/local/bin process-compose \
- && curl -fsSLO https://github.com/oven-sh/bun/releases/download/bun-v${BUN}/bun-linux-x64.zip \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O https://github.com/oven-sh/bun/releases/download/bun-v${BUN}/bun-linux-x64.zip \
  && echo "${BUN_SHA256}  bun-linux-x64.zip" | sha256sum -c - \
  && unzip -q bun-linux-x64.zip && mv bun-linux-x64/bun /usr/local/bin/bun \
  && rm -rf /tmp/* && process-compose version --short && bun --version

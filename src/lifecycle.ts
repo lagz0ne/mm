@@ -169,6 +169,7 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   // 0. a project box: its containers go first (the box and its egress proxy)
   if (a.box && boxHook.down) steps.push(...boxHook.down(root))
   if (a.box && boxHook.reclaim) steps.push(...boxHook.reclaim(root)) // the box's 0600 files back to the host's owner, before the pack
+  if (a.box && boxHook.forget) steps.push(...boxHook.forget(root)) // and its network
   // 1. processes: stop, then reload process-compose without the project file (removes its processes)
   const s = pc('namespace', 'stop', a.project)
   steps.push({ step: 'stop', status: s.ok || /not found|no process/i.test(short(s)) ? 'ok' : 'fail', detail: s.ok ? `namespace ${a.project}` : short(s) })
@@ -214,6 +215,11 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   if (/^[a-z][a-z0-9-]{0,62}$/.test(a.project)) {
     const cdir = join(DIRS.mm, 'claude', a.project)
     if (existsSync(cdir)) { rmSync(cdir, { recursive: true, force: true }); steps.push({ step: 'claude folder', status: 'ok', detail: `${cdir.replace(HOME, '~')} removed` }) }
+    // a box's Paseo (its daemon's state, as the Claude folder) and its password: a box made again under this name gets
+    // a new password (review sy-b15.8 2); and its egress list
+    const left = [join(DIRS.mm, 'paseo', a.project), join(DIRS.mm, 'paseo', `${a.project}.password`), join(DIRS.mm, 'egress', a.project)].filter(existsSync)
+    for (const p of left) rmSync(p, { recursive: true, force: true })
+    if (left.length) steps.push({ step: 'box state', status: 'ok', detail: `removed ${left.map((p) => p.replace(HOME, '~')).join(', ')}` })
   }
   const clientDir = join(DIRS.projects, a.client)
   if (existsSync(clientDir) && !readdirSync(clientDir).length) rmSync(clientDir, { recursive: true })

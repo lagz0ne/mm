@@ -63,9 +63,24 @@ export async function installTools(root: string): Promise<Step[]> {
   mkdirSync(join(root, 'tools'), { recursive: true })
   for (const t of ['bd', 'dolt']) {
     const spec = tools[t]['linux-x64']
-    const buf = new Uint8Array(await (await fetch(spec.url, { redirect: 'follow' })).arrayBuffer())
-    const got = new Bun.CryptoHasher('sha256').update(buf).digest('hex')
-    if (got !== spec.sha256) throw new Error(`${t}: checksum mismatch (${got})`)
+    // GitHub's release downloads fail now and then (502/504, a cut-off body): try again, up to 4 times; the checksum
+    // still decides (a body that never matches fails)
+    // ...and a copy is kept by its checksum (~/.mm/cache/tools/<sha256>), so a new project doesn't need GitHub at all
+    // once this machine has it; the copy is used only if it still has that checksum
+    const sha = (b: Uint8Array) => new Bun.CryptoHasher('sha256').update(b).digest('hex')
+    const cached = join(DIRS.mm, 'cache', 'tools', String(spec.sha256).replace(/[^0-9a-f]/g, ''))
+    let buf = new Uint8Array(), got = '', why = ''
+    try { buf = new Uint8Array(readFileSync(cached)); got = sha(buf) } catch {}
+    for (let i = 0; i < 4 && got !== spec.sha256; i++) {
+      if (i) await Bun.sleep(3000 * i)
+      try {
+        const r = await fetch(spec.url, { redirect: 'follow', signal: AbortSignal.timeout(300_000) })
+        buf = new Uint8Array(await r.arrayBuffer()); got = sha(buf)
+        if (r.ok && got === spec.sha256) { try { mkdirSync(dirname(cached), { recursive: true }); writeFileSync(cached, buf) } catch {} break }
+        why = r.ok ? `checksum mismatch (${got})` : `download failed (HTTP ${r.status})`
+      } catch (e) { why = `download failed (${(e as Error).message})` }
+    }
+    if (got !== spec.sha256) throw new Error(`${t}: ${why}`)
     const tmp = join(root, `.tools-${t}.tar.gz`)
     writeFileSync(tmp, buf)
     const x = run(['tar', '-xzf', tmp, '-C', join(root, 'tools'), spec.extract])
@@ -215,8 +230,8 @@ export function serviceProcess(root: string, project: string, n: string, s: SvcR
 
 /** A project with `box: true` runs in its own container (src/box.ts registers this when it loads): every caller of up()
  *  (mm up, new, update, restore) gets the box without a second code path. */
-export const boxHook: { up: ((root: string) => Step[]) | null; down: ((root: string) => Step[]) | null; reclaim: ((root: string) => Step[]) | null
-  processes: ((root: string) => { name: string; status: string; is_ready: string; restarts: number }[]) | null } = { up: null, down: null, reclaim: null, processes: null }
+export const boxHook: { up: ((root: string) => Step[]) | null; down: ((root: string) => Step[]) | null; reclaim: ((root: string) => Step[]) | null; forget: ((root: string) => Step[]) | null
+  processes: ((root: string) => { name: string; status: string; is_ready: string; restarts: number }[]) | null } = { up: null, down: null, reclaim: null, forget: null, processes: null }
 
 /** What engine scripts read at runtime (.run/services.json, .run/endpoints.json), on the host or in a box (whose
  *  process manager has its own socket); the gateway reads services.json for each board's public name. */

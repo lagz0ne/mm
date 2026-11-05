@@ -30,6 +30,9 @@ for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready"
 check "the services run in the box (dolt, bd-serve, board ready)" sh -c "mm inspect '$REF' | grep -q 'dolt .*Ready' && mm inspect '$REF' | grep -q 'bd-serve .*Ready' && mm inspect '$REF' | grep -q 'board .*Ready'"
 check "...and not on the host's process manager" sh -c "! process-compose -U -u $HOME/.mm/pc.sock process list -o json | jq -e '.[] | select(.name | startswith(\"$PROJECT.\"))'"
 check "the board answers inside the box (by its name)" IN "curl -sf -o /dev/null http://board.$PROJECT.localhost:1355/api/whoami"
+check "...and every program resolves those names, not only curl (Node: bd-serve.$PROJECT.localhost is 127.0.0.1)" IN "node -e \"require('dns').lookup('bd-serve.$PROJECT.localhost',{family:4},(e,a)=>process.exit(e||a!=='127.0.0.1'?1:0))\""
+sleep 10   # wake's first board call comes a few seconds after the board is ready
+check "wake runs in the box (Running, no restarts)" sh -c "mm inspect '$REF' | awk '\$1==\"wake\"' | grep -qE 'Running +[^ ]+ +0( |\$)'"
 check "bd works in the box (an item, over Dolt's socket)" IN "cd $ROOT && bin/bd create 'made in the box' --json | grep -q '\"id\"'"
 
 echo "== the box user"
@@ -91,6 +94,11 @@ check "the host reaches the box's Paseo with the password (paseo ls)" sh -c "PAS
 check "...and is refused with a wrong one" sh -c "! PASEO_PASSWORD=wrong-password paseo --host 'tcp://$BIP:6767' ls --json"
 GW=$(echo "$BIP" | sed 's/\.10$/.1/')
 check "the box can't reach the system Paseo (6767 on its network's gateway, the host)" sh -c "! IN 'curl -s -o /dev/null --max-time 5 --noproxy \"*\" http://$GW:6767/'"
+# another box: a stand-in on its own internal network (as mm makes them), listening on Paseo's port (review sy-b15.8 4)
+ONET=mm-net-qa-other-$$; OBOX=mm-qa-other-$$
+D network create --internal --subnet 10.231.250.0/24 "$ONET" >/dev/null 2>&1 && D run -d --name "$OBOX" --network "$ONET" --ip 10.231.250.10 --user 200250 --cap-drop ALL "$(D inspect -f '{{.Config.Image}}' "$BOX")" socat TCP-LISTEN:6767,fork,reuseaddr SYSTEM:'echo other-box' >/dev/null 2>&1
+check "...nor another box's daemon (6767 on its network), directly or through its own egress proxy" sh -c "D exec '$OBOX' curl --http0.9 -s --max-time 5 http://10.231.250.10:6767/ | grep -q other-box && ! IN 'curl --http0.9 -s --max-time 5 --noproxy \"*\" http://10.231.250.10:6767/ | grep -q other-box' && ! IN 'curl --http0.9 -s --max-time 10 -x http://$PX:8888 http://10.231.250.10:6767/ | grep -q other-box'"
+D rm -f "$OBOX" >/dev/null 2>&1; D network rm "$ONET" >/dev/null 2>&1
 
 echo "== mm finds the box (its registration)"
 check "mm ls lists it as a box, with its processes" sh -c "mm ls -o json | jq -e --arg p '$PROJECT' '.[] | select(.project == \$p) | .box == true'"
@@ -98,7 +106,7 @@ check "the run files the engine scripts read (.run/services.json, endpoints.json
 
 echo "== the box's schedules (the host's mm cron runs them in the box), its backup out of its reach (sy-8gv)"
 BK=$(jq -r .dirs.backups "$ROOT/.run/endpoints.json"); BKP="$BK/$PROJECT"
-check "mm cron --run $PROJECT/health: runs in the box, ok" mm cron --run "$PROJECT/health"
+check "mm cron --run $PROJECT/health: runs in the box, and finds no problem (the box's Paseo answers too)" sh -c "o=\$(mm cron --run '$PROJECT/health' 2>&1) && echo \"\$o\" && ! echo \"\$o\" | grep -q FAILED"
 check "mm cron --run $PROJECT/backup: ok" mm cron --run "$PROJECT/backup"
 LAST=$(ls -1d "$BKP"/20*/ 2>/dev/null | tail -1)
 check "...a backup on the host ($BKP/<date>), with the board's items in it" sh -c "[ -n '$LAST' ] && grep -q 'made in the box' '$LAST/board.jsonl' && test -d '$LAST/board.dolt' && test -s '$LAST/config.bundle'"
@@ -114,5 +122,5 @@ for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready"
 check "...its board is ready in the box, and the item made there before is still there" sh -c "mm inspect '$REF' | grep -q 'board .*Ready' && IN \"cd $ROOT && bin/bd list --json\" | grep -q 'made in the box'"
 
 echo "== archive"
-check "mm archive: the box and its proxy are gone, and what mm kept for it" sh -c "mm archive '$REF' >/dev/null && ! D inspect '$BOX' >/dev/null 2>&1 && ! D inspect '$PX' >/dev/null 2>&1 && ! test -e '$HD'"
+check "mm archive: the box and its proxy are gone, and what mm kept for it" sh -c "mm archive '$REF' >/dev/null && ! D inspect '$BOX' >/dev/null 2>&1 && ! D inspect '$PX' >/dev/null 2>&1 && ! D network inspect '$NET' >/dev/null 2>&1 && ! test -e '$HD' && ! test -e '$PW' && ! test -e '$MM_HOME_DIR/paseo/$PROJECT' && ! test -e '$MM_HOME_DIR/egress/$PROJECT'"
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]

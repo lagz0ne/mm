@@ -16,7 +16,7 @@ import * as syncMod from './sync'
 import { release, restoreMachine } from './restore'
 import { AUTH_SOCK, callApi, serve as authServe } from './auth'
 import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
-import { findRoot, listProjects, namespaceOp, newProject, processes, readAnswers, resolve, up } from './project'
+import { findRoot, listProjects, namespaceOp, newProject, parseRef, processes, readAnswers, resolve, rootOf, up } from './project'
 import * as boxMod from './box'
 import { type Format, print } from './out'
 import pkg from '../package.json'
@@ -119,7 +119,13 @@ program.command('new <project>').description('stamp a project from the template:
       console.log(`\n${answers.project} ready at ${tilde(answers.root)}`)
       for (const [n, s] of Object.entries(services)) if ((s as { url?: string }).url) console.log(`  ${n.padEnd(9)} ${(s as { url?: string }).url}`)
       process.exit(steps.some((s) => s.status === 'fail') ? 1 : 0)
-    } catch (e) { console.error(`mm new: ${(e as Error).message}`); process.exit(1) }
+    } catch (e) {
+      const msg = (e as Error).message
+      console.error(`mm new: ${msg}`)
+      // a stop halfway leaves the folder (and a new try refuses it): say how to clear it
+      try { const { client, name } = parseRef(ref), r = rootOf(client, name); if (!/already exists/.test(msg) && existsSync(join(r, '.mm-answers.yaml'))) console.error(`the half-made project is at ${tilde(r)}: mm archive ${ref} removes it (then try again)`) } catch {}
+      process.exit(1)
+    }
   })
 program.command('ls').description('list projects').action(() => { const o = fmt(); print(listProjects(), o, 'project') })
 program.command('inspect <project>').description('a project: answers, services, URLs').action((ref: string) => {
