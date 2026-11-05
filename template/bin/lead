@@ -61,7 +61,9 @@ case "${1:-}" in
 Handover: a previous $role lead had these items open (in progress or blocked). Read each one's latest comments, then carry on with them; don't wait for a board update:
 $items"
     # its own Claude folder for this project (no global CLAUDE.md, settings or memory), with its folder trusted
-    CDIR=$(MM_PROJECT="$PROJECT" node "$P/bin/lib/claude.mjs" trust "$DIR") || { echo "lead: could not prepare the Claude folder" >&2; exit 1; }
+    # (and the project root: Claude Code runs an MCP headersHelper, e.g. the design lead's Doop key, only when the
+    # workspace root, the git root, is trusted; plans/doop.md)
+    CDIR=$(MM_PROJECT="$PROJECT" node "$P/bin/lib/claude.mjs" trust "$DIR" "$P") || { echo "lead: could not prepare the Claude folder" >&2; exit 1; }
     "$PASEO" run --no-wait -q --title "$PROJECT · $role lead" --provider "$model" --mode auto --env "CLAUDE_CONFIG_DIR=$CDIR" \
       --cwd "$DIR" --label "project=$PROJECT" --label "role=$role" \
       --env "BEADS_ACTOR=$role" \

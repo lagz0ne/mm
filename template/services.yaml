@@ -46,6 +46,14 @@ services:
     public: { name: "{{name}}-{{client}}", auth: none }
     ready: { http: / }
     restart: always
+  doop:
+    about: "Optional design canvas (Doop, the pinned image mm names in .run/endpoints.json): loopback only, its data in data/doop/, its own account and agent key in secrets/. The design lead reaches it by MCP. On with `mm doop on <project>` (plans/doop.md)."
+    optional: true
+    command: "{root}/bin/doop-run"
+    env: { DOOP_URL: "{url:doop}" }
+    port: http
+    ready: { http: /healthz }
+    restart: always
 schedules:
   health: { every: 1m, command: "node {root}/bin/health" }
   backup: { every: "daily 03:30", command: "{root}/bin/backup" }

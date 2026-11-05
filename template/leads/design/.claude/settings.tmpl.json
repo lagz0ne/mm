@@ -26,7 +26,8 @@
       "Write(//tmp/**)",
       "Edit({root}/worktrees/lead-design/docs/design/**)",
       "Write({root}/worktrees/lead-design/docs/design/**)",
-      "Write(~/.local/share/preview/{project}-design/**)"
+      "Write(~/.local/share/preview/{project}-design/**)",
+      "mcp__doop"
     ],
     "deny": [
       "Read({root}/secrets/**)",

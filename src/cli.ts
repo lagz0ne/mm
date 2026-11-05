@@ -16,7 +16,7 @@ import * as syncMod from './sync'
 import { release, restoreMachine } from './restore'
 import { AUTH_SOCK, callApi, serve as authServe } from './auth'
 import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
-import { findRoot, listProjects, namespaceOp, newProject, parseRef, processes, readAnswers, resolve, rootOf, up } from './project'
+import { findRoot, listProjects, namespaceOp, newProject, parseRef, processes, readAnswers, resolve, rootOf, setOptional, up } from './project'
 import * as boxMod from './box'
 import * as aiMod from './ai'
 import { type Format, print } from './out'
@@ -150,6 +150,11 @@ for (const [cmd, op] of [['down', 'stop'], ['restart', 'restart']] as const) {
   })
 }
 
+// a project's own design canvas (plans/doop.md): an optional service, off until turned on here (the owner's choice)
+const doopCmd = program.command('doop').description('a project\'s own Doop (design canvas): loopback only, its data in the project (plans/doop.md)')
+for (const [cmd, on] of [['on', true], ['off', false]] as const)
+  doopCmd.command(`${cmd} <project>`).description(on ? 'start the project\'s Doop (the answers get it; the design lead gets its MCP)' : 'stop it (its data stays in data/doop/)')
+    .action((ref: string) => { const st = setOptional(findRoot(ref), 'doop', on); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })
 const boxCmd = program.command('box').description('project boxes: each project in its own container (plans/project-box.md)')
 boxCmd.command('build').description('build the box image and the egress proxy image (pinned tools) from this mm').action(() => { const st = boxMod.build(); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })
 boxCmd.command('on <project>').description('move a host project into its own box (its host processes stop; the answers get box: true)').action((ref: string) => { const st = boxMod.on(findRoot(ref)); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })

@@ -42,7 +42,10 @@ const MS = (() => { try { return JSON.parse(fs.readFileSync(path.join(P, '.run',
 const named = (p) => [p, ...(p.startsWith(`${HOME}/`) ? [`~${p.slice(HOME.length)}`, `$HOME${p.slice(HOME.length)}`] : [])].map((x) => `Bash(*${x}*)`)
 const SECRET_DENY = [...(MS.files || []).flatMap((f) => [`Read(/${f})`, `Edit(/${f})`, ...named(f)]),
   ...(MS.dirs || []).flatMap((d) => [`Read(/${d}/**)`, `Edit(/${d}/**)`, ...named(d)])]
-const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm fill*)', ...BD_QUIET, ...OWNER_ONLY, ...SECRET_DENY]
+// The project's own secrets (Doop's account, agent key and auth secret among them; plans/doop.md): no Bash command that
+// names them, and no running the helper that prints the Doop key (only Claude Code runs it, as the MCP's headersHelper)
+const PROJECT_SECRETS = ['Bash(*{root}/secrets*)', 'Bash(*secrets/doop*)', 'Bash(*doop-mcp-headers*)', 'Edit(/{root}/secrets/**)']
+const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm fill*)', ...BD_QUIET, ...OWNER_ONLY, ...SECRET_DENY, ...PROJECT_SECRETS]
 // Assistants (assistants/<user>/, system profile): no tool that acts or reads on its own (bin/lib/assist.mjs); a tool
 // that is not allowed is refused without asking (defaultMode dontAsk), so no permission request ever reaches a
 // human's phone from an assistant.
@@ -108,6 +111,22 @@ for (const dir of SETTINGS_DIRS) {
   try { tj = JSON.parse(fs.readFileSync(t, 'utf8')) } catch (e) { bad(`${path.relative(P, t)} is not valid JSON (${e.message})`); continue }
   if (JSON.stringify(tj).includes(R)) bad(`${path.relative(P, t)} hard-codes ${R}; write {root} instead`)
   if (process.argv.includes('--render')) fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify(render(tj, path.basename(dir), dir.startsWith(`${ASSIST_ROOT}/`)), null, 2) + '\n')
+  // a role's MCP servers (.mcp.tmpl.json -> .mcp.json): a server whose {url:<service>} doesn't run here is left out, so
+  // e.g. the design lead gets Doop only while the project runs it (mm doop on)
+  const mt = path.join(dir, '.mcp.tmpl.json'), mo = path.join(dir, '.mcp.json')
+  if (fs.existsSync(mt) && process.argv.includes('--render')) {
+    let m; try { m = JSON.parse(fs.readFileSync(mt, 'utf8')) } catch (e) { bad(`${path.relative(P, mt)} is not valid JSON (${e.message})`); continue }
+    const fillAll = (v) => gfill(v).replaceAll('{project}', projectName()).replace(/\{url:([\w-]+)\}/g, (x, n) => svcUrl(n) || x)
+    const servers = Object.fromEntries(Object.entries(m.mcpServers || {}).map(([k, s]) => [k, JSON.parse(fillAll(JSON.stringify(s)))])
+      .filter(([, s]) => !JSON.stringify(s).includes('{url:')))
+    // ...and approved in the folder's local settings (Claude Code takes that only from there, in a trusted folder; not
+    // from settings.json): exactly the servers just rendered
+    const ml = path.join(dir, '.claude', 'settings.local.json'), names = Object.keys(servers)
+    if (names.length) {
+      fs.writeFileSync(mo, JSON.stringify({ mcpServers: servers }, null, 2) + '\n')
+      fs.writeFileSync(ml, JSON.stringify({ enabledMcpjsonServers: names }, null, 2) + '\n')
+    } else { fs.rmSync(mo, { force: true }); fs.rmSync(ml, { force: true }) }
+  }
 }
 
 function mandatoryDeny(role) {

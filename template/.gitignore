@@ -21,6 +21,8 @@
 leads/RACI.md
 # Generated from settings.tmpl.json by `bin/config-check --render` (absolute paths for this machine).
 leads/*/.claude/settings.json
+leads/*/.mcp.json
+leads/*/.claude/settings.local.json
 assistants/*/.claude/settings.json
 assistants/*/mode
 setup/.claude/settings.json

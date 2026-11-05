@@ -1,0 +1,43 @@
+#!/bin/sh
+# doop-run — the project's own Doop (plans/doop.md), run by the process manager as the optional `doop` service
+# (`mm doop on <project>`). The pinned image mm names in .run/endpoints.json (containers.doop_image), as its own
+# container:
+#   - loopback only: 127.0.0.1:$PORT (portless gives it doop.<project>.localhost);
+#   - its data in the project: data/doop/ (PGlite under data/pg, assets under data/assets), backed up with it;
+#   - the owner's uid, a read-only root, no capabilities, no new privileges, limits;
+#   - its secrets in secrets/ (0600, never on a command line): its auth secret, a random sign-up domain (only who knows
+#     it can make an account), and, after the first start, its own account and the design lead's agent key.
+# The design lead reaches it by MCP (leads/design/.mcp.json, rendered while it runs), with bin/doop-mcp-headers.
+set -eu
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+PROJECT=$(sed -n 's/^project:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p' "$P/.mm-answers.yaml" 2>/dev/null || true); PROJECT=${PROJECT:-$(basename "$P")}
+: "${PORT:?the process manager gives PORT}" "${DOOP_URL:?services.yaml gives DOOP_URL}"
+EP="$P/.run/endpoints.json"
+cfg() { node -e "try{const c=require('$EP').containers||{};process.stdout.write(String(c['$1']||''))}catch{}"; }
+DOCKER=$(cfg docker); DOCKER=${DOCKER:-docker}; IMAGE=$(cfg doop_image)
+[ -n "$IMAGE" ] || { echo "doop-run: no Doop image in $EP (mm up writes it)" >&2; exit 1; }
+S="$P/secrets"; D="$P/data/doop"; NAME="mm-doop-$PROJECT"
+umask 077; mkdir -p "$S" "$D"; chmod 700 "$S"
+rnd() { node -e "process.stdout.write(require('crypto').randomBytes($1).toString('hex'))"; }
+[ -s "$S/doop-auth-secret" ] || rnd 32 >"$S/doop-auth-secret"
+[ -s "$S/doop-signup-domain" ] || printf '%s.doop.invalid' "$(rnd 12)" >"$S/doop-signup-domain"
+# the container's env, in a file only docker reads (never on a command line)
+{ echo "NODE_ENV=production"; echo "PORT=4400"; echo "HOME=/tmp"
+  echo "BETTER_AUTH_URL=$DOOP_URL"; echo "TRUSTED_ORIGINS=$DOOP_URL"
+  echo "BETTER_AUTH_SECRET=$(cat "$S/doop-auth-secret")"; echo "SIGNUP_EMAIL_DOMAINS=$(cat "$S/doop-signup-domain")"
+} >"$S/doop.env"
+$DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
+$DOCKER run --rm --name "$NAME" --label "mm.project=$PROJECT" --label mm.service=doop \
+  --user "$(id -u):$(id -g)" --read-only --tmpfs /tmp:rw,nosuid,size=512m \
+  --cap-drop ALL --security-opt no-new-privileges --memory 2g --pids-limit 1024 \
+  -p "127.0.0.1:$PORT:4400" -v "$D:/app/data" --env-file "$S/doop.env" "$IMAGE" &
+pid=$!
+trap '$DOCKER stop -t 10 "$NAME" >/dev/null 2>&1 || true; wait $pid 2>/dev/null; exit 0' TERM INT
+# first start: Doop's own account for the project, and the design lead's agent key (bin/lib/doop-init.mjs)
+n=0; until curl -sf -o /dev/null "http://127.0.0.1:$PORT/healthz"; do
+  # alive? /proc, not kill -0: with `sudo docker`, $pid is root's and can't be signalled by the owner
+  [ -d "/proc/$pid" ] || { wait $pid; exit 1; }
+  n=$((n + 1)); [ $n -lt 180 ] || { echo "doop-run: Doop did not answer in 3 min" >&2; break; }; sleep 1
+done
+[ -s "$S/doop-agent-key" ] || node "$P/bin/lib/doop-init.mjs" "http://127.0.0.1:$PORT" "$DOOP_URL" "$S" || echo "doop-run: first-start setup failed (it is tried again at the next start)" >&2
+wait $pid

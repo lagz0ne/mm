@@ -13,7 +13,8 @@ import { pcRunning, writeBase } from './pc'
 import { renderTo, template, templateCommit } from './template'
 import pkg from '../package.json'
 
-export interface Answers { client: string; name: string; project: string; short: string; root: string; template_version: string; created: string; profile?: string; throwaway?: boolean; box?: boolean }
+export interface Answers { client: string; name: string; project: string; short: string; root: string; template_version: string; created: string; profile?: string; throwaway?: boolean; box?: boolean
+  services_on?: string[] } // optional services this project runs (services.yaml optional: true), e.g. doop
 const ID = /^[a-z][a-z0-9-]{0,30}$/
 export const PROJECTS_PC = join(DIRS.pc, 'projects')
 /** Project boxes: one file each (`# from <root>/services.yaml`), so mm, the gateway and the sentinel find them; never
@@ -185,6 +186,8 @@ export function resolve(root: string) {
   const services: Record<string, Svc & { url?: string; public_url?: string; public_port?: number; public_bind?: string }> = {}
   for (const [n, s] of Object.entries(spec.services)) {
     if (s.optional && n === 'app' && !existsSync(join(root, 'release'))) continue // app starts once something is deployed
+    // any other optional service (e.g. doop) runs only when the project's answers turn it on: `mm doop on <project>`
+    if (s.optional && n !== 'app' && !(a.services_on || []).includes(n)) continue
     const env = Object.fromEntries(Object.entries(s.env || {}).map(([k, v]) => [k, fill(String(v))]))
     // domain mode: a public service gets a stable port. The service itself stays on loopback (portless and the health
     // checks reach it there); the web proxy reaches it through mm's forwarder on bind_host (up(): <service>-public),
@@ -269,9 +272,36 @@ export function writeRunFiles(root: string, pcSocket: string) {
   const ep = { manager: 'process-compose (mm)', self_healing: true, restart: `process-compose -U -u ${pcSocket} process restart ${a.project}.{service}`,
     logs: `tail -n {lines} ${join(root, '.run', 'logs')}/{service}.log`, observability: obsEndpoints(), dirs: engineDirs(),
     ...(publicKeyPem() ? { auth: { public_key: publicKeyPem() } } : {}), // the gateway's key: boards verify its assertions
+    // how this machine runs a container, and the pinned images of optional services (bin/doop-run; plans/doop.md)
+    containers: { docker: String(process.env.MM_DOCKER || getPath(loadConfig(), 'box.docker') || 'docker'),
+      doop_image: String(process.env.MM_DOOP_IMAGE || getPath(loadConfig(), 'doop.image') || 'mm-doop:0.12.0') },
     machine_secrets: machineSecretPaths(), // where the machine's secrets are (paths only): config-check denies them to every role (sy-5ag)
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
   writeInProject(root, '.run/endpoints.json', JSON.stringify(ep, null, 2))
+}
+
+/**
+ * Turn an optional service (services.yaml `optional: true`, e.g. doop) on or off for a project: the answers record it
+ * (committed), mm up starts or drops it, and config-check renders again (a role's MCP that needs the service, e.g. the
+ * design lead's Doop, appears or goes with it).
+ */
+export function setOptional(root: string, service: string, on: boolean): Step[] {
+  const spec = Bun.YAML.parse(readFileSync(join(root, 'services.yaml'), 'utf8')) as { services: Record<string, Svc> }
+  const s = spec.services?.[service]
+  if (!s || !s.optional || service === 'app') return [{ step: service, status: 'fail', detail: `${service} is not an optional service of this project's template (mm update first?)` }]
+  const f = join(root, '.mm-answers.yaml'), text = readFileSync(f, 'utf8'), a = readAnswers(root)
+  const list = new Set(a.services_on || []); if (on) list.add(service); else list.delete(service)
+  const body = text.replace(/^services_on:.*\n?/m, '').trimEnd() + (list.size ? `\nservices_on: [${[...list].sort().join(', ')}]\n` : '\n')
+  const steps: Step[] = []
+  if (body !== text) {
+    writeFileSync(f, body)
+    const c = run(['git', '-C', root, 'commit', '-q', '-m', `mm ${service} ${on ? 'on' : 'off'}`, '.mm-answers.yaml'], { env: { SETUP_HUMAN: '1' } })
+    steps.push({ step: 'answers', status: c.ok ? 'ok' : 'fail', detail: c.ok ? `services_on: [${[...list].join(', ')}]` : (c.err || c.out).trim().slice(0, 160) })
+  } else steps.push({ step: 'answers', status: 'skip', detail: `${service} already ${on ? 'on' : 'off'}` })
+  steps.push(...up(root))
+  const cc = run([join(root, 'bin', 'config-check'), '--render'], { cwd: root })
+  steps.push({ step: 'governance check', status: cc.ok ? 'ok' : 'fail', detail: (cc.out || cc.err).trim().split('\n').pop() || '' })
+  return steps
 }
 
 export function up(root: string): Step[] {

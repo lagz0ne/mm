@@ -1,0 +1,7 @@
+#!/bin/sh
+# doop-mcp-headers — the headersHelper of the design lead's Doop MCP (leads/design/.mcp.json; plans/doop.md). Claude
+# Code runs it when it connects; it prints the auth header from the project's agent key, so the key is never in a
+# config file. Agents may not run it (config-check denies it) or read secrets/.
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+k=$(cat "$P/secrets/doop-agent-key" 2>/dev/null) || { echo "no Doop agent key yet (the doop service makes it at its first start)" >&2; exit 1; }
+printf '{"Authorization":"Bearer %s"}\n' "$k"
