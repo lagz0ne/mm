@@ -70,7 +70,7 @@ export async function ensurePc(): Promise<string> {
   mkdirSync(DIRS.bin, { recursive: true })
   writeFileSync(launcher, [
     '#!/bin/sh', '# Written by mm onboard: the machine process manager with the base file and every project file.',
-    `set -- -f "${BASE}"`, `for f in "${PROJECTS}"/*.yaml; do [ -e "$f" ] && set -- "$@" -f "$f"; done`, `rm -f "${DIRS.socket}"`,
+    `set -- -f "${BASE}"`, `for f in "${PROJECTS}"/*.yaml "${join(DIRS.pc, 'box-public')}"/*.yaml; do [ -e "$f" ] && set -- "$@" -f "$f"; done`, `rm -f "${DIRS.socket}"`,
     `exec "${pc}" up -t=false --keep-project -U -u "${DIRS.socket}" -L "${join(DIRS.pc, 'process-compose.log')}" "$@"`, '',
   ].join('\n'), { mode: 0o755 })
   if (hasSystemdUser()) {

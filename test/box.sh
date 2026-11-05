@@ -180,6 +180,16 @@ check "Claude Code in the box answers through the gateway (claude -p, the box's 
 check "...the upstream saw only the machine's key, never the box's" sh -c "grep -q 'upstream-secret-qa' '$AIT/up.jsonl' && ! grep -q mmk_ '$AIT/up.jsonl'"
 check "...and mm usage counts it for this project" sh -c "mm ai usage -o json | jq -e --arg p '$PROJECT' '.[0].rows[] | select(.project == \$p) | .calls >= 2'"
 
+echo "== its public board: from the host to the box, Traefik never on the box's network (review sy-b15.7 2)"
+PUBPORT=$(jq -r '.services.board.public_port // empty' "$ROOT/.run/services.json"); PUBBIND=$(jq -r '.services.board.public_bind // empty' "$ROOT/.run/services.json")
+PUBNAME=$(jq -r '.services.board.public.name // empty' "$ROOT/.run/services.json")
+if [ -n "$PUBPORT" ] && [ -n "$PUBBIND" ]; then
+  for _ in $(seq 1 30); do [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://$PUBBIND:$PUBPORT/api/whoami")" != 000 ] && break; sleep 1; done
+  check "the host's bind_host ($PUBBIND:$PUBPORT) reaches the box board's public side, which serves nothing without the gateway's assertion" sh -c "c=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 'http://$PUBBIND:$PUBPORT/api/whoami'); [ \"\$c\" != 000 ] && [ \"\$c\" != 200 ]"
+  check "...its route is listed ($PUBNAME), and no Traefik (no other container) is on the box's network" sh -c "expose ls | grep -q '$PUBNAME' && [ \"\$(D network inspect -f '{{range .Containers}}{{.Name}} {{end}}' '$NET' | wc -w)\" = 2 ]"
+  check "...the host's forwarder is in pc/box-public, not among the projects" sh -c "test -f '$MM_HOME_DIR/pc/box-public/$PROJECT.yaml' && ! test -e '$MM_HOME_DIR/pc/projects/$PROJECT.yaml'"
+else ok "no public board on this machine (not domain mode): skipped"; fi
+
 echo "== mm finds the box (its registration)"
 check "mm ls lists it as a box, with its processes" sh -c "mm ls -o json | jq -e --arg p '$PROJECT' '.[] | select(.project == \$p) | .box == true'"
 check "the run files the engine scripts read (.run/services.json, endpoints.json)" sh -c "jq -e .services.board '$ROOT/.run/services.json' >/dev/null && test -s '$ROOT/.run/endpoints.json'"
@@ -199,6 +209,7 @@ PORTS="$HD/ports.json"; DP=$(jq -r .dolt_port "$PORTS" 2>/dev/null)
 IN "jq '.dolt_port = 40001 | .services.board.public_port = 40002' $ROOT/.run/services.json >$ROOT/.run/x.json && mv $ROOT/.run/x.json $ROOT/.run/services.json"
 check "the host keeps the box's ports ($PORTS, out of the box's sight), and the box rewrote its own copy" sh -c "[ -n '$DP' ] && [ '$DP' != null ] && ! IN 'test -e $PORTS' && [ \"\$(jq .dolt_port '$ROOT/.run/services.json')\" = 40001 ]"
 check "mm box off: the box stops; box: true leaves the answers (committed)" sh -c "mm box off '$REF' >/tmp/box-off.out 2>&1 && ! D inspect '$BOX' >/dev/null 2>&1 && ! grep -qx 'box: true' '$ROOT/.mm-answers.yaml' && git -C '$ROOT' diff --quiet -- .mm-answers.yaml"
+check "...the box's public forwarder goes from the host (the host project's own takes over)" sh -c "! test -e '$MM_HOME_DIR/pc/box-public/$PROJECT.yaml'"
 for _ in $(seq 1 60); do process-compose -U -u "$HOME/.mm/pc.sock" process list -o json 2>/dev/null | jq -e ".[] | select(.name==\"$PROJECT.board\") | .is_ready == \"Ready\"" >/dev/null && break; sleep 2; done
 check "...its services run on the host again (board ready), and no file stays the box's" sh -c "process-compose -U -u $HOME/.mm/pc.sock process list -o json | jq -e '.[] | select(.name==\"$PROJECT.board\") | .is_ready == \"Ready\"' >/dev/null && [ -z \"\$(find '$ROOT' -uid +199999 -print -quit)\" ]"
 check "...on the host, its ports are the host's copy, not what the box wrote" sh -c "[ \"\$(jq .dolt_port '$ROOT/.run/services.json')\" = '$DP' ] && [ \"\$(jq .services.board.public_port '$ROOT/.run/services.json')\" != 40002 ]"
@@ -212,4 +223,5 @@ check "...and it joined the machine's Paseo again (one entry)" sh -c "[ \"\$(SP 
 echo "== archive"
 check "mm archive: the box and its proxy are gone, and what mm kept for it" sh -c "mm archive '$REF' >/dev/null && ! D inspect '$BOX' >/dev/null 2>&1 && ! D inspect '$PX' >/dev/null 2>&1 && ! D network inspect '$NET' >/dev/null 2>&1 && ! test -e '$HD' && ! test -e '$PW' && ! test -e '$MM_HOME_DIR/paseo/$PROJECT' && ! test -e '$MM_HOME_DIR/egress/$PROJECT'"
 check "...and it left the machine's Paseo" sh -c "[ -z \"\$(joined)\" ]"
+check "...its public forwarder and its route are gone" sh -c "! test -e '$MM_HOME_DIR/pc/box-public/$PROJECT.yaml' && { [ -z '$PUBNAME' ] || ! expose ls | grep -q '$PUBNAME'; }"
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]

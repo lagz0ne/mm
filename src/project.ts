@@ -389,7 +389,10 @@ export function up(root: string): Step[] {
 /** Load the base file plus every project file into the running process-compose. */
 export function loadAll() {
   writeBase()
-  const files = [join(DIRS.pc, 'base.yaml'), ...(existsSync(PROJECTS_PC) ? readdirSync(PROJECTS_PC).filter((f) => f.endsWith('.yaml')).sort().map((f) => join(PROJECTS_PC, f)) : [])]
+  // the projects, and the host's side of the boxes' public services (pc/box-public: kept apart, so nothing takes them
+  // for projects)
+  const dirFiles = (d: string) => (existsSync(d) ? readdirSync(d).filter((f) => f.endsWith('.yaml')).sort().map((f) => join(d, f)) : [])
+  const files = [join(DIRS.pc, 'base.yaml'), ...dirFiles(PROJECTS_PC), ...dirFiles(join(DIRS.pc, 'box-public'))]
   const r = run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'update', ...files.flatMap((f) => ['-f', f])], { timeoutMs: 60_000 })
   // nothing to change (e.g. the last project was just removed) is not a failure
   return /No processes were updated/i.test(r.out + r.err) ? { ...r, ok: true } : r
