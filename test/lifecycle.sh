@@ -153,6 +153,12 @@ check "mm doctor: bd quiet ok for this project" sh -c "mm doctor -o json 2>/dev/
 printf '#!/bin/sh\nexec bd hooks run pre-commit "$@"\n' >"$ROOT/control/.git/hooks/pre-commit"; chmod +x "$ROOT/control/.git/hooks/pre-commit"
 check "...a bd hook planted in control/: doctor fails, naming it" sh -c "mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item == \"bd quiet $REF\") | .status == \"fail\" and (.detail | test(\"control/.git/hooks/pre-commit\"))'"
 rm -f "$ROOT/control/.git/hooks/pre-commit"
+# the shared temp folders (review sy-b15.16): a writable file is listed, unless a folder the group can't enter is above it
+loose_n() { mm doctor -o json 2>/dev/null | jq -r '.[] | select(.item == "shared temp folders") | if .status == "ok" then "0" else (.detail | capture("^(?<n>[0-9]+)").n) end'; }
+L0=$(loose_n); WALL=$(mktemp -d /tmp/mm-qa-wall.XXXXXX); OPEN=$(mktemp -d /tmp/mm-qa-open.XXXXXX)
+chmod 700 "$WALL"; chmod 755 "$OPEN"; (umask 000; : >"$WALL/f"; : >"$OPEN/f")
+L1=$(loose_n); rm -rf "$WALL" "$OPEN"
+check "mm doctor: a world-writable file of yours in /tmp is listed, one under a 0700 folder is not ($L0 -> $L1)" test "$L1" = "$((L0 + 1))"
 check "a lead may not install bd hooks or turn metrics on (rendered denies)" sh -c "jq -e '.permissions.deny | index(\"Bash(bd hooks*)\") and index(\"Bash(bin/bd config set metrics*)\") and index(\"Bash(bd init*)\")' '$ROOT/leads/qa/.claude/settings.json'"
 check "a lead may not make people, links, grants or tokens, nor reach the gateway's socket or store (review sy-b15.13)" sh -c "jq -e --arg mm \"/\${MM_HOME:-$HOME/.mm}\" '.permissions.deny | index(\"Bash(mm user*)\") and index(\"Bash(mm grant*)\") and index(\"Bash(mm token*)\") and index(\"Bash(*auth.sock*)\") and index(\"Read(\(\$mm)/auth/**)\")' '$ROOT/leads/qa/.claude/settings.json'"
 

@@ -122,7 +122,10 @@ export function doctor(): Check[] {
     out.push((m & 0o077) === 0 ? { layer: 'machine', item: `mode ${d.replace(HOME, '~')}`, status: 'ok', detail: `0${m.toString(8)}` }
       : { layer: 'machine', item: `mode ${d.replace(HOME, '~')}`, status: 'fail', detail: `0${m.toString(8)}: wider than 0700 (the boxes share the owner's group)`, fix: `chmod 700 ${d.replace(HOME, '~')}` })
   }
-  const loose = run(['find', '/tmp', '/var/tmp', '/dev/shm', '-xdev', '-user', String(uid), '-not', '-type', 'l', '-perm', '/022', '-print'], { timeoutMs: 30_000 }).out.trim().split('\n').filter(Boolean)
+  // a folder that neither the group nor others may enter (no g+x, no o+x: e.g. Claude's own 0700 /tmp/claude-<uid>) is a
+  // wall too: what is under it is out of their reach, so it isn't listed (review sy-b15.16 #4)
+  const loose = run(['find', '/tmp', '/var/tmp', '/dev/shm', '-xdev', '(', '-type', 'd', '-not', '-perm', '/011', '-prune', ')', '-o',
+    '(', '-user', String(uid), '-not', '-type', 'l', '-perm', '/022', '-print', ')'], { timeoutMs: 30_000 }).out.trim().split('\n').filter(Boolean)
   out.push(loose.length
     ? { layer: 'machine', item: 'shared temp folders', status: 'warn', detail: `${loose.length} path(s) of yours are group- or world-writable: ${loose.slice(0, 5).join(', ')}${loose.length > 5 ? ', …' : ''}`, fix: 'chmod go-w them (or remove them)' }
     : { layer: 'machine', item: 'shared temp folders', status: 'ok', detail: 'nothing of yours is group- or world-writable in /tmp, /var/tmp, /dev/shm' })
