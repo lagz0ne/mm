@@ -58,10 +58,14 @@ function hashPort(key: string): number {
 // ---------- mm new ----------
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
 export type NewOpts = { short?: string; profile?: string; root?: string; project?: string; throwaway?: boolean; box?: boolean }
-/** The project-local tools (bd, dolt) from tools.json, checksums verified. Used by mm new and mm restore. */
+/** The project-local tools (bd, dolt), checksums verified. Used by mm new and mm restore. The pins (URL and sha256)
+ *  come from mm's own template, never from the project's tools.json: a box can write its project, so after a restore
+ *  it would choose the binaries the host then runs as the owner (review sy-b15.17 6). */
 export async function installTools(root: string): Promise<Step[]> {
   const steps: Step[] = []
-  const tools = JSON.parse(readFileSync(join(root, 'tools.json'), 'utf8'))
+  const pin = template().files.find((f) => f.p === 'tools.json')
+  if (!pin) throw new Error("mm's template has no tools.json")
+  const tools = JSON.parse(Buffer.from(pin.c, 'base64').toString('utf8'))
   mkdirSync(join(root, 'tools'), { recursive: true })
   for (const t of ['bd', 'dolt']) {
     const spec = tools[t]['linux-x64']

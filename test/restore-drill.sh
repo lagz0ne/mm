@@ -34,6 +34,9 @@ mm new acme/shop >/tmp/new.out 2>&1 || { say "mm new failed"; tail -20 /tmp/new.
 for _ in $(seq 1 90); do mm inspect acme/shop 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
 cd ~/.mm/projects/acme/shop
 I1=$(bin/bd create "drill item one" --json | jq -r .id); bin/bd create "drill item two" >/dev/null; bin/bd comments add "$I1" "a comment that must come back" >/dev/null
+# a project that changed its own tools.json (as a box could): the restore must take mm's pins, not these (sy-b15.17 6)
+jq '.bd["linux-x64"].url = "https://tools.evil.invalid/bd.tar.gz" | .bd["linux-x64"].sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' tools.json >tools.json.new && mv tools.json.new tools.json
+SETUP_HUMAN=1 git commit -qam "a project's own tools.json (drill: must not be used)" >/dev/null 2>&1
 cd ~
 age-keygen -o ~/recovery.key 2>/dev/null; mm vault init --recovery "$(age-keygen -y ~/recovery.key)" >/dev/null
 git init -q --bare ~/mastermind.git
@@ -60,6 +63,7 @@ jq -r '.[] | "     \(.status) \(.step): \(.detail[0:150])"' /tmp/drill.json 2>/d
 check "age came from the distro's signed packages" sh -c 'command -v age && jq -e ".[] | select(.step==\"age\") | .status==\"ok\"" /tmp/drill.json'
 check "the same items on the board (report)" sh -c "jq -e '.[] | select(.step==\"acme-shop: items\") | .status==\"ok\" and (.detail | startswith(\"$(cat ~/a.count | tr -d ' ') of the backup\"))' /tmp/drill.json"
 check "board answers by name" curl -sf -o /dev/null http://board.acme-shop.localhost:1355/api/whoami
+check "the project's own tools.json came back changed, and mm's pinned bd was installed instead (sy-b15.17 6)" sh -c 'grep -q tools.evil.invalid ~/.mm/projects/acme/shop/tools.json && ~/.mm/projects/acme/shop/tools/bd version >/dev/null'
 check "the items and the comment through the board API" sh -c 'curl -sf "http://board.acme-shop.localhost:1355/api/v0/beads/issues?limit=50" | grep -q "drill item one" && cd ~/.mm/projects/acme/shop/control && ../bin/bd comments "$(../bin/bd list --json | jq -r ".[] | select(.title==\"drill item one\") | .id")" | grep -q "must come back"'
 check "held back: wake (leads) not started, reported" sh -c '! process-compose -U -u ~/.mm/pc.sock process list -o json | jq -e ".[] | select(.name==\"acme-shop.wake\")" && jq -e "[.[] | select(.step==\"acme-shop: held\") | .detail | test(\"wake\")] | any" /tmp/drill.json'
 check "no public route or forwarder" sh -c '! process-compose -U -u ~/.mm/pc.sock process list -o json | jq -e ".[] | select(.name | endswith(\"-public\"))"'

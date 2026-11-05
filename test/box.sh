@@ -88,7 +88,7 @@ check "...and its exit code comes back" sh -c "mm shell '$REF' sh -c 'exit 7' </
 echo "== what the box may write"
 check "the root file system is read-only" sh -c "! IN 'touch /usr/x'"
 check "the project folder is writable (memory/, the board's data)" IN "touch $ROOT/memory/.box-probe && rm $ROOT/memory/.box-probe"
-for f in services.yaml .mm-answers.yaml secrets.json bin/land .git/config; do
+for f in services.yaml .mm-answers.yaml secrets.json tools.json bin/land .git/config; do
   check "read-only in the box: $f" sh -c "! IN 'echo x >> $ROOT/$f' && ! grep -q '^x\$' '$ROOT/$f'"
 done
 HD="$MM_HOME_DIR/box/$PROJECT"

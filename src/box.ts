@@ -224,7 +224,8 @@ export function up(root: string): Step[] {
   // (.git/info and .git/objects/info too: grafts, alternates and the like would choose what the host's git sees; review
   // sy-b15.6 2a)
   const rootReal = realpathSync(root), roRel = ['bin', 'ops', 'setup', 'tools', '.git/hooks', '.git/config', '.git/info', '.git/objects/info',
-    'code/.git/hooks', 'code/.git/config', 'code/.git/info', 'code/.git/objects/info', 'services.yaml', '.mm-answers.yaml', 'secrets.json', 'governance.json']
+    'code/.git/hooks', 'code/.git/config', 'code/.git/info', 'code/.git/objects/info', 'services.yaml', '.mm-answers.yaml', 'secrets.json', 'governance.json',
+    'tools.json'] // the tools' pins: mm takes its own (installTools), and the box can't change this copy either (review sy-b15.17 6)
   const there = roRel.filter((r) => { try { lstatSync(join(rootReal, r)); return true } catch { return false } })
   const linked = there.filter((r) => { try { return realpathSync(join(rootReal, r)) !== join(rootReal, r) } catch { return true } })
   if (linked.length) return fail('box', `refused: ${linked.join(', ')} goes through a symlink (the box may not choose what mm mounts)`)
