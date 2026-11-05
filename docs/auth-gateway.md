@@ -36,7 +36,14 @@ No token in a link, no password. The code grants nothing by itself; only an appr
    `mm_auth` cookie (host-only, see above). The pending cookie is deleted.
 5. **Limits:** codes are 40 bits and live 5 min; the gateway allows at most 5 wrong codes per Telegram id per 10 min
    and 100 per hour in all, and logs each refusal. A pending sign-in that isn't approved in 5 min is gone; the page
-   offers a new code.
+   offers a new code. Code issuing is limited per address. **The address** (shown on the approval card and used for
+   that limit) is Cloudflare's `CF-Connecting-IP` (the router's 443 takes only Cloudflare's ranges, and Cloudflare
+   sets the header), else the socket peer; **never `X-Forwarded-For`**, which any client can send (sy-lbe, sy-76e).
+   **Durations:** an approval (`/approve`, an on-the-spot grant) always ends: no days given means 7, and 0 or more
+   than 365 is refused, as the bot also refuses it. Only `mm auth grant` / `/grant`, the owner's deliberate grant,
+   may have no end (`--days 0`). **Names a guest can't take:** the system's actors (`wake`, `watchdog`, `sentinel`,
+   `bridge`, `mm`, `root`, …), the leads and `steward`/`assistant`, `owner`, and the owner's own name (`owner_name`).
+   The gateway holds this list; the bot's own check is a second one.
 6. **Then each board** (unchanged): a **302 to `https://<board host>/_mm/auth/callback?c=<one-time code>`**, single
    use, 30 s, bound to that board host and that session. The board route sends `/_mm/auth/*` to the gateway, which
    burns it and sets `mm_board` on the board host, then redirects to `/`. Later visits with a live `mm_auth` repeat

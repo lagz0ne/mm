@@ -8,7 +8,7 @@
 //   Socket ($MM_HOME/run/auth.sock, 0600): approve, pending, grant, revoke, grants, sessions (the bot, `mm auth`).
 // State: $MM_HOME/auth/ (0700): grants.json, sessions.json, signing.key (0600 each); pending codes live in memory.
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, timingSafeEqual } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { getPath, loadConfig } from './config'
 import { DIRS } from './env'
@@ -34,13 +34,25 @@ function writeAtomic(f: string, data: string) { const t = `${f}.tmp-${process.pi
 function ensureStore() {
   mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 }); chmodSync(AUTH_DIR, 0o700)
   mkdirSync(dirname(AUTH_SOCK), { recursive: true, mode: 0o700 }); chmodSync(dirname(AUTH_SOCK), 0o700)
-  const k = join(AUTH_DIR, 'signing.key')
-  if (!existsSync(k)) { const { privateKey } = generateKeyPairSync('ed25519'); writeAtomic(k, privateKey.export({ type: 'pkcs8', format: 'pem' }) as string) }
+  signingKeyOnce()
   for (const f of readdirSync(AUTH_DIR)) { const p = join(AUTH_DIR, f); if ((statSync(p).mode & 0o077) !== 0) chmodSync(p, 0o600) }
 }
+/** The signing key, made once. The gateway and `mm up` (writing each board's public key) may both get here first:
+ *  link() into place fails if a key is already there, so there is only ever one key, whoever made it. */
+function signingKeyOnce() {
+  const k = join(AUTH_DIR, 'signing.key')
+  if (existsSync(k)) return
+  mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 }); chmodSync(AUTH_DIR, 0o700)
+  const t = `${k}.new-${process.pid}`, { privateKey } = generateKeyPairSync('ed25519')
+  writeFileSync(t, privateKey.export({ type: 'pkcs8', format: 'pem' }) as string, { mode: 0o600 })
+  try { linkSync(t, k) } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e } finally { rmSync(t, { force: true }) }
+}
 const readJson = <T>(f: string, d: T): T => { try { return JSON.parse(readFileSync(join(AUTH_DIR, f), 'utf8')) as T } catch { return d } }
-/** The public key boards verify assertions with (PEM); mm writes it into each board's endpoints.json. */
+/** The public key boards verify assertions with (PEM); mm writes it into each board's endpoints.json. With the
+ *  gateway on, the key is made here if it isn't there yet, so a board started before the gateway still gets it. */
 export function publicKeyPem(): string | null {
+  const on = getPath(loadConfig(), 'auth.enabled')
+  if (on === true || on === 'true') try { signingKeyOnce() } catch {}
   try { return createPublicKey(createPrivateKey(readFileSync(join(AUTH_DIR, 'signing.key'), 'utf8'))).export({ type: 'spki', format: 'pem' }) as string } catch { return null }
 }
 
@@ -96,7 +108,9 @@ export function gateway() {
     `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${Math.floor(maxAge / 1000)}${secure(req)}`
   const headers = { 'content-security-policy': "default-src 'self'; frame-ancestors 'none'", 'referrer-policy': 'no-referrer', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }
   const json = (o: unknown, status = 200, extra: Record<string, string> = {}) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json', ...headers, ...extra } })
-  const ipOf = (req: Request, srv?: { requestIP?: (r: Request) => { address: string } | null }) => req.headers.get('x-forwarded-for')?.split(',')[0].trim() || srv?.requestIP?.(req)?.address || '?'
+  // the browser's address: Cloudflare's CF-Connecting-IP (Cloudflare sets it, and the router's 443 takes only
+  // Cloudflare's ranges), else the socket peer. Never X-Forwarded-For: anyone can send it (sy-lbe, sy-76e).
+  const ipOf = (req: Request, srv?: { requestIP?: (r: Request) => { address: string } | null }) => req.headers.get('cf-connecting-ip')?.trim() || srv?.requestIP?.(req)?.address || '?'
   const newCode = () => { let c = ''; const b = randomBytes(8); for (let i = 0; i < 8; i++) c += ALPHABET[b[i] & 31]; return `${c.slice(0, 4)}-${c.slice(4)}` }
   const normCode = (c: string) => String(c || '').toUpperCase().replace(/[^0-9A-Z]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1').replace(/^(.{4})(.{4})$/, '$1-$2')
   const sameHash = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))
@@ -167,7 +181,9 @@ export function gateway() {
   }
 
   // the socket API: only the bot and `mm auth` (same user; the socket is 0600 in a 0700 folder)
-  const NAME = /^[a-z][a-z0-9._-]{1,31}$/, RESERVED = new Set(['wake', 'watchdog', 'brain', 'ui', 'beads', 'smoke', 'system', 'admin', 'setup', 'guest', 'human', 'owner', 'ops', 'review', 'platform'])
+  // names a guest can't take: the system's actors, the leads, and the owner's own name (so nobody signs in as them)
+  const NAME = /^[a-z][a-z0-9._-]{1,31}$/, RESERVED = new Set(['wake', 'watchdog', 'brain', 'ui', 'beads', 'smoke', 'system', 'admin', 'setup', 'guest', 'human', 'owner', 'ops', 'review', 'platform',
+    'sentinel', 'steward', 'assistant', 'mm', 'root', 'bridge', ownerName.toLowerCase()])
   async function api(req: Request): Promise<Response> {
     const u = new URL(req.url), b = req.method === 'POST' ? await req.json().catch(() => ({})) as Record<string, unknown> : {}
     const caller = String(b.by || u.searchParams.get('by') || 'cli')
@@ -186,7 +202,10 @@ export function gateway() {
         if (!NAME.test(name) || RESERVED.has(name)) return json({ error: `${name}: not a usable name` }, 400)
         role = (b.role === 'viewer' ? 'viewer' : 'member') as Role; scope = String(b.scope || '').split(',').filter(Boolean) // never owner
         if (!scope.length) return json({ error: 'scope: a project, several (a,b) or all' }, 400)
-        const days = Number(b.days || 7), g: Grant = { name, scope, role, created: new Date().toISOString(), by: caller, ...(days > 0 ? { expires: new Date(now() + days * 864e5).toISOString() } : {}) }
+        // an on-the-spot grant always ends: no days given = 7; 0 (no end) is refused here, as by the bridge. Only
+        // /grant, the owner's deliberate grant, may have no end (days 0).
+        if (b.days !== undefined && !(Number(b.days) >= 1 && Number(b.days) <= 365)) return json({ error: 'an approval needs an end: 1 to 365 days (an open-ended grant is mm auth grant)' }, 400)
+        const days = Number(b.days ?? 7), g: Grant = { name, scope, role, created: new Date().toISOString(), by: caller, ...(days > 0 ? { expires: new Date(now() + days * 864e5).toISOString() } : {}) }
         grants = [...grants.filter((x) => x.name !== name), g]; user = name
       } else if (ownerId && String(b.telegram_id) === ownerId) { // the owner, for themselves
         user = ownerName; role = 'owner'; scope = ['all']

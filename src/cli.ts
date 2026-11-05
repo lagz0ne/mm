@@ -313,8 +313,10 @@ obs.command('ui').description('where the UIs are (loopback: open them through an
 program.hook('preAction', (_p, cmd) => {
   const name = [cmd.parent?.name() !== 'mm' ? cmd.parent?.name() : '', cmd.name()].filter(Boolean).join(' ')
   if (name === 'ship' || name === 'cron' || name.startsWith('obs')) return
-  // fill: the name only, never what follows it (a secret typed on the command line by mistake must not reach a trace)
-  const done = mmSpan(`mm ${name}`, { args: name === 'fill' ? String(cmd.args[0] ?? '') : cmd.args.join(' ') })
+  // fill: the name only, never what follows it (a secret typed on the command line by mistake must not reach a trace).
+  // auth approve / pending: a sign-in code is a credential until it is used, so it never reaches a trace either.
+  const args = name === 'fill' ? String(cmd.args[0] ?? '') : /^auth (approve|pending)$/.test(name) ? ['(code)', ...cmd.args.slice(1)].join(' ') : cmd.args.join(' ')
+  const done = mmSpan(`mm ${name}`, { args })
   process.on('exit', (code) => done(code === 0, { exit_code: code }))
 })
 

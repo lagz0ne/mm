@@ -23,7 +23,7 @@ export PATH="$T/bin:$PATH"   # every check, including those in sh -c, runs this 
 mm auth serve >"$T/gw.log" 2>&1 & GW=$!
 for _ in $(seq 1 50); do [ -S "$MM_HOME/run/auth.sock" ] && curl -s -o /dev/null "http://127.0.0.1:$PORT/s/app.js" && break; sleep 0.2; done
 G="http://127.0.0.1:$PORT"; J="$T/jar"
-sig() { curl -s -c "$J" -b "$J" -H "x-forwarded-for: ${2:-10.0.0.1}" -D "$T/h" "$G/s?b=$BOARD&r=${1:-/items}" | sed -n 's/.*id="code"[^>]*>\([0-9A-Z-]*\)<.*/\1/p'; }
+sig() { curl -s -c "$J" -b "$J" -H "cf-connecting-ip: ${2:-10.0.0.1}" -D "$T/h" "$G/s?b=$BOARD&r=${1:-/items}" | sed -n 's/.*id="code"[^>]*>\([0-9A-Z-]*\)<.*/\1/p'; }
 
 echo '== a code on the screen'
 CODE=$(sig /items)
@@ -32,9 +32,13 @@ check "strict CSP, no-referrer, no-store" bash -c "grep -qi \"content-security-p
 check "a pending cookie, HttpOnly" bash -c "grep -qi 'set-cookie: mm_pending=.*HttpOnly' '$T/h'"
 check "the page waits" bash -c "curl -s -b '$J' $G/s/poll | grep -q waiting"
 check "mm auth pending shows what is asking" bash -c "mm auth pending $CODE -o json | jq -e '.board == \"$BOARD\" and .ip == \"10.0.0.1\"'"
+check "a forged X-Forwarded-For doesn't change the address shown (sy-lbe)" bash -c "rm -f '$T/jx'; C=\$(curl -s -c '$T/jx' -H 'x-forwarded-for: 6.6.6.6' -H 'cf-connecting-ip: 10.0.0.9' '$G/s?b=$BOARD' | sed -n 's/.*id=\"code\"[^>]*>\\([0-9A-Z-]*\\)<.*/\\1/p'); mm auth pending \$C -o json | jq -e '.ip == \"10.0.0.9\"'"
+check "...and with no CF-Connecting-IP it is the socket peer, not the header" bash -c "rm -f '$T/jx'; C=\$(curl -s -c '$T/jx' -H 'x-forwarded-for: 6.6.6.6' '$G/s?b=$BOARD' | sed -n 's/.*id=\"code\"[^>]*>\\([0-9A-Z-]*\\)<.*/\\1/p'); mm auth pending \$C -o json | jq -e '.ip == \"127.0.0.1\"'"
 
 echo '== approved by the owner, as a named guest'
 check "a wrong scope name is refused" bash -c "! mm auth approve $CODE --as ops --for acme-shop"
+check "reserved names are refused: the owner's name, steward, bridge, mm, root" bash -c "for n in owner steward bridge mm root sentinel assistant; do ! mm auth approve $CODE --as \$n --for acme-shop || exit 1; done"
+check "an approval with no end (days 0) is refused" bash -c "! mm auth approve $CODE --as alex --for acme-shop --days 0"
 check "mm auth approve --as alex --for acme-shop" bash -c "mm auth approve $CODE --as alex --for acme-shop -o json | jq -e '.user == \"alex\" and .role == \"member\"'"
 check "the same code again: refused (single use)" bash -c "! mm auth approve $CODE --as eve --for acme-shop"
 curl -s -c "$J" -b "$J" -D "$T/h2" "$G/s/poll" >"$T/poll.json"
@@ -93,7 +97,7 @@ node "$T/fakebd.mjs" $BDP "$T/bd.jsonl" & FB=$!
 mkdir -p "$T/board" && (cd "$SRC/template" && tar -cf - --exclude=node_modules --exclude=dist site bin leads) | tar -xf - -C "$T/board"   # a copy: the board writes .run/ where it runs
 (cd "$T/board" && PORT=$BL BOARD_PUBLIC_PORT=$BP BD_SERVE=http://127.0.0.1:$BDP MM_AUTH_PUBLIC_KEY="$PUB" PASEO_NO_SDK=1 PASEO_BIN=false MM_PROJECT=acme-shop \
   exec node site/server.mjs >"$T/board.log" 2>&1) & BS=$!
-for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$BL/api/whoami" && curl -s -o /dev/null "http://127.0.0.1:$BP/" && break; sleep 0.2; done
+for _ in $(seq 1 150); do curl -s -o /dev/null "http://127.0.0.1:$BL/api/whoami" && curl -s -o /dev/null "http://127.0.0.1:$BP/" && break; sleep 0.2; done
 pub() { curl -s -o "$T/pb" -w '%{http_code}' -H "x-forwarded-host: ${2:-$BOARD}" ${1:+-H "x-mm-assertion: $1"} "${@:3}" "http://127.0.0.1:$BP/api/whoami"; }
 mk() { node -e "const c=require('crypto'),f=require('fs');const [k,u,r,h,ms]=process.argv.slice(1);const b=Buffer.from(JSON.stringify({u,r,h,exp:Date.now()+Number(ms),n:'t'})).toString('base64url');process.stdout.write(b+'.'+c.sign(null,Buffer.from(b),c.createPrivateKey(f.readFileSync(k,'utf8'))).toString('base64url'))" "$MM_HOME/auth/signing.key" "$@"; }
 check "public side, no assertion: 401, nothing else" test "$(pub '')" = 401
@@ -136,13 +140,13 @@ check "a granted person approves their own code (bob)" bash -c "sock /approve '{
 rm -f "$J"; C3=$(sig / 10.0.0.3)
 check "someone without a grant cannot (403)" bash -c "sock /approve '{\"code\":\"$C3\",\"telegram_id\":\"999\",\"by\":\"bot\"}' | jq -e '.error'"
 check "the owner, by their Telegram id: owner of all" bash -c "sock /approve '{\"code\":\"$C3\",\"telegram_id\":\"777\",\"by\":\"bot\"}' | jq -e '.role == \"owner\" and .scope == [\"all\"]'"
-check "an on-the-spot grant can't make an owner" bash -c "rm -f '$J'; C=\$(curl -s -c '$J' -H 'x-forwarded-for: 10.0.0.4' '$G/s?b=$BOARD' | sed -n 's/.*id=\"code\"[^>]*>\\([0-9A-Z-]*\\)<.*/\\1/p'); mm auth approve \$C --as carol --for acme-shop --role owner -o json | jq -e '.role == \"member\"'"
+check "an on-the-spot grant can't make an owner" bash -c "rm -f '$J'; C=\$(curl -s -c '$J' -H 'cf-connecting-ip: 10.0.0.4' '$G/s?b=$BOARD' | sed -n 's/.*id=\"code\"[^>]*>\\([0-9A-Z-]*\\)<.*/\\1/p'); mm auth approve \$C --as carol --for acme-shop --role owner -o json | jq -e '.role == \"member\"'"
 rm -f "$J"; C4=$(sig / 10.0.0.5)
 for i in 1 2 3 4 5; do sock /approve '{"code":"ZZZZ-ZZZZ","telegram_id":"888"}' >/dev/null; done
 check "5 wrong codes per identity, then limited (429), even for a right one" bash -c "sock /approve '{\"code\":\"$C4\",\"telegram_id\":\"888\"}' | jq -e '.error | test(\"too many\")'"
-check "a race: two approvals of one code, exactly one wins" bash -c "rm -f '$J'; C=\$(curl -s -c '$J' -H 'x-forwarded-for: 10.0.0.6' '$G/s?b=$BOARD' | sed -n 's/.*id=\"code\"[^>]*>\\([0-9A-Z-]*\\)<.*/\\1/p'); (sock /approve \"{\\\"code\\\":\\\"\$C\\\",\\\"as\\\":\\\"dan\\\",\\\"scope\\\":\\\"acme-shop\\\"}\" > '$T/r1' &); sock /approve \"{\\\"code\\\":\\\"\$C\\\",\\\"as\\\":\\\"erin\\\",\\\"scope\\\":\\\"acme-shop\\\"}\" > '$T/r2'; sleep 0.5; [ \$(cat '$T/r1' '$T/r2' | grep -c '\"ok\":true') = 1 ]"
-for i in $(seq 1 10); do curl -s -o /dev/null -H 'x-forwarded-for: 10.9.9.9' "$G/s?b=$BOARD"; done
-check "code issuing is limited per address (the 11th: 429)" test "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-forwarded-for: 10.9.9.9' "$G/s?b=$BOARD")" = 429
+check "a race: two approvals of one code, exactly one wins" bash -c "rm -f '$J'; C=\$(curl -s -c '$J' -H 'cf-connecting-ip: 10.0.0.6' '$G/s?b=$BOARD' | sed -n 's/.*id=\"code\"[^>]*>\\([0-9A-Z-]*\\)<.*/\\1/p'); (sock /approve \"{\\\"code\\\":\\\"\$C\\\",\\\"as\\\":\\\"dan\\\",\\\"scope\\\":\\\"acme-shop\\\"}\" > '$T/r1' &); sock /approve \"{\\\"code\\\":\\\"\$C\\\",\\\"as\\\":\\\"erin\\\",\\\"scope\\\":\\\"acme-shop\\\"}\" > '$T/r2'; sleep 0.5; [ \$(cat '$T/r1' '$T/r2' | grep -c '\"ok\":true') = 1 ]"
+for i in $(seq 1 10); do curl -s -o /dev/null -H 'cf-connecting-ip: 10.9.9.9' "$G/s?b=$BOARD"; done
+check "code issuing is limited per address (the 11th: 429)" test "$(curl -s -o /dev/null -w '%{http_code}' -H 'cf-connecting-ip: 10.9.9.9' "$G/s?b=$BOARD")" = 429
 rm -f "$J"; C5=$(sig / 10.0.0.7); sleep 7
 check "an expired code: refused, and the page says so" bash -c "! mm auth approve $C5 --as fay --for acme-shop && curl -s -b '$J' $G/s/poll | grep -q expired"
 
@@ -151,5 +155,6 @@ check "auth/ 0700, files 0600, the socket 0600" bash -c "[ \$(stat -c %a '$MM_HO
 check "grants persist (bob, carol, the winner of the race)" bash -c "mm auth grants -o json | jq -e 'map(.name) | (index(\"bob\") and index(\"carol\"))'"
 check "the log has no full code and no cookie value" bash -c "! grep -q '$CODE' '$T/gw.log' && ! grep -qE 'mm_(auth|board|pending)=' '$T/gw.log'"
 check "every approval is logged (with its code's short hash)" bash -c "grep -c '\"approved\"' '$T/gw.log' | grep -qE '^[4-9]'"
+[ "$fail" = 0 ] || { echo "--- board.log"; tail -15 "$T/board.log"; }
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
