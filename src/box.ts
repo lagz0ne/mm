@@ -12,7 +12,7 @@ import { AI_PORT, aiEnabled, aiSocket, mintKey, revokeKeys, store as aiStore } f
 import { mkdtempSync, rmSync } from 'node:fs'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, HOME, run, which } from './env'
-import { BOXES, boxHook, gitRefusal, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, resolve, serviceProcess, up as projectUp, writeRunFiles } from './project'
+import { BOX_READONLY, BOXES, boxHook, gitRefusal, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, resolve, sealEngine, serviceProcess, up as projectUp, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
 import paseoJoinScript from '../box/paseo-join.mjs' with { type: 'text' }
@@ -269,9 +269,8 @@ export function up(root: string): Step[] {
   // each one only if it is really there, inside the project: no symlink on the way (Docker would follow it on the host)
   // (.git/info and .git/objects/info too: grafts, alternates and the like would choose what the host's git sees; review
   // sy-b15.6 2a)
-  const rootReal = realpathSync(root), roRel = ['bin', 'ops', 'setup', 'tools', '.git/hooks', '.git/config', '.git/info', '.git/objects/info',
-    'code/.git/hooks', 'code/.git/config', 'code/.git/info', 'code/.git/objects/info', 'services.yaml', '.mm-answers.yaml', 'secrets.json', 'governance.json',
-    'tools.json'] // the tools' pins: mm takes its own (installTools), and the box can't change this copy either (review sy-b15.17 6)
+  // (site/ too: the host builds the board there, with npm; review sy-b15.6 follow-up 2)
+  const rootReal = realpathSync(root), roRel = BOX_READONLY
   const there = roRel.filter((r) => { try { lstatSync(join(rootReal, r)); return true } catch { return false } })
   const linked = there.filter((r) => { try { return realpathSync(join(rootReal, r)) !== join(rootReal, r) } catch { return true } })
   if (linked.length) return fail('box', `refused: ${linked.join(', ')} goes through a symlink (the box may not choose what mm mounts)`)
@@ -395,6 +394,8 @@ export function on(root: string): Step[] {
   rmSync(join(PROJECTS_PC, `${a.project}.yaml`), { force: true })
   const l = loadAll(); steps.push({ step: 'host', status: l.ok ? 'ok' : 'fail', detail: l.ok ? `${a.project} unloaded from the host's process manager` : short(l) })
   if (!l.ok) return steps
+  // the engine as the host has it now (the host's own files): what the host may run of it later (review sy-b15.6)
+  sealEngine(root); steps.push({ step: 'engine', status: 'ok', detail: 'bin/ and site/ sealed on the host' })
   steps.push(setBox(root, true), ...up(root))
   return steps
 }

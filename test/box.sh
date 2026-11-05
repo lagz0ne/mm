@@ -89,7 +89,7 @@ check "...and its exit code comes back" sh -c "mm shell '$REF' sh -c 'exit 7' </
 echo "== what the box may write"
 check "the root file system is read-only" sh -c "! IN 'touch /usr/x'"
 check "the project folder is writable (memory/, the board's data)" IN "touch $ROOT/memory/.box-probe && rm $ROOT/memory/.box-probe"
-for f in services.yaml .mm-answers.yaml secrets.json tools.json bin/land .git/config; do
+for f in services.yaml .mm-answers.yaml secrets.json tools.json bin/land site/package.json .git/config; do
   check "read-only in the box: $f" sh -c "! IN 'echo x >> $ROOT/$f' && ! grep -q '^x\$' '$ROOT/$f'"
 done
 HD="$MM_HOME_DIR/box/$PROJECT"
@@ -122,6 +122,29 @@ check "a replace ref the box planted: mm up refuses, and says why" sh -c "! mm u
 IN "rm -rf $ROOT/.git/refs/replace" >/dev/null 2>&1
 check "...gone again: mm up works" sh -c "mm up '$REF' >/dev/null 2>&1"
 for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
+IN "cd $ROOT && h=\$(git -c safe.directory='*' rev-parse HEAD) && echo \"\$h refs/replace/\$h\" >> .git/packed-refs" >/dev/null 2>&1
+check "a replace ref the box packed into .git/packed-refs: mm up refuses, and says why (review sy-b15.6 follow-up 1)" sh -c "! mm up '$REF' >/tmp/box-up-packed.out 2>&1 && grep -q 'packed-refs' /tmp/box-up-packed.out"
+IN "cd $ROOT && grep -v ' refs/replace/' .git/packed-refs > .git/packed-refs.new; mv .git/packed-refs.new .git/packed-refs" >/dev/null 2>&1
+check "...gone again: mm up works" sh -c "mm up '$REF' >/dev/null 2>&1"
+for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
+
+echo "== what a box's history can't make the host run (review sy-b15.6 follow-up 2)"
+check "mm new --box sealed the engine (bin/, site/) on the host, out of the box's sight" sh -c "jq -e '.files[\"bin/config-check\"]' '$HD/engine.json' >/dev/null && ! IN 'test -e $HD/engine.json'"
+PWN=/tmp/mm-pwned-$$; rm -f "$PWN"; ORIG=$(git -C "$ROOT" rev-parse HEAD)
+# the box commits its own bin/config-check (it can write the repo's history, not the file), points main at it, writes a
+# MERGE_HEAD (as if an update were in progress), and an index that hides the change from git status
+IN "cd $ROOT && G='git -c safe.directory=*' && export GIT_AUTHOR_NAME=box GIT_AUTHOR_EMAIL=box@box GIT_COMMITTER_NAME=box GIT_COMMITTER_EMAIL=box@box && b=\$(printf '%s\n' '#!/bin/sh' 'touch $PWN; exit 0' | \$G hash-object -w --stdin) && GIT_INDEX_FILE=/tmp/evil.idx \$G read-tree HEAD && GIT_INDEX_FILE=/tmp/evil.idx \$G update-index --cacheinfo 100755,\$b,bin/config-check && t=\$(GIT_INDEX_FILE=/tmp/evil.idx \$G write-tree) && c=\$(\$G commit-tree \$t -p HEAD -m 'box: its own config-check') && \$G update-ref refs/heads/main \$c && \$G read-tree \$c && \$G update-index --assume-unchanged bin/config-check && echo \$c > .git/MERGE_HEAD" >/tmp/box-evil.out 2>&1
+check "(the box made its commit: main is not mm's any more, and git status shows nothing)" sh -c "[ \"\$(git -C '$ROOT' rev-parse HEAD)\" != '$ORIG' ] && [ -z \"\$(git -C '$ROOT' status --porcelain --untracked-files=no)\" ]"
+check "mm update --abort with the box's MERGE_HEAD: refused (mm began no update), and nothing of the box's runs" sh -c "! mm update '$REF' --abort >/tmp/box-abort.out 2>&1 && grep -q 'no record' /tmp/box-abort.out && ! test -e '$PWN' && git -C '$ROOT' show '$ORIG:bin/config-check' | cmp -s - '$ROOT/bin/config-check'"
+IN "rm -f $ROOT/.git/MERGE_HEAD" >/dev/null 2>&1
+check "mm update: refused, HEAD's bin/config-check is not what is on disk (git status is fooled, mm is not)" sh -c "! mm update '$REF' >/tmp/box-upd.out 2>&1 && grep -q 'bin/config-check in HEAD' /tmp/box-upd.out && ! test -e '$PWN'"
+# as a host git step that resets toward HEAD would do (merge --abort, reset): the box's file on disk
+git -C "$ROOT" show HEAD:bin/config-check > "$ROOT/bin/config-check"
+check "the box's bin/config-check on disk: mm update refuses to run it, and says why" sh -c "! mm update '$REF' >/tmp/box-upd2.out 2>&1 && grep -q 'not as mm' /tmp/box-upd2.out && ! test -e '$PWN'"
+check "...mm doctor doesn't run the box's bin/ either" sh -c "mm doctor >/tmp/box-doctor.out 2>&1; grep -q 'not checked' /tmp/box-doctor.out && ! test -e '$PWN'"
+git -C "$ROOT" update-index --no-assume-unchanged bin/config-check; git -C "$ROOT" reset -q --hard "$ORIG"
+check "...back to mm's: mm update works again" sh -c "mm update '$REF' >/tmp/box-upd3.out 2>&1 || { cat /tmp/box-upd3.out; false; }"
+rm -f "$PWN"
 
 echo "== the way out"
 check "no DNS for an outside name in the box (getent example.com fails)" sh -c "! IN 'getent hosts example.com'"

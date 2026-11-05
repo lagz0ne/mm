@@ -1,8 +1,8 @@
 // Project lifecycle after `mm new`: update from the template (three-way merge), restart, archive (clean removal).
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join, relative } from 'node:path'
+import { dirname, isAbsolute, join, relative } from 'node:path'
 import { canon, DIRS, HOME, run, within } from './env'
-import { BOXES, boxHook, gitRefusal, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, resolve, up, writeRunFiles } from './project'
+import { BOXES, boxHook, boxish, engineRefusal, gitRefusal, headDrift, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, resolve, sealEngine, templateVars, up, writeRunFiles } from './project'
 import { template, templateCommit } from './template'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
@@ -12,8 +12,20 @@ const gitIn = (root: string) => (args: string[], env?: Record<string, string>) =
 const short = (r: { out: string; err: string }) => (r.err || r.out).trim().split('\n').slice(-3).join(' ').slice(0, 200)
 
 function varsOf(root: string) {
-  const a = readAnswers(root)
-  return { a, vars: { client: a.client, name: a.name, project: a.project, short: a.short, root, home: HOME, brain: DIRS.brain, projects: DIRS.projects, mm: DIRS.mm, claude_dir: join(DIRS.mm, 'claude', a.project), profile: a.profile || 'project' } as Record<string, string> }
+  return { a: readAnswers(root), vars: templateVars(root) }
+}
+/**
+ * A box project's update in progress, as mm began it (on the host, out of the box's sight): HEAD before the merge and
+ * the template commit merged. A box can write HEAD and MERGE_HEAD, so --abort and --continue go on only if both are
+ * still what mm made (review sy-b15.6 follow-up 2: an abort resets toward HEAD).
+ */
+const updRecFile = (root: string) => join(DIRS.mm, 'box', readAnswers(root).project, 'update.json')
+function updMoved(root: string, git: ReturnType<typeof gitIn>): string | null {
+  if (!boxish(root)) return null
+  let rec: { head?: string; next?: string } = {}
+  try { rec = JSON.parse(readFileSync(updRecFile(root), 'utf8')) } catch { return 'mm has no record of beginning this update (a box can write MERGE_HEAD)' }
+  const head = git(['rev-parse', '-q', '--verify', 'HEAD']).out.trim(), mh = git(['rev-parse', '-q', '--verify', 'MERGE_HEAD']).out.trim()
+  return head === rec.head && mh === rec.next ? null : 'HEAD or MERGE_HEAD is not what mm made when it began this update (a box can write them)'
 }
 
 // ---------- mm update ----------
@@ -35,10 +47,13 @@ export function update(root: string, o: UpdateOpts = {}): UpdateResult {
 
   if (o.abort) {
     if (!merging) return fail('abort', 'no update in progress')
+    const moved = updMoved(root, git); if (moved) return fail('abort', `refused: ${moved}`)
     const r = git(['merge', '--abort'])
     if (!r.ok) return fail('abort', short(r))
+    rmSync(updRecFile(root), { force: true })
+    const drift = headDrift(root); if (drift) return fail('abort', `merge undone, but ${drift}: look before the next update`)
     steps.push({ step: 'abort', status: 'ok', detail: 'merge undone; project is as before' })
-    rebuildIfBroken(root, steps)
+    if (!rebuildIfBroken(root, steps)) return res
     res.ok = true; return res
   }
   if (o.continue) {
@@ -46,6 +61,9 @@ export function update(root: string, o: UpdateOpts = {}): UpdateResult {
     return finish(root, res)
   }
   if (merging) return fail('update', 'an update is already in progress: resolve and `mm update --continue`, or `--abort`')
+  // a box project: HEAD holds what is on disk in its read-only files, so the merge starts from the host's files, never
+  // from history the box wrote (review sy-b15.6 follow-up 2)
+  const drift = headDrift(root) || engineRefusal(root); if (drift) return fail('git', `refused: ${drift}`)
   const dirty = git(['status', '--porcelain', '--untracked-files=no']).out.trim()
   if (dirty) return fail('clean tree', `commit or discard local changes first:\n${dirty}`)
 
@@ -77,6 +95,10 @@ export function update(root: string, o: UpdateOpts = {}): UpdateResult {
   steps.push({ step: 'plan', status: res.conflicts.length ? 'fail' : 'ok', detail: `${a.template_version} -> ${t.version}: ${res.changed.length} file(s) change${res.conflicts.length ? `, ${res.conflicts.length} conflict(s)` : ''}` })
   if (o.dryRun) { res.ok = !res.conflicts.length; return res }
 
+  if (boxish(root)) { // the update as mm begins it, for --abort and --continue (updMoved)
+    const f = updRecFile(root); mkdirSync(dirname(f), { recursive: true, mode: 0o755 })
+    writeFileSync(f, JSON.stringify({ head: git(['rev-parse', 'HEAD']).out.trim(), next }))
+  }
   const m = git(['merge', '--no-ff', '--no-commit', next], { SETUP_HUMAN: '1' })
   if (!m.ok) {
     res.conflicts = git(['diff', '--name-only', '--diff-filter=U']).out.trim().split('\n').filter(Boolean)
@@ -95,6 +117,10 @@ function finish(root: string, res: UpdateResult): UpdateResult {
   if (unmerged) { steps.push({ step: 'merge', status: 'fail', detail: `still conflicted: ${unmerged.split('\n').join(', ')}` }); return res }
   const markers = git(['grep', '-lE', '^(<{7}|>{7})( |$)', '--cached']).out.trim()
   if (markers) { steps.push({ step: 'merge', status: 'fail', detail: `conflict markers left in: ${markers.split('\n').join(', ')}` }); return res }
+  // a box project: the merge is still the one mm began, and the engine is mm's, before the host runs any of it (npm in
+  // site/, bin/config-check, bin/bd-quiet; review sy-b15.6 follow-up 2)
+  const moved = updMoved(root, git); if (moved) { steps.push({ step: 'merge', status: 'fail', detail: `refused: ${moved}` }); return res }
+  const no = engineRefusal(root); if (no) { steps.push({ step: 'engine', status: 'fail', detail: `refused: ${no}` }); return res }
   const changed = git(['diff', '--name-only', '--cached', 'HEAD']).out.trim().split('\n').filter(Boolean)
   res.changed = changed
   const next = git(['rev-parse', 'MERGE_HEAD']).out.trim()
@@ -120,6 +146,7 @@ function finish(root: string, res: UpdateResult): UpdateResult {
   if (!c.ok) return fail('commit', c)
   git(['branch', '-f', 'mm-template', next])
   steps.push({ step: 'commit', status: 'ok', detail: git(['log', '-1', '--format=%h %s']).out.trim() })
+  if (boxish(root)) { rmSync(updRecFile(root), { force: true }); sealEngine(root) } // the checked engine is the new seal
 
   // apply: reload the service definitions, then restart what runs changed code (services.yaml changes restart via reload)
   steps.push(...up(root))
@@ -142,10 +169,12 @@ function finish(root: string, res: UpdateResult): UpdateResult {
   return res
 }
 
-function rebuildIfBroken(root: string, steps: Step[]) {
-  if (existsSync(join(root, 'site', 'dist', 'index.html'))) return
+function rebuildIfBroken(root: string, steps: Step[]): boolean {
+  if (existsSync(join(root, 'site', 'dist', 'index.html'))) return true
+  const no = engineRefusal(root); if (no) { steps.push({ step: 'board build', status: 'fail', detail: `refused: ${no}` }); return false }
   const b = run(['sh', '-c', 'npm run build --silent'], { cwd: join(root, 'site'), timeoutMs: 900_000 })
   steps.push({ step: 'board build', status: b.ok ? 'ok' : 'fail', detail: b.ok ? 'rebuilt after abort' : short(b) })
+  return true // the abort itself held; a failed build shows as its own step
 }
 
 function writeAnswers(root: string, a: object) {
@@ -244,6 +273,8 @@ export function restore(tarball: string): { steps: Step[]; root: string; ok: boo
   if (!x.ok) return { steps: [{ step: 'unpack', status: 'fail', detail: short(x) }], root, ok: false }
   steps.push({ step: 'unpack', status: 'ok', detail: root.replace(HOME, '~') })
   rmSync(join(root, '.dolt', 'mysql.sock'), { force: true })
+  // a box project's archive holds what the box wrote: the host builds its board only from mm's engine (review sy-b15.6)
+  const no = engineRefusal(root); if (no) return { steps: [...steps, { step: 'engine', status: 'fail', detail: `refused: ${no}` }], root, ok: false }
   if (!existsSync(join(root, 'site', 'node_modules'))) {
     const b = run(['sh', '-c', 'npm ci --no-audit --no-fund --silent'], { cwd: join(root, 'site'), timeoutMs: 900_000 })
     steps.push({ step: 'board deps', status: b.ok ? 'ok' : 'fail', detail: b.ok ? 'installed' : short(b) })

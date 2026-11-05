@@ -7,7 +7,7 @@ import { dirname, join, relative } from 'node:path'
 import { getPath, held, loadConfig, saveConfig, setPath } from './config'
 import { DIRS, HOME, run } from './env'
 import { expand, machineInputs } from './inputs'
-import { listProjects, readAnswers } from './project'
+import { engineRefusal, listProjects, readAnswers } from './project'
 import * as vault from './vault'
 import { jobArgs, landBackup } from './box'
 import pkg from '../package.json'
@@ -118,6 +118,8 @@ function plan(work: string, steps: Step[]): Item[] {
         steps.push({ step: `backup ${b.id}`, status: 'ok', detail: `in the box; ${made}` })
         return (bk = join(from, made))
       }
+      // a project that was a box: its bin/ runs on the host only if it is mm's engine (review sy-b15.6 follow-up 2)
+      const no = engineRefusal(b.root); if (no) throw new Error(`${b.id}: bin/backup not run: ${no}`)
       const r = run([join(b.root, 'bin', 'backup')], { cwd: b.root, env: { BACKUP_DIR: dest }, timeoutMs: 900_000 })
       const made = existsSync(dest) ? readdirSync(dest).filter((d) => d.startsWith('20')).sort().pop() : undefined
       if (!r.ok || !made) throw new Error(`${b.id}: bin/backup failed: ${short(r)}`)

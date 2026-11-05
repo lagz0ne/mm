@@ -4,7 +4,7 @@ import { basename, dirname, join } from 'node:path'
 import { type Config, getPath, loadConfig, when } from './config'
 import { DIRS, HOME, hasSystemdUser, isRoot, run, which } from './env'
 import { needs } from './inputs'
-import { listProjects } from './project'
+import { engineRefusal, listProjects } from './project'
 import { manifest, type Tool } from './manifest'
 import * as vault from './vault'
 
@@ -102,6 +102,9 @@ export function doctor(): Check[] {
         try { if (/\bbd\b[^\n]*\bhooks?\b|\bbeads\b/i.test(readFileSync(join(dir, f), 'utf8'))) hooks.push(`${join(dir, f).replace(HOME, '~')}`) } catch {}
       }
     }
+    // a box project's bin/: the host runs it only if it is mm's engine (review sy-b15.6 follow-up 2)
+    const no = engineRefusal(root)
+    if (no) { out.push({ layer: 'board', item: `bd quiet ${id}`, status: 'fail', detail: `not checked: ${no}`, fix: 'see what changed bin/ (git -C <project> log -- bin), then mm update' }); continue }
     const get = (k: string) => run([join(root, 'bin', 'bd'), 'config', 'get', k], { cwd: join(root, 'control'), timeoutMs: 15_000 }).out.trim().split('\n').pop()
     const metrics = get('metrics.disabled'), noHooks = get('no-hooks')
     const bad = [...(hooks.length ? [`bd hook(s): ${hooks.join(', ')}`] : []), ...(metrics !== 'true' ? [`metrics.disabled is ${metrics || 'unreadable'}`] : [])]

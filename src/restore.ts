@@ -12,7 +12,7 @@ import { install } from './install'
 import { type Install, manifest } from './manifest'
 import { onboard } from './onboard'
 import { pcRunning } from './pc'
-import { installTools, processes, readAnswers, up } from './project'
+import { engineRefusal, installTools, processes, readAnswers, up } from './project'
 import { ALLOW } from './sync'
 import * as vault from './vault'
 
@@ -261,6 +261,9 @@ async function bringUp(root: string, work: string): Promise<{ steps: Step[]; ok:
   const expected = lines(join(stage, 'board.jsonl'))
   const must = (step: string, r: { ok: boolean; out: string; err: string }) => { steps.push({ step: `${a.project}: ${step}`, status: r.ok ? 'ok' : 'fail', detail: r.ok ? (r.out.trim().split('\n').pop() || 'done').slice(0, 120) : short(r) }); return r.ok }
   try { for (const s of await installTools(root)) steps.push({ ...s, step: `${a.project}: ${s.step}` }) } catch (e) { steps.push({ step: `${a.project}: tools`, status: 'fail', detail: (e as Error).message }); return res(false) }
+  // a box's bundle is the box's own history: the host runs its bin/ and site/ (init, npm, config-check, wt, bd) only
+  // if they are mm's engine (review sy-b15.6 follow-up 2)
+  const no = engineRefusal(root); if (no) { steps.push({ step: `${a.project}: engine`, status: 'fail', detail: `refused: ${no}` }); return res(false) }
   if (!must('board database (bin/init)', run([join(root, 'bin', 'init'), a.short], { cwd: root, timeoutMs: 300_000 }))) return res(false)
   const db = JSON.parse(readFileSync(join(root, 'control', '.beads', 'metadata.json'), 'utf8')).dolt_database as string
   const denv = { DOLT_ROOT_PATH: join(root, '.dolt-root'), XDG_CONFIG_HOME: join(root, '.config') }

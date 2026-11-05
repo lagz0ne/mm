@@ -33,14 +33,21 @@ export function profileFiles(t: Template, profile = 'project'): TFile[] {
 /** Write the rendered template under `dest`. Text files get {{var}} filled; binary files are copied as they are.
  *  `vars.profile` picks the template profile (default `project`). */
 export function renderTo(dest: string, vars: Record<string, string>, t = template()) {
-  const fill = (s: string) => s.replace(/\{\{(\w+)\}\}/g, (m, k) => vars[k] ?? m)
-  for (const f of profileFiles(t, vars.profile)) {
-    const out = join(dest, fill(f.p))
+  for (const f of rendered(vars, t)) {
+    const out = join(dest, f.p)
     mkdirSync(dirname(out), { recursive: true })
-    const buf = Buffer.from(f.c, 'base64'), text = buf.toString('utf8')
-    writeFileSync(out, text.includes('�') ? buf : fill(text))
+    writeFileSync(out, f.data)
     chmodSync(out, f.m)
   }
+}
+
+/** The rendered template in memory: each file's path and bytes as renderTo writes them. */
+export function rendered(vars: Record<string, string>, t = template()): { p: string; m: number; data: Buffer }[] {
+  const fill = (s: string) => s.replace(/\{\{(\w+)\}\}/g, (m, k) => vars[k] ?? m)
+  return profileFiles(t, vars.profile).map((f) => {
+    const buf = Buffer.from(f.c, 'base64'), text = buf.toString('utf8')
+    return { p: fill(f.p), m: f.m, data: text.includes('�') ? buf : Buffer.from(fill(text)) }
+  })
 }
 
 /**

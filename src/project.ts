@@ -1,7 +1,7 @@
 // Projects: stamp from the template (mm new), load into the machine's process-compose as a namespace (mm up),
 // namespace operations (down/restart), listing and inspection.
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { getPath, held, loadConfig } from './config'
@@ -10,7 +10,7 @@ import { obsEndpoints } from './obs'
 import { machineSecretPaths } from './inputs'
 import { publicKeyPem } from './auth'
 import { pcRunning, writeBase } from './pc'
-import { renderTo, template, templateCommit } from './template'
+import { rendered, renderTo, template, templateCommit } from './template'
 import pkg from '../package.json'
 
 export interface Answers { client: string; name: string; project: string; short: string; root: string; template_version: string; created: string; profile?: string; throwaway?: boolean; box?: boolean
@@ -152,6 +152,7 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
   git(['add', '-A'])
   must('config commit', run(['git', 'commit', '-q', '-m', `mm new ${client}/${name}${product ? '' : ` (profile ${profile})`} (template ${answers.template_version})`], { cwd: root, env: { SETUP_HUMAN: '1' } }))
   git(['config', 'core.hooksPath', 'ops/githooks'])
+  if (answers.box) sealEngine(root) // the engine as mm put it there: what the host may run of it later (review sy-b15.6)
 
   // 5. lead worktrees (roles without workers)
   if (product) {
@@ -286,12 +287,14 @@ export function writeRunFiles(root: string, pcSocket: string) {
 
 /**
  * Host git on a project a box can write (review sy-b15.6 2): what the box wrote never steers what the host's git sees
- * or runs. Replace objects off, no system or global config, no hooks, and safe.directory exactly this repo (the box owns
- * its files). Empty for a host project (its own hooks, e.g. the config repo's pre-commit, keep running).
+ * or runs. Replace objects off for every project (a replace ref can also sit in packed-refs, and a project that was a
+ * box keeps what the box wrote; review sy-b15.6 follow-up 1). For a box project also: no system or global config, no
+ * hooks, and safe.directory exactly this repo (the box owns its files). A host project keeps its own hooks (e.g. the
+ * config repo's pre-commit).
  */
 export function hostGitEnv(root: string): Record<string, string> {
   let box = false; try { box = !!readAnswers(root).box } catch {}
-  if (!box) return {}
+  if (!box) return { GIT_NO_REPLACE_OBJECTS: '1' }
   return { GIT_NO_REPLACE_OBJECTS: '1', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_COUNT: '3',
     GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: '/dev/null', GIT_CONFIG_KEY_1: 'safe.directory', GIT_CONFIG_VALUE_1: root,
     GIT_CONFIG_KEY_2: 'safe.directory', GIT_CONFIG_VALUE_2: join(root, 'code') }
@@ -302,11 +305,94 @@ export function gitRefusal(root: string): string | null {
     if (!existsSync(g)) continue
     const rep = join(g, 'refs', 'replace')
     if (existsSync(rep) && readdirSync(rep).length) return `${g}/refs/replace/ has entries (replace objects)`
+    // ...or packed (review sy-b15.6 follow-up 1): a line "<sha> refs/replace/<sha>" in packed-refs
+    try { if (/^[0-9a-f]+ refs\/replace\//m.test(readFileSync(join(g, 'packed-refs'), 'utf8'))) return `${g}/packed-refs has refs/replace/ (replace objects)` } catch {}
     if (existsSync(join(g, 'info', 'grafts'))) return `${g}/info/grafts exists`
     for (const f of ['alternates', 'http-alternates']) {
       const p = join(g, 'objects', 'info', f)
       if (existsSync(p) && readFileSync(p, 'utf8').trim()) return `${g}/objects/info/${f} names another object store`
     }
+  }
+  return null
+}
+
+// ---------- what a box can't make the host run (review sy-b15.6, follow-up 2) ----------
+/** Read-only in a box (src/box.ts mounts each over the project): the kernel, the engine the host runs (bin/, site/),
+ *  and every file that decides what the box may do. They change only through mm on the host. */
+export const BOX_READONLY = ['bin', 'site', 'ops', 'setup', 'tools', '.git/hooks', '.git/config', '.git/info', '.git/objects/info',
+  'code/.git/hooks', 'code/.git/config', 'code/.git/info', 'code/.git/objects/info', 'services.yaml', '.mm-answers.yaml', 'secrets.json', 'governance.json',
+  'tools.json'] // the tools' pins: mm takes its own (installTools), and the box can't change this copy either (review sy-b15.17 6)
+/** The variables the template is rendered with for this project (mm new, mm update). */
+export function templateVars(root: string): Record<string, string> {
+  const a = readAnswers(root)
+  return { client: a.client, name: a.name, project: a.project, short: a.short, root, home: HOME, brain: DIRS.brain, projects: DIRS.projects, mm: DIRS.mm, claude_dir: join(DIRS.mm, 'claude', a.project), profile: a.profile || 'project' }
+}
+// the engine: what the host runs from a project (bin/: config-check, bd-quiet, init, wt, backup, bd; site/: npm ci and
+// the board's build), without the build's output
+const ENGINE_SKIP = ['site/node_modules', 'site/dist']
+const isEngine = (p: string) => /^(bin|site)\//.test(p) && !ENGINE_SKIP.some((s) => p === s || p.startsWith(`${s}/`))
+const sha256 = (b: Uint8Array) => createHash('sha256').update(b).digest('hex')
+const sealFile = (project: string) => join(DIRS.mm, 'box', project, 'engine.json')
+/** The engine's files on disk and their sha256. A link or any other odd file is named so, never followed or read. */
+function engineOnDisk(root: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  const walk = (rel: string) => {
+    if (ENGINE_SKIP.includes(rel)) return
+    let st; try { st = lstatSync(join(root, rel)) } catch { return }
+    if (st.isDirectory()) { for (const n of readdirSync(join(root, rel)).sort()) walk(`${rel}/${n}`); return }
+    out[rel] = st.isFile() ? sha256(readFileSync(join(root, rel))) : 'not a plain file'
+  }
+  for (const d of ['bin', 'site']) walk(d)
+  return out
+}
+/** A box project now, or one that was (mm keeps its seal after mm box off: the history it wrote stays). */
+export function boxish(root: string): boolean {
+  try { const a = readAnswers(root); return !!a.box || existsSync(sealFile(a.project)) } catch { return false }
+}
+/**
+ * Why the host must not run a box project's bin/ or site/, or null. A box can write its config repo's history (objects,
+ * refs, the index), so a host git step that writes the working tree (a merge, an abort, a restore from its bundle) could
+ * bring files the box chose into bin/ or site/, and the host then runs them as the owner. So before mm runs anything
+ * there, each file must be as mm's template renders it for this project, or as mm sealed it on the host the last time
+ * it put them there (mm new, mm box on, a checked mm update). Nothing else, and no extra file. A host project: null.
+ */
+export function engineRefusal(root: string): string | null {
+  if (!boxish(root)) return null
+  const disk = engineOnDisk(root), want: Record<string, string> = {}
+  for (const f of rendered(templateVars(root))) if (isEngine(f.p)) want[f.p] = sha256(f.data)
+  let seal: Record<string, string> = {}
+  try { seal = JSON.parse(readFileSync(sealFile(readAnswers(root).project), 'utf8')).files || {} } catch {}
+  const off = Object.keys(disk).filter((p) => disk[p] !== want[p] && disk[p] !== seal[p]).sort()
+  if (!off.length) return null
+  return `${off.slice(0, 3).join(', ')}${off.length > 3 ? ` and ${off.length - 3} more` : ''}: not as mm's template (${template().version}) or its seal (${sealFile(readAnswers(root).project).replace(HOME, '~')}) has ${off.length === 1 ? 'it' : 'them'}, and mm won't run a box project's bin/ or site/ on the host (review sy-b15.6)`
+}
+/** After mm itself put the engine there (mm new --box, mm box on, a checked mm update): its files, sealed on the host
+ *  (a folder the box never sees). */
+export function sealEngine(root: string) {
+  const a = readAnswers(root), f = sealFile(a.project)
+  mkdirSync(dirname(f), { recursive: true, mode: 0o755 })
+  writeFileSync(f, JSON.stringify({ sealed: new Date().toISOString(), template: a.template_version, files: engineOnDisk(root) }, null, 2))
+}
+/**
+ * A box project's history against its read-only files: HEAD must hold exactly what is on disk there. The box can't
+ * change those files, but it can commit other content for them (and an index that hides it from `git status`); a host
+ * step that then resets toward HEAD would bring that content in. Compared by mm itself (blob ids of the files on disk
+ * against HEAD's tree), never through the box-writable index. A host project: null.
+ */
+export function headDrift(root: string): string | null {
+  if (!boxish(root)) return null
+  const paths = BOX_READONLY.filter((p) => !p.includes('.git') && p !== 'tools')
+  const r = run(['git', '-C', root, 'ls-tree', '-r', '-z', 'HEAD', '--', ...paths], { env: hostGitEnv(root) })
+  if (!r.ok) return `git ls-tree HEAD: ${(r.err || r.out).trim().slice(0, 120)}`
+  for (const e of r.out.split('\0').filter(Boolean)) {
+    const m = /^(\d+) (\w+) ([0-9a-f]+)\t(.+)$/s.exec(e); if (!m) return `odd ls-tree line: ${e.slice(0, 80)}`
+    const [, mode, type, id, p] = m
+    if (type !== 'blob') return `${p} in HEAD is a ${type}, not a file`
+    let data: Buffer
+    try { const st = lstatSync(join(root, p)); data = mode === '120000' ? (st.isSymbolicLink() ? Buffer.from(readlinkSync(join(root, p))) : Buffer.from([0])) : st.isFile() ? readFileSync(join(root, p)) : Buffer.from([0]) }
+    catch { return `${p} is in HEAD but not on disk` }
+    const blob = new Bun.CryptoHasher(id.length === 64 ? 'sha256' : 'sha1').update(`blob ${data.length}\0`).update(data).digest('hex')
+    if (blob !== id) return `${p} in HEAD is not what is on disk (the box can commit to this repo, not change the file)`
   }
   return null
 }
@@ -331,6 +417,7 @@ export function setOptional(root: string, service: string, on: boolean): Step[] 
     steps.push({ step: 'answers', status: c.ok ? 'ok' : 'fail', detail: c.ok ? `services_on: [${[...list].join(', ')}]` : (c.err || c.out).trim().slice(0, 160) })
   } else steps.push({ step: 'answers', status: 'skip', detail: `${service} already ${on ? 'on' : 'off'}` })
   steps.push(...up(root))
+  const no = engineRefusal(root); if (no) return [...steps, { step: 'governance check', status: 'fail', detail: `refused: ${no}` }]
   const cc = run([join(root, 'bin', 'config-check'), '--render'], { cwd: root })
   steps.push({ step: 'governance check', status: cc.ok ? 'ok' : 'fail', detail: (cc.out || cc.err).trim().split('\n').pop() || '' })
   return steps

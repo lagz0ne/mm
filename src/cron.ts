@@ -7,7 +7,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, write
 import { join } from 'node:path'
 import { DIRS, HOME, toolPath } from './env'
 import { hostDir, jobArgs, landBackup } from './box'
-import { resolve } from './project'
+import { engineRefusal, resolve } from './project'
 
 const STATE = join(DIRS.mm, 'data', 'cron.json')
 type Job = { project: string; root: string; name: string; every: string; command: string; box: boolean }
@@ -69,6 +69,12 @@ async function runJob(j: Job): Promise<{ code: number; tail: string }> {
   // a box's cron log is the host's (the host appends to it; in the project folder the box could make it a symlink)
   const t0 = Date.now(), log = j.box ? join(hostDir(j.project), 'cron.log') : join(j.root, '.run', 'logs', 'cron.log')
   const jenv = { MM_PROJECT: j.project, TRACEPARENT: '' }
+  // on the host, a project that was a box: its bin/ runs only if it is mm's engine (review sy-b15.6 follow-up 2)
+  const no = j.box ? null : engineRefusal(j.root)
+  if (no) {
+    try { appendFileSync(log, JSON.stringify({ time: new Date().toISOString(), level: 'error', msg: `${j.name} refused: ${no}`, project: j.project, service: 'cron', job: j.name, exit_code: 1, duration_ms: 0 }) + '\n') } catch {}
+    return { code: 1, tail: `refused: ${no}` }
+  }
   const p = Bun.spawn(j.box ? jobArgs(j.root, j.name, j.command, jenv) : ['sh', '-c', j.command], { cwd: j.root, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
     env: { ...process.env, PATH: toolPath(), ...jenv } })
   const limit = setTimeout(() => p.kill(), j.name === 'backup' ? 30 * 60e3 : 5 * 60e3)
