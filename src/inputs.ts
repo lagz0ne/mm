@@ -5,7 +5,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { type Config, getPath, loadConfig, saveConfig, setPath, when } from './config'
-import { HOME, run } from './env'
+import { DIRS, HOME, run } from './env'
 import { manifest } from './manifest'
 import * as vault from './vault'
 
@@ -19,7 +19,11 @@ export interface Input {
 export type Status = 'missing' | 'filled' | 'sealed' | 'managed' | 'unchecked' | 'bad' | 'n/a'
 export interface Need { scope: string; name: string; kind: Input['kind']; status: Status; required: boolean; for: string; how: string; fill: string; detail?: string }
 
-export const expand = (p: string) => p.replace(/^~(?=\/|$)/, HOME)
+/** A manifest path on this machine: `~` is the home folder; `{brain}` the brain's folder in this layout (DIRS.brain). */
+export const expand = (p: string) => p.replace(/^\{brain\}(?=\/|$)/, DIRS.brain).replace(/^~(?=\/|$)/, HOME)
+// the brain's folder in either layout: the denies name both, so a machine whose layout was guessed wrong (or a folder
+// left over from a move) is still covered
+const BRAINS = [join(DIRS.mm, 'brain'), join(HOME, 'brain')]
 const tilde = (p: string) => (p.startsWith(HOME) ? `~${p.slice(HOME.length)}` : p)
 export const machineInputs = () => manifest.machine.inputs as Record<string, Input>
 /**
@@ -32,9 +36,12 @@ export function machineSecretPaths(): { files: string[]; dirs: string[] } {
   const files = new Set<string>([join(HOME, '.claude', '.credentials.json')]), dirs = new Set<string>([join(HOME, '.paseo')])
   for (const i of Object.values(machineInputs())) {
     if (i.kind !== 'secret' || !i.path) continue
-    const f = expand(i.path), d = dirname(f)
-    files.add(f)
-    if (d !== HOME && d !== join(HOME, '.claude') && d.startsWith(`${HOME}/`)) dirs.add(d)
+    const all = /^\{brain\}(\/|$)/.test(i.path) ? BRAINS.map((b) => i.path!.replace(/^\{brain\}/, b)) : [expand(i.path)]
+    for (const f of all) {
+      const d = dirname(f)
+      files.add(f)
+      if (d !== HOME && d !== join(HOME, '.claude') && d.startsWith(`${HOME}/`)) dirs.add(d)
+    }
   }
   return { files: [...files].sort(), dirs: [...dirs].sort() }
 }

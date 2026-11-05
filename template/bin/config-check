@@ -35,10 +35,15 @@ const OWNER_ONLY = ['Bash(mm user*)', 'Bash(mm grant*)', 'Bash(mm token*)', 'Bas
   'Bash(mm ai budget*)', 'Bash(*ai.sock*)', 'Read(/{mm}/ai/**)', 'Edit(/{mm}/ai/**)',
   `Read(/${HOME}/.config/secrets/ai-upstream.key)`, `Edit(/${HOME}/.config/secrets/ai-upstream.key)`]
 // The machine's secrets (review sy-5ag): every path mm lists in .run/endpoints.json (machine_secrets: each secret input's
-// file and folder in the manifest, Paseo's home, Claude's login), so a new input is covered without a template change; a
-// fixed list when an older mm wrote none. Read and Edit, and any Bash command that names one (absolute, ~ or $HOME form).
-const MS = (() => { try { return JSON.parse(fs.readFileSync(path.join(P, '.run', 'endpoints.json'), 'utf8')).machine_secrets } catch { return null } })()
-  || { files: [`${HOME}/.claude/.credentials.json`], dirs: [`${HOME}/brain/.keys`, `${HOME}/.config/secrets`, `${HOME}/.paseo`, `${HOME}/.ssh`] }
+// file and folder in the manifest, Paseo's home, Claude's login), so a new input is covered without a template change;
+// always joined with a fixed list (the brain's keys in either layout among them), so the run file, which a box can
+// write, can add paths but never take one away (review sy-v92 1). Read and Edit, and any Bash command that names one
+// (absolute, ~ or $HOME form).
+const MS_FIXED = { files: [`${HOME}/.claude/.credentials.json`],
+  dirs: [`${HOME}/.mm/brain/.keys`, `${HOME}/brain/.keys`, `${HOME}/.config/secrets`, `${HOME}/.paseo`, `${HOME}/.ssh`] }
+const MS_RUN = (() => { try { return JSON.parse(fs.readFileSync(path.join(P, '.run', 'endpoints.json'), 'utf8')).machine_secrets || {} } catch { return {} } })()
+const strs = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.startsWith('/')) : [])
+const MS = { files: [...new Set([...MS_FIXED.files, ...strs(MS_RUN.files)])], dirs: [...new Set([...MS_FIXED.dirs, ...strs(MS_RUN.dirs)])] }
 const named = (p) => [p, ...(p.startsWith(`${HOME}/`) ? [`~${p.slice(HOME.length)}`, `$HOME${p.slice(HOME.length)}`] : [])].map((x) => `Bash(*${x}*)`)
 const SECRET_DENY = [...(MS.files || []).flatMap((f) => [`Read(/${f})`, `Edit(/${f})`, ...named(f)]),
   ...(MS.dirs || []).flatMap((d) => [`Read(/${d}/**)`, `Edit(/${d}/**)`, ...named(d)])]

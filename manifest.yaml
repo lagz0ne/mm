@@ -21,7 +21,8 @@ machine:
   # fills one. kind var = an answer, kept in config.yaml (key: config, else the name); secret = a file at `path`
   # (mode 600, never in git; read from a file, a pipe or the terminal, never the command line); account = held
   # elsewhere, checked by `check` when possible, never stored; managed_by = made by that tool, only checked.
-  # Values never appear here, in output, logs or traces.
+  # Values never appear here, in output, logs or traces. A path may start with `{brain}`: the brain's folder in this
+  # machine's layout (one-root: $MM_HOME/brain; legacy: ~/brain).
   inputs:
     host:      { kind: var, ask: "Machine name", default: "$(hostname -s)", for: "names this machine in reports and public names" }
     home:      { kind: var, default: "$HOME", for: "the user's home folder (derived)" }
@@ -41,10 +42,10 @@ machine:
     telegram_owner_id: { kind: var, config: telegram.owner_id,
                  for: "the one Telegram user the bridge serves (approvals and chat with agents)",
                  how: "your numeric Telegram user id: message @userinfobot on Telegram" }
-    cloudflare-token: { kind: secret, required: true, when: "access == domain", path: "~/brain/.keys/.cf",
+    cloudflare-token: { kind: secret, required: true, when: "access == domain", path: "{brain}/.keys/.cf",
                  for: "brain/bin/cf: DNS records and tunnel routes for public names",
                  how: "Cloudflare dashboard > My Profile > API Tokens > Create Token: Zone DNS Edit (+ Account Cloudflare Tunnel Edit) for the domain's zone" }
-    telegram-bot-token: { kind: secret, path: "~/brain/.keys/.telebot",
+    telegram-bot-token: { kind: secret, path: "{brain}/.keys/.telebot",
                  for: "the paseo-telegram bridge (approvals and chat with agents)",
                  how: "@BotFather on Telegram: /newbot, or /token for an existing bot" }
     claude-oauth-token: { kind: secret, required: true, path: "~/.config/secrets/claude-oauth.token",
