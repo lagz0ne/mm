@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// bin/wake after a restart (sy-6ym): a lead whose Paseo agent shows `closed` and has work waiting is resumed once with a
-// message to the same agent; a closed lead with nothing open, and an idle one, are left alone; a failed send is tried
-// again; a lead that closes again soon is not resumed twice within WAKE_RESUME_MS.
+// bin/wake after a restart (sy-6ym, sy-670): a lead whose Paseo agent shows `closed` and has work waiting (in progress or
+// blocked) is started again once with bin/lead start (a resumed agent has none of bin/lead's env); a closed lead with
+// nothing open, and an idle one, are left alone; a failed start is tried again; a lead that closes again soon is not
+// restarted twice within WAKE_RESUME_MS.
 // Hermetic: temp folder, stub paseo and bd-serve, no obs.
 //   node test/wake-resume.mjs            exit 0 = every check passed
 import { spawn } from 'node:child_process'
@@ -22,6 +23,13 @@ fs.mkdirSync(path.join(T, 'proj', 'leads'), { recursive: true })
 fs.writeFileSync(path.join(T, 'proj', 'leads', 'roles.json'), JSON.stringify({ roles: [{ id: 'qa' }, { id: 'ops' }, { id: 'dev' }] }))
 fs.mkdirSync(path.join(T, 'proj', 'control'), { recursive: true })
 fs.writeFileSync(path.join(T, 'proj', 'bin', 'bd'), '#!/bin/sh\n', { mode: 0o755 })
+// stub bin/lead: `start <role>` is recorded, and that role's lead is then running (idle), as after bin/lead start
+const STARTED = path.join(T, 'started.txt')
+fs.writeFileSync(path.join(T, 'proj', 'bin', 'lead'), `#!/bin/sh
+[ "$1" = start ] || exit 2
+[ -f "${T}/failstart" ] && { rm -f "${T}/failstart"; echo "paseo refused" >&2; exit 1; }
+echo "START $2" >>"${STARTED}"; echo idle >"${T}/$2.status"
+`, { mode: 0o755 })
 // stub paseo: each role's agent status lives in <role>.status; `send` records the prompt (per agent) and the agent
 // then runs (idle), as a resumed Paseo agent does
 const SENT = path.join(T, 'sent.txt'), st = (r, s) => fs.writeFileSync(path.join(T, `${r}.status`), s)
@@ -56,25 +64,25 @@ const w = spawn('node', [path.join(T, 'proj', 'bin', 'wake')], { env, stdio: ['i
 let out = ''; w.stdout.on('data', (d) => (out += d)); w.stderr.on('data', (d) => (out += d))
 const sent = () => { try { return fs.readFileSync(SENT, 'utf8') } catch { return '' } }
 const opsLog = () => { try { return fs.readFileSync(path.join(T, 'proj', '.run', 'logs', 'ops.log'), 'utf8') } catch { return '' } }
-const to = (r) => (sent().match(new RegExp(`TO agent-${r}\\n`, 'g')) || []).length
+const starts = (r) => { try { return (fs.readFileSync(STARTED, 'utf8').match(new RegExp(`^START ${r}$`, 'gm')) || []).length } catch { return 0 } }
 
 try {
   console.log('== after a restart: a closed lead with work in progress')
-  ok('qa is resumed, in its own agent (context kept)', await until(() => to('qa') === 1))
-  ok('...told why, with its item in progress', /closed by a restart[\s\S]*p-1 "half done before the reboot" is in progress/.test(sent()))
-  ok('...logged', await until(() => /resumed qa \(qa\): it was closed with 1 open reason/.test(opsLog())))
+  ok('qa is started again with bin/lead start (its own env, its own Claude folder; sy-670)', await until(() => starts('qa') === 1))
+  ok('...not resumed with a message to the old agent', !/TO agent-qa\nYou were closed/.test(sent()))
+  ok('...logged, with its handover count', await until(() => /restarted qa \(was qa, closed\): 0 reason\(s\) wait for it, 1 item\(s\) in its handover/.test(opsLog())))
   await sleep(1500)
-  ok('a closed lead with nothing in progress (ops) is left alone', to('ops') === 0)
-  ok('an idle lead (dev) is not sent a resume', !/TO agent-dev\nYou were closed/.test(sent()))
+  ok('a closed lead with nothing in progress or blocked (ops) is left alone', starts('ops') === 0)
+  ok('an idle lead (dev) is not restarted', starts('dev') === 0)
 
   console.log('== once, not on every check')
   st('qa', 'closed'); await sleep(1500)
-  ok('qa closes again soon after: not resumed twice (WAKE_RESUME_MS)', to('qa') === 1)
+  ok('qa closes again soon after: not restarted twice (WAKE_RESUME_MS)', starts('qa') === 1)
 
-  console.log('== a failed send is tried again')
-  fs.writeFileSync(path.join(T, 'failsend'), ''); items.push({ id: 'p-4', assignee: 'ops', status: 'in_progress', title: 'ops now has work' })
-  ok('the failure is logged (reasons kept)', await until(() => /resume of ops failed \(reasons kept\)/.test(opsLog())))
-  ok('...and ops is resumed at the next check', await until(() => to('ops') === 1 && /p-4 "ops now has work"/.test(sent())))
+  console.log('== a failed start is tried again; a blocked item counts as work')
+  fs.writeFileSync(path.join(T, 'failstart'), ''); items.push({ id: 'p-4', assignee: 'ops', status: 'blocked', title: 'ops waits on a human' })
+  ok('the failure is logged, with the reason (reasons kept)', await until(() => /restart of ops failed \(reasons kept\): paseo refused/.test(opsLog())))
+  ok('...and ops is started at the next check', await until(() => starts('ops') === 1))
 } finally {
   w.kill(); srv.close()
   if (fail) console.log(`--- wake output\n${opsLog().split('\n').slice(-15).join('\n')}\n${out.slice(-1500)}`)

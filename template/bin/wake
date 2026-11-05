@@ -152,9 +152,12 @@ async function tick() {
 }
 
 // After a machine or Paseo restart, a lead's agent shows `closed` and is never idle, so tick() never reaches it and
-// its work stops (sy-6ym, the reboot of 2026-11-04). A closed lead with work waiting (reasons, or items in progress)
-// is resumed with a message to the same agent: its context is kept (never bin/lead start, which archives it). At most
-// once per WAKE_RESUME_MS per agent; counted (mm_wake_resumed_total) and logged.
+// its work stops (sy-6ym, the reboot of 2026-11-04). A closed lead with work waiting (reasons, or items in progress or
+// blocked) is started again with bin/lead start (sy-670): Paseo resumes a closed agent with none of the env bin/lead
+// gave it (its board actor, its own Claude folder), so a resumed lead posted as someone else, with Claude's global
+// folder, where its old session isn't anyway. bin/lead start archives the closed one, and the new lead's first prompt
+// lists its items in progress and blocked (the handover, sy-8n1); the reasons stay pending, and tick() sends them once
+// the new lead is idle. At most once per WAKE_RESUME_MS per agent; counted (mm_wake_resumed_total) and logged.
 const RESUME_CHECK = Number(process.env.WAKE_RESUME_CHECK_MS || 60000), RESUME_GAP = Number(process.env.WAKE_RESUME_MS || 600000)
 const resumed = {}
 let resuming = false // one check at a time: two overlapping checks would both see "not resumed yet" and send twice
@@ -172,21 +175,17 @@ async function resumeClosed1() {
     if (!a || a.status !== 'closed' || Date.now() - (resumed[a.id] || 0) < RESUME_GAP) continue
     open ||= await bd('/v0/beads/issues?limit=500')
     const reasons = pending[role]
-    const lines = [...[...reasons.values()].map((r) => `- ${r.reason}`),
-      ...(open.items || []).filter((i) => i.assignee === role && i.status === 'in_progress').map((i) => `- ${i.id} "${clip(i.title, 80)}" is in progress (yours)`)]
-    if (!lines.length) continue
-    const msg = [`You were closed by a restart (the machine or Paseo). Resume your open work as the ${role} lead (${PROJECT}):`, ...lines,
-      '', 'Follow your role brief: pick up, answer every human comment on the item, then end your turn.'].join('\n')
+    const mine = (open.items || []).filter((i) => i.assignee === role && (i.status === 'in_progress' || i.status === 'blocked'))
+    if (!reasons.size && !mine.length) continue
     resumed[a.id] = Date.now()
-    const batch = new Map(reasons); reasons.clear()
     try {
-      await span('wake resume', { role, agent: a.id, via: P_.via() }, () => P_.send(a.id, msg))
+      await span('wake resume', { role, agent: a.id, via: 'bin/lead start' }, () => new Promise((ok, no) =>
+        execFile(path.join(P, 'bin', 'lead'), ['start', role], { cwd: P, timeout: 180000 }, (e, out, err) => (e ? no(new Error(String(err || e.message).trim().slice(0, 300))) : ok(out)))))
       count('mm_wake_resumed_total', { role })
-      log(`resumed ${role} (${a.shortId || a.id}): it was closed with ${lines.length} open reason(s)`)
+      log(`restarted ${role} (was ${a.shortId || a.id}, closed): ${reasons.size} reason(s) wait for it, ${mine.length} item(s) in its handover`)
     } catch (e) {
-      for (const [id, r] of batch) if (!reasons.has(id)) reasons.set(id, r)
-      delete resumed[a.id] // not sent: try again at the next check
-      log(`resume of ${role} failed (reasons kept):`, e.message)
+      delete resumed[a.id] // not started: try again at the next check
+      log(`restart of ${role} failed (reasons kept):`, e.message)
     }
   }
 }

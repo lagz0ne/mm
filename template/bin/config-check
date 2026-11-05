@@ -87,7 +87,12 @@ function render(tmpl, role, assistant = false) {
     hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: 'Bash|Read|Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: h, timeout: 10 }] }] }
   }
   const govDeny = [...ALWAYS_DENY.map(gfill), ...BRAIN_DENY, ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? mandatoryDeny(role) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
-  return { ...tmpl, ...(hooks ? { hooks } : {}), permissions: { ...p,
+  // who the session is, in the settings themselves (sy-670): a lead that Paseo resumes from `closed` runs without the
+  // env bin/lead gave it at start, but Claude Code applies this to every session in this folder, however it started
+  const who = assistant ? {} : { env: { ...(tmpl.env || {}), BEADS_ACTOR: role, GIT_AUTHOR_NAME: role, GIT_COMMITTER_NAME: role,
+    GIT_AUTHOR_EMAIL: `${role}@${projectName()}.local`, GIT_COMMITTER_EMAIL: `${role}@${projectName()}.local`,
+    PATH: [path.join(P, 'bin'), path.join(D.mm, 'bin'), path.join(D.mm, 'npm', 'bin'), `${HOME}/.local/bin`, `${HOME}/.npm-global/bin`, '/usr/local/bin', '/usr/bin', '/bin'].join(':') } }
+  return { ...tmpl, ...who, ...(hooks ? { hooks } : {}), permissions: { ...p,
     ...(p.additionalDirectories ? { additionalDirectories: p.additionalDirectories.map(fill) } : {}),
     // a rule naming a service that doesn't run yet ({url:app} before the first deploy) is left out, not half-rendered
     allow: (p.allow || []).map(rule).filter((r) => !r.includes('{url:')), deny: [...new Set([...(p.deny || []).map(rule), ...govDeny])] } }
