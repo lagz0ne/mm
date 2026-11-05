@@ -10,7 +10,7 @@ import { expand as expandHome, fill, needs, unmet } from './inputs'
 import { manifest } from './manifest'
 import { onboard } from './onboard'
 import { archive, restore, update } from './lifecycle'
-import { cron } from './cron'
+import { cron, runOnce } from './cron'
 import * as vaultMod from './vault'
 import * as syncMod from './sync'
 import { release, restoreMachine } from './restore'
@@ -269,7 +269,9 @@ program.command('sync').description('seal what can\'t be rebuilt into the master
     } catch (e) { console.error(`mm sync: ${(e as Error).message}`); process.exit(1) }
   })
 
-program.command('cron').description('(run by mm-pc) run every project\'s schedules (health, backup, ...)').action(async () => { await cron() })
+program.command('cron').description('(run by mm-pc) run every project\'s schedules (health, backup, ...)')
+  .option('--run <project/job>', 'run one job now, once (e.g. acme-shop/backup), and exit with its code')
+  .action(async (opts) => { if (opts.run) process.exit(await runOnce(opts.run)); await cron() })
 program.command('ship').description('(run by mm-pc) ship service log files to VictoriaLogs').action(async () => { await ship() })
 
 const vaultCmd = program.command('vault').description('sealed secrets (age): two keys, opened only into memory-backed files at start (docs/vault.md)')

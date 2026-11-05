@@ -15,7 +15,7 @@ check() { local d=$1; shift; if "$@" >/tmp/box-test.out 2>&1; then ok "$d"; else
 BOX=mm-box-$PROJECT; PX=mm-egress-$PROJECT; NET=mm-net-$PROJECT; MM_HOME_DIR=${MM_HOME:-$HOME/.mm}
 D() { $MM_DOCKER "$@"; }
 IN() { D exec "$BOX" sh -c "umask 002; $*"; }   # as mm shell does
-cleanup() { [ -n "${KEEP:-}" ] && return; mm archive "$REF" >/dev/null 2>&1; D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1; }
+cleanup() { [ -n "${KEEP:-}" ] && return; mm archive "$REF" >/dev/null 2>&1; [ -n "${BKP:-}" ] && rm -rf "$BKP";D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1; }
 trap cleanup EXIT
 export -f D IN; export BOX PX NET MM_DOCKER
 
@@ -73,6 +73,15 @@ check "the box can't reach the system Paseo (6767 on its network's gateway, the 
 echo "== mm finds the box (its registration)"
 check "mm ls lists it as a box, with its processes" sh -c "mm ls -o json | jq -e --arg p '$PROJECT' '.[] | select(.project == \$p) | .box == true'"
 check "the run files the engine scripts read (.run/services.json, endpoints.json)" sh -c "jq -e .services.board '$ROOT/.run/services.json' >/dev/null && test -s '$ROOT/.run/endpoints.json'"
+
+echo "== the box's schedules (the host's mm cron runs them in the box), its backup out of its reach (sy-8gv)"
+BK=$(jq -r .dirs.backups "$ROOT/.run/endpoints.json"); BKP="$BK/$PROJECT"
+check "mm cron --run $PROJECT/health: runs in the box, ok" mm cron --run "$PROJECT/health"
+check "mm cron --run $PROJECT/backup: ok" mm cron --run "$PROJECT/backup"
+LAST=$(ls -1d "$BKP"/20*/ 2>/dev/null | tail -1)
+check "...a backup on the host ($BKP/<date>), with the board's items in it" sh -c "[ -n '$LAST' ] && grep -q 'made in the box' '$LAST/board.jsonl' && test -d '$LAST/board.dolt' && test -s '$LAST/config.bundle'"
+check "...owned by the host's owner, and nothing of it left in the box's staging folder" sh -c "[ -z \"\$(find '$LAST' ! -uid $(id -u) -print -quit)\" ] && [ -z \"\$(ls -A '$ROOT/.run/box/backup')\" ]"
+check "the box can't see the backups folder" sh -c "! IN 'ls $BK' && ! IN 'test -e $BKP'"
 
 echo "== mm box off, mm box on (a project moves between the host and its box)"
 check "mm box off: the box stops; box: true leaves the answers (committed)" sh -c "mm box off '$REF' >/tmp/box-off.out 2>&1 && ! D inspect '$BOX' >/dev/null 2>&1 && ! grep -qx 'box: true' '$ROOT/.mm-answers.yaml' && git -C '$ROOT' diff --quiet -- .mm-answers.yaml"

@@ -1,13 +1,15 @@
 // mm cron: the machine's one scheduler (process-compose has none). Runs every project's `schedules` from its
 // .run/services.json (written by `mm up`): `every: 1m | 30s | 2h | "daily HH:MM"` (local time). One run of a job at a
 // time; each run is a line in <root>/.run/logs/cron.log (shipped to VictoriaLogs) and its own trace (the job's
-// engine script reports to it). State: ~/.mm/data/cron.json (last start per project/job).
+// engine script reports to it). State: ~/.mm/data/cron.json (last start per project/job). A project box's jobs
+// (~/.mm/pc/boxes) run in its box, as the box user; its backup then lands outside the box (box.ts landBackup).
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DIRS, HOME, toolPath } from './env'
+import { jobArgs, landBackup } from './box'
 
 const STATE = join(DIRS.mm, 'data', 'cron.json')
-type Job = { project: string; root: string; name: string; every: string; command: string }
+type Job = { project: string; root: string; name: string; every: string; command: string; box: boolean }
 
 export function parseEvery(every: string): { ms: number } | { daily: [number, number] } | null {
   const m = /^(\d+)\s*(s|m|h)$/.exec(every.trim())
@@ -25,14 +27,14 @@ export function due(every: string, last: number | undefined, now = Date.now()): 
 }
 
 function jobs(): Job[] {
-  const out: Job[] = [], pdir = join(DIRS.pc, 'projects')
-  for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
+  const out: Job[] = []
+  for (const [pdir, box] of [[join(DIRS.pc, 'projects'), false], [join(DIRS.pc, 'boxes'), true]] as const) for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
     const m = /from (.+)\/services\.yaml/.exec(readFileSync(join(pdir, f), 'utf8'))
     if (!m) continue
     const root = m[1].replace(/^~(?=\/)/, HOME)
     try {
       const s = JSON.parse(readFileSync(join(root, '.run', 'services.json'), 'utf8')) as { project: string; schedules?: Record<string, { every: string; command: string }> }
-      for (const [name, j] of Object.entries(s.schedules || {})) if (j?.every && j?.command) out.push({ project: s.project, root, name, every: j.every, command: j.command })
+      for (const [name, j] of Object.entries(s.schedules || {})) if (j?.every && j?.command) out.push({ project: s.project, root, name, every: j.every, command: j.command, box })
     } catch {}
   }
   return out
@@ -52,21 +54,38 @@ export async function cron(tickMs = 10_000) {
       if (st[key] === undefined && !first.has(key)) { first.add(key); const e = parseEvery(j.every); if (e && 'daily' in e) st[key] = now }
       if (running.has(key) || !due(j.every, st[key], now)) continue
       st[key] = now; running.add(key)
-      const t0 = Date.now(), log = join(j.root, '.run', 'logs', 'cron.log')
-      const p = Bun.spawn(['sh', '-c', j.command], { cwd: j.root, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
-        env: { ...process.env, PATH: toolPath(), MM_PROJECT: j.project, TRACEPARENT: '' } })
-      const limit = setTimeout(() => p.kill(), j.name === 'backup' ? 30 * 60e3 : 5 * 60e3)
-      Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]).then(([out, err, code]) => {
-        clearTimeout(limit); running.delete(key)
-        const tail = `${out}${err}`.trim().split('\n').slice(-5).join(' | ').slice(0, 1000)
-        try {
-          mkdirSync(join(j.root, '.run', 'logs'), { recursive: true })
-          appendFileSync(log, JSON.stringify({ time: new Date().toISOString(), level: code ? 'error' : 'info', msg: `${j.name} ${code ? `failed (exit ${code})` : 'ok'}${tail ? `: ${tail}` : ''}`,
-            project: j.project, service: `cron`, job: j.name, exit_code: code, duration_ms: Date.now() - t0 }) + '\n')
-        } catch {}
-      })
+      runJob(j).then(() => running.delete(key))
     }
     try { writeFileSync(STATE, JSON.stringify(st)) } catch {}
     await Bun.sleep(tickMs)
   }
+}
+
+/** One run of a job: its line in <root>/.run/logs/cron.log. Resolves to the exit code and the output's tail. */
+async function runJob(j: Job): Promise<{ code: number; tail: string }> {
+  const t0 = Date.now(), log = join(j.root, '.run', 'logs', 'cron.log')
+  const jenv = { MM_PROJECT: j.project, TRACEPARENT: '' }
+  const p = Bun.spawn(j.box ? jobArgs(j.root, j.name, j.command, jenv) : ['sh', '-c', j.command], { cwd: j.root, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
+    env: { ...process.env, PATH: toolPath(), ...jenv } })
+  const limit = setTimeout(() => p.kill(), j.name === 'backup' ? 30 * 60e3 : 5 * 60e3)
+  let [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited])
+  clearTimeout(limit)
+  if (j.box && j.name === 'backup' && code === 0) try { out += `\nlanded ${landBackup(j.root)}` } catch (e) { code = 1; err += `\n${(e as Error).message}` }
+  const tail = `${out}${err}`.trim().split('\n').slice(-5).join(' | ').slice(0, 1000)
+  try {
+    mkdirSync(join(j.root, '.run', 'logs'), { recursive: true })
+    appendFileSync(log, JSON.stringify({ time: new Date().toISOString(), level: code ? 'error' : 'info', msg: `${j.name} ${code ? `failed (exit ${code})` : 'ok'}${tail ? `: ${tail}` : ''}`,
+      project: j.project, service: `cron`, job: j.name, exit_code: code, duration_ms: Date.now() - t0 }) + '\n')
+  } catch {}
+  return { code, tail }
+}
+
+/** `mm cron --run <project>/<job>`: run one job now, once, as the scheduler would (logged the same way). */
+export async function runOnce(ref: string): Promise<number> {
+  const [project, name] = ref.split('/')
+  const j = jobs().find((x) => x.project === project && x.name === name)
+  if (!j) { console.error(`mm cron: no job ${ref} (jobs: ${jobs().map((x) => `${x.project}/${x.name}`).join(', ') || 'none'})`); return 2 }
+  const r = await runJob(j)
+  console.log(`${ref} ${r.code ? `failed (exit ${r.code})` : 'ok'}${r.tail ? `: ${r.tail}` : ''}`)
+  return r.code
 }

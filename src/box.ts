@@ -4,7 +4,7 @@
 // project folder is mounted at the same path (so every generated path stays right); the kernel and every file that
 // decides what the box may do are mounted read-only on top (review sy-b15.6). The box's network is `internal`: the
 // only way out is the project's own egress proxy, with its allowlist (the base list + the project's `egress:`).
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -193,12 +193,47 @@ export function down(root: string): Step[] {
 /** Give the host's owner the files the box made (some are 0600, as their programs make them): before the host packs
  *  or moves the project (mm archive). mm is the only holder of Docker access, so a short-lived root helper does it,
  *  with the project as its only mount. Run only with the box stopped. */
-export function reclaim(root: string): Step[] {
-  const uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000, a = readAnswers(root)
-  const dirs = [root, join(DIRS.mm, 'paseo', a.project), join(DIRS.mm, 'claude', a.project)].filter(existsSync)
-  const r = docker('run', '--rm', '--network', 'none', '--user', '0:0', '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--cap-add', 'FOWNER', '--cap-add', 'DAC_OVERRIDE',
+/** chown -R (no symlinks followed) to the host's owner, by a one-shot root helper with no network. */
+function giveBack(dirs: string[]) {
+  const uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000
+  return docker('run', '--rm', '--network', 'none', '--user', '0:0', '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--cap-add', 'FOWNER', '--cap-add', 'DAC_OVERRIDE',
     ...dirs.flatMap((d) => ['-v', `${d}:${d}`]), '--entrypoint', 'chown', IMAGE(), '-R', '--no-dereference', `${uid}:${gid}`, ...dirs)
+}
+export function reclaim(root: string): Step[] {
+  const a = readAnswers(root)
+  const dirs = [root, join(DIRS.mm, 'paseo', a.project), join(DIRS.mm, 'claude', a.project)].filter(existsSync)
+  const r = giveBack(dirs)
   return [{ step: 'reclaim', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `the box's files back to the host's owner (${dirs.length} folder(s))` : short(r) }]
+}
+
+/**
+ * A box project's schedules (health, backup, ...): the host's `mm cron` runs them in the box, as the box user. The box
+ * can't see the machine's backups folder, so `backup` writes to a staging folder in the project (it empties it first),
+ * and landBackup then moves what it made out of the box's reach (sy-8gv).
+ */
+export const backupStage = (root: string) => join(root, '.run', 'box', 'backup')
+export function jobArgs(root: string, name: string, command: string, env: Record<string, string>) {
+  const stage = backupStage(root), e = { ...env, ...(name === 'backup' ? { BACKUP_DIR: stage } : {}) }
+  const script = name === 'backup' ? `umask 002 && mkdir -p '${stage}' && find '${stage}' -mindepth 1 -delete && ${command}` : `umask 002 && ${command}`
+  return [...dockerCmd(), 'exec', '-w', root, ...Object.entries(e).flatMap(([k, v]) => ['-e', `${k}=${v}`]), names(readAnswers(root).project).box, 'sh', '-c', script]
+}
+const STAMP = /^20\d\d-\d\d-\d\dT\d{4}Z$/
+/** After a box's backup: its new dated folder(s) go to <backups>/<project>/ as the host owner's; the newest 14 stay. */
+export function landBackup(root: string): string {
+  const stage = backupStage(root), dest = join(DIRS.backups, readAnswers(root).project)
+  const got = existsSync(stage) ? readdirSync(stage).filter((d) => STAMP.test(d) && lstatSync(join(stage, d)).isDirectory()) : []
+  if (!got.length) throw new Error(`the box left no backup in ${stage}`)
+  const r = giveBack(got.map((d) => join(stage, d)))
+  if (!r.ok) throw new Error(`could not take the backup from the box: ${short(r)}`)
+  mkdirSync(dest, { recursive: true })
+  for (const d of got) {
+    try { renameSync(join(stage, d), join(dest, d)) } catch {   // another file system: copy, then remove
+      const c = run(['cp', '-a', join(stage, d), join(dest, d)]); if (!c.ok) throw new Error(`copy ${d}: ${short(c)}`)
+      rmSync(join(stage, d), { recursive: true, force: true })
+    }
+  }
+  for (const d of readdirSync(dest).filter((x) => STAMP.test(x)).sort().slice(0, -14)) rmSync(join(dest, d), { recursive: true, force: true })
+  return `${got.join(', ')} -> ${dest}`
 }
 boxHook.reclaim = reclaim
 
