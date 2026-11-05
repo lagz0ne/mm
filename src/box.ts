@@ -101,6 +101,9 @@ export function up(root: string): Step[] {
   const claude = join(DIRS.mm, 'claude', a.project); mkdirSync(claude, { recursive: true, mode: 0o700 })
   const lim = (k: string, d: string) => String(getPath(loadConfig(), `box.${k}`) || d)
   const r = docker('run', '-d', '--name', n.box, '--hostname', a.project, '--label', `mm.project=${a.project}`, '--network', n.net, '--restart', 'unless-stopped',
+    // no DNS out (review sy-b15.7: lookups are a way out): Docker's own resolver still answers the names on the box's
+    // network (its proxy), and forwards everything else to 127.0.0.1, where nothing answers
+    '--dns', '127.0.0.1',
     '--user', `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--pids-limit', lim('pids', '2048'), '--memory', lim('memory', '4g'), '--cpus', lim('cpus', '2'),
     '--tmpfs', `/tmp:rw,nosuid,nodev,size=1g,mode=1777`, '--tmpfs', `${HOME}:rw,nosuid,nodev,size=512m,uid=${process.getuid?.() ?? 1000},gid=${process.getgid?.() ?? 1000},mode=0700`, '-e', `HOME=${HOME}`,

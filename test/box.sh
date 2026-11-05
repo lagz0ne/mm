@@ -47,6 +47,8 @@ for f in services.yaml .mm-answers.yaml secrets.json bin/land .git/config .run/b
 done
 
 echo "== the way out"
+check "no DNS for an outside name in the box (getent example.com fails)" sh -c "! IN 'getent hosts example.com'"
+check "...but its own proxy's name resolves" IN "getent hosts $PX"
 check "no direct way out (by name)" sh -c "! IN 'curl -s -o /dev/null --max-time 8 --noproxy \"*\" https://github.com/'"
 check "no direct way out (by address)" sh -c "! IN 'curl -s -o /dev/null --max-time 8 --noproxy \"*\" https://1.1.1.1/'"
 check "through its proxy: a site on its list (github.com)" IN "curl -s -o /dev/null --max-time 20 -x http://$PX:8888 https://github.com/"
