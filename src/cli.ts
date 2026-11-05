@@ -18,6 +18,7 @@ import { AUTH_SOCK, callApi, serve as authServe } from './auth'
 import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
 import { findRoot, listProjects, namespaceOp, newProject, parseRef, processes, readAnswers, resolve, rootOf, up } from './project'
 import * as boxMod from './box'
+import * as aiMod from './ai'
 import { type Format, print } from './out'
 import pkg from '../package.json'
 
@@ -252,6 +253,30 @@ auth.command('pending <code>').description('what is asking to sign in with this 
 auth.command('approve <code>').description('sign in the browser that shows this code, as a person (the owner\'s step; the bridge calls the same socket API)')
   .requiredOption('--as <name>', 'the person it signs in (mm user add first)')
   .action((code: string, o) => authCall('/approve', { code, name: o.as, by: 'cli' }))
+// the AI gateway for project boxes (src/ai.ts, sy-b15.10): budgets and use; keys are made by mm up, never printed
+const ai = program.command('ai').description('the AI gateway for project boxes: every model call, its cost, budgets per project and person (mm.ai)')
+ai.command('serve').description('(run by mm-pc as mm.ai) the AI gateway').action(async () => { await aiMod.serve() })
+ai.command('budget <project> <usd>').description('a monthly budget in USD for a project, or one person in it (--person); 0 removes it. 80 % warns, 100 % stops new calls')
+  .option('--person <name>', 'the budget of one person in the project')
+  .action((project: string, usd: string, o) => {
+    // spending is the owner's to allow, like access (the same brake as mm grant)
+    if (process.env.CLAUDECODE || process.env.PASEO_AGENT_ID) { console.error('mm: budgets are the owner\'s to set: run it yourself, in your own terminal'); process.exit(1) }
+    const d = aiMod.store()
+    try { aiMod.setBudget(d, project, o.person || '', Number(usd)); console.log(`${o.person ? `${o.person} in ${project}` : project}: ${Number(usd) ? `$${Number(usd).toFixed(2)} a month` : 'no budget'}`) }
+    catch (e) { console.error(`mm ai budget: ${(e as Error).message}`); process.exit(2) } finally { d.close() }
+  })
+const usage = () => {
+  const d = aiMod.store(), r = aiMod.report(d); d.close(); const o = fmt()
+  if (o.format !== 'table') { print([r] as unknown as Record<string, unknown>[], o, 'month'); return }
+  console.log(`AI use in ${r.month}`)
+  print(r.rows, o, 'project')
+  if (r.budgets.length) { console.log(''); print(r.budgets as unknown as Record<string, unknown>[], o, 'project') }
+}
+ai.command('usage').description('this month\'s use: by project, person and model, with the budgets').action(usage)
+program.command('usage').description('this month\'s AI use (same as mm ai usage)').action(usage)
+ai.command('revoke <project>').description('end every AI key of a project now (mm up gives its box a new one)').action((project: string) => {
+  const d = aiMod.store(); const n = aiMod.revokeKeys(d, project); d.close(); console.log(`${project}: ${n} key(s) ended`)
+})
 // people and access (the owner's steps): a person, a role per project, a single-use link that opens all of it
 const user = program.command('user').description('people who sign in to the boards: mm user add | link | rm | ls')
 user.command('add <name>').description('a person (no password; they sign in with a link from mm user link)')

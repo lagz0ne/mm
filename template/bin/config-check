@@ -28,8 +28,12 @@ const HOME = process.env.HOME || os.homedir()
 const BD_QUIET = ['bd', 'bin/bd', 'tools/bd'].flatMap((b) => ['hooks', 'setup', 'init', 'config set no-hooks', 'config set metrics', 'config set no-git-ops'].map((c) => `Bash(${b} ${c}*)`))
 // Access is the owner's (review sy-b15.13): no agent makes people, sign-in links, grants or tokens, talks to the
 // gateway's socket, or reads its store or a box's Paseo password. `mm revoke` stays free (it only takes access away).
+// The same for spending (sy-b15.10): no agent sets an AI budget, or reads or edits the AI gateway's store (its keys'
+// hashes, budgets, use) or the machine's upstream key.
 const OWNER_ONLY = ['Bash(mm user*)', 'Bash(mm grant*)', 'Bash(mm token*)', 'Bash(mm auth*)', 'Bash(*auth.sock*)',
-  'Read(/{mm}/auth/**)', 'Edit(/{mm}/auth/**)', 'Read(/{mm}/paseo/**)', 'Edit(/{mm}/paseo/**)']
+  'Read(/{mm}/auth/**)', 'Edit(/{mm}/auth/**)', 'Read(/{mm}/paseo/**)', 'Edit(/{mm}/paseo/**)',
+  'Bash(mm ai budget*)', 'Bash(*ai.sock*)', 'Read(/{mm}/ai/**)', 'Edit(/{mm}/ai/**)',
+  `Read(/${HOME}/.config/secrets/ai-upstream.key)`, `Edit(/${HOME}/.config/secrets/ai-upstream.key)`]
 const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm fill*)', ...BD_QUIET, ...OWNER_ONLY]
 // Assistants (assistants/<user>/, system profile): no tool that acts or reads on its own (bin/lib/assist.mjs); a tool
 // that is not allowed is refused without asking (defaultMode dontAsk), so no permission request ever reaches a

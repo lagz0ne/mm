@@ -30,6 +30,11 @@ export function writeBase() {
   if (getPath(loadConfig(), 'auth.enabled') === true || getPath(loadConfig(), 'auth.enabled') === 'true') processes['mm.auth'] = { namespace: 'mm', command: `${mm} auth serve`, environment: [`PATH=${toolPath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
     log_location: join(DIRS.pc, 'auth.log'), availability: { restart: 'always', backoff_seconds: 3 },
     readiness_probe: { exec: { command: `test -S ${join(DIRS.mm, 'run', 'auth.sock')}` }, period_seconds: 3, failure_threshold: 20 } }
+  // the AI gateway for every box (src/ai.ts, sy-b15.10): one socket per box, no TCP port. Off until the machine turns it
+  // on (`mm config set ai.enabled true`) and the owner fills its upstream key (`mm fill ai-upstream-key`).
+  const ai = getPath(loadConfig(), 'ai.enabled')
+  if (ai === true || ai === 'true') processes['mm.ai'] = { namespace: 'mm', command: `${mm} ai serve`, environment: [`PATH=${toolPath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
+    log_location: join(DIRS.pc, 'ai.log'), availability: { restart: 'always', backoff_seconds: 3 } }
   Object.assign(processes, obsProcesses())
   writeFileSync(BASE, `# mm: the machine process manager. Projects join as namespaces (~/.mm/pc/projects/*.yaml).\nversion: "0.5"\n${Bun.YAML.stringify({ processes }, null, 2)}\n`)
 }

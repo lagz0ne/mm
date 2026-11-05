@@ -6,8 +6,9 @@
 // only way out is the project's own egress proxy, with its allowlist (the base list + the project's `egress:`).
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { AI_PORT, aiEnabled, aiSocket, mintKey, revokeKeys, store as aiStore } from './ai'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, run } from './env'
@@ -92,10 +93,14 @@ const allowPatterns = (hosts: string[]) => hosts.map((h) => `^${h.startsWith('*.
 
 /** What every program in the box gets (its services, and the jobs mm cron runs there): its names, its Paseo, its proxy. */
 function boxEnv(root: string): Record<string, string> {
-  const { answers: a, pp } = resolve(root), out = `http://${names(a.project).proxy}:8888`
+  const { answers: a, pp } = resolve(root), px = names(a.project).proxy, out = `http://${px}:8888`, direct = `localhost,127.0.0.1,.localhost,${px}`
   return { PATH: BOX_PATH, HOME, MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0', PASEO_HOME: join(DIRS.mm, 'paseo', a.project),
-    HTTPS_PROXY: out, HTTP_PROXY: out, https_proxy: out, http_proxy: out, NO_PROXY: 'localhost,127.0.0.1,.localhost', no_proxy: 'localhost,127.0.0.1,.localhost' }
+    HTTPS_PROXY: out, HTTP_PROXY: out, https_proxy: out, http_proxy: out, NO_PROXY: direct, no_proxy: direct,
+    // models only through mm's AI gateway (sy-b15.10): its proxy forwards this port to the box's own socket on the host;
+    // the key is the box's (/run/mm/secrets/ai.key), never a provider's
+    ANTHROPIC_BASE_URL: `http://${px}:${AI_PORT}` }
 }
+const aiOn = aiEnabled // the AI gateway on for this machine (`mm config set ai.enabled true`)
 /** The box's own process-compose file: portless (the names) and the project's services, as on the host. */
 function boxProcesses(root: string, proxy: string) {
   const { answers: a, services, socket, pp } = resolve(root)
@@ -107,7 +112,8 @@ function boxProcesses(root: string, proxy: string) {
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${pp}/` }, period_seconds: 3, failure_threshold: 20 } },
     // the box's own Paseo: runs the project's leads as the box user; only on the box network, with mm's password; no
     // relay and no web UI (only the system Paseo has the relay; review sy-b15.8)
-    [`${a.project}.paseo`]: { namespace: a.project, command: `sh -c 'PASEO_PASSWORD="$$(cat /run/mm/secrets/paseo.password)" exec paseo daemon run'`,
+    // its agents get the box's AI key from the file at start (never in a config file); none: no model
+    [`${a.project}.paseo`]: { namespace: a.project, command: `sh -c '[ -r /run/mm/secrets/ai.key ] && export ANTHROPIC_API_KEY="$$(cat /run/mm/secrets/ai.key)"; PASEO_PASSWORD="$$(cat /run/mm/secrets/paseo.password)" exec paseo daemon run'`,
       environment: Object.entries({ ...env, PASEO_LISTEN: `0.0.0.0:${PASEO_PORT}`, PASEO_RELAY_ENABLED: 'false', PASEO_WEB_UI_ENABLED: 'false' }).map(([k, v]) => `${k}=${v}`),
       log_location: join(root, '.run', 'logs', 'paseo.log'), availability: { restart: 'always', backoff_seconds: 3 },
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${PASEO_PORT}/` }, period_seconds: 3, failure_threshold: 40 } },
@@ -132,11 +138,15 @@ export function up(root: string): Step[] {
   const edir = join(DIRS.mm, 'egress', a.project); mkdirSync(edir, { recursive: true, mode: 0o700 })
   const hosts = egressList(root); writeFileSync(join(edir, 'allow'), allowPatterns(hosts), { mode: 0o644 })
   if (exists('container', n.proxy)) docker('rm', '-f', n.proxy)
-  const px = docker('run', '-d', '--name', n.proxy, '--label', `mm.project=${a.project}`, '--restart', 'unless-stopped', '--read-only', '--tmpfs', '/run:size=8m', '--tmpfs', '/var/log/tinyproxy:size=8m',
+  // ...and the way to mm's AI gateway: its port AI_PORT, on the box's network only (a fixed address, .2), forwards to
+  // this box's own socket of mm.ai (the folder mounted here, nowhere else). The socket names the project to the gateway.
+  const pip = net.ip.replace(/\.10$/, '.2'), aiDir = dirname(aiSocket(a.project)); mkdirSync(aiDir, { recursive: true, mode: 0o755 })
+  const fwd = `while :; do socat TCP-LISTEN:${AI_PORT},bind=${pip},fork,reuseaddr UNIX-CONNECT:/run/mm/ai/ai.sock 2>/dev/null; sleep 1; done & exec tinyproxy -d -c /etc/tinyproxy/tinyproxy.conf`
+  const px = docker('run', '-d', '--name', n.proxy, '--label', `mm.project=${a.project}`, '--restart', 'unless-stopped', '--init', '--read-only', '--tmpfs', '/run:size=8m', '--tmpfs', '/var/log/tinyproxy:size=8m',
     '--cap-drop', 'ALL', '--cap-add', 'SETUID', '--cap-add', 'SETGID', '--security-opt', 'no-new-privileges', '--pids-limit', '256', '--memory', '256m',
-    '-v', `${join(edir, 'allow')}:/etc/mm/allow:ro`, EGRESS_IMAGE())
+    '-v', `${join(edir, 'allow')}:/etc/mm/allow:ro`, '-v', `${aiDir}:/run/mm/ai`, EGRESS_IMAGE(), 'sh', '-c', fwd)
   if (!px.ok) return fail('egress proxy', short(px))
-  const cn = docker('network', 'connect', n.net, n.proxy); if (!cn.ok) return fail('egress proxy', short(cn))
+  const cn = docker('network', 'connect', '--ip', pip, n.net, n.proxy); if (!cn.ok) return fail('egress proxy', short(cn))
   steps.push({ step: 'egress proxy', status: 'ok', detail: `${n.proxy}: ${hosts.length} name(s) (${hosts.slice(0, 4).join(', ')}${hosts.length > 4 ? ', …' : ''})` })
   // 3. the box's process-compose file, read-only to the box
   const hd = hostDir(a.project), cfg = join(hd, 'cfg'), sock = join(hd, 'sock'), stage = join(hd, 'backup')
@@ -157,7 +167,14 @@ export function up(root: string): Step[] {
     if (!vault.ready()) return fail('secrets', `the services declare ${declared.join(', ')}, and this machine has no vault (mm vault init)`)
     for (const f of Object.values(vault.openFor(a.project, declared.map((x) => vault.projectSecretName(a.project, x))))) chmodSync(f, 0o640)
   }
-  steps.push({ step: 'secrets', status: 'ok', detail: `${declared.length} value(s) + the Paseo password, read-only in the box (tmpfs)` })
+  // its AI key: a new one at every up (the old ones for the project's own work end), for mm.ai only (sy-b15.10)
+  let aiKey = ''
+  if (aiOn()) {
+    const d = aiStore()
+    try { revokeKeys(d, a.project, 'project'); const k = mintKey(d, a.project, { kind: 'project', ttlMs: 31 * 24 * 3600e3 }); writeFileSync(join(sec, 'ai.key'), k.key, { mode: 0o640 }); chmodSync(join(sec, 'ai.key'), 0o640); aiKey = ` + its AI key (until ${k.expires.slice(0, 10)})` }
+    finally { d.close() }
+  } else rmSync(join(sec, 'ai.key'), { force: true })
+  steps.push({ step: 'secrets', status: 'ok', detail: `${declared.length} value(s) + the Paseo password${aiKey}, read-only in the box (tmpfs)` })
   const paseoHome = join(DIRS.mm, 'paseo', a.project), claude = join(DIRS.mm, 'claude', a.project)
   // what the box writes: group-writable (setgid folders keep the group), so the box's uid and the host's owner share it
   for (const d of [root, paseoHome, claude]) {

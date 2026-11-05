@@ -161,6 +161,7 @@ L1=$(loose_n); rm -rf "$WALL" "$OPEN"
 check "mm doctor: a world-writable file of yours in /tmp is listed, one under a 0700 folder is not ($L0 -> $L1)" test "$L1" = "$((L0 + 1))"
 check "a lead may not install bd hooks or turn metrics on (rendered denies)" sh -c "jq -e '.permissions.deny | index(\"Bash(bd hooks*)\") and index(\"Bash(bin/bd config set metrics*)\") and index(\"Bash(bd init*)\")' '$ROOT/leads/qa/.claude/settings.json'"
 check "a lead may not make people, links, grants or tokens, nor reach the gateway's socket or store (review sy-b15.13)" sh -c "jq -e --arg mm \"/\${MM_HOME:-$HOME/.mm}\" '.permissions.deny | index(\"Bash(mm user*)\") and index(\"Bash(mm grant*)\") and index(\"Bash(mm token*)\") and index(\"Bash(*auth.sock*)\") and index(\"Read(\(\$mm)/auth/**)\")' '$ROOT/leads/qa/.claude/settings.json'"
+check "...nor set an AI budget, or read or edit the AI gateway's store or the upstream key (sy-b15.10)" sh -c "jq -e --arg mm \"/\${MM_HOME:-$HOME/.mm}\" --arg home \"/$HOME\" '.permissions.deny | index(\"Bash(mm ai budget*)\") and index(\"Bash(*ai.sock*)\") and index(\"Read(\(\$mm)/ai/**)\") and index(\"Edit(\(\$mm)/ai/**)\") and index(\"Read(\(\$home)/.config/secrets/ai-upstream.key)\")' '$ROOT/leads/qa/.claude/settings.json'"
 
 step "archive: dry run, then clean removal"
 check "dry run" mm archive "$REF" --dry-run

@@ -50,6 +50,9 @@ machine:
     claude-oauth-token: { kind: secret, required: true, path: "~/.config/secrets/claude-oauth.token",
                  for: "CLAUDE_CODE_OAUTH_TOKEN for agents (shell + paseo service)",
                  how: "`claude setup-token` on any machine signed in to your Claude account" }
+    ai-upstream-key: { kind: secret, when: "ai.enabled == true", path: "~/.config/secrets/ai-upstream.key",
+                 for: "mm.ai, the AI gateway for project boxes: its key for the upstream (never in a box)",
+                 how: "an Anthropic API key (console.anthropic.com > API Keys), or the key of an Anthropic-compatible gateway (then set ai.upstream to its URL)" }
     expose-password: { kind: secret, required: true, when: "access == domain", path: "~/.config/secrets/expose.pass",
                  for: "expose --auth: basic auth in front of protected public services",
                  how: "a new random password (e.g. `openssl rand -base64 24`); you type it in the browser" }

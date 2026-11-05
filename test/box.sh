@@ -15,9 +15,35 @@ check() { local d=$1; shift; if "$@" >/tmp/box-test.out 2>&1; then ok "$d"; else
 BOX=mm-box-$PROJECT; PX=mm-egress-$PROJECT; NET=mm-net-$PROJECT; MM_HOME_DIR=${MM_HOME:-$HOME/.mm}
 D() { $MM_DOCKER "$@"; }
 IN() { D exec "$BOX" sh -c "umask 002; $*"; }   # as mm shell does
-cleanup() { [ -n "${KEEP:-}" ] && return; mm archive "$REF" >/dev/null 2>&1; [ -n "${BKP:-}" ] && rm -rf "$BKP"; [ -n "${CAN:-}" ] && rm -rf "$CAN"; D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1; }
+cleanup() { [ -n "${AIGW:-}" ] && kill $AIGW 2>/dev/null; [ -n "${AIUP:-}" ] && kill $AIUP 2>/dev/null; [ -n "${AIT:-}" ] && rm -rf "$AIT"
+  [ -n "${KEEP:-}" ] && return; mm archive "$REF" >/dev/null 2>&1; [ -n "${BKP:-}" ] && rm -rf "$BKP"; [ -n "${CAN:-}" ] && rm -rf "$CAN"; D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1; }
 trap cleanup EXIT
 export -f D IN; export BOX PX NET MM_DOCKER
+# mm's AI gateway for this test only (sy-b15.10): its own store, a fake upstream that answers like the Messages API,
+# and the machine's config untouched (MM_AI_*: src/ai.ts). The box gets its key at mm up.
+AIT=$(mktemp -d); AIUPP=$(( 39100 + RANDOM % 800 ))
+export MM_AI_ENABLED=1 MM_AI_DIR="$AIT/store" MM_AI_UPSTREAM="http://127.0.0.1:$AIUPP" MM_AI_UPSTREAM_KEY_FILE="$AIT/upstream.key"
+printf 'upstream-secret-qa' >"$AIT/upstream.key"; chmod 600 "$AIT/upstream.key"
+cat >"$AIT/up.mjs" <<'EOF'
+import http from 'node:http'; import fs from 'node:fs'
+const [port, out] = process.argv.slice(2)
+http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
+  fs.appendFileSync(out, JSON.stringify({ path: req.url, key: req.headers['x-api-key'] || '' }) + '\n')
+  if (req.headers['x-api-key'] !== 'upstream-secret-qa') { res.writeHead(401, { 'content-type': 'application/json' }); return res.end('{"type":"error","error":{"type":"authentication_error","message":"bad key"}}') }
+  if (req.url.startsWith('/v1/messages/count_tokens')) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"input_tokens":10}') }
+  let j = {}; try { j = JSON.parse(b) } catch {}
+  const model = j.model || 'claude-opus-5-5', text = 'QA-GATEWAY-ANSWER'
+  const msg = { id: 'msg_qa', type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 50, output_tokens: 1 } }
+  if (!j.stream) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ...msg, content: [{ type: 'text', text }], stop_reason: 'end_turn', usage: { input_tokens: 50, output_tokens: 5 } })) }
+  res.writeHead(200, { 'content-type': 'text/event-stream' })
+  const ev = (t, d) => res.write(`event: ${t}\ndata: ${JSON.stringify({ type: t, ...d })}\n\n`)
+  ev('message_start', { message: msg }); ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } })
+  ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text } }); ev('content_block_stop', { index: 0 })
+  ev('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 5 } }); ev('message_stop', {}); res.end()
+}) }).listen(Number(port), '127.0.0.1')
+EOF
+node "$AIT/up.mjs" $AIUPP "$AIT/up.jsonl" & AIUP=$!
+mm ai serve >"$AIT/ai.log" 2>&1 & AIGW=$!
 
 echo "== the images"
 check "mm box build: the box image and the egress proxy image" mm box build
@@ -115,6 +141,20 @@ ONET=mm-net-qa-other-$$; OBOX=mm-qa-other-$$
 D network create --internal --subnet 10.231.250.0/24 "$ONET" >/dev/null 2>&1 && D run -d --name "$OBOX" --network "$ONET" --ip 10.231.250.10 --user 200250 --cap-drop ALL "$(D inspect -f '{{.Config.Image}}' "$BOX")" socat TCP-LISTEN:6767,fork,reuseaddr SYSTEM:'echo other-box' >/dev/null 2>&1
 check "...nor another box's daemon (6767 on its network), directly or through its own egress proxy" sh -c "D exec '$OBOX' curl --http0.9 -s --max-time 5 http://10.231.250.10:6767/ | grep -q other-box && ! IN 'curl --http0.9 -s --max-time 5 --noproxy \"*\" http://10.231.250.10:6767/ | grep -q other-box' && ! IN 'curl --http0.9 -s --max-time 10 -x http://$PX:8888 http://10.231.250.10:6767/ | grep -q other-box'"
 D rm -f "$OBOX" >/dev/null 2>&1; D network rm "$ONET" >/dev/null 2>&1
+
+echo "== models only through mm's AI gateway (sy-b15.10)"
+AIS="$MM_HOME_DIR/box/$PROJECT/ai/ai.sock"
+for _ in $(seq 1 30); do [ -S "$AIS" ] && break; sleep 1; done
+check "the box has its AI key (read-only, tmpfs) and the gateway's address; no provider key" sh -c "IN 'test -s /run/mm/secrets/ai.key' && ! IN 'echo x >> /run/mm/secrets/ai.key' && mm shell '$REF' env </dev/null | grep -qx 'ANTHROPIC_BASE_URL=http://$PX:4000' && ! IN 'grep -rq upstream-secret-qa /run/mm 2>/dev/null'"
+check "...its Paseo daemon has the key for its agents" IN "tr '\\0' '\\n' </proc/\$(pgrep -f 'paseo daemon' | head -1)/environ | grep -q '^ANTHROPIC_API_KEY=mmk_'"
+check "the box can't see the gateway's socket (only its proxy mounts it)" sh -c "[ -S '$AIS' ] && ! IN 'test -e /run/mm/ai'"
+check "a call from the box with its key: the upstream's answer, through its proxy and the gateway" IN "curl -s --noproxy '*' \$(printenv ANTHROPIC_BASE_URL 2>/dev/null || echo http://$PX:4000)/v1/messages -H \"x-api-key: \$(cat /run/mm/secrets/ai.key)\" -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' -d '{\"model\":\"claude-opus-5-5\",\"max_tokens\":5,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}' | grep -q QA-GATEWAY-ANSWER"
+check "...without its key: refused (401)" sh -c "[ \"\$(IN \"curl -s -o /dev/null -w '%{http_code}' --noproxy '*' http://$PX:4000/v1/messages -H 'x-api-key: mmk_nope' -d '{}'\")\" = 401 ]"
+PXB=$(D inspect -f '{{range $n, $c := .NetworkSettings.Networks}}{{if ne $n "'"$NET"'"}}{{$c.IPAddress}}{{end}}{{end}}' "$PX")
+check "the gateway's port is on the box's network only (not on the proxy's way out, $PXB)" sh -c "[ -n '$PXB' ] && ! curl -s --max-time 3 -o /dev/null http://$PXB:4000/"
+check "Claude Code in the box answers through the gateway (claude -p, the box's key)" sh -c "mm shell '$REF' sh -c 'ANTHROPIC_API_KEY=\$(cat /run/mm/secrets/ai.key) DISABLE_TELEMETRY=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 timeout 120 claude -p \"say hi\" --output-format text' </dev/null | grep -q QA-GATEWAY-ANSWER"
+check "...the upstream saw only the machine's key, never the box's" sh -c "grep -q 'upstream-secret-qa' '$AIT/up.jsonl' && ! grep -q mmk_ '$AIT/up.jsonl'"
+check "...and mm usage counts it for this project" sh -c "mm ai usage -o json | jq -e --arg p '$PROJECT' '.[0].rows[] | select(.project == \$p) | .calls >= 2'"
 
 echo "== mm finds the box (its registration)"
 check "mm ls lists it as a box, with its processes" sh -c "mm ls -o json | jq -e --arg p '$PROJECT' '.[] | select(.project == \$p) | .box == true'"
