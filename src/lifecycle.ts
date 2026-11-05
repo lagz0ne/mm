@@ -168,6 +168,7 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
 
   // 0. a project box: its containers go first (the box and its egress proxy)
   if (a.box && boxHook.down) steps.push(...boxHook.down(root))
+  if (a.box && boxHook.reclaim) steps.push(...boxHook.reclaim(root)) // the box's 0600 files back to the host's owner, before the pack
   // 1. processes: stop, then reload process-compose without the project file (removes its processes)
   const s = pc('namespace', 'stop', a.project)
   steps.push({ step: 'stop', status: s.ok || /not found|no process/i.test(short(s)) ? 'ok' : 'fail', detail: s.ok ? `namespace ${a.project}` : short(s) })

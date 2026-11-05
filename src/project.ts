@@ -211,7 +211,7 @@ export function serviceProcess(root: string, project: string, n: string, s: SvcR
 
 /** A project with `box: true` runs in its own container (src/box.ts registers this when it loads): every caller of up()
  *  (mm up, new, update, restore) gets the box without a second code path. */
-export const boxHook: { up: ((root: string) => Step[]) | null; down: ((root: string) => Step[]) | null } = { up: null, down: null }
+export const boxHook: { up: ((root: string) => Step[]) | null; down: ((root: string) => Step[]) | null; reclaim: ((root: string) => Step[]) | null } = { up: null, down: null, reclaim: null }
 
 export function up(root: string): Step[] {
   if (boxHook.up && readAnswers(root).box) return boxHook.up(root)

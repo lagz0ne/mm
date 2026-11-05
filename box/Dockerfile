@@ -48,6 +48,9 @@ RUN cd /opt/mm-npm && npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
  && npm cache clean --force && claude --version && paseo --version && portless --version
 
 RUN userdel -r ubuntu 2>/dev/null; mkdir -p "$(dirname ${HOME_DIR})" && useradd -u ${UID} -d ${HOME_DIR} -M -s /bin/bash box
+# the box runs as its own uid (mm passes --user and its own passwd), so the project's repos are owned by another uid:
+# git trusts them (every repo in a box is that project's), in the system config the box can't change
+RUN git config --system --add safe.directory '*'
 ENV HOME=${HOME_DIR}
 USER box
 WORKDIR /tmp

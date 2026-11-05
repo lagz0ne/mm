@@ -14,7 +14,7 @@ ok() { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }; bad() { fail=$
 check() { local d=$1; shift; if "$@" >/tmp/box-test.out 2>&1; then ok "$d"; else bad "$d"; tail -3 /tmp/box-test.out | sed 's/^/       /'; fi; }
 BOX=mm-box-$PROJECT; PX=mm-egress-$PROJECT; NET=mm-net-$PROJECT; MM_HOME_DIR=${MM_HOME:-$HOME/.mm}
 D() { $MM_DOCKER "$@"; }
-IN() { D exec "$BOX" sh -c "$*"; }
+IN() { D exec "$BOX" sh -c "umask 002; $*"; }   # as mm shell does
 cleanup() { [ -n "${KEEP:-}" ] && return; mm archive "$REF" >/dev/null 2>&1; D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1; }
 trap cleanup EXIT
 export -f D IN; export BOX PX NET MM_DOCKER
@@ -33,7 +33,9 @@ check "the board answers inside the box (by its name)" IN "curl -sf -o /dev/null
 check "bd works in the box (an item, over Dolt's socket)" IN "cd $ROOT && bin/bd create 'made in the box' --json | grep -q '\"id\"'"
 
 echo "== the box user"
-check "a normal user (uid $(id -u)), not root" sh -c "[ \"\$(IN 'id -u')\" = '$(id -u)' ]"
+check "its own uid (200000+), not root and not the host's owner (uid $(id -u), who has sudo) (review sy-b15.15 1)" sh -c "u=\$(IN 'id -u'); [ \"\$u\" -ge 200000 ] && [ \"\$u\" != '$(id -u)' ]"
+check "...a named user in the box (its own passwd: bd and Node can look it up)" sh -c "IN 'id -un' | grep -qx box && IN 'node -e \"console.log(require(\\\"os\\\").userInfo().homedir)\"' | grep -qx '$HOME'"
+check "a file the box makes: the box's uid, the host's group, group-writable; the host can still change and remove it" sh -c "IN 'touch $ROOT/memory/.own-probe' && [ \"\$(stat -c %u '$ROOT/memory/.own-probe')\" -ge 200000 ] && [ \"\$(stat -c %g '$ROOT/memory/.own-probe')\" = '$(id -g)' ] && stat -c %A '$ROOT/memory/.own-probe' | grep -q '^-...rw' && echo x >> '$ROOT/memory/.own-probe' && rm '$ROOT/memory/.own-probe'"
 check "no sudo" sh -c "! IN 'sudo -n true'"
 check "no capabilities (CapEff all zero)" sh -c "IN 'grep CapEff /proc/self/status' | grep -q '0000000000000000'"
 check "no new privileges" sh -c "IN 'grep NoNewPrivs /proc/self/status' | grep -q '1'"
