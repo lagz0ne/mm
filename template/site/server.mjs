@@ -82,7 +82,7 @@ async function accessEmail(req) {
 
 // Self-identification: the visitor picks a name (cookie board_user). Lead and system names are reserved, so a human
 // can never post as a lead. A verified Access login, when configured, always wins.
-const RESERVED = new Set([...ROLES, 'setup', 'wake', 'watchdog', 'smoke', 'ui', 'beads', 'system', 'admin', 'brain'])
+const RESERVED = new Set([...ROLES, 'setup', 'wake', 'watchdog', 'smoke', 'ui', 'beads', 'system', 'admin', 'brain', 'mm-upstream'])
 function cookieUser(req) {
   const m = /(?:^|;\s*)board_user=([^;]*)/.exec(req.headers.cookie || '')
   const name = m ? decodeURIComponent(m[1]).trim().toLowerCase() : ''

@@ -38,7 +38,7 @@
 import { createHash } from 'node:crypto'
 
 export const RAILS = ['needs-you', 'sign-off', 'approval']
-export const SYSTEM = new Set(['wake', 'watchdog', 'ui', 'smoke', 'beads'])
+export const SYSTEM = new Set(['wake', 'watchdog', 'ui', 'smoke', 'beads', 'mm-upstream'])
 const NOT_SIGNED = /\bnot signed[ -]off\b/i
 const h = (s, n) => createHash('sha256').update(s).digest('hex').slice(0, n)
 export const traceIdOf = (project, id) => h(`${project}/${id}`, 32)

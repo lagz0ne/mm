@@ -70,7 +70,8 @@ function note(role, id, reason, byLead = false, kind = 'talk') {
 }
 
 const leadOf = (actor) => ROLES.find((r) => actor === r || (actor || '').startsWith(`${r}/`)) || null
-const SYSTEM = ['ui', 'wake', 'watchdog', 'smoke', 'beads'] // the board's own actors (the Supervisor and sentinel post as watchdog)
+// the board's own actors (the Supervisor and sentinel post as watchdog; the system board's answers come as mm-upstream)
+const SYSTEM = ['ui', 'wake', 'watchdog', 'smoke', 'beads', 'mm-upstream']
 const isHuman = (actor) => !!actor && !leadOf(actor) && !SYSTEM.includes(actor)
 
 function stopLoop(id) {
@@ -102,7 +103,8 @@ function raciRoute(e, byLead = false) {
 //   handoff     bd update <id> -a <role> --if-assignee <me> --if-status <s>   wakes <role> (also when the writer is the
 //               old assignee); a reassign to a person (the owner, a human) labels the item needs-you
 //   blocked     bd update <id> -s blocked     wakes the item's Accountable role (its act: activity), else the board's Lead
-//                                             (roles.json `lead`), else labels needs-you
+//                                             (roles.json `lead`), else labels needs-you; an item labelled upstream:*
+//                                             wakes nobody (it waits on the system board's answer, bin/upstream there)
 //   dependency  bd dep add <id> <other>       wakes <other>'s assignee
 //   reopen      bd reopen <id>                wakes <id>'s assignee (the board's Lead when that is the writer itself)
 //   done        bd close <id>                 wakes nobody (closing tells the RACI's Informed roles)
@@ -143,7 +145,11 @@ function transition(e, byLead) {
     if (ROLES.includes(i.assignee)) to('handoff', i.assignee, `HANDOFF to you from ${writer} on ${id} "${title}" (was ${was.assignee || 'unassigned'}, now ${i.status}). Read its latest comments, then take it up and answer on the item.`)
     else if (i.assignee !== writer && !SYSTEM.includes(i.assignee)) needsYou('handoff', `handed to ${i.assignee} (a person)`)
   }
-  if (i.status === 'blocked' && was.status !== 'blocked') {
+  if (i.status === 'blocked' && was.status !== 'blocked' && labels.some((l) => l.startsWith('upstream:'))) {
+    // it waits on the system board (the upstream channel): nobody here can unblock it, and it is not the human's; the
+    // answer comes back as a comment by mm-upstream, which wakes the assignee
+    log(`BLOCKED on ${id} by ${writer}: ${labels.filter((l) => l.startsWith('upstream:')).join(', ')}: waits on the system board; nobody woken`)
+  } else if (i.status === 'blocked' && was.status !== 'blocked') {
     const act = labels.find((l) => l.startsWith('act:'))?.slice(4)
     const acc = Object.entries(raci().find((x) => x.id === act)?.raci || {}).find(([r, l]) => l.includes('A') && ROLES.includes(r) && r !== self)?.[0]
     const target = acc || (BOARD_LEAD !== self ? BOARD_LEAD : null)

@@ -49,6 +49,8 @@ for (const id of ['s-1', 's-2', 's-3', 's-4', 's-7', 's-9', 's-10', 's-11', 's-1
 add('s-5', { status: 'in_progress', labels: ['act:sec'] })
 add('s-6', { status: 'in_progress', assignee: 'ops' })
 add('s-8', { status: 'open', assignee: '' })
+add('s-16', { status: 'in_progress', labels: ['upstream:engine'] })
+add('s-17', { status: 'in_progress', assignee: 'ops', labels: ['upstream:machine', 'act:sec'] })
 const records = [], streams = []
 const srv = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x'), json = (o, c = 200) => { res.writeHead(c, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)) }
@@ -105,6 +107,18 @@ try {
   ok('...and not the Lead', !/s-5/.test(to('ops')))
   change('s-6', 'ops', { status: 'blocked' })
   ok('blocked by the Lead itself: needs-you (the human)', await until(() => /label add s-6 needs-you/.test(bdlog())))
+  const quietUp = sent()
+  change('s-16', 'platform', { status: 'blocked' })
+  change('s-17', 'ops', { status: 'blocked' })
+  await sleep(1500)
+  ok('blocked on an upstream:* item (it waits on the system board): nobody woken, no needs-you, also by the Lead',
+    !/s-16|s-17/.test(sent().slice(quietUp.length)) && !/s-1[67] needs-you/.test(bdlog()) && /s-16 by platform: upstream:engine: waits on the system board/.test(opsLog()))
+  comment('s-16', 'mm-upstream', 'From the system board: platform commented #1 on sy-1: fixed')
+  ok('...the system board\'s answer (a comment by mm-upstream) wakes its assignee', await until(() => /mm-upstream commented #?\d* ?on s-16/.test(to('platform'))))
+  const quietUp2 = sent()
+  change('s-16', 'mm-upstream', { labels: [] })
+  await sleep(1500)
+  ok('...and mm-upstream taking the label off is no signal', !/s-16/.test(sent().slice(quietUp2.length)) && !/s-16 needs-you/.test(bdlog()))
 
   console.log('== dependency = bd dep add; reopen = bd reopen; done = bd close')
   depAdd('s-7', 'platform', 'i-dep')
