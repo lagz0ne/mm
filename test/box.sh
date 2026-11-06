@@ -209,6 +209,10 @@ check "every connection is logged on the host, for this project (the site on the
 check "...and the shipper takes that log, stamped with the box's project" sh -c "mm ship --dry-run 2>/dev/null | grep 'example.com' | jq -e 'select(.project == \"$PROJECT\")' >/dev/null"
 # the proxy checks the address after DNS (sy-59m8): mm-egress, as its own user, with the machine's docker subnets
 check "the egress proxy runs as its own user, with no capabilities" sh -c "s=\$(D exec '$PX' sh -c 'for p in /proc/[0-9]*; do case \"\$(tr \"\\0\" \" \" <\$p/cmdline 2>/dev/null)\" in /usr/local/bin/mm-egress*) cat \$p/status;; esac; done'); echo \"\$s\" | grep -qE '^Uid:[[:space:]]+[1-9][0-9]*[[:space:]]' && echo \"\$s\" | grep -qE '^CapEff:[[:space:]]+0+\$'"
+# ...started as that uid, never root (sy-58fo): 190000 + its subnet's n, the owner's group, no capability added
+PXU=$(( 190000 + $(D network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$NET" 2>/dev/null | cut -d. -f3) ))
+check "the egress proxy's container: --user $PXU:$(id -g), no --cap-add, cap-drop ALL" sh -c "[ \"\$(D inspect -f '{{.Config.User}} {{.HostConfig.CapAdd}} {{.HostConfig.CapDrop}}' '$PX')\" = '$PXU:$(id -g) [] [ALL]' ]"
+check "...every process in it (init, shell, AI forwarder, proxy) is uid $PXU, all capabilities 0" sh -c "a=\$(D exec '$PX' sh -c 'for p in /proc/[0-9]*; do [ -r \$p/status ] && grep -E \"^(Uid|CapPrm|CapEff|CapBnd):\" \$p/status | tr -s \"\\t\\n\" \"  \" && echo; done' | grep .); echo \"\$a\"; [ \$(echo \"\$a\" | grep -c .) -ge 4 ] && ! echo \"\$a\" | grep -vE '^Uid: $PXU $PXU $PXU $PXU CapPrm: 0+ CapEff: 0+ CapBnd: 0+ \$'"
 check "...and refuses every docker network of this machine (MM_EGRESS_DENY: the default bridge, the box's network)" sh -c "e=\$(D inspect -f '{{range .Config.Env}}{{println .}}{{end}}' '$PX' | grep '^MM_EGRESS_DENY='); echo \"\$e\" | grep -q '172.17.0.0/16' && echo \"\$e\" | grep -qF \"\$(D network inspect -f '{{(index .IPAM.Config 0).Subnet}}' '$NET')\""
 check "through its proxy: plain http is refused (403), and logged" sh -c "[ \"\$(IN \"curl -s -o /dev/null -w '%{http_code}' --max-time 20 -x http://$PX:8888 http://github.com/\")\" = 403 ] && grep -F 'name=github.com' '$ELOG' | grep -q 'not GET'"
 check "...and a tunnel to port 80 (403), logged" sh -c "[ \"\$(IN \"curl -s -o /dev/null -w '%{http_connect}' -p --max-time 20 -x http://$PX:8888 http://github.com:80/\")\" = 403 ] && grep -F 'name=github.com port=80' '$ELOG' | grep -q 'only port 443'"
@@ -332,7 +336,8 @@ check "mm cron --run $PROJECT/health: runs in the box, and finds no problem (the
 check "mm cron --run $PROJECT/backup: ok" mm cron --run "$PROJECT/backup"
 LAST=$(ls -1d "$BKP"/20*/ 2>/dev/null | tail -1)
 check "...a backup on the host ($BKP/<date>), with the board's items in it" sh -c "[ -n '$LAST' ] && grep -q 'made in the box' '$LAST/board.jsonl' && test -d '$LAST/board.dolt' && test -s '$LAST/config.bundle'"
-check "...owned by the host's owner, and nothing of it left in the box's staging folder" sh -c "[ -z \"\$(find '$LAST' ! -uid $(id -u) -print -quit)\" ] && [ -z \"\$(ls -A '$HD/backup')\" ]"
+# (no root chown any more, sy-58fo: what the box made stays its uid's, regrouped by a container as that uid)
+check "...the host owner's to read, move and remove: every file of it the owner's or group-rw, every folder group-rwx, the owner's group; nothing left in the staging folder" sh -c "[ -z \"\$(find '$LAST' ! -uid $(id -u) ! -type l \\( \\( -type f ! -perm -060 \\) -o \\( -type d ! -perm -070 \\) -o ! -gid $(id -g) \\) -print -quit)\" ] && [ -z \"\$(ls -A '$HD/backup')\" ] && cp -a '$LAST' '${LAST%/}.copy-probe' && rm -rf '${LAST%/}.copy-probe'"
 check "the box can't see the backups folder" sh -c "! IN 'ls $BK' && ! IN 'test -e $BKP'"
 
 echo "== mm box off, mm box on (a project moves between the host and its box)"
@@ -340,7 +345,12 @@ echo "== mm box off, mm box on (a project moves between the host and its box)"
 PORTS="$HD/ports.json"; DP=$(jq -r .dolt_port "$PORTS" 2>/dev/null)
 IN "jq '.dolt_port = 40001 | .services.board.public_port = 40002' $ROOT/.run/services.json >$ROOT/.run/x.json && mv $ROOT/.run/x.json $ROOT/.run/services.json"
 check "the host keeps the box's ports ($PORTS, out of the box's sight), and the box rewrote its own copy" sh -c "[ -n '$DP' ] && [ '$DP' != null ] && ! IN 'test -e $PORTS' && [ \"\$(jq .dolt_port '$ROOT/.run/services.json')\" = 40001 ]"
+# what a box's program leaves 0600 in a 0700 folder (the host owner can't read it): mm box off gives it back (sy-58fo)
+IN "mkdir -p $ROOT/memory/.priv-probe && echo priv-$$ >$ROOT/memory/.priv-probe/f && chmod 600 $ROOT/memory/.priv-probe/f && chmod 700 $ROOT/memory/.priv-probe"
 check "mm box off: the box stops; box: true leaves the answers (committed)" sh -c "mm box off '$REF' >/tmp/box-off.out 2>&1 && ! D inspect '$BOX' >/dev/null 2>&1 && ! grep -qx 'box: true' '$ROOT/.mm-answers.yaml' && git -C '$ROOT' diff --quiet -- .mm-answers.yaml"
+check "...its files given back with no root container: a regroup as the box's uid, then taken (sy-58fo)" sh -c "grep -E 'reclaim .*as uid 2[0-9]{5}.*no root' /tmp/box-off.out && grep -E 'take .*the host owner.s again' /tmp/box-off.out"
+check "...the box's 0600 file in its 0700 folder: the owner's now, readable, and the owner removes it" sh -c "[ \"\$(stat -c %u '$ROOT/memory/.priv-probe/f')\" = '$(id -u)' ] && [ \"\$(cat '$ROOT/memory/.priv-probe/f')\" = priv-$$ ] && rm -r '$ROOT/memory/.priv-probe'"
+check "...and nothing of the box's left in mm's folders for it (paseo, claude, the host's folder)" sh -c "[ -z \"\$(find '$MM_HOME_DIR/paseo/$PROJECT' '$MM_HOME_DIR/claude/$PROJECT' '$HD' -uid +199999 -print -quit 2>/dev/null)\" ]"
 check "...the box's public forwarder goes from the host (the host project's own takes over)" sh -c "! test -e '$MM_HOME_DIR/pc/box-public/$PROJECT.yaml'"
 for _ in $(seq 1 60); do process-compose -U -u "$HOME/.mm/pc.sock" process list -o json 2>/dev/null | jq -e ".[] | select(.name==\"$PROJECT.board\") | .is_ready == \"Ready\"" >/dev/null && break; sleep 2; done
 check "...its services run on the host again (board ready), and no file stays the box's" sh -c "process-compose -U -u $HOME/.mm/pc.sock process list -o json | jq -e '.[] | select(.name==\"$PROJECT.board\") | .is_ready == \"Ready\"' >/dev/null && [ -z \"\$(find '$ROOT' -uid +199999 -print -quit)\" ]"

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Project box, the network (sy-9il step 0 (c); sy-59m8): a box on a Docker network with `internal: true` gets out only
 # through its egress proxy, the image this repo builds (box/egress.Dockerfile, mm-egress), run the way mm runs it
-# (src/box.ts: read-only, no capabilities but the two setpriv needs, its own user, the log appended to a host file).
+# (src/box.ts: read-only, started as its own uid (190000 + n, no account, never root) with the owner's group and no
+# capabilities at all (sy-58fo), the log appended to a host file, the AI forwarder to a stand-in socket on the host).
 # Throwaway image, containers, networks and folders only; the host's services and the live Traefik are not touched.
 # Proves: an allowed site works; a site off the list, plain http and port 80 are refused; an allowed name that
 # resolves to loopback, a private address, the metadata address, a docker bridge, or a network mm names is refused
@@ -13,9 +14,12 @@ DOCKER=${DOCKER:-docker}; KEEP=""; [ "${1:-}" = --keep ] && KEEP=1
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ID=$$; NET=mm-box-int-$ID; PX=mm-box-proxy-$ID; BOX=mm-box-$ID; FETCH=mm-box-fetch-$ID; BASE=${BASE:-ubuntu:24.04}
 ALLOW=${ALLOW:-github.com}
-TMP=$(mktemp -d); LOGD=$TMP/log; ELOG=$LOGD/egress.log
+TMP=$(mktemp -d); LOGD=$TMP/log; ELOG=$LOGD/egress.log; AID=$TMP/ai; AIPID=""
+EUID_PX=190040 # the proxy's own uid, as mm gives it (190000 + n): no account here
+getent passwd "$EUID_PX" >/dev/null && { echo "uid $EUID_PX is an account here"; exit 1; }
 BUILT=""; IMG=${EGRESS_IMAGE:-}
 cleanup() {
+  [ -n "$AIPID" ] && kill "$AIPID" 2>/dev/null
   [ -n "$KEEP" ] && { echo "kept: $BOX $PX $FETCH $NET ${BUILT:+$IMG} $TMP"; return; }
   $DOCKER rm -f "$BOX" "$PX" "$FETCH" >/dev/null 2>&1; $DOCKER network rm "$NET" >/dev/null 2>&1
   [ -n "$BUILT" ] && $DOCKER rmi -f "$IMG" >/dev/null 2>&1
@@ -52,12 +56,21 @@ for h in $NAMES; do printf '^%s(:443)?$\n' "$(printf %s "$h" | sed 's/\./\\./g')
 hosts() { printf '%s\n' '127.0.0.1 localhost' '::1 localhost' '127.0.0.1 loop.mm-test' '10.20.30.40 ten.mm-test' \
   '169.254.169.254 meta.mm-test' "$HOST_IP bridge.mm-test" '203.0.114.7 pooled.mm-test' "$1 rebind.mm-test"; }
 hosts "$PUB" >"$TMP/hosts"; chmod 0644 "$TMP/hosts"
+# the box's own socket of mm's AI gateway, as mm makes it (src/box.ts: its folder 0750, the socket 0660, the owner's
+# group): a stand-in here that answers one HTTP line
+mkdir -p "$AID"; chmod 0750 "$AID"
+/usr/bin/python3 -I -c 'import os, socket, sys
+s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); os.chmod(sys.argv[1], 0o660); s.listen(8)
+while True:
+    c, _ = s.accept(); c.recv(4096); c.sendall(b"HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nai-ok"); c.close()' "$AID/ai.sock" &
+AIPID=$!
+for i in $(seq 1 20); do [ -S "$AID/ai.sock" ] && break; sleep 0.2; done
 # 203.0.114.0/24 stands for a docker network on public addresses: mm passes every docker subnet (MM_EGRESS_DENY)
-$DOCKER run -d --name "$PX" --init --read-only --tmpfs /run:size=8m --cap-drop ALL --cap-add SETUID --cap-add SETGID \
-  --security-opt no-new-privileges --pids-limit 256 --memory 256m --group-add "$(id -g)" \
+$DOCKER run -d --name "$PX" --init --read-only --tmpfs /run:size=8m --user "$EUID_PX:$(id -g)" --cap-drop ALL \
+  --security-opt no-new-privileges --pids-limit 256 --memory 256m \
   -e "MM_EGRESS_DENY=203.0.114.0/24,$SUBNET" \
-  -v "$TMP/hosts:/etc/hosts:ro" -v "$TMP/allow:/etc/mm/allow:ro" -v "$LOGD:/run/mm/log" "$IMG" \
-  sh -c 'exec setpriv --reuid=egress --regid=egress --clear-groups /usr/local/bin/mm-egress >>/run/mm/log/egress.log 2>&1' >/dev/null || { echo "proxy start failed"; exit 1; }
+  -v "$TMP/hosts:/etc/hosts:ro" -v "$TMP/allow:/etc/mm/allow:ro" -v "$AID:/run/mm/ai" -v "$LOGD:/run/mm/log" "$IMG" \
+  sh -c 'while :; do socat TCP-LISTEN:4000,fork,reuseaddr UNIX-CONNECT:/run/mm/ai/ai.sock 2>/dev/null; sleep 1; done & exec /usr/local/bin/mm-egress >>/run/mm/log/egress.log 2>&1' >/dev/null || { echo "proxy start failed"; exit 1; }
 $DOCKER network connect "$NET" "$PX" || exit 1
 $DOCKER run -d --name "$BOX" --network "$NET" "$BASE" sleep infinity >/dev/null || exit 1
 for f in $($DOCKER exec "$FETCH" sh -c 'ls /var/cache/apt/archives/*.deb'); do $DOCKER cp "$FETCH:$f" - | $DOCKER cp - "$BOX:/tmp/"; done
@@ -72,7 +85,11 @@ for i in $(seq 1 20); do grep -q ' start ' "$ELOG" && break; sleep 0.5; done
 echo "== the proxy"
 # the proxy process's status: the one whose command is the proxy itself (not the init or the shell that started it)
 pxstatus() { $DOCKER exec "$PX" sh -c 'for p in /proc/[0-9]*; do case "$(tr "\0" " " <$p/cmdline 2>/dev/null)" in /usr/local/bin/mm-egress*) cat $p/status;; esac; done'; }
-check "it runs as its own user (not root), with no capabilities" eval "s=\$(pxstatus); echo \"\$s\" | grep -E '^(Uid|CapEff)'; echo \"\$s\" | grep -qE '^Uid:[[:space:]]+[1-9][0-9]*[[:space:]]' && echo \"\$s\" | grep -qE '^CapEff:[[:space:]]+0+\$'"
+check "it runs as its own uid ($EUID_PX, not root), with no capabilities" eval "s=\$(pxstatus); echo \"\$s\" | grep -E '^(Uid|CapEff)'; echo \"\$s\" | grep -qE '^Uid:[[:space:]]+$EUID_PX[[:space:]]+$EUID_PX[[:space:]]+$EUID_PX[[:space:]]+$EUID_PX\$' && echo \"\$s\" | grep -qE '^CapEff:[[:space:]]+0+\$'"
+# every process in it (the init, the shell, socat, the proxy): its uid from the start (no root step), no capabilities
+allstatus() { $DOCKER exec "$PX" sh -c 'for p in /proc/[0-9]*; do [ -r $p/status ] && grep -E "^(Uid|CapPrm|CapEff|CapBnd):" $p/status | tr -s "\t\n" "  " && echo; done'; }
+check "every process in it starts as $EUID_PX, with all capabilities 0" eval "a=\$(allstatus); echo \"\$a\"; [ \$(echo \"\$a\" | grep -c .) -ge 4 ] && ! echo \"\$a\" | grep . | grep -vE '^Uid: $EUID_PX $EUID_PX $EUID_PX $EUID_PX CapPrm: 0+ CapEff: 0+ CapBnd: 0+ \$'"
+check "the AI forwarder (its uid, the owner's group) reaches the box's socket on the host" eval "[ \"\$(IN \"curl -s --noproxy '*' --max-time 10 http://$PX:4000/\")\" = ai-ok ]"
 echo "== out"
 check "through the proxy: a site on the list works ($ALLOW)" eval "c=\$($DOCKER exec $BOX curl -s -o /dev/null -w '%{http_code}' --max-time 20 --proxy $P https://$ALLOW/); echo \$c; [ \"\$c\" -ge 200 ] && [ \"\$c\" -lt 400 ]"
 check "...and it is logged: allowed, with the name and the address" eval "grep -E ' allowed .*name=$ALLOW port=443 address=' '$ELOG'"

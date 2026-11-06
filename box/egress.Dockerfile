@@ -15,8 +15,9 @@ RUN go vet ./... && go test -count=1 ./... && go build -ldflags='-s -w' -o /out/
 FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 ENV DEBIAN_FRONTEND=noninteractive
 # socat: forwards the box's port 4000 to its own socket of mm's AI gateway (src/ai.ts), mounted at /run/mm/ai.
-# The proxy runs as its own user (egress: no home, no shell); setpriv (util-linux) drops to it.
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends socat && rm -rf /var/lib/apt/lists/* \
- && useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin egress
+# The proxy and socat start as their own uid, never root, with no capabilities (sy-58fo): mm passes
+# --user <190000 + n>:<the owner's group> (src/box.ts); the default here is a uid with no account either.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends socat && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/mm-egress /usr/local/bin/mm-egress
-CMD ["setpriv", "--reuid=egress", "--regid=egress", "--clear-groups", "/usr/local/bin/mm-egress"]
+USER 190000:190000
+CMD ["/usr/local/bin/mm-egress"]

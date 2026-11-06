@@ -55,8 +55,8 @@ say "synced $(cat ~/a.count) item record(s) at $(cut -c1-12 ~/a.head)"
 # only its repo's history: it commits `box: false`, its own services.yaml command and its own git hooks.
 cat >~/fake-docker <<'FD'
 #!/bin/bash
-# docker stand-in: `exec` runs the job here (the box's staging folder is the host's); `run --rm` (mm's chown helper)
-# does nothing; anything else fails (so mm box on records the host's side, then can't start a box)
+# docker stand-in: `exec` runs the job here (the box's staging folder is the host's); `run --rm` (giveBack's regroup,
+# only when a file there is not the owner's) does nothing; anything else fails (so mm box on records the host's side, then can't start a box)
 case "$1" in
   exec) shift; env=(); cwd=.
     while [ $# -gt 0 ]; do case "$1" in -w) cwd=$2; shift 2 ;; -e) case "$2" in MM_PROJECT=*|BACKUP_DIR=*) env+=("$2") ;; esac; shift 2 ;; -i|-it) shift ;; *) break ;; esac; done
