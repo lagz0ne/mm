@@ -46,6 +46,27 @@ export default function App() {
   const [, setNow] = useState(0) // re-render each poll so "waiting 3m" ages
   const [tick, setTick] = useState(0) // bumps when anything changes, so an open detail reloads
   const search = useRef<HTMLInputElement>(null)
+  // Tablet widths (md to xl, the breakpoints the header and grid already use): Now and Activity fold into a drawer
+  // the toolbar's toggle opens over the columns, below the toolbar so the toggle stays in reach (sy-l6t1). Phone keeps
+  // them below the board, desktop beside it.
+  const [side, setSide] = useState(false)
+  const sideBtn = useRef<HTMLButtonElement>(null)
+  const sidePanel = useRef<HTMLElement>(null)
+  const closeSide = useCallback((refocus = true) => { setSide(false); if (refocus) sideBtn.current?.focus() }, [])
+  useEffect(() => { if (side) sidePanel.current?.focus() }, [side])
+  useEffect(() => {
+    if (!side || openId) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); closeSide() } }
+    // a tap outside (the toolbar, the epics) closes it too; the scrim over the columns closes it on its own click
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node
+      if (!sidePanel.current?.contains(t) && !sideBtn.current?.contains(t) && !(t as HTMLElement).closest?.('[data-side-scrim]')) closeSide(false)
+    }
+    window.addEventListener('keydown', onKey)
+    document.addEventListener('pointerdown', onDown)
+    return () => { window.removeEventListener('keydown', onKey); document.removeEventListener('pointerdown', onDown) }
+  }, [side, openId, closeSide])
+  const openFromSide = (id: string) => { closeSide(false); setOpenId(id) }
 
   const load = useCallback(async () => {
     try {
@@ -191,7 +212,13 @@ export default function App() {
         </ToggleGroup>
         <Input ref={search} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search"
           className="h-7 w-56" />
-        <button type="button" className="ml-auto text-xs hover:underline" disabled={idSource === 'gateway'}
+        <button type="button" ref={sideBtn} aria-expanded={side} aria-controls="board-side" onClick={() => (side ? closeSide() : setSide(true))}
+          title="Now and recent activity"
+          className={cn('ml-auto hidden h-7 items-center gap-1.5 border px-2.5 text-xs font-semibold md:inline-flex xl:hidden', side ? 'border-foreground bg-foreground text-background' : 'border-input hover:border-foreground')}>
+          Now <span className={cn('min-w-4 px-1 text-center tabular-nums', presence.length ? 'bg-swiss text-white' : 'bg-muted text-muted-foreground', side && !presence.length && 'bg-background/20 text-background')}>{presence.length}</span>
+          <span aria-hidden className={side ? 'opacity-60' : 'text-muted-foreground'}>·</span> Activity
+        </button>
+        <button type="button" className="ml-auto text-xs hover:underline md:ml-0 xl:ml-auto" disabled={idSource === 'gateway'}
           title={idSource === 'gateway' ? 'Your name comes from your sign-in' : 'Change who you are'}
           onClick={() => setIdentifying(true)}>
           <b>{actor || '…'}</b>{idSource === 'default' && <span className="text-swiss"> · who are you?</span>}
@@ -219,7 +246,7 @@ export default function App() {
         </section>
       )}
 
-      <div className="grid min-h-0 flex-1 grid-rows-[1fr_14rem] xl:grid-cols-[1fr_20rem] xl:grid-rows-1">
+      <div className="relative grid min-h-0 flex-1 grid-rows-[1fr_14rem] md:grid-rows-1 xl:grid-cols-[1fr_20rem]">
         <main className="min-h-0 overflow-auto">
           <div className="grid min-w-[880px] grid-cols-[9.5rem_repeat(4,minmax(0,1fr))]">
             <div className="sticky top-0 z-10 border-b border-foreground bg-background" />
@@ -236,14 +263,19 @@ export default function App() {
           </div>
         </main>
 
-        <aside className="flex min-h-0 flex-col border-t xl:border-t-0 xl:border-l">
-          <NowStrip onOpen={setOpenId} />
+        {side && <div aria-hidden data-side-scrim onClick={() => closeSide()} className="absolute inset-0 z-40 hidden bg-foreground/25 md:block xl:hidden" />}
+        <aside id="board-side" ref={sidePanel} tabIndex={-1} aria-label="Now and activity"
+          className={cn('flex min-h-0 flex-col border-t outline-none',
+            'md:absolute md:inset-y-0 md:right-0 md:z-50 md:w-80 md:max-w-[85vw] md:border-t-0 md:border-l md:border-foreground md:bg-background md:shadow-2xl',
+            side ? 'md:flex' : 'md:hidden',
+            'xl:static xl:z-auto xl:flex xl:w-auto xl:max-w-none xl:border-border xl:shadow-none')}>
+          <NowStrip onOpen={openFromSide} />
           <h2 className="shrink-0 border-b border-foreground px-4 py-2 text-[11px] font-bold tracking-[0.1em] uppercase">Activity</h2>
           <ol className="min-h-0 flex-1 overflow-y-auto">
             {events.length === 0 && <li className="px-4 py-3 text-xs text-muted-foreground">No events yet.</li>}
             {events.map((ev) => (
               <li key={ev.seq}>
-                <button onClick={() => setOpenId(ev.issue_id)} className="grid w-full grid-cols-[2.5rem_1fr] gap-x-2 border-b px-4 py-2 text-left hover:bg-muted">
+                <button onClick={() => openFromSide(ev.issue_id)} className="grid w-full grid-cols-[2.5rem_1fr] gap-x-2 border-b px-4 py-2 text-left hover:bg-muted">
                   <span className="text-[11px] text-muted-foreground tabular-nums">{ago(ev.ts)}</span>
                   <span className="min-w-0 text-xs leading-snug">
                     <ActorName actor={ev.actor || 'beads'} personas={meta.personas ?? null} /> {verb(ev)} <span className="font-mono text-[11px]">{ev.issue_id}</span>
