@@ -356,8 +356,10 @@ function publicUp(root: string, ip: string): Step[] {
     const bind = s.public_bind || '127.0.0.1'
     // Doop's public side listens on the host itself (doop-run, below): only a forwarder from a bind_host off loopback
     if (n === 'doop' && isLoopback(bind)) continue
-    // named for its own namespace (<project>-public), so nothing on the host's process manager looks like the box's own
-    processes[`${a.project}-public.${n}`] = { namespace: `${a.project}-public`, command: `socat TCP-LISTEN:${s.public_port},bind=${bind},reuseaddr,fork TCP:${n === 'doop' ? '127.0.0.1' : ip}:${s.public_port}`,
+    // named for its own namespace (<project>-public), so nothing on the host's process manager looks like the box's own.
+    // Doop's is <project>-public.doop-public: <project>-public.doop is the host's Doop itself (below), which took its
+    // name and so its place (sy-wo7y: the route reached nothing on bind_host)
+    processes[`${a.project}-public.${n === 'doop' ? 'doop-public' : n}`] = { namespace: `${a.project}-public`, command: `socat TCP-LISTEN:${s.public_port},bind=${bind},reuseaddr,fork TCP:${n === 'doop' ? '127.0.0.1' : ip}:${s.public_port}`,
       log_location: join(hostDir(a.project), `${n}-public.log`), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 } }
   }
   // its Doop (sy-wo7y), on the host next to the box
@@ -802,15 +804,21 @@ function giveBuild(root: string, build: string, uid: number, gid: number): Step 
   try { if (!lstatSync(dir).isDirectory()) return { step: 'app build', status: 'fail', detail: `${shown} is not a folder` } } catch { return null }
   const left = run(['find', dir, '!', '-user', String(uid), '-print', '-quit'])
   if (!left.ok || !left.out.trim()) return null
-  const names = build === '.' ? readdirSync(rel).filter((f) => !/^\..+\.(box|host)$/.test(f)) : [build]
+  // only the entries with something not the box user's yet (sy-wo7y: an entry the box already owned, 0700, was renamed
+  // aside and the host owner could not remove it: EACCES, and mm up stopped)
+  const names = (build === '.' ? readdirSync(rel).filter((f) => !/^\..+\.(box|host)$/.test(f)) : [build])
+    .filter((n) => { const r = run(['find', join(rel, n), '!', '-user', String(uid), '-print', '-quit']); return !r.ok || !!r.out.trim() })
   if (!names.length) return null
   run(['find', dir, '-user', me, '(', '(', '-type', 'd', '-exec', 'chmod', 'g+rwxs', '{}', '+', ')', '-o', '(', '-type', 'f', '-exec', 'chmod', 'g+rw', '{}', '+', ')', ')'])
   try { chmodSync(rel, (lstatSync(rel).mode & 0o7777) | 0o2070) } catch {}
-  // each entry: a copy the box's uid owns, the old one renamed aside, the copy into its place (nothing removed first)
+  // each entry: a copy the box's uid owns, the old one renamed aside, the copy into its place (nothing removed first);
+  // then the old one goes, by the box's uid too (it may own some of it; the host owner's parts are open to the group).
+  // Leftovers of an earlier run (.<n>.box, .<n>.host) go first, as far as the box's uid can remove them.
   const c = docker('run', '--rm', '--network', 'none', '--user', `${uid}:${gid}`, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-    '-v', `${rel}:${rel}`, '--entrypoint', 'sh', IMAGE(), '-c', 'set -e; cd "$1"; shift; for n in "$@"; do rm -rf ".$n.box"; cp -a "$n" ".$n.box"; rm -rf ".$n.host"; mv "$n" ".$n.host"; mv ".$n.box" "$n"; done', 'sh', rel, ...names)
+    '-v', `${rel}:${rel}`, '--entrypoint', 'sh', IMAGE(), '-c',
+    'cd "$1" || exit 1; shift; for x in .*.box .*.host; do [ -e "$x" ] && rm -rf "$x" 2>/dev/null; done; set -e; for n in "$@"; do rm -rf ".$n.box"; cp -a "$n" ".$n.box"; mv "$n" ".$n.host"; mv ".$n.box" "$n"; rm -rf ".$n.host" 2>/dev/null || true; done', 'sh', rel, ...names)
   if (!c.ok) return { step: 'app build', status: 'fail', detail: `${shown} stays the host owner's (its app may not set its own modes): ${short(c)}` }
-  for (const n of names) rmSync(join(rel, `.${n}.host`), { recursive: true, force: true })
+  for (const n of names) { try { rmSync(join(rel, `.${n}.host`), { recursive: true, force: true }) } catch {} } // what is left is harmless; the next run removes it
   return { step: 'app build', status: 'ok', detail: `${shown} is the box user's now (its app sets its own modes, as on the host)` }
 }
 export function uncarryHostApp(root: string): Step[] {
