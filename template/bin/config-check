@@ -90,10 +90,14 @@ let G = {}
 try { G = JSON.parse(fs.readFileSync(path.join(P, 'governance.json'), 'utf8')) } catch (e) { if (fs.existsSync(path.join(P, 'governance.json'))) bad(`governance.json unreadable (${e.message})`) }
 // {brain} {projects} {mm}: the machine's folders, from mm (one-root boxes keep them under $MM_HOME)
 const D = dirs()
-// a project has no business in the brain (review sy-5ag): all of it is denied to a board outside it (the system board
-// lives in it, and keeps its own rules). The brain's folder in either layout, as for its keys
+// a project has no business in the brain (review sy-5ag): all of it is denied to every board except the system board,
+// whose review audits it and whose ops runs it (sy-qlkl). The system board is the one whose answers say
+// `profile: system` and that is not a box (the answers are read-only in a box), or the one inside the brain (the old
+// layout). The brain's keys stay denied to every board, the system board too (the fixed list above). Either layout.
 const BRAINS = [...new Set([D.brain, `${HOME}/.mm/brain`, `${HOME}/brain`])]
-const BRAIN_DENY = BRAINS.some((b) => (P + '/').startsWith(b + '/')) ? [] : BRAINS.flatMap((b) => [`Read(/${b}/**)`, `Edit(/${b}/**)`, ...named(b)])
+const ANSWERS = (() => { try { return fs.readFileSync(path.join(P, '.mm-answers.yaml'), 'utf8') } catch { return '' } })()
+const SYSTEM_BOARD = (/^profile:\s*["']?system["']?\s*$/m.test(ANSWERS) && !/^box:\s*true\s*$/m.test(ANSWERS)) || BRAINS.some((b) => (P + '/').startsWith(b + '/'))
+const BRAIN_DENY = SYSTEM_BOARD ? [] : BRAINS.flatMap((b) => [`Read(/${b}/**)`, `Edit(/${b}/**)`, ...named(b)])
 const gfill =(v) => v.replaceAll('{root}', R).replaceAll('{home}', HOME).replaceAll('{brain}', D.brain).replaceAll('{projects}', D.projects).replaceAll('{mm}', D.mm)
 const grule = (r) => { const v = gfill(r); return /^(Read|Edit|Write)\(\//.test(v) ? v.replace(/^(Read|Edit|Write)\(\//, '$1(//') : v }
 const G_READ = (G.read || []).map(gfill), G_WRITE = Object.fromEntries(Object.entries(G.write || {}).map(([k, v]) => [k, v.map(gfill)]))
