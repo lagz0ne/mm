@@ -455,7 +455,7 @@ function editState(fn) {
 const readState = () => { try { return JSON.parse(fs.readFileSync(path.join(P, '.wake-state.json'), 'utf8')) } catch { return {} } }
 // a person's run (sy-q8fv): mm run-as <person> (their own token, from the vault), with only their items in progress; in
 // a box, the host starts it (askHost, sy-9618)
-const leadStart = (role, next, person = null, own = []) => (person && BOXED) ? askHost(role, person, own, next) : new Promise((ok, no) => execFile(...(person ? [MM, ['run-as', person, PROJECT, role]] : [path.join(P, 'bin', 'lead'), ['start', role]]),
+const leadStart = (role, next, person = null, own = [], items = []) => (person && BOXED) ? askHost(role, [...new Set([...own, ...items])], next) : new Promise((ok, no) => execFile(...(person ? [MM, ['run-as', person, PROJECT, role]] : [path.join(P, 'bin', 'lead'), ['start', role]]),
   { cwd: P, timeout: 180000, env: { ...process.env, LEAD_NEXT: next.map((i) => `- ${i.id} (P${i.priority ?? '?'}): ${oneLine(i.title, 100)}`).join('\n'), ...(person ? { LEAD_ITEMS: own.join(' ') } : {}) } },
   (e, out, err) => (e ? no(new Error(String(err || e.message).trim().split('\n').filter((l) => !/^(archived |mm run-as: \S+ is the owner)/.test(l)).join(' ').slice(0, 400) || e.message)) : ok(out))))
 
@@ -627,13 +627,16 @@ async function keptBack(role, a, b) {
 // kept role (the owner's contact) gets everything, as before: the owner chose it.
 // In a box (sy-9618): its wake can't reach mm or the vault, so it asks the host, on the box's own mm.api socket (the one
 // way a box has to the host; src/boxruns.ts). The host says whether person runs are on (wake.person_runs, the machine's)
-// and who the sponsor is (lookHost(), each reconcile pass), and starts each run (askHost()) with the same rules as mm
-// run-as: a role on the project, the person's own token (none: no run, and the same words for the item), never the
-// owner's instead. The host unreachable: wake keeps what the host said last (no plain lead for a person's work).
+// and who asked for runs on which item there (lookHost(), each reconcile pass: the host's own record, sy-otxx 1; never
+// this box's journal, which the box writes itself), and starts each run (askHost(): item ids only, never a person) with
+// the same rules as mm run-as: a role on the project, the person's own token (none: no run, and the same words for the
+// item), never the owner's instead. A box has no sponsor: work nobody asked for on the host runs as a plain lead. The
+// run gets an mm.ai key of its own that ends by the host's clock (its label run-expires: then wake deletes it). The host
+// unreachable: wake keeps what the host said last (no plain lead for a person's work).
 const BOXED = (() => { try { return /^box:[ \t]*true\b/m.test(fs.readFileSync(path.join(P, '.mm-answers.yaml'), 'utf8')) } catch { return false } })()
 const MM = process.env.WAKE_MM || 'mm'
 const HOST_SOCK = process.env.WAKE_DISPATCH_SOCK || '/run/mm/api/api.sock'
-const hostSays = { on: false, sponsor: '', said: '' }
+const hostSays = { on: false, asks: new Map(), said: '' }
 /** One call on the box's socket: { code, body } (the host's JSON answer). */
 const hostCall = (method, body, timeout) => new Promise((ok, no) => {
   const r = http.request({ socketPath: HOST_SOCK, path: '/person-run', method, headers: { 'content-type': 'application/json' }, timeout }, (res) => {
@@ -651,8 +654,11 @@ async function lookHost() {
     try {
       const r = await hostCall('GET', null, 10000)
       if (r.body.status === 'on' || r.body.status === 'off') {
-        on = r.body.status === 'on'; hostSays.sponsor = /^[a-z][a-z0-9._-]{1,31}$/.test(r.body.sponsor || '') ? r.body.sponsor : ''
-        said = on ? `on: the host starts them${hostSays.sponsor ? ` (the sponsor: ${hostSays.sponsor})` : ''}` : 'off on the host (wake.person_runs)'
+        on = r.body.status === 'on'
+        // who asked for which item: the host's own record (sy-otxx 1), never this box's journal
+        const asks = r.body.asks && typeof r.body.asks === 'object' && !Array.isArray(r.body.asks) ? r.body.asks : {}
+        hostSays.asks = new Map(Object.entries(asks).filter(([i, p]) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(i) && /^[a-z][a-z0-9._-]{1,31}$/.test(String(p))).map(([i, p]) => [i, String(p)]))
+        said = on ? `on: the host starts them, for the items people asked for there (${hostSays.asks.size} now)` : 'off on the host (wake.person_runs)'
       } else said = `the host's answer was ${r.code} (kept: ${on ? 'on' : 'off'})`
     } catch (e) { said = `the host's socket did not answer (kept: ${on ? 'on' : 'off'}): ${e.message}` }
   }
@@ -660,8 +666,8 @@ async function lookHost() {
   if (said !== hostSays.said) { hostSays.said = said; log(`person runs in this box: ${said}`) }
 }
 /** A person's run in a box, started by the host: resolves to its agent id; refused: an Error with the host's words. */
-async function askHost(role, person, own, next) {
-  const body = { role, person, items: own.slice(0, 40),
+async function askHost(role, own, next) {
+  const body = { role, items: own.slice(0, 40),
     next: next.slice(0, 10).map((i) => ({ id: i.id, priority: Number.isInteger(i.priority) ? i.priority : null, title: oneLine(i.title, 80) })) }
   let r
   try { r = await hostCall('POST', body, 300000) } catch (e) { throw new Error(`the host's socket did not answer: ${e.message}`) }
@@ -680,10 +686,12 @@ function remember(e) {
   if (e.op === 'create' && e.actor && !creators.has(e.issue_id)) creators.set(e.issue_id, e.actor)
   if (e.op === 'comment' && e.comment && isHuman(e.comment.author) && !askers.has(e.issue_id)) askers.set(e.issue_id, e.comment.author)
 }
-const sponsor = () => (BOXED && hostSays.sponsor) || ownerName() // a box can't read the machine's config: the host says
+// a box has no sponsor (sy-otxx 1): work nobody asked for on the host runs as a plain lead there, never as the owner
+const sponsor = () => (BOXED ? null : ownerName())
 const asPerson = (actor) => (actor === 'bridge' ? sponsor() : actor)
 /** The person an item's work is for, or null (nobody asked: upkeep). */
 function requester(id) {
+  if (BOXED) return hostSays.asks.get(id) || null // the host's record only: the box's own journal is the box's to write
   const c = creators.get(id)
   if (isHuman(c)) return asPerson(c)
   const a = askers.get(id)
@@ -692,7 +700,8 @@ function requester(id) {
 /** Whose run a reason belongs in: the item's requester, else the sponsor (a key that is no item, e.g. worker:<name>). */
 const runnerOf = (id) => requester(id) || sponsor()
 /** Everyone who may have a run here (the CLI's list has no labels, so wake asks for each by label). */
-const persons = () => [...new Set([sponsor(), ...[...creators.values()].filter(isHuman).map(asPerson), ...[...askers.values()].map(asPerson)])]
+const persons = () => BOXED ? [...new Set(hostSays.asks.values())]
+  : [...new Set([sponsor(), ...[...creators.values()].filter(isHuman).map(asPerson), ...[...askers.values()].map(asPerson)])]
 const labelsKnown = (a) => P_.via() === 'sdk' || Object.keys(a?.labels || {}).some((k) => k !== 'project' && k !== 'role')
 /** What agent `a` of `role` is: { person (null: a plain lead), live: true, false (a person run made on a worker the
  *  daemon no longer has) or null (the daemon can't say which worker it has now: nothing is sent to a person run, and
@@ -701,6 +710,8 @@ async function runOf(role, a, fresh = false) {
   const cur = await P_.worker({ fresh })
   if (labelsKnown(a)) {
     const p = a.labels?.person || null
+    // a box's person run whose mm.ai key has ended (its label run-expires, the host's clock: sy-otxx 2) is stale too
+    if (p && /^\d+$/.test(a.labels['run-expires'] || '') && Number(a.labels['run-expires']) * 1000 <= Date.now()) return { person: p, live: false, ended: true }
     return { person: p, live: !p || (cur ? a.labels['paseo-worker'] === cur : null) }
   }
   for (const p of persons()) {
@@ -715,7 +726,8 @@ async function tidyPersonRuns() {
   const cur = await P_.worker({ fresh: true })
   if (!cur) return
   let stale = []
-  if (P_.via() === 'sdk') stale = (await P_.list({ project: PROJECT })).filter((a) => a.labels.person && a.labels['paseo-worker'] !== cur)
+  const ended = (a) => /^\d+$/.test(a.labels['run-expires'] || '') && Number(a.labels['run-expires']) * 1000 <= Date.now()
+  if (P_.via() === 'sdk') stale = (await P_.list({ project: PROJECT })).filter((a) => a.labels.person && (a.labels['paseo-worker'] !== cur || ended(a)))
   else {
     const live = new Set((await P_.list({ project: PROJECT, 'paseo-worker': cur })).map((a) => a.id))
     for (const p of persons()) for (const a of await P_.list({ project: PROJECT, person: p })) if (!live.has(a.id)) stale.push({ ...a, labels: { ...a.labels, person: p } })
@@ -725,7 +737,8 @@ async function tidyPersonRuns() {
     try {
       await P_.remove(a.id) // deleted, not archived: a send to an archived run would bring it back (sy-q8fv)
       archivedRuns.add(a.id); count('mm_wake_person_runs_deleted_total', {})
-      log(`deleted ${a.labels.role || 'a'} run for ${a.labels.person} (${a.shortId || a.id}): the Paseo daemon restarted since it was made (worker ${a.labels['paseo-worker'] || 'unknown'}, now ${cur}), and it would come back on the daemon's token, not theirs`)
+      log(ended(a) ? `deleted ${a.labels.role || 'a'} run for ${a.labels.person} (${a.shortId || a.id}): its mm.ai key has ended (the host's clock); a new ask starts a new one`
+        : `deleted ${a.labels.role || 'a'} run for ${a.labels.person} (${a.shortId || a.id}): the Paseo daemon restarted since it was made (worker ${a.labels['paseo-worker'] || 'unknown'}, now ${cur}), and it would come back on the daemon's token, not theirs`)
     } catch (e) { log(`delete of the person run ${a.id} failed (tried again on the next pass):`, e.message) }
   }
 }
@@ -737,7 +750,7 @@ function pickPerson(role, now, mine, hand) {
   for (const i of hand) if (now.get(i.id)?.kind === 'work') add(runnerOf(i.id), 'next', i)
   for (const id of now.keys()) add(runnerOf(id), 'items', id)
   for (const i of mine) add(runnerOf(i.id), 'own', i.id)
-  for (const g of groups.values()) if (Date.now() >= (startFailed[`${role}:${g.person}`]?.next || 0)) return { ...g, items: [...new Set([...g.items, ...g.own])] }
+  for (const g of groups.values()) if (Date.now() >= (startFailed[g.person ? `${role}:${g.person}` : role]?.next || 0)) return { ...g, items: [...new Set([...g.items, ...g.own])] }
   return null
 }
 
@@ -764,7 +777,7 @@ async function startLead(role, { was = null, items = [], why = '', next = [], bo
   if (Date.now() < (startFailed[fk]?.next || 0)) return { started: false, why: 'backoff' }
   startedAt[role] = Date.now()
   try {
-    await span(was ? 'wake resume' : 'wake start', { role, agent: was?.id || 'none', items: items.join(' '), via: person ? 'mm run-as' : 'bin/lead start', ...(person ? { person } : {}) }, () => leadStart(role, next, person, own))
+    await span(was ? 'wake resume' : 'wake start', { role, agent: was?.id || 'none', items: items.join(' '), via: person ? 'mm run-as' : 'bin/lead start', ...(person ? { person } : {}) }, () => leadStart(role, next, person, own, items))
     count(was ? 'mm_wake_resumed_total' : 'mm_wake_started_total', { role })
     log(was ? `restarted ${role}${as} (was ${was.shortId || was.id}, closed): ${why}` : `started ${role}${as} (no agent): ${why}`)
     for (const i of next) if (pending[role].get(i.id)?.kind === 'work') { pending[role].delete(i.id); (handed[role] ||= new Map()).set(i.id, Date.now()) } // in its first prompt
@@ -907,7 +920,7 @@ async function reconcile1() {
       if (r.live === false || swap) {
         try {
           await P_.remove(a.id) // a person run is deleted, never archived (sy-q8fv)
-          log(r.live === false ? `deleted ${role}'s run for ${p} (${a.shortId || a.id}): made before the Paseo daemon restarted` : `deleted ${role}'s run for ${p} (${a.shortId || a.id}), idle: only other people's work waits (${[...new Set(ids.map(runnerOf))].join(', ')})`)
+          log(r.live === false ? `deleted ${role}'s run for ${p} (${a.shortId || a.id}): ${r.ended ? "its mm.ai key has ended (the host's clock)" : 'made before the Paseo daemon restarted'}` : `deleted ${role}'s run for ${p} (${a.shortId || a.id}), idle: only other people's work waits (${[...new Set(ids.map(runnerOf))].join(', ')})`)
           delete idleFrom[role]; delete idleSeen[role]; a = null
         } catch (e) { log(`delete of ${role}'s run ${a.id} failed (left running):`, e.message) }
       }
@@ -921,7 +934,7 @@ async function reconcile1() {
       const g = pickPerson(role, now, mine, hand)
       if (!g) continue // each person whose work waits is in a backoff (no token yet, or a failed start)
       await startLead(role, { was: a, items: g.items, next: g.next, own: g.own, person: g.person, board: b,
-        why: `as ${g.person}: ${g.items.length - g.own.length} reason(s) wait for it, ${g.own.length} item(s) in its handover` })
+        why: `${g.person ? `as ${g.person}` : 'nobody asked on the host'}: ${g.items.length - g.own.length} reason(s) wait for it, ${g.own.length} item(s) in its handover` })
       continue
     }
     const next = hand.filter((i) => now.get(i.id)?.kind === 'work')

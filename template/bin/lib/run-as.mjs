@@ -5,8 +5,10 @@
 // to that run's environment only: CLAUDE_CODE_OAUTH_TOKEN, in the unmodified Claude Code binary.
 //   node bin/lib/run-as.mjs <person> <paseo run options...> <prompt>    (the token on stdin)
 // What else the run's environment gets, so nothing else signs its calls and its own commands can't read the token:
-//   ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL empty (a box's mm.ai key and URL, or any other, are not
-//   used: the person's token goes to the model's own API only), CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 (Claude Code strips
+//   on the host: ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL empty (the person's token goes to the
+//   model's own API only); in a box: no token at all, the run's own mm.ai key (ANTHROPIC_API_KEY, to the box's mm.ai
+//   address) and the label run-expires=<when the key ends> (the box's wake deletes the run then);
+//   CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 (Claude Code strips
 //   its credentials from the shells and hooks it runs), MM_PERSON=<person>.
 // And the label paseo-worker=<the daemon's worker> (sy-q8fv): Paseo keeps no run's environment, so a run resumed after
 // the daemon restarted would run on the daemon's own token (the owner's). wake archives every person run whose worker
@@ -23,7 +25,13 @@ const [person, ...args] = process.argv.slice(2)
 if (!/^[a-z][a-z0-9._-]{1,31}$/.test(person || '')) die(`not a person's name: ${person}`, 2)
 let token = ''
 try { token = fs.readFileSync(0, 'utf8').split('\n')[0].trim() } catch {}
-if (!/^sk-ant-oat01-[A-Za-z0-9_-]{40,400}$/.test(token)) die(`no Claude token came for ${person} (or not one in a token's shape): no run`)
+// in a box (sy-otxx 2) what comes is never the person's token: an mm.ai key of this run's own (mmk_…), bound to the
+// project and the person and ending by the host's clock; the run calls the model through mm.ai (the box's
+// ANTHROPIC_BASE_URL), which uses the person's token on the host. On the host: the person's token, as before.
+const boxed = /^mmk_[A-Za-z0-9_-]{32}$/.test(token)
+if (boxed && !/^http:\/\/[\w.-]+:\d+$/.test(process.env.ANTHROPIC_BASE_URL || '')) die(`an mm.ai key came for ${person}, and this box has no mm.ai address (ANTHROPIC_BASE_URL): no run`)
+if (!boxed && !/^sk-ant-oat01-[A-Za-z0-9_-]{40,400}$/.test(token)) die(`no Claude token came for ${person} (or not one in a token's shape): no run`)
+const expires = /^\d{9,11}$/.test(process.env.MM_RUN_EXPIRES || '') ? process.env.MM_RUN_EXPIRES : ''
 const scrub = (s) => String(s ?? '').split(token).join('[token]')
 
 // the options bin/lead gives `paseo run`
@@ -46,10 +54,12 @@ for (let i = 0; i < args.length; i++) {
 if (!prompt) die('no prompt', 2)
 const w = await worker({ fresh: true })
 if (!w) die(`the Paseo daemon did not say which worker holds its agents, so a run for ${person} could not be archived when it restarts: no run`)
-o.label = [...o.label.filter((l) => !/^paseo-worker=/.test(l)), `paseo-worker=${w}`]
+o.label = [...o.label.filter((l) => !/^(paseo-worker|run-expires)=/.test(l)), `paseo-worker=${w}`, ...(boxed && expires ? [`run-expires=${expires}`] : [])]
 const SET_HERE = /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_BASE_URL|CLAUDE_CODE_SUBPROCESS_ENV_SCRUB|MM_PERSON)=/
-o.env = [...o.env.filter((e) => !SET_HERE.test(e)), `CLAUDE_CODE_OAUTH_TOKEN=${token}`, 'ANTHROPIC_API_KEY=', 'ANTHROPIC_AUTH_TOKEN=', 'ANTHROPIC_BASE_URL=',
-  'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1', `MM_PERSON=${person}`]
+o.env = [...o.env.filter((e) => !SET_HERE.test(e)),
+  ...(boxed ? ['CLAUDE_CODE_OAUTH_TOKEN=', `ANTHROPIC_API_KEY=${token}`, `ANTHROPIC_BASE_URL=${process.env.ANTHROPIC_BASE_URL}`]
+    : [`CLAUDE_CODE_OAUTH_TOKEN=${token}`, 'ANTHROPIC_API_KEY=', 'ANTHROPIC_BASE_URL=']),
+  'ANTHROPIC_AUTH_TOKEN=', 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1', `MM_PERSON=${person}`]
 
 // Paseo's CLI package, from the paseo bin/lead uses (as box/paseo-join.mjs finds it)
 let bin = process.env.PASEO_BIN || ''

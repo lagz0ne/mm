@@ -8,6 +8,7 @@
 //     GET  /s?b=<board host>&r=<path>  signed in -> the board's callback; else "ask the owner for a link"
 //     GET  / , GET /s/done             the home page: the boards this person holds a role on, with each board's counts
 //     POST /s/out                      ends the session (and its board sessions)
+//     GET|POST /s/runs                 "Runs for you": the person asks for runs on one item (src/personasks.ts)
 //   On a board host:
 //     GET  /_mm/auth/callback?c=…      a one-time code -> that board's own cookie (mm_board, host-only, Strict)
 //     GET  /verify                     forward-auth: the board cookie or `Authorization: Bearer` -> 200 + a signed
@@ -23,6 +24,7 @@ import { getMigrations } from 'better-auth/db/migration'
 import { admin, bearer, magicLink, organization } from 'better-auth/plugins'
 import { createAccessControl } from 'better-auth/plugins/access'
 import { granted, grantedProjects } from './apistate'
+import { addAsk, ASK_TTL_MS, ITEM as ASK_ITEM, askProjects, asksOf, dropAsk } from './personasks'
 import { hasToken, removeToken, setToken, tokenSince } from './persontoken'
 import { ready as vaultReady } from './vault'
 import { getPath, loadConfig } from './config'
@@ -435,6 +437,40 @@ export async function gateway() {
     return tokenPageFor(p.name, had ? 'Replaced. mm will not show it again.' : 'Saved. mm will not show it again.')
   }
 
+  // ---------- "Runs for you" (sy-otxx 1): a person asks for runs on one item, on their own token ----------
+  // The host's record of who asked (src/personasks.ts): a box's ask for a person run names only item ids, and the person
+  // is the one this record holds. The person is the session's, never a name in the form; a viewer has no runs; the
+  // system board never. Each ask lasts ASK_TTL_MS; the person drops their own. The owner hears each one.
+  const RUNS_FORM_MAX = 2048
+  const runProjects = (userId: string) => Object.keys(loadHosts().hosts).filter((pr) => !isSystemBoard(pr) && (roleOn(userId, pr) || 'viewer') !== 'viewer').sort()
+  const runsPageFor = (p: { userId: string; name: string }, msg = '', status = 200) =>
+    html(runsPage(p.name, askProjects().flatMap((pr) => asksOf(pr).filter((a) => a.person === p.name).map((a) => ({ project: pr, ...a }))), runProjects(p.userId), hasToken(p.name), msg), status)
+  const runsForYou = async (req: Request, srv?: { requestIP?: (r: Request) => { address: string } | null }) => {
+    const p = await personOf(req)
+    if (req.method === 'GET' || req.method === 'HEAD') return p ? runsPageFor(p) : new Response(null, { status: 302, headers: { location: '/s', ...headers } })
+    if (req.method !== 'POST') return new Response('method not allowed', { status: 405, headers })
+    const ip = clientIp(req, srv)
+    if (!p) return html(page('Your session has ended. Sign in again, then open "Runs for you".'), 403)
+    if (!fromOwnPage(req)) { log('warn', 'run ask refused (not from its page)', { user: p.name, ip }); return runsPageFor(p, 'Use the form on this page.', 403) }
+    if (limited(`runs:${p.userId}`, 30, 10 * 60e3)) return runsPageFor(p, 'Too many changes. Wait a few minutes.', 429)
+    const raw = await req.arrayBuffer().catch(() => new ArrayBuffer(0))
+    if (raw.byteLength > RUNS_FORM_MAX) return runsPageFor(p, 'That is too long.', 413)
+    const f = new URLSearchParams(new TextDecoder().decode(raw)), a = f.get('a'), project = String(f.get('project') || '').trim(), item = String(f.get('item') || '').trim()
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(project) || !ASK_ITEM.test(item)) return runsPageFor(p, 'Name a project and one item id (as on its board).', 400)
+    if (a === 'drop') {
+      const was = dropAsk(project, item, p.name)
+      log('info', was ? 'run ask dropped' : 'run ask drop: none', { user: p.name, project, item, ip })
+      return runsPageFor(p, was ? `Dropped: no new runs for ${item} on ${project}.` : 'There was no such ask of yours.')
+    }
+    if (a !== 'ask') return runsPageFor(p, 'Use the form on this page.', 400)
+    const role = isSystemBoard(project) ? null : roleOn(p.userId, project)
+    if (!role || role === 'viewer') { log('warn', 'run ask refused: no role', { user: p.name, project, item, ip }); return runsPageFor(p, role ? 'A viewer has no runs.' : `You have no role on ${project}.`, 403) }
+    try { addAsk(project, item, p.name) } catch (e) { log('warn', 'run ask refused', { user: p.name, project, item, why: (e as Error).message }); return runsPageFor(p, (e as Error).message, 409) }
+    log('info', 'run ask', { user: p.name, project, item, ip })
+    tellOwner(`${p.name} asked for runs on ${item} in ${project}, on their own Claude token (from ${ip}).`)
+    return runsPageFor(p, `Asked: runs for ${item} on ${project} are yours, on your own token, for ${Math.round(ASK_TTL_MS / 86400e3)} days.`)
+  }
+
   async function http(req: Request, srv?: { requestIP?: (r: Request) => { address: string } | null }): Promise<Response> {
     const u = new URL(req.url), host = req.headers.get('x-forwarded-host') || u.host, path = u.pathname
     // forward-auth: the web proxy asks for every request to a board host
@@ -518,6 +554,7 @@ export async function gateway() {
       const r = html(codePage(code, board)); r.headers.append('set-cookie', setPendingCookie(req, id)); return r
     }
     if (path === '/s/token' && host === authHost) return claudeToken(req, srv)
+    if (path === '/s/runs' && host === authHost) return runsForYou(req, srv)
     if (path === '/s/app.js') return new Response(CODE_JS, { headers: { 'content-type': 'text/javascript', ...headers } })
     if (path === '/s/poll') {
       const v = cookies(req).mm_pending, k = v ? h(v) : '', pp = k ? pending.get(k) : undefined
@@ -840,9 +877,24 @@ ${c.s.last ? `<p class="last">Last activity: ${esc(c.s.last.slice(0, 16).replace
   return shell('Your boards', homeNav('boards', name), cards.length ? `${waitingList(cards)}<div class="cards">${cards.map(card).join('\n')}</div>` : '<p>You have no board yet; the owner can grant you one.</p>')
 }
 /** The signed-in pages' nav: the boards, the person's Claude token, who, sign out. */
-function homeNav(here: 'boards' | 'token', name: string) {
+function homeNav(here: 'boards' | 'token' | 'runs', name: string) {
   const item = (k: typeof here, href: string, label: string) => (k === here ? `<span class="here">${label}</span>` : `<a href="${href}">${label}</a>`)
-  return `${item('boards', '/', 'Boards')}${item('token', '/s/token', 'Your Claude token')}<span class="who">Signed in as <b>${esc(name)}</b></span><form method="post" action="/s/out"><button type="submit" class="quiet">Sign out</button></form>`
+  return `${item('boards', '/', 'Boards')}${item('token', '/s/token', 'Your Claude token')}${item('runs', '/s/runs', 'Runs for you')}<span class="who">Signed in as <b>${esc(name)}</b></span><form method="post" action="/s/out"><button type="submit" class="quiet">Sign out</button></form>`
+}
+/** "Runs for you" (sy-otxx 1): the person's asks, and a form to ask for runs on one item or drop an ask. */
+function runsPage(name: string, asks: { project: string; item: string; expires: number }[], projects: string[], token: boolean, msg: string) {
+  const when = (t: number) => esc(new Date(t).toISOString().slice(0, 16).replace('T', ' '))
+  const list = asks.length ? `<ul>${asks.map((a) => `<li><b>${esc(a.item)}</b> on ${esc(a.project)}, until ${when(a.expires)} UTC
+<form method="post" action="/s/runs" class="tok"><input type="hidden" name="a" value="drop"><input type="hidden" name="project" value="${esc(a.project)}"><input type="hidden" name="item" value="${esc(a.item)}"><button type="submit" class="quiet">Drop</button></form></li>`).join('\n')}</ul>`
+    : '<p>You have asked for no runs.</p>'
+  return shell('Runs for you', homeNav('runs', name), `${msg ? `<p class="msg" role="status">${esc(msg)}</p>` : ''}
+<p>A project in a box runs its work for you only on an item you asked for here, on your own Claude token. Nobody else can ask in your name, and the box can't either.${token ? '' : ' <b>You have no Claude token set yet</b>: set it first (Your Claude token).'}</p>
+<p class="label">Your asks</p>${list}
+<form method="post" action="/s/runs" class="tok"><input type="hidden" name="a" value="ask">
+<label for="project">Project</label><input id="project" name="project" list="projects" required maxlength="64" autocomplete="off" spellcheck="false">
+<datalist id="projects">${projects.map((pr) => `<option value="${esc(pr)}">`).join('')}</datalist>
+<label for="item">Item id</label><input id="item" name="item" required maxlength="64" autocomplete="off" spellcheck="false">
+<button type="submit">Ask for runs</button></form>`)
 }
 /** "Your Claude token" (sy-8n4w): set, replace, remove. It never holds the value: only whether one is set, and since when. */
 function tokenPage(name: string, vaultOk: boolean, set: boolean, since: string | null, msg: string) {

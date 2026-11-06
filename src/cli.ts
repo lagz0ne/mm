@@ -420,6 +420,19 @@ program.command('run-as <person> <project> <role>').description('start a lead fo
     try { process.exit(await runAsMod.runAs(person, ref, role, { model: o.model })) } catch (e) { console.error(`mm run-as: ${(e as Error).message}`); process.exit(1) }
   })
 
+// who asked for person runs on which item (sy-otxx 1, src/personasks.ts): only a person signed in at the gateway asks
+// ("Runs for you"); here the owner lists them and drops one (dropping only ever takes a run away)
+program.command('run-asks [project]').description('the asks for person runs (who asked for which item, until when); --drop <item> drops one')
+  .option('--drop <item>', 'drop the ask for this item of <project>')
+  .action(async (project: string | undefined, o) => {
+    const asks = await import('./personasks')
+    if (o.drop) {
+      if (!project) { console.error('mm run-asks: --drop needs the project'); process.exit(2) }
+      const was = asks.dropAsk(project, String(o.drop)); console.log(was ? `dropped: ${o.drop} on ${project}` : `no ask for ${o.drop} on ${project}`); return
+    }
+    for (const p of project ? [project] : asks.askProjects()) for (const a of asks.asksOf(p)) console.log(`${p}\t${a.item}\t${a.person}\tuntil ${new Date(a.expires).toISOString().slice(0, 16)}Z`)
+  })
+
 program.command('sync').description('seal what can\'t be rebuilt into the mastermind repo and push it (docs/restore.md)')
   .option('--init <repo>', 'first time: clone the mastermind repo into ~/.mm/state/mastermind and remember it')
   .option('-n, --dry-run', 'list what would go in; seal and commit nothing')

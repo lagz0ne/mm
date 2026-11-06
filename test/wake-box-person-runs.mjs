@@ -1,11 +1,14 @@
 #!/usr/bin/env node
-// bin/wake in a box, person runs (sy-9618): a box's wake can't reach mm or the vault, so it asks the host on the box's
-// own mm.api socket. The host says whether person runs are on and who the sponsor is (the box can't read the machine's
-// config), and starts each run: wake sends {role, person, items, next} and never runs mm or a plain lead for a person's
-// work. Item work runs as its requester, upkeep as the sponsor the host named; a refusal (no token) comes back in the
-// host's words, and the item gets the plain comment; a box Paseo restart deletes the runs made before; the host off:
-// the leads run as before (plain), and no run is asked for. Hermetic: temp folder and MM_HOME, a stand-in host socket,
-// stub paseo (a real process stands for the box Paseo's worker), stub mm (never called), bin/bd and bd-serve, no obs.
+// bin/wake in a box, person runs (sy-9618, sy-otxx): a box's wake can't reach mm or the vault, so it asks the host on
+// the box's own mm.api socket. The host says whether person runs are on and who asked for runs on which item (the
+// host's own record; the box's journal is the box's to write, so wake never takes a person from it), and starts each
+// run: wake sends {role, items, next}, never a person, and never runs mm or a plain lead for a person's work. Item work
+// someone asked for on the host runs as that person; work nobody asked for there (an item the box's journal says the
+// owner made, too) runs as a plain lead, never as the owner. A refusal (no token) comes back in the host's words, and
+// the item gets the plain comment; a box Paseo restart, or a run whose mm.ai key has ended (its label run-expires),
+// deletes the run; the host off: the leads run as before (plain), and no run is asked for. Hermetic: temp folder and
+// MM_HOME, a stand-in host socket, stub paseo (a real process stands for the box Paseo's worker), stub mm (never
+// called), bin/bd and bd-serve, no obs.
 //   node test/wake-box-person-runs.mjs            exit 0 = every check passed
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -61,22 +64,28 @@ else if (cmd === 'send') { fs.appendFileSync(T + '/sent.log', 'TO ' + a[0] + '\\
 `, { mode: 0o755 })
   // mm: never run in a box (it can't reach it)
   fs.writeFileSync(path.join(T, 'mm-stub'), `#!/bin/sh\necho "$*" >>"${T}/mm.log"\nexit 1\n`, { mode: 0o755 })
-  // the host's side of the box's socket (src/boxruns.ts), standing in: on/off and the sponsor; a run made as the
-  // host makes it (labelled with the box Paseo's worker); carol has no token
+  // the host's side of the box's socket (src/boxruns.ts), standing in: on/off and its asks (q-1 alice's, o-1 carol's);
+  // the person is the asks', never the box's word; a run made as the host makes it (labelled with the box Paseo's
+  // worker and when its key ends); carol has no token
   const asks = []
   const workerOf = () => { const pid = read(path.join(T, 'worker.pid')).trim(); const s = read(`/proc/${pid}/stat`); return `${pid}.${s.slice(s.lastIndexOf(')') + 2).split(' ')[19]}` }
   const SOCK = path.join(T, 'api.sock')
   const host = http.createServer((req, res) => {
     const json = (code, o) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)) }
     if (req.url !== '/person-run') return json(404, { status: 'refused', why: 'unknown-call' })
-    if (req.method === 'GET') return json(200, hostOn ? { status: 'on', sponsor: 'boss' } : { status: 'off' })
+    const hostAsks = { 'q-1': 'alice', 'o-1': 'carol' }
+    if (req.method === 'GET') return json(200, hostOn ? { status: 'on', asks: hostAsks } : { status: 'off' })
     let s = ''; req.on('data', (d) => (s += d)); req.on('end', () => {
-      const b = JSON.parse(s); asks.push(b)
+      fs.appendFileSync(path.join(T, 'asks.raw'), s + '\n'); const b = JSON.parse(s); asks.push(b)
       if (!hostOn) return json(403, { status: 'refused', why: 'off', message: 'person runs are off on this machine' })
+      if (b.person !== undefined) return json(400, { status: 'refused', why: 'format', message: 'a box does not name the person' })
+      const ids = [...(b.items || []), ...(b.next || []).map((n) => n.id)], people = [...new Set(ids.map((i) => hostAsks[i] || '-'))]
+      if (!ids.length || people.length !== 1 || people[0] === '-') return json(403, { status: 'refused', why: 'no-ask', message: 'nobody asked for runs on these items on the host' })
+      b.person = people[0]
       if (b.person === 'carol') return json(403, { status: 'refused', why: 'no-token', message: 'carol has no Claude token, so the run does not start: set your Claude token on the home page (https://auth.example.org/s/token). mm never uses the owner\'s token for another person.' })
       const l = JSON.parse(read(AG)); for (const x of l) if (x.labels.role === b.role) x.archived = true
       const id = `run-${b.person}-${b.role}-${l.length}`
-      l.push({ id, status: 'idle', labels: { project: 'wp', role: b.role, person: b.person, 'paseo-worker': workerOf() } }); fs.writeFileSync(`${AG}.h`, JSON.stringify(l)); fs.renameSync(`${AG}.h`, AG)
+      l.push({ id, status: 'idle', labels: { project: 'wp', role: b.role, person: b.person, 'paseo-worker': workerOf(), 'run-expires': String(Math.floor(Date.now() / 1000) + 3600) } }); fs.writeFileSync(`${AG}.h`, JSON.stringify(l)); fs.renameSync(`${AG}.h`, AG)
       json(200, { status: 'done', agent: id })
     })
   })
@@ -86,10 +95,12 @@ else if (cmd === 'send') { fs.appendFileSync(T + '/sent.log', 'TO ' + a[0] + '\\
     { id: 'q-1', assignee: 'qa', status: 'open', priority: 1, title: "alice's report", labels: [] },
     { id: 'd-1', assignee: 'dev', status: 'open', priority: 2, title: 'a check nobody asked for', labels: [] },
     { id: 'o-1', assignee: 'ops', status: 'open', priority: 2, title: "carol's ask", labels: [] },
+    { id: 'f-1', assignee: 'dev', status: 'open', priority: 2, title: 'the box says the owner made this', labels: [] },
   ]
   let seq = 0
   const ev = (op, id, actor, extra = {}) => ({ seq: ++seq, op, issue_id: id, actor, ts: new Date().toISOString(), issue: items.find((i) => i.id === id), ...extra })
-  const records = [ev('create', 'q-1', 'alice'), ev('create', 'd-1', 'watchdog'), ev('create', 'o-1', 'carol')]
+  // the box's journal: f-1 "made by boss" (the box writes its own board): never the host's word for whose run it is
+  const records = [ev('create', 'q-1', 'alice'), ev('create', 'd-1', 'watchdog'), ev('create', 'o-1', 'carol'), ev('create', 'f-1', 'boss')]
   const streams = []
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x'), json = (o) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)) }
@@ -117,27 +128,33 @@ else if (cmd === 'send') { fs.appendFileSync(T + '/sent.log', 'TO ' + a[0] + '\\
       ok('...wake says what the host said', /person runs in this box: off on the host/.test(out))
       return
     }
-    ok('item work runs as its requester: the qa lead is asked of the host for alice, with her queue head', await until(() => asks.some((a) => a.role === 'qa' && a.person === 'alice'))
+    ok('item work someone asked for on the host: the qa lead is asked of the host with her items and queue head, and the run is alice\'s', await until(() => asks.some((a) => a.role === 'qa' && a.person === 'alice'))
       && (() => { const a = asks.find((x) => x.person === 'alice'); return Array.isArray(a.items) && a.next.length === 1 && a.next[0].id === 'q-1' && a.next[0].priority === 1 && a.next[0].title === "alice's report" })())
-    ok("upkeep runs as the sponsor the host named (boss; the box has no owner_name of its own)", await until(() => asks.some((a) => a.role === 'dev' && a.person === 'boss' && a.next.some((n) => n.id === 'd-1'))))
-    ok('...never through mm (the box has none) or a plain bin/lead start', !read(path.join(T, 'mm.log')) && !plain())
+    ok('...wake never names a person to the host', asks.length > 0 && !fs.readFileSync(path.join(T, 'asks.raw'), 'utf8').includes('"person"'))
+    ok("work nobody asked for on the host (d-1, and f-1 the box's journal says the owner made): a plain lead, never asked as the owner", await until(() => plain().includes('PLAIN dev'))
+      && !asks.some((a) => a.role === 'dev' || (a.next || []).some((n) => n.id === 'd-1' || n.id === 'f-1')))
+    ok('...never through mm (the box has none); no plain lead for the asked-for work', !read(path.join(T, 'mm.log')) && !plain().includes('PLAIN qa') && !plain().includes('PLAIN ops'))
     const e1 = ev('comment', 'q-1', 'alice', { comment: { id: 'c1', author: 'alice', text: 'any news?' } }); records.push(e1); for (const s of streams) s.write(`data: ${JSON.stringify(e1)}\n\n`)
     ok("...the run is the one the host made: alice's comment goes to it", await until(() => sent().split('----').some((m) => m.includes('TO run-alice-qa') && m.includes('any news?'))))
     ok('a person with no token (carol): asked, refused, no run of hers', await until(() => asks.some((a) => a.role === 'ops' && a.person === 'carol')) && !live().some((x) => x.labels.person === 'carol'))
     ok("...her item says why, in the host's words, with where to set the token", await until(() => /comments add o-1 No run yet: this item's work runs as carol \(who asked for it\).*carol has no Claude token set.*https:\/\/auth\.example\.org\/s\/token/.test(bdlog())))
     ok("...and no one else's run (nor a plain lead) took her work", !asks.some((a) => a.person !== 'carol' && a.next.some((n) => n.id === 'o-1')) && !plain().includes('PLAIN ops'))
-    ok('wake said person runs are on, from the host', /person runs in this box: on: the host starts them \(the sponsor: boss\)/.test(out))
+    ok('wake said person runs are on, from the host (no sponsor)', /person runs in this box: on: the host starts them, for the items people asked for there \(2 now\)/.test(out) && !/sponsor/.test(out))
+    // a run whose mm.ai key has ended (the host's clock, its label run-expires): deleted
+    { const l = JSON.parse(read(AG)), r = l.find((x) => !x.archived && x.labels.person === 'alice'); if (r) r.labels['run-expires'] = String(Math.floor(Date.now() / 1000) - 1); fs.writeFileSync(AG, JSON.stringify(l))
+      ok(`a run whose key has ended (run-expires past): deleted (${r?.id})`, !!r && await until(() => deleted().includes(r.id)) && /its mm.ai key has ended/.test(out)) }
     // the box's Paseo restarts: a new worker; the runs made before are deleted
+    const e2 = ev('comment', 'q-1', 'alice', { comment: { id: 'c2', author: 'alice', text: 'and now?' } }); records.push(e2); for (const s of streams) s.write(`data: ${JSON.stringify(e2)}\n\n`)
+    ok('...alice comments again: a new run of hers, asked of the host', await until(() => live().some((x) => x.labels.person === 'alice')))
     const before = live().filter((x) => x.labels.person).map((x) => x.id)
     newWorker()
     ok(`a box Paseo restart: the person runs made before are deleted (${before.join(', ')})`, before.length > 0 && await until(() => before.every((id) => deleted().includes(id))))
     // the host's socket stops answering: wake keeps what it said last (on): no plain lead for a person's work
     await new Promise((r) => host.close(r)); fs.rmSync(SOCK, { force: true }); fs.writeFileSync(SOCK, '')
     const n = asks.length
-    items.push({ id: 'q-2', assignee: 'qa', status: 'open', priority: 1, title: 'another', labels: [] })
-    const e = ev('create', 'q-2', 'alice'); records.push(e); for (const s of streams) s.write(`data: ${JSON.stringify(e)}\n\n`)
+    const e = ev('comment', 'q-1', 'alice', { comment: { id: 'c3', author: 'alice', text: 'still there?' } }); records.push(e); for (const s of streams) s.write(`data: ${JSON.stringify(e)}\n\n`)
     await sleep(3000)
-    ok("the host's socket gone quiet: no plain lead starts for a person's work (what the host said last holds)", !plain() && asks.length === n && /person runs in this box: the host's socket did not answer \(kept: on\)/.test(out))
+    ok("the host's socket gone quiet: no plain lead starts for a person's work (what the host said last holds)", !plain().includes('PLAIN qa') && asks.length === n && /person runs in this box: the host's socket did not answer \(kept: on\)/.test(out))
   } finally {
     w.kill(); srv.close(); try { host.close() } catch {} for (const x of workers) x.kill()
     if (fail) console.log(out.split('\n').slice(-25).join('\n'))

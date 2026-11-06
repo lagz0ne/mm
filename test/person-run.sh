@@ -8,9 +8,10 @@
 # log, no page, no file outside the vault. mm run-as: a person's run gets their token only (as CLAUDE_CODE_OAUTH_TOKEN,
 # nothing else signs its calls), labelled with the Paseo daemon's worker (no worker said: no run); a person with none is
 # refused, and the owner's token is never used for them; a viewer, a stranger and an agent's shell are refused; the
-# opened file is gone. In a box (a stand-in for docker): the run goes over docker exec -i; the box's egress gets the
-# model's host when the run starts, keeps it while the run is there, and loses it once none is left (the sweep), or at
-# once when the run does not start (sy-q8fv).
+# opened file is gone. In a box (a stand-in for docker; sy-otxx 2): the run goes over docker exec -i with no token at
+# all, only an mm.ai key of its own (kind person, bound to the project and the person, ending by the host's clock, its
+# label run-expires); mm.ai off: no run; the box's egress never gets the model's host; the host's record goes when the
+# key ends (the host's clock, never the box's word); a run that does not start has its key revoked at once.
 #   test/person-run.sh [mm command]       default: bun <repo>/src/cli.ts
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd); MMC=${1:-"bun $SRC/src/cli.ts"}
@@ -147,48 +148,52 @@ check "the owner with no personal token: the machine's own (the owner's), with a
 printf '%s\n' "$TO" | mm user claude-token >/dev/null
 printf 'client: acme\nname: shop\nproject: acme-shop\nshort: sh\nroot: %s\ntemplate_version: test\ncreated: test\nbox: true\n' "$P" >"$P/.mm-answers.yaml"
 # a stand-in for docker: the box and its proxy are "running" (while $T/box.up is); exec runs the command here (the
-# box's sh -c ...), so bin/lead --as and the box's `paseo ls` are the stand-ins above; a proxy restart is logged
+# box's sh -c ...) with the environment its -e flags name, so bin/lead --as and the box's `paseo ls` are the stand-ins
+# above; a proxy restart is logged
 cat >"$T/dock" <<EOF
-#!/bin/sh
+#!/bin/bash
 echo "\$*" >>"$T/dock.log"
 case "\$1" in
   inspect) [ -e "$T/box.up" ] && echo true || echo false ;;
   container) exit 0 ;;
   restart) echo "RESTART \$4" >>"$T/proxy.log" ;;
-  exec) while [ \$# -gt 0 ] && ! { [ "\$1" = sh ] && [ "\$2" = -c ]; }; do shift; done; exec "\$@" ;;
+  exec) shift; while [ \$# -gt 0 ] && ! { [ "\$1" = sh ] && [ "\$2" = -c ]; }; do case "\$1" in -e) export "\$2"; shift ;; -w) shift ;; esac; shift; done; exec "\$@" ;;
 esac
 exit 0
 EOF
 chmod +x "$T/dock"; ln -sf "$T/pcli/bin/paseo" "$T/bin/paseo"; touch "$T/box.up"
-export MM_DOCKER="$T/dock"
+export MM_DOCKER="$T/dock" MM_AI_DIR="$T/ai"
 ALLOW="$MM_HOME/egress/acme-shop/allow"; REC="$MM_HOME/person-runs/acme-shop.json"
 cat >"$T/sweep.ts" <<EOF
 import { sweep } from '$SRC/src/runas'
 console.log(JSON.stringify(sweep('$P')))
 EOF
-cat >"$T/list.ts" <<EOF
-import { egressList } from '$SRC/src/box'
-console.log(egressList('$P').join(' '))
+# the run's key as mm.ai keeps it (its sha256 only): kind, person, project, expires, revoked
+cat >"$T/key.ts" <<EOF
+import { Database } from 'bun:sqlite'
+const d = new Database('$T/ai/ai.db', { readonly: true })
+const q = 'SELECT project, person, kind, expires, revoked FROM ai_key'
+console.log(JSON.stringify((process.argv[2] === 'latest' ? d.query(q + ' ORDER BY created DESC LIMIT 1').get() : d.query(q + ' WHERE hash = ?').get(process.argv[2])) ?? null))
 EOF
 restarts() { [ -e "$T/proxy.log" ] && wc -l <"$T/proxy.log" || echo 0; }
-export -f restarts; export ALLOW REC
+keyof() { bun "$T/key.ts" "$(last | jq -r .api_key | tr -d '\n' | sha256sum | cut -d' ' -f1)"; }
+export -f restarts keyof; export ALLOW REC
 n=$(runs)
-check "a box with no model host on its egress: the run starts (over docker exec -i, stdin, no TTY), with her token" bash -c "mm run-as alice acme-shop qa >'$T/rbox' 2>'$T/rbox.err' && grep -q agent-1 '$T/rbox' && [ \$(runs) = \$(( $n + 1 )) ] && last | jq -e --arg s \"\$(sha '$TA')\" '.token_sha == \$s' && grep -q '^exec -i -w $P ' '$T/dock.log' && ! grep -q -- '-it' '$T/dock.log'"
-check "...the box's egress now has api.anthropic.com (the proxy restarted once to read it), and mm said so" bash -c "grep -qF 'api\\.anthropic\\.com' '$ALLOW' && [ \$(restarts) = 1 ] && grep -q 'egress now has api.anthropic.com' '$T/rbox.err'"
-check "...the host's record has her run (its agent id), no token in it, 0600" bash -c "jq -e '.runs | length == 1 and .[0].person == \"alice\" and .[0].agent == \"agent-1\" and .[0].role == \"qa\"' '$REC' && ! grep -q 'sk-ant' '$REC' && [ \$(stat -c %a '$REC') = 600 ]"
-touch "$ST/live"
-check "a second run while the first is there: no second proxy restart" bash -c "mm run-as alice acme-shop qa >/dev/null 2>&1 && [ \$(restarts) = 1 ] && jq -e '.runs | length == 2' '$REC'"
-check "the sweep while the run is in the box (its Paseo lists it): the entries stay, no restart" bash -c "bun '$T/sweep.ts' | jq -e '.dropped == 0 and .left == 2' && grep -qF 'api\\.anthropic\\.com' '$ALLOW' && [ \$(restarts) = 1 ] && grep -q -- '--label project=acme-shop' '$ST/ls.log'"
-rm -f "$ST/live"
-check "the sweep once the runs are gone (archived): the record goes, and the model's host leaves the egress (one restart)" bash -c "bun '$T/sweep.ts' | jq -e '.dropped == 2 and .left == 0' && [ ! -e '$REC' ] && ! grep -qF 'anthropic' '$ALLOW' && [ \$(restarts) = 2 ]"
-check "...and the sweep again: nothing to do, no restart" bash -c "bun '$T/sweep.ts' | jq -e '.dropped == 0' && [ \$(restarts) = 2 ]"
+check "a box, mm.ai off: a person's run is refused (it reaches the model through mm.ai only), no run" bash -c "! mm run-as alice acme-shop qa 2>'$T/roff' && grep -q 'through mm.ai only' '$T/roff' && [ \$(runs) = $n ] && [ ! -e '$REC' ]"
+export MM_AI_ENABLED=1
+check "a box: the run starts (over docker exec -i, stdin, no TTY), with no token at all: its own mm.ai key, to the box's mm.ai address" bash -c "mm run-as alice acme-shop qa >'$T/rbox' 2>'$T/rbox.err' && grep -q agent-1 '$T/rbox' && [ \$(runs) = \$(( $n + 1 )) ] && last | jq -e '.token_sha == null and (.api_key | test(\"^mmk_[A-Za-z0-9_-]{32}\$\")) and (.base_url | test(\"^http://[a-z0-9.-]+:4000\$\")) and .auth_token == \"\" and .person == \"alice\"' && grep -q '^exec -i -w $P ' '$T/dock.log' && ! grep -q -- '-it' '$T/dock.log'"
+check "...mm.ai keeps its key (sha256 only): kind person, alice, acme-shop, ending by the host's clock (as the run's label says)" bash -c "keyof | jq -e '.kind == \"person\" and .person == \"alice\" and .project == \"acme-shop\" and .revoked == 0' && e=\$(keyof | jq .expires) && last | jq -e --arg e \"run-expires=\$(( e / 1000 ))\" '.labels | index(\$e)' && [ \$(( e - \$(date +%s%3N) )) -gt \$(( 3 * 3600000 )) ]"
+check "...the box's egress never gets the model's host (no proxy restart), and no token went into docker's command line" bash -c "! grep -qF 'anthropic' '$ALLOW' 2>/dev/null && [ \$(restarts) = 0 ] && ! grep -q 'sk-ant' '$T/dock.log'"
+check "...the host's record has her run (its agent id, when its key ends), no token or key in it, 0600" bash -c "jq -e '.runs | length == 1 and .[0].person == \"alice\" and .[0].agent == \"agent-1\" and .[0].role == \"qa\" and (.[0].expires > 0)' '$REC' && ! grep -q 'sk-ant\|mmk_' '$REC' && [ \$(stat -c %a '$REC') = 600 ]"
+check "the sweep before the key ends: the run stays (the box is not asked)" bash -c "bun '$T/sweep.ts' | jq -e '.dropped == 0 and .left == 1' && ! grep -qs -- '--label project=acme-shop' '$ST/ls.log'"
+jq '.runs[0].expires = 1000' "$REC" >"$REC.x" && mv "$REC.x" "$REC"
+check "the sweep once its key has ended (the host's clock): the record goes, no proxy restart" bash -c "bun '$T/sweep.ts' | jq -e '.dropped == 1 and .left == 0' && [ ! -e '$REC' ] && [ \$(restarts) = 0 ]"
 mv "$ST/worker.pid" "$ST/worker.off"
-check "a run in the box that does not start: the model's host comes and goes at once, nothing recorded" bash -c "! mm run-as alice acme-shop qa 2>'$T/rbad' && [ ! -e '$REC' ] && ! grep -qF 'anthropic' '$ALLOW' && [ \$(restarts) = 4 ] && grep -q 'is off acme-shop' '$T/rbad'"
+check "a run in the box that does not start: nothing recorded, and its key is revoked at once" bash -c "! mm run-as alice acme-shop qa 2>'$T/rbad' && [ ! -e '$REC' ] && [ \$(restarts) = 0 ] && bun '$T/key.ts' latest | jq -e '.kind == \"person\" and .revoked == 1'"
 mv "$ST/worker.off" "$ST/worker.pid"
-mm run-as alice acme-shop qa >/dev/null 2>&1; rm -f "$T/box.up"
-check "the box is down: the sweep drops its runs and the model's host" bash -c "jq -e '.runs | length == 1' '$REC' && bun '$T/sweep.ts' | jq -e '.dropped == 1' && [ ! -e '$REC' ] && ! grep -qF 'anthropic' '$ALLOW'"
-printf 'services: {}\negress: [api.anthropic.com]\n' >"$P/services.yaml"; touch "$T/box.up"; r0=$(restarts)
-check "a box that lists api.anthropic.com itself: no restart for the run, and kept after the sweep (only mm's own entry goes)" bash -c "mm run-as alice acme-shop qa >/dev/null 2>&1 && rm -f '$T/box.up' && bun '$T/sweep.ts' >/dev/null && [ ! -e '$REC' ] && bun '$T/list.ts' | grep -qw 'api.anthropic.com' && [ \$(restarts) = $r0 ]"
+printf '{"runs":[{"person":"alice","role":"qa","agent":"agent-0","at":1000}]}\n' >"$REC"
+check "a record from before (no expiry): the sweep drops it and reloads the box's egress once" bash -c "bun '$T/sweep.ts' | jq -e '.dropped == 1 and .left == 0 and (.egress | test(\"off\"))' && [ ! -e '$REC' ] && [ \$(restarts) = 1 ]"
+unset MM_AI_ENABLED MM_AI_DIR
 printf 'services: {}\n' >"$P/services.yaml"; unset MM_DOCKER
 printf 'client: acme\nname: shop\nproject: acme-shop\nshort: sh\nroot: %s\ntemplate_version: test\ncreated: test\n' "$P" >"$P/.mm-answers.yaml"
 check "mm user rm alice: her token goes with her account" bash -c "mm user rm alice >/dev/null && [ ! -e '$V/claude_token.alice.age' ]"

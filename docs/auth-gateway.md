@@ -125,7 +125,8 @@ subscription, never on the owner's (sy-8n4w).
   after a board change), and never sends a message to one.
 - **wake starts runs per person** (`mm config set wake.person_runs true`; off by default; in a box through the host, below): work on
   an item runs as its requester (who created it, else the first person who commented on it; the owner's chat bridge
-  is the owner), upkeep and background as the project's sponsor (its owner, `owner_name`). wake starts the lead through
+  is the owner), upkeep and background as the project's sponsor (its owner, `owner_name`); on the host only: in a box
+  the person comes from the host's own record of who asked, below. wake starts the lead through
   `mm run-as`, gives it only that person's items in its handover, and sends it only that person's share; an idle
   lead held by one person while only another person's work waits makes way (at most once per `WAKE_RESUME_MS` per
   role). A person with no token: no run, wake says so on the item once, and tries again later (the other people's work
@@ -134,25 +135,35 @@ subscription, never on the owner's (sy-8n4w).
 - **No token, no run:** a person without one gets "set your Claude token on the home page", and nothing starts. The
   owner's token is never used for anyone else. The owner without a personal token runs on the machine's own token
   (which is the owner's), as every lead does.
-- **In a box:** the token goes over `docker exec -i`'s stdin to bin/lead in the box; it never enters a box's files.
-  The run calls the model's own API, not mm.ai, so mm puts `api.anthropic.com` on the box's egress list when a
-  person's run starts there (the owner's answer, sy-q8fv; its proxy restarts once to read it), and takes it off once
-  none is left: the host's record of the box's person runs (`$MM_HOME/person-runs/<project>.json`, 0600, no token),
-  swept once a minute by mm cron (and at each `mm run-as`) against the box's own Paseo list; a run that does not start
-  takes it off at once. A box that declares `api.anthropic.com` itself (or the owner granted it) keeps it. While it is
-  there, that box's other agents can reach the model's API directly too, past mm.ai's check of server-side tools.
-- **A box's wake asks the host** (sy-9618): it can't reach mm or the vault, so with person runs on it asks on the box's
-  own mm.api socket (`/run/mm/api/api.sock`, the box's one way to the host): `GET /person-run` (on or off, and the
-  sponsor's name: a box can't read the machine's config), `POST /person-run {role, person, items, next}` (a run). The
-  host decides with the same rules as `mm run-as` (src/boxruns.ts): the box's own project only (the socket names it),
-  a role there (not a viewer), the person's own token (none: the same "set your Claude token" words, which wake puts on
-  the item), the token over `docker exec -i`'s stdin only, the box Paseo's worker label, the model's host on the box's
-  egress only while the run is there. A run a box asks for is never on the machine's own token, not even the owner's:
-  the owner needs a personal token too. 20 asks an hour per box (`MM_API_PERSON_RATE`), one start at a time. Off
-  (refused) unless `wake.person_runs` is on; mm.api then runs for it even with the project API off (its four calls are
-  refused then), and a box mounts the socket from its next `mm up`. The host trusts the box's word on who asked (it
-  checks the person is on the project and has a token): a box's agents can spend a member's token on their own
-  project's work, within the rate.
+- **In a box** (sy-otxx): the person's token never goes into a box. mm mints the run an mm.ai key of its own (kind
+  `person`: bound to the project and the person, ending by the host's clock after `wake.person_run_hours`, 4 as
+  shipped, 1 to 24) and hands it over `docker exec -i`'s stdin; the run calls the model through mm.ai (the box's
+  `ANTHROPIC_BASE_URL`), and mm.ai calls Anthropic's own API (never `ai.upstream`) with that person's token, opened
+  from the vault on the host at each call. Each call checks again: the key's time, the person's role (no viewer), a
+  token, and a live ask of theirs on the project; dropping the ask ends the key's calls at once. The box's egress never
+  gets the model's host. The run is labelled `run-expires=<when the key ends>`, and the box's wake deletes it then.
+  The host's record of the box's person runs (`$MM_HOME/person-runs/<project>.json`, 0600, no token, no key) is swept
+  by the host's clock only (mm cron, and each `mm run-as`); a run that does not start has its key revoked at once.
+  mm.ai off (`ai.enabled`): no person run in a box. The key is in the run's environment in the box (the box user can
+  read it), but it works only through that box's mm.ai socket, for that person's asks, until it ends.
+- **Who asked: the host's record, never the box's word** (sy-otxx): a person asks for runs on one item on the gateway's
+  own host, signed in ("Runs for you", `/s/runs`): the person is the session's, the project one where they hold a
+  role (not a viewer; never the system board), one person per item, for 7 days (they ask again, or drop it). The owner
+  hears each ask; `mm run-asks [project]` lists them, `mm run-asks <project> --drop <item>` drops one. The record:
+  `$MM_HOME/person-asks/<project>.json` (0600 in a 0700 folder).
+- **A box's wake asks the host** (sy-9618, sy-otxx): it can't reach mm or the vault, so with person runs on it asks
+  on the box's own mm.api socket (`/run/mm/api/api.sock`, the box's one way to the host): `GET /person-run` (on or
+  off, and the host's asks for this project: which item, whose), `POST /person-run {role, items, next}` (a run: item
+  ids only; a `person` in the body is refused). The host takes the person from its asks: every item in `items` and
+  `next` must be asked for, all by the same person; none (upkeep), or items nobody asked for, or two people's: no run,
+  and never the owner or an admin instead. Then the same rules as `mm run-as` (src/boxruns.ts): the box's own project
+  only (the socket names it), a role there (not a viewer), the person's own token (none: the same "set your Claude
+  token" words, which wake puts on the item), the box Paseo's worker label, the mm.ai key above. A box has no sponsor:
+  work nobody asked for on the host runs as a plain lead there (the box's own mm.ai key), as before person runs; wake
+  in a box never takes a person from the box's own journal. 20 asks an hour per box (`MM_API_PERSON_RATE`), counted in
+  mm.api's own file (`$MM_HOME/api/person-run-rate.json`, 0600, so a restart keeps the hour), one start at a time. Off
+  (refused) unless `wake.person_runs` is on in the config (no environment turns it on); mm.api then runs for it even
+  with the project API off (its four calls are refused then), and a box mounts the socket from its next `mm up`.
 - **The terms:** this follows Anthropic's "an end user signing in to the unmodified Claude Code binary with their own
   Claude subscription, including where a platform hosts Claude Code". The owner reads the terms
   (code.claude.com/docs/en/legal-and-compliance) and decides; this note is not legal advice.

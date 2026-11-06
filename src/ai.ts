@@ -9,6 +9,11 @@
 //   The store: $MM_HOME/ai/ai.db (0600, SQLite, WAL): keys (sha256 only), usage, budgets, notices sent.
 //   The upstream key: the machine input `ai-upstream-key` (a file, 0600), or the one `ai.upstream_key_input` names (only
 //   `claude-oauth-token` besides), read at each call, never logged or passed on.
+//   A person's run in a box (sy-otxx 2): a key of kind `person`, minted by mm run-as for that run only (src/runas.ts),
+//   bound to (project, person) and ending by the host's clock. Its calls go to Anthropic's own API (never ai.upstream,
+//   which may be another gateway) with that person's own Claude token, opened from the vault on the host at each call
+//   and never passed on. At each call the person must still hold a non-viewer role there, a token, and a live ask on the
+//   project (src/personasks.ts); else the call is refused. Never the machine's key for such a key.
 import { Database } from 'bun:sqlite'
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
@@ -18,6 +23,9 @@ import { servedBoxes } from './boxreg'
 import { type Config, getPath, loadConfig } from './config'
 import { DIRS } from './env'
 import { expand, machineInputs } from './inputs'
+import { asksOn } from './personasks'
+import { hasToken, roleOf, tokenName } from './persontoken'
+import * as vault from './vault'
 
 // MM_AI_DIR, MM_AI_UPSTREAM, MM_AI_UPSTREAM_KEY_FILE, MM_AI_UPSTREAM_AUTH and MM_AI_ENABLED are for tests on a live
 // machine (test/box.sh): a throwaway store, upstream, key and auth, with the machine's config untouched (a machine in
@@ -82,17 +90,21 @@ export function store(): Database {
   return d
 }
 const NAME = /^[a-z][a-z0-9-]{0,62}$/
-const check = (what: string, v: string, allowEmpty = false) => { if (!(allowEmpty && v === '') && !NAME.test(v)) throw new Error(`not a ${what} name: ${v}`); return v }
+const PERSON_NAME = /^[a-z][a-z0-9._-]{1,31}$/ // mm.auth's names (src/persontoken.ts)
+const check = (what: string, v: string, allowEmpty = false) => { if (!(allowEmpty && v === '') && !(what === 'person' ? PERSON_NAME : NAME).test(v)) throw new Error(`not a ${what} name: ${v}`); return v }
 
 /** A key for one project (and one person, or the project's own background work). The raw key is returned once;
  *  only its sha256 is kept. */
-export function mintKey(d: Database, project: string, o: { person?: string; kind?: 'run' | 'project'; ttlMs?: number } = {}) {
+export function mintKey(d: Database, project: string, o: { person?: string; kind?: 'run' | 'project' | 'person'; ttlMs?: number } = {}) {
   const person = check('person', o.person || '', true), kind = o.kind || (person ? 'run' : 'project')
+  if (kind === 'person' && !person) throw new Error('a person key names its person')
   const ttl = Math.min(Math.max(o.ttlMs ?? 8 * 3600e3, 60e3), 31 * 24 * 3600e3)
   const raw = `mmk_${randomBytes(24).toString('base64url')}`
   d.query('INSERT INTO ai_key (hash, project, person, kind, created, expires) VALUES (?, ?, ?, ?, ?, ?)').run(h(raw), check('project', project), person, kind, now(), now() + ttl)
-  return { key: raw, project, person, kind, expires: new Date(now() + ttl).toISOString() }
+  return { key: raw, hash: h(raw), project, person, kind, expires: new Date(now() + ttl).toISOString() }
 }
+/** One key ends now (by its sha256). */
+export const revokeKey = (d: Database, hash: string) => d.query('UPDATE ai_key SET revoked = 1 WHERE hash = ?').run(hash).changes
 export function revokeKeys(d: Database, project: string, kind?: string) {
   return d.query(`UPDATE ai_key SET revoked = 1 WHERE project = ? AND revoked = 0${kind ? ' AND kind = ?' : ''}`).run(...(kind ? [project, kind] : [project])).changes
 }
@@ -143,6 +155,24 @@ export function ownerOnly(k: { project: string; person: string }, owner: string,
   } catch { return 'the grants could not be read, so oauth mode refuses' }
   finally { db?.close() }
 }
+/** Why a person key's call may not go up now, or null (sy-otxx 2): the person's role (no viewer), a live ask on the
+ *  project (dropping it ends their runs' calls) and a token. */
+export function personRefusal(project: string, person: string): string | null {
+  const r = roleOf(person, project)
+  if (!r.role) return `${person} can't have a run on ${project}: ${r.why || 'no role there'}`
+  if (r.role === 'viewer') return `${person} is a viewer on ${project}: a viewer has no runs`
+  if (!asksOn(project, person)) return `${person} has no live ask for runs on ${project} on the host`
+  if (!hasToken(person)) return `${person} has no Claude token on the host`
+  return null
+}
+/** The person's token, opened from the vault for this call only (the tmpfs file is removed at once); '' if it can't be. */
+function personToken(person: string): string {
+  let f = ''
+  try { f = vault.openForRun(tokenName(person)); return readFileSync(f, 'utf8').split('\n')[0].trim() } catch { return '' }
+  finally { if (f) rmSync(f, { force: true }) }
+}
+/** Where a person key's calls go: Anthropic's own API, never ai.upstream (another gateway must not see a person's token). */
+const personUpstream = () => String(process.env.MM_AI_UPSTREAM || 'https://api.anthropic.com').replace(/\/+$/, '')
 const apiError = (status: number, type: string, message: string, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify({ type: 'error', error: { type, message: `mm.ai: ${message}` } }), { status, headers: { 'content-type': 'application/json', ...extra } })
 const PASS_HEADERS = ['content-type', 'accept', 'anthropic-version', 'anthropic-dangerous-direct-browser-access']
@@ -268,13 +298,24 @@ export async function serve() {
       log('warn', 'key refused', { box: project, key: raw ? h(raw).slice(0, 6) : undefined, why: !k ? 'unknown' : k.revoked ? 'revoked' : k.expires < now() ? 'expired' : `for ${k.project}` })
       return apiError(401, 'authentication_error', 'this key is not valid for this project (it may have expired)')
     }
-    if (upstreamAuth(cfg()) === 'oauth') {
-      const no = ownerOnly(k, String(getPath(cfg(), 'owner_name') ?? 'owner'))
-      if (no) { log('warn', 'oauth mode: not the owner\'s own use', { box: project, person: k.person || undefined, why: no }); return apiError(403, 'permission_error', no) }
+    const personKey = k.kind === 'person'
+    let key = ''
+    if (personKey) {
+      // a person's run (sy-otxx 2): their own token, never the machine's key; and the person still may, at this call
+      const no = personRefusal(project, k.person)
+      if (no) { log('warn', 'person key refused', { box: project, person: k.person, why: no }); return apiError(403, 'permission_error', no) }
+      key = personToken(k.person)
+      if (!key) { log('error', 'person key: the token could not be opened', { box: project, person: k.person }); return apiError(503, 'api_error', `${k.person}'s Claude token could not be opened on the host`) }
+    } else {
+      if (upstreamAuth(cfg()) === 'oauth') {
+        const no = ownerOnly(k, String(getPath(cfg(), 'owner_name') ?? 'owner'))
+        if (no) { log('warn', 'oauth mode: not the owner\'s own use', { box: project, person: k.person || undefined, why: no }); return apiError(403, 'permission_error', no) }
+      }
+      const { input, key: up, why: badInput } = upstreamKey()
+      if (badInput) { log('error', 'upstream key input refused', { why: badInput }); return apiError(503, 'api_error', `the machine's AI config is wrong: ${badInput}`) }
+      if (!up) { log('error', `no upstream key (mm fill ${input})`); return apiError(503, 'api_error', `the machine has no upstream key yet: the file of ${input} is missing or empty (the owner: mm fill ${input})`) }
+      key = up
     }
-    const { input, key, why: badInput } = upstreamKey()
-    if (badInput) { log('error', 'upstream key input refused', { why: badInput }); return apiError(503, 'api_error', `the machine's AI config is wrong: ${badInput}`) }
-    if (!key) { log('error', `no upstream key (mm fill ${input})`); return apiError(503, 'api_error', `the machine has no upstream key yet: the file of ${input} is missing or empty (the owner: mm fill ${input})`) }
     const bytes = req.method === 'POST' ? await req.arrayBuffer() : undefined
     let parsed: Record<string, unknown> = {}
     if (bytes) {
@@ -303,7 +344,7 @@ export async function serve() {
     const headers = new Headers()
     for (const n of PASS_HEADERS) { const v = req.headers.get(n); if (v) headers.set(n, v) }
     // the client's own authorization / x-api-key (the box's mm key) are not among the passed headers: only ours goes up
-    const auth = upstreamAuth(cfg())
+    const auth = personKey ? 'oauth' : upstreamAuth(cfg())
     let beta = betaHeader(req.headers.get('anthropic-beta'), serverOk); if (auth === 'oauth') beta = mergeBeta(beta, OAUTH_BETA)
     if (beta) headers.set('anthropic-beta', beta)
     if (auth === 'bearer' || auth === 'oauth') headers.set('authorization', `Bearer ${key}`); else headers.set('x-api-key', key)
@@ -315,7 +356,7 @@ export async function serve() {
     let released = false
     const release = () => { if (messages && !released) { released = true; inflight.set(project, Math.max(0, (inflight.get(project) || 1) - 1)) } }
     let up: Response
-    try { up = await fetch(`${upstream()}${path}${u.search}`, { method: req.method, headers, body, signal: req.signal }) }
+    try { up = await fetch(`${personKey ? personUpstream() : upstream()}${path}${u.search}`, { method: req.method, headers, body, signal: req.signal }) }
     catch (e) { release(); log('error', 'upstream unreachable', { box: project, error: (e as Error).name }); return apiError(502, 'api_error', 'the upstream did not answer') }
     const out = new Headers(); for (const [n, v] of up.headers) if (!/^(content-encoding|content-length|transfer-encoding|connection|set-cookie)$/i.test(n)) out.set(n, v)
     if (!messages || !up.ok || !up.body) { const b = await up.arrayBuffer(); release(); return new Response(b, { status: up.status, headers: out }) }
