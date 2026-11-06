@@ -116,9 +116,10 @@ try { G = JSON.parse(fs.readFileSync(path.join(P, 'governance.json'), 'utf8')) }
 // {brain} {projects} {mm}: the machine's folders, from mm (one-root boxes keep them under $MM_HOME)
 const D = dirs()
 // the folders ahead of /usr/bin in a lead's PATH (review sy-jm5 2): mm's from what the host knows (a run file that names
-// another folder is not followed), and no role may write a file into any of them, so nothing there shadows git or bd
+// another folder is not followed), and no role may write a file into any of them, so nothing there shadows git or bd.
+// ~/.bun/bin last: bun's own installer puts it there, and a worker that builds mm needs it (sy-asaw)
 const MM_DIR = MMS.includes(D.mm) ? D.mm : MMS[0]
-const PATH_FIRST = [path.join(P, 'bin'), path.join(MM_DIR, 'bin'), path.join(MM_DIR, 'npm', 'bin'), `${HOME}/.local/bin`, `${HOME}/.npm-global/bin`]
+const PATH_FIRST = [path.join(P, 'bin'), path.join(MM_DIR, 'bin'), path.join(MM_DIR, 'npm', 'bin'), `${HOME}/.local/bin`, `${HOME}/.npm-global/bin`, `${HOME}/.bun/bin`]
 // a project has no business in the brain (review sy-5ag): all of it is denied to every board except the system board,
 // whose review audits it and whose ops runs it (sy-qlkl). The system board is the one whose answers say
 // `profile: system` and that is not a box (the answers are read-only in a box), or the one inside the brain (the old
