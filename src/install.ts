@@ -1,6 +1,6 @@
 // Installers for the manifest's `install` kinds. Everything lands under ~/.mm except system packages.
 // Every download is checked against its published sha256 before use.
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { archNames, asRoot, DIRS, run, which } from './env'
 import type { Install } from './manifest'
@@ -35,6 +35,30 @@ function unpack(archive: Uint8Array, name: string, dest: string) {
   const r = run(['tar', flag, file, '-C', dest])
   rmSync(file, { force: true })
   if (!r.ok) throw new Error(`tar ${name}: ${r.err.trim()}`)
+}
+
+/** npm, kept inside $MM_HOME: its cache (and the logs in it) under npm/, no update check. */
+export const npmEnv = () => ({ npm_config_cache: join(DIRS.npm, '.cache'), npm_config_update_notifier: 'false' })
+
+const CLAUDE_DIST = 'https://downloads.claude.ai/claude-code-releases'
+/**
+ * Claude Code, pinned, into $MM_HOME/tools/claude/<version> (linked into bin/): the release's own binary, checked
+ * against the sha256 in that release's manifest, the way its install script checks it. Not the install script: that one
+ * takes the latest and installs into ~/.local/bin and ~/.local/share/claude (sy-8w1). `base`: a test's server.
+ */
+export async function claudeDist(version: string, base = CLAUDE_DIST): Promise<string> {
+  const musl = existsSync('/lib/libc.musl-x86_64.so.1') || existsSync('/lib/libc.musl-aarch64.so.1')
+  const platform = `linux-${archNames.node}${musl ? '-musl' : ''}`
+  let want: string | undefined
+  try { want = JSON.parse(new TextDecoder().decode(await download(`${base}/${version}/manifest.json`)))?.platforms?.[platform]?.checksum } catch {}
+  if (!want || !/^[a-f0-9]{64}$/.test(want)) throw new Error(`no published checksum for claude ${version} ${platform}`)
+  const dest = join(DIRS.tools, 'claude', version), bin = join(dest, 'claude'), part = `${bin}.part-${process.pid}`
+  const body = await verified(`${base}/${version}/${platform}/claude`, want)
+  mkdirSync(dest, { recursive: true })
+  writeFileSync(part, body, { mode: 0o755 })
+  renameSync(part, bin)
+  link(bin, 'claude')
+  return `claude ${version} -> ~/.mm/tools/claude/${version}`
 }
 
 /** Package manager on this machine. */
@@ -83,12 +107,14 @@ export async function install(name: string, spec: Install): Promise<string> {
       if (!which('npm')) throw new Error('npm is needed first (node)')
       mkdirSync(DIRS.npm, { recursive: true })
       const pkg = spec.version ? `${spec.package}@${spec.version}` : spec.package
-      const r = run(['npm', 'install', '-g', '--prefix', DIRS.npm, '--no-audit', '--no-fund', pkg], { timeoutMs: 600_000 })
+      // npm's cache and logs (~/.npm by default) and its update check stay out of the home folder (sy-8w1)
+      const r = run(['npm', 'install', '-g', '--prefix', DIRS.npm, '--no-audit', '--no-fund', pkg], { timeoutMs: 600_000, env: npmEnv() })
       if (!r.ok) throw new Error(`npm install ${pkg}: ${r.err.trim().split('\n').slice(-2).join(' ')}`)
       const nbin = join(DIRS.npm, 'bin')
       for (const b of existsSync(nbin) ? readdirSync(nbin) : []) link(join(nbin, b), b)
       return `${pkg} -> ~/.mm/npm`
     }
+    case 'claude-dist': return await claudeDist(spec.version)
     case 'script': {
       const body = await download(spec.url)
       const file = join(DIRS.mm, `.install-${name}.sh`)
