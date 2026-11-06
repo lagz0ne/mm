@@ -45,7 +45,11 @@ const NOW = Number(E.SUPERVISOR_NOW) || Date.now(), now = new Date(NOW).toISOStr
 const SELF = projectName()
 
 const run = (cmd, args, t = 60000) => execFileSync(cmd, args, { encoding: 'utf8', timeout: t, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 << 20 })
-const git = (dir, args) => run('git', ['--no-optional-locks', '-C', dir, ...args])
+// host git, never steered by what a repo's own config or a box chose (review sy-futg): no fsmonitor command, no hooks,
+// no replace objects, and no index lock
+const GIT_ENV = { ...E, GIT_NO_REPLACE_OBJECTS: '1', GIT_TERMINAL_PROMPT: '0' }
+const git = (dir, args) => execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '--no-optional-locks', '-C', dir, ...args],
+  { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 << 20, env: GIT_ENV })
 const expand = (p) => p.replace(/^~(?=\/|$)/, HOME)
 const tilde = (p) => (p === HOME || p.startsWith(`${HOME}/`) ? `~${p.slice(HOME.length)}` : p)
 const ms = (t) => Date.parse(t) || 0
@@ -114,7 +118,12 @@ const leads = once(async () => {
 let listedCache = null
 const listed = () => (listedCache ||= JSON.parse(run(MM, ['ls', '-o', 'json'])).filter((p) => !p.throwaway))
 // The git repos watched: the mm repo (~/mm: where the template puts it) and every project's own repo (mm ls), plus config.
-const repos = once(async () => [...new Set([path.join(HOME, 'mm'), ...(CONF.repos || []).map(expand), ...listed().map((p) => expand(p.root))])].filter((d) => fs.existsSync(d)))
+// A box project's repos are never read here (review sy-futg, the sy-b15.6 rule): the box can write their .git, so host
+// git there could run what the box chose. A box is known from the host's side: mm keeps <mm home>/box/<project>/ for
+// it, or its answers (read-only in the box) say box: true. If a box's dirty check is wanted, it runs in the box.
+const isBox = (p) => { if (fs.existsSync(path.join(dirs().mm, 'box', String(p.project)))) return true
+  try { return /^box:\s*true\s*$/m.test(fs.readFileSync(path.join(expand(p.root), '.mm-answers.yaml'), 'utf8')) } catch { return false } }
+const repos = once(async () => [...new Set([path.join(HOME, 'mm'), ...(CONF.repos || []).map(expand), ...listed().filter((p) => !isBox(p)).map((p) => expand(p.root))])].filter((d) => fs.existsSync(d)))
 // Commits naming an item id, newest time per id, in the watched repos and the brain (any branch, recent only).
 const commits = once(async () => {
   const last = {}, since = Math.floor((NOW - MIN.stall * 60000) / 1000)

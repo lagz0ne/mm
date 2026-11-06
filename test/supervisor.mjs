@@ -50,7 +50,19 @@ git(MMR, ['worktree', 'add', '-q', '-b', 'feat', WT])
 write(path.join(WT, 'src.ts'), 'half done\n', clock - 60 * MIN) // left an hour ago: dirty at once
 write(path.join(P2, 'junk'), 'x\n', clock - 60 * MIN) // a throwaway project: never reported
 write(path.join(P1, 'fresh'), 'x\n', clock) // being worked on now: not yet
-fs.writeFileSync(path.join(T, 'ls.json'), JSON.stringify([{ project: 'p1', root: P1 }, { project: 'p2', root: P2, throwaway: true }, { project: 'sysqa', root: SYS }]))
+// review sy-futg: box projects are never read (p3: its answers say box; p4: mm keeps a host folder for it), and no repo's
+// own config runs anything (p5, a clean host project). Each repo's core.fsmonitor is a trap that writes a canary file.
+const P3 = path.join(T, 'p3'), P4 = path.join(T, 'p4'), P5 = path.join(T, 'p5'), canary = (p) => path.join(T, `ran-${path.basename(p)}`)
+for (const p of [P3, P4, P5]) {
+  repo(p)
+  fs.writeFileSync(path.join(T, `trap-${path.basename(p)}`), `#!/bin/sh\necho ran >"${canary(p)}"\n`, { mode: 0o755 })
+  git(p, ['config', 'core.fsmonitor', path.join(T, `trap-${path.basename(p)}`)])
+}
+fs.writeFileSync(path.join(P3, '.mm-answers.yaml'), 'project: p3\nbox: true\n'); touch(path.join(P3, '.mm-answers.yaml'), clock - 60 * MIN)
+write(path.join(P3, 'boxjunk'), 'x\n', clock - 60 * MIN); write(path.join(P4, 'boxjunk'), 'x\n', clock - 60 * MIN) // dirty and old: would be found if read
+fs.mkdirSync(path.join(HOME, '.mm', 'box', 'p4'), { recursive: true })
+fs.writeFileSync(path.join(T, 'ls.json'), JSON.stringify([{ project: 'p1', root: P1 }, { project: 'p2', root: P2, throwaway: true }, { project: 'sysqa', root: SYS },
+  { project: 'p3', root: P3 }, { project: 'p4', root: P4 }, { project: 'p5', root: P5 }]))
 git(SYS, ['init', '-q', '-b', 'main']) // the board's own repo: everything it writes is ignored, so it stays clean
 fs.writeFileSync(path.join(SYS, '.gitignore'), '/*\n!/.gitignore\n'); git(SYS, ['add', '.gitignore']); git(SYS, ['commit', '-qm', 'init'], clock - 600 * MIN)
 
@@ -124,6 +136,8 @@ ok(`open: ${DIRTY} (not p1: touched now; not p2: throwaway; not the board's own 
 const D = openOf(DIRTY)
 ok('item for ops, label supervisor, task, P2, by watchdog', D && D.assignee === 'ops' && D.labels.join() === 'supervisor' && D.priority === 2 && events.find((e) => e.issue_id === D.id).actor === 'watchdog')
 ok('it names the file', D && D.description.includes('src.ts') && D.description.includes('feat'))
+ok('box projects are never read: no dirty finding for p3 (answers box) or p4 (host box folder) (review sy-futg)', !openKeys().includes('p3') && !openKeys().includes('p4'))
+ok('no repo config ran: no core.fsmonitor command in p3, p4 or p5 (review sy-futg)', [P3, P4, P5].every((p) => !fs.existsSync(canary(p))))
 
 step('run 2 (+12 min): handoff and idle')
 clock = T0 + 12 * MIN
