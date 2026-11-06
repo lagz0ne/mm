@@ -22,6 +22,13 @@ export function obsEndpoints() {
   }
 }
 
+/**
+ * How process-compose writes every mm service's log file (namespace mm; sy-7e99). Without it, process-compose buffers
+ * the file (4 KiB, so a quiet service's lines stay in its memory and never reach the shipper) and opens it truncated
+ * at every start (the lines before a restart are gone). Flush each line; rotation also makes it append.
+ */
+export const MM_LOG_CONFIG = { add_timestamp: true, flush_each_line: true, rotation: { max_size_mb: 20, max_backups: 2 } }
+
 /** Process-compose entries for the stack and the shipper (namespace mm). */
 export function obsProcesses(): Record<string, unknown> {
   if (!obsInstalled()) return {}
@@ -31,7 +38,7 @@ export function obsProcesses(): Record<string, unknown> {
   writeFileSync(scrape, `# Written by mm. VictoriaMetrics scrapes the stack itself; engine services push.\nscrape_configs:\n  - job_name: victoria\n    scrape_interval: 30s\n    static_configs:\n      - targets: ["127.0.0.1:${p.metrics}", "127.0.0.1:${p.logs}", "127.0.0.1:${p.traces}"]\n`)
   const svc = (name: string, cmd: string, port: number) => ({
     namespace: 'mm', command: cmd, environment: env, log_location: join(DIRS.pc, `${name}.log`),
-    log_configuration: { add_timestamp: true, flush_each_line: true, rotation: { max_size_mb: 20, max_backups: 2 } },
+    log_configuration: MM_LOG_CONFIG,
     availability: { restart: 'always', backoff_seconds: 3 },
     readiness_probe: { exec: { command: `curl -sf -o /dev/null --max-time 2 http://127.0.0.1:${port}/health` }, period_seconds: 5, failure_threshold: 20 },
   })
@@ -40,7 +47,7 @@ export function obsProcesses(): Record<string, unknown> {
     'mm.metrics': svc('metrics', `victoria-metrics -httpListenAddr=127.0.0.1:${p.metrics} -storageDataPath=${join(DATA, 'metrics')} -retentionPeriod=90d -promscrape.config=${scrape} -loggerFormat=json`, p.metrics),
     'mm.logs': svc('logs', `victoria-logs -httpListenAddr=127.0.0.1:${p.logs} -storageDataPath=${join(DATA, 'logs')} -retentionPeriod=30d -retention.maxDiskSpaceUsageBytes=20GiB -loggerFormat=json`, p.logs),
     'mm.traces': svc('traces', `victoria-traces -httpListenAddr=127.0.0.1:${p.traces} -storageDataPath=${join(DATA, 'traces')} -retentionPeriod=14d -retention.maxDiskSpaceUsageBytes=20GiB -loggerFormat=json`, p.traces),
-    'mm.ship': { namespace: 'mm', command: `${mm} ship`, environment: env, log_location: join(DIRS.pc, 'ship.log'),
+    'mm.ship': { namespace: 'mm', command: `${mm} ship`, environment: env, log_location: join(DIRS.pc, 'ship.log'), log_configuration: MM_LOG_CONFIG,
       availability: { restart: 'always', backoff_seconds: 5 }, depends_on: { 'mm.logs': { condition: 'process_healthy' } } },
   }
 }

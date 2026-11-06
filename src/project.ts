@@ -216,6 +216,9 @@ export function resolve(root: string) {
 }
 
 type SvcResolved = ReturnType<typeof resolve>['services'][string]
+/** How process-compose writes a project process's log file: each line at once, appended (rotation), so the shipper
+ *  sees it (sy-7e99: without it, the file is buffered and truncated at each start). */
+export const PROJECT_LOG_CONFIG = { add_timestamp: true, timestamp_format: '2006-01-02T15:04:05.000Z07:00', flush_each_line: true, rotation: { max_size_mb: 20, max_backups: 3 } }
 /** One service as a process-compose process, on the host or in a project box. Host: secrets through `mm vault run`.
  *  Box (secretsDir): mm isn't in the box, so the service gets <NAME>_FILE paths in the read-only secrets mount. */
 export function serviceProcess(root: string, project: string, n: string, s: SvcResolved, services: Record<string, SvcResolved>,
@@ -233,7 +236,7 @@ export function serviceProcess(root: string, project: string, n: string, s: SvcR
     namespace: project, command: cmd, working_dir: s.workdir || root,
     environment: Object.entries({ ...o.env, MM_SERVICE: n, ...files, ...s.env }).filter(([, v]) => v !== undefined).map(([k, v]) => `${k}=${v}`),
     log_location: join(root, '.run', 'logs', `${n}.log`),
-    log_configuration: { add_timestamp: true, timestamp_format: '2006-01-02T15:04:05.000Z07:00', flush_each_line: true, rotation: { max_size_mb: 20, max_backups: 3 } },
+    log_configuration: PROJECT_LOG_CONFIG,
     availability: { restart: s.restart === 'on_failure' ? 'on_failure' : 'always', backoff_seconds: 3 },
     ...(probe ? { readiness_probe: { ...probe, initial_delay_seconds: 1, period_seconds: 3, timeout_seconds: 4, failure_threshold: 20 } } : {}),
     // hung (running, not answering) for ~1 min: the manager restarts it (health only reports)
@@ -513,7 +516,7 @@ export function up(root: string): Step[] {
     if (hold) { held_back.push(`${n}-public`); continue }
     processes[`${a.project}.${n}-public`] = {
       namespace: a.project, command: `${pdeath}socat TCP-LISTEN:${port},bind=${bind},reuseaddr,fork TCP:127.0.0.1:${port}`, working_dir: root,
-      log_location: join(root, '.run', 'logs', `${n}-public.log`),
+      log_location: join(root, '.run', 'logs', `${n}-public.log`), log_configuration: PROJECT_LOG_CONFIG,
       // no depends_on: loaded into a running process manager, a dependent can wait for a 'started' event that has
       // already passed (it stays Pending); the forwarder needs nothing up to listen, connections just fail until then
       availability: { restart: 'always', backoff_seconds: 3 },
