@@ -45,6 +45,9 @@ const OWNER_ONLY = ['Bash(mm user*)', 'Bash(mm grant*)', 'Bash(mm token*)', 'Bas
   ...MMS.flatMap((m) => ['auth', 'paseo', 'ai', 'api'].flatMap((d) => [`Read(/${m}/${d}/**)`, `Edit(/${m}/${d}/**)`])),
   ...MMS.map((m) => `Bash(*${m}/api/*)`),
   `Read(/${HOME}/.config/secrets/ai-upstream.key)`, `Edit(/${HOME}/.config/secrets/ai-upstream.key)`,
+  // who may ride the owner's subscription in oauth mode is the owner's to say (ai.owner_personas, sy-b15.10): its key in
+  // any command, and the Edit tool on mm's config file (mm config set stays: it refuses that key in an agent's shell)
+  'Bash(*owner_personas*)', ...MMS.map((m) => `Edit(/${m}/config.yaml)`),
   // the vault's opener and its key maker (review sy-uvgq): `vault run` opens any project's secrets and runs any command
   // without naming a path; `vault init` would replace the machine's key. The leading * catches ~/.mm/bin/mm, env … mm,
   // timeout … mm. `mm vault ls|check` stay free.

@@ -22,6 +22,7 @@ import { betterAuth } from 'better-auth'
 import { getMigrations } from 'better-auth/db/migration'
 import { admin, bearer, magicLink, organization } from 'better-auth/plugins'
 import { createAccessControl } from 'better-auth/plugins/access'
+import { ownerPersonas } from './ai'
 import { granted, grantedProjects } from './apistate'
 import { getPath, loadConfig } from './config'
 import { expand, machineInputs } from './inputs'
@@ -473,7 +474,8 @@ export async function gateway() {
     }
     if (u.pathname === '/user/ls') {
       const rows = db.query('SELECT id, name, role, createdAt FROM user ORDER BY name').all() as { id: string; name: string; role?: string; createdAt: string }[]
-      return json(rows.map((x) => ({ name: x.name, owner: x.role === 'admin',
+      const personas = ownerPersonas() // the owner's own persona accounts (ai.owner_personas): they may use oauth mode
+      return json(rows.map((x) => ({ name: x.name, owner: x.role === 'admin', persona: x.role !== 'admin' && personas.has(x.name),
         grants: x.role === 'admin' ? 'owner (every project)' : (db.query('SELECT o.slug AS p, m.role AS r FROM member m JOIN organization o ON o.id = m.organizationId WHERE m.userId = ? ORDER BY o.slug').all(x.id) as { p: string; r: string }[]).map((g) => `${g.p}:${g.r}`).join(', '),
         sessions: (db.query('SELECT COUNT(*) AS n FROM session WHERE userId = ? AND expiresAt > ?').get(x.id, new Date().toISOString()) as { n: number }).n,
         last_signin: (db.query('SELECT createdAt AS t, ipAddress AS ip FROM session WHERE userId = ? ORDER BY createdAt DESC LIMIT 1').get(x.id) as { t: string; ip: string } | null)?.t || null,

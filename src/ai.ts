@@ -119,18 +119,27 @@ export function report(d: Database, since = monthStart()) {
 // ---------- the gateway ----------
 type KeyRow = { project: string; person: string; kind: string; expires: number; revoked: number }
 
+/** The accounts the owner marked as their own personas (`ai.owner_personas` in mm's config: a list, or names split by
+ *  commas or spaces; set only by the owner). Names that aren't account names are dropped. */
+export function ownerPersonas(cfg: Record<string, unknown> = loadConfig()): Set<string> {
+  const v = getPath(cfg, 'ai.owner_personas'), list = Array.isArray(v) ? v.map(String) : String(v ?? '').split(/[\s,]+/)
+  return new Set(list.map((s) => s.trim()).filter((s) => /^[a-z][a-z0-9._-]{1,31}$/.test(s)))
+}
+
 /** Oauth mode carries the machine owner's own subscription, which its terms keep to the owner's own use (review
- *  sy-b15.10): only the owner's own run, or a project's background key, and only for a project where nobody but the
- *  owner holds a role (mm.auth's grants). The reason it is refused, or null. Fails closed: grants it can't read refuse. */
-export function ownerOnly(k: { project: string; person: string }, owner: string, accounts = join(DIRS.mm, 'auth', 'accounts.db')): string | null {
-  if (k.person && k.person !== owner) return `a run for ${k.person}: in oauth mode only the owner's own runs may call`
+ *  sy-b15.10): only a run of the owner or of one of the owner's personas (ai.owner_personas: accounts the owner uses to
+ *  emulate users), or a project's background key, and only for a project where nobody but the owner and those personas
+ *  holds a role (mm.auth's grants). The reason it is refused, or null. Fails closed: grants it can't read refuse. */
+export function ownerOnly(k: { project: string; person: string }, owner: string, personas: Set<string> = new Set(), accounts = join(DIRS.mm, 'auth', 'accounts.db')): string | null {
+  if (k.person && k.person !== owner && !personas.has(k.person)) return `a run for ${k.person}: in oauth mode only the owner's own runs (and the owner's personas, ai.owner_personas) may call`
   if (!existsSync(accounts)) return null                          // no gateway on this machine: no grants to anyone
   let db: Database | undefined
   try {
     db = new Database(accounts, { readonly: true })
-    const r = db.query(`SELECT COUNT(*) AS n FROM member m JOIN organization o ON o.id = m.organizationId JOIN user u ON u.id = m.userId
-      WHERE o.slug = ? AND COALESCE(u.role, '') != 'admin' AND COALESCE(u.banned, 0) = 0`).get(k.project) as { n: number }
-    return r.n > 0 ? `${k.project} has ${r.n} other ${r.n === 1 ? 'person' : 'people'} with a role: in oauth mode only a project of the owner alone may call` : null
+    const rows = db.query(`SELECT u.name AS name FROM member m JOIN organization o ON o.id = m.organizationId JOIN user u ON u.id = m.userId
+      WHERE o.slug = ? AND COALESCE(u.role, '') != 'admin' AND COALESCE(u.banned, 0) = 0`).all(k.project) as { name: string }[]
+    const others = rows.filter((r) => !personas.has(r.name)).length
+    return others > 0 ? `${k.project} has ${others} other ${others === 1 ? 'person' : 'people'} with a role (not the owner's personas): in oauth mode only a project of the owner alone may call` : null
   } catch { return 'the grants could not be read, so oauth mode refuses' }
   finally { db?.close() }
 }
@@ -260,7 +269,7 @@ export async function serve() {
       return apiError(401, 'authentication_error', 'this key is not valid for this project (it may have expired)')
     }
     if (String(getPath(cfg(), 'ai.upstream_auth') || '') === 'oauth') {
-      const no = ownerOnly(k, String(getPath(cfg(), 'owner_name') ?? 'owner'))
+      const no = ownerOnly(k, String(getPath(cfg(), 'owner_name') ?? 'owner'), ownerPersonas(cfg()))
       if (no) { log('warn', 'oauth mode: not the owner\'s own use', { box: project, person: k.person || undefined, why: no }); return apiError(403, 'permission_error', no) }
     }
     const { input, key, why: badInput } = upstreamKey()
