@@ -31,12 +31,13 @@ board() { # <root> <client> <name> <project> <profile> <with code?>
 #!/bin/sh
 set -eu
 P=$(cd "$(dirname "$0")/.." && pwd); D=$BACKUP_DIR/$(date -u +%Y-%m-%dT%H%MZ); mkdir -p "$D/board.dolt"
+[ ! -e "$P/.fail-backup" ] || { echo "bin/doop-run: Error response from daemon: container mm-doop-x is restarting" >&2; exit 1; }
 cp "$P/.board-state" "$D/board.dolt/data"; cp "$P/.board-state" "$D/board.jsonl"
 git -C "$P" bundle create -q "$D/config.bundle" --all
 [ ! -d "$P/code/.git" ] || git -C "$P/code" bundle create -q "$D/code.bundle" --all
 echo "backup $D: 1 items"
 EOF
-  chmod +x "$P/bin/backup"; echo "$M_BOARD $4" >"$P/.board-state"; printf '.board-state\n' >"$P/.gitignore"
+  chmod +x "$P/bin/backup"; echo "$M_BOARD $4" >"$P/.board-state"; printf '.board-state\n.fail-backup\n' >"$P/.gitignore"
   [ "$4" = system ] || echo '{"required":[{"name":"API_KEY","for":"app"}],"optional":[]}' >"$P/secrets.json"
   git -C "$P" init -q && git -C "$P" add -A && git -C "$P" commit -qm config
   if [ "$6" = 1 ]; then mkdir -p "$P/code" && echo "$M_CODE" >"$P/code/app.txt" && git -C "$P/code" init -q && git -C "$P/code" add -A && git -C "$P/code" commit -qm code; fi
@@ -86,6 +87,25 @@ check "nothing changed: no commit" test "$(heads)" = "$H1"
 echo more >>"$MM_HOME/brain/memory/fact.md"; git -C "$MM_HOME/brain" commit -qam more
 mm sync >>"$LOG" 2>&1
 check "brain changed: only its file and MANIFEST in the commit" test "$(git -C "$R" show --name-only --format= main | tr '\n' ' ')" = "MANIFEST brain/repo.bundle.age "
+
+echo "== one project's backup fails (sy-bey8)"
+SH="$MM_HOME/projects/acme/shop"; blobs() { git -C "$R" ls-tree main projects/acme/shop/ | awk '{print $3}' | tr '\n' ' '; }
+B1=$(blobs); H5=$(heads)
+echo more >>"$MM_HOME/system/.board-state"; echo more >>"$SH/.board-state"
+echo more >>"$SH/code/app.txt"; git -C "$SH/code" commit -qam more   # its code changed too: a new code.bundle must not go in alone
+touch "$SH/.fail-backup"
+mm sync -o json >"$T/fail.json" 2>>"$LOG"; RC=$?
+check "the run exits non-zero" [ "$RC" != 0 ]
+check "...after pushing the others: the system board's new backup is in mastermind" bash -c "[ \"\$(git -C '$R' rev-parse main)\" != '$H5' ] && git -C '$R' show --name-only --format= main | grep -qx system/board.tar.age && [ \"\$(git -C '$CK' rev-parse HEAD)\" = \"\$(git -C '$R' rev-parse main)\" ]"
+check "the failed project's files are as they were (none resealed, not its new code alone)" test "$(blobs)" = "$B1"
+check "the report names it, with the one-line reason, and says mastermind keeps its last backup" jq -e '[.[] | select(.status == "fail" and .step == "backup acme-shop" and (.detail | test("bin/backup failed: .*is restarting.*mastermind keeps its last backup")))] | length == 1' "$T/fail.json"
+check "...and ends with which boards were not backed up" jq -e '.[-1].step == "failed" and .[-1].status == "fail" and (.[-1].detail | test("not backed up: acme-shop"))' "$T/fail.json"
+check "...the others' steps are ok (the system board backed up, pushed)" jq -e '([.[] | select(.step == "backup system" and .status == "ok")] | length == 1) and ([.[] | select(.step == "push" and .status == "ok")] | length == 1)' "$T/fail.json"
+check "the checkout is clean, no staged file left" bash -c "[ -z \"\$(git -C '$CK' status --porcelain)\" ] && ! find '$CK' -name '*.mm-new*' | grep -q ."
+rm -f "$SH/.fail-backup"
+mm sync >>"$LOG" 2>&1; RC=$?
+check "it works again: exit 0, the project's board and code are sealed again" bash -c "[ $RC = 0 ] && git -C '$R' show --name-only --format= main | grep -qx projects/acme/shop/board.tar.age && git -C '$R' show --name-only --format= main | grep -qx projects/acme/shop/code.bundle.age"
+check "...and its new code is the one in mastermind" bash -c "age -d -i '$T/recovery.key' '$CK/projects/acme/shop/code.bundle.age' >'$T/c2.bundle' && git clone -q '$T/c2.bundle' '$T/c2' && tail -1 '$T/c2/app.txt' | grep -qx more"
 
 echo '== refusals'
 H2=$(heads); printf 'AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ\n' >"$MM_HOME/vault/stray.age"; chmod 600 "$MM_HOME/vault/stray.age"

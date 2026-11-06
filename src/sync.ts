@@ -2,7 +2,7 @@
 // the vault's two recipients, except the vault's own exportable files (already sealed), MANIFEST and a README.
 // The checkout lives at $MM_HOME/state/mastermind. Plaintext never lands there: each file is sealed from memory.
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { getPath, held, loadConfig, saveConfig, setPath } from './config'
 import { DIRS, HOME, run } from './env'
@@ -94,7 +94,9 @@ const refsOf = (dir: string, box?: Board) => box
   ? sha(run(jobArgs(box.root, 'refs', `git -C '${dir}' for-each-ref --format='%(objectname) %(refname)'; git -C '${dir}' symbolic-ref -q HEAD`, {})).out)
   : sha(run(['git', '-C', dir, 'for-each-ref', '--format=%(objectname) %(refname)']).out + run(['git', '-C', dir, 'symbolic-ref', '-q', 'HEAD']).out)
 
-type Item = { path: string; from: string; fp: () => string; bytes: () => Buffer | Uint8Array; plain?: boolean }
+/** board: the board whose backup it comes from. One board's failure keeps all of that board's files as they were in
+ *  mastermind (never half a new one), and the others still go (sy-bey8). Items without a board fail the whole run. */
+type Item = { path: string; from: string; fp: () => string; bytes: () => Buffer | Uint8Array; plain?: boolean; board?: string }
 /** What mastermind should hold now. Board items need a fresh backup (made lazily, once per board). */
 function plan(work: string, steps: Step[]): Item[] {
   const items: Item[] = []
@@ -126,11 +128,12 @@ function plan(work: string, steps: Step[]): Item[] {
       steps.push({ step: `backup ${b.id}`, status: 'ok', detail: r.out.trim().split('\n').pop()?.replace(work, '<work>') || 'done' })
       return (bk = join(dest, made))
     }
-    items.push({ path: `${b.dir}/config.bundle.age`, from: `${tl(b.root)} (config repo)`, fp: () => refsOf(b.root, b.box ? b : undefined), bytes: () => readFileSync(join(backup(), 'config.bundle')) })
+    const board = b.id
+    items.push({ board, path: `${b.dir}/config.bundle.age`, from: `${tl(b.root)} (config repo)`, fp: () => refsOf(b.root, b.box ? b : undefined), bytes: () => readFileSync(join(backup(), 'config.bundle')) })
     if (existsSync(join(b.root, 'code', '.git')))
-      items.push({ path: `${b.dir}/code.bundle.age`, from: `${tl(join(b.root, 'code'))} (product repo)`, fp: () => refsOf(join(b.root, 'code'), b.box ? b : undefined), bytes: () => readFileSync(join(backup(), 'code.bundle')) })
+      items.push({ board, path: `${b.dir}/code.bundle.age`, from: `${tl(join(b.root, 'code'))} (product repo)`, fp: () => refsOf(join(b.root, 'code'), b.box ? b : undefined), bytes: () => readFileSync(join(backup(), 'code.bundle')) })
     items.push({
-      path: `${b.dir}/board.tar.age`, from: `${b.id} board (Dolt backup + JSONL + releases)`,
+      board, path: `${b.dir}/board.tar.age`, from: `${b.id} board (Dolt backup + JSONL + releases)`,
       fp: () => { const d = backup(); return sha(readFileSync(join(d, 'board.jsonl')) + (existsSync(join(d, 'releases')) ? readFileSync(join(d, 'releases'), 'utf8') : '')) },
       bytes: () => { const d = backup(); return tarOf(d, ['board.dolt', 'board.jsonl', ...(existsSync(join(d, 'releases')) ? ['releases'] : [])]) },
     })
@@ -139,7 +142,7 @@ function plan(work: string, steps: Step[]): Item[] {
     if (b.boxish) {
       let rec: Buffer | undefined
       const bytes = () => (rec ??= Buffer.from(JSON.stringify(boxRecord(b.root), null, 1)))
-      items.push({ path: `${b.dir}/box.json.age`, from: `${b.id}: the host's record of a box (its privilege files, engine seal, template base)`, fp: () => sha(bytes()), bytes })
+      items.push({ board, path: `${b.dir}/box.json.age`, from: `${b.id}: the host's record of a box (its privilege files, engine seal, template base)`, fp: () => sha(bytes()), bytes })
     }
   }
   return items
@@ -177,7 +180,8 @@ export type SyncOpts = { dryRun?: boolean; push?: boolean; fresh?: boolean; forc
 /**
  * Bring mastermind up to date: seal what changed since the last sync, drop what's gone (an archived project), write
  * MANIFEST, commit, push. A file is resealed only when its source changed (age output differs on every run, so
- * resealing everything would grow the repo by a full copy each hour).
+ * resealing everything would grow the repo by a full copy each hour). A board whose backup fails keeps its last files
+ * there; the rest is committed and pushed, then the run fails, naming it (sy-bey8).
  */
 export function sync(o: SyncOpts = {}): { steps: Step[]; ok: boolean; commit?: string } {
   const steps: Step[] = [], fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return { steps, ok: false } }
@@ -194,6 +198,12 @@ export function sync(o: SyncOpts = {}): { steps: Step[]; ok: boolean; commit?: s
   chmodSync(work, 0o700)
   const start = git(['symbolic-ref', '-q', '--short', 'HEAD']).out.trim() || branch()
   const undo = () => { if (o.fresh) git(['checkout', '-qf', start]); git(['reset', '-q', '--hard']); git(['clean', '-fdq']) } // back to the last commit
+  // boards whose backup failed: the rest is committed and pushed, then the run says which and is not ok (sy-bey8)
+  const failed: string[] = []
+  const done = (r: { ok: boolean; commit?: string }) => {
+    if (failed.length) steps.push({ step: 'failed', status: 'fail', detail: `not backed up: ${failed.join(', ')} (see backup <board> above; the rest went in)` })
+    return { steps, ...r, ok: r.ok && !failed.length }
+  }
   try {
     const items = plan(work, steps)
     if (o.dryRun) { for (const i of items) steps.push({ step: 'plan', status: 'ok', detail: `${i.path} <- ${i.from}` }); return { steps, ok: true } }
@@ -208,13 +218,36 @@ export function sync(o: SyncOpts = {}): { steps: Step[]; ok: boolean; commit?: s
     const want = new Set(items.map((i) => i.path).concat('MANIFEST', 'README.md')), next: Record<string, string> = {}
     for (const f of files()) if (!want.has(f)) { rmSync(join(CHECKOUT, f)); steps.push({ step: 'drop', status: 'ok', detail: f }) }
     let sealed = 0, kept = 0
-    for (const i of items) {
-      const out = join(CHECKOUT, i.path), fp = i.fp()
-      next[i.path] = fp
-      if (prev[i.path] === fp && existsSync(out)) { kept++; continue }
-      mkdirSync(dirname(out), { recursive: true })
-      if (i.plain) writeFileSync(out, i.bytes(), { mode: 0o600 }); else vault.sealTo(i.bytes(), out)
-      sealed++
+    // a board's items go together (sy-bey8): each is sealed to a staged file, and they move in only when all of that
+    // board's made it. A board whose backup fails keeps what mastermind has of it; the other boards still go.
+    const groups: Item[][] = []
+    for (const i of items) { const g = groups[groups.length - 1]; if (i.board && g?.[0].board === i.board) g.push(i); else groups.push([i]) }
+    for (const g of groups) {
+      const board = g[0].board, fps: Record<string, string> = {}, staged: [to: string, out: string][] = []
+      let k = 0
+      try {
+        for (const i of g) {
+          const out = join(CHECKOUT, i.path), fp = i.fp()
+          fps[i.path] = fp
+          if (prev[i.path] === fp && existsSync(out)) { k++; continue }
+          mkdirSync(dirname(out), { recursive: true })
+          const to = board ? `${out}.mm-new` : out
+          staged.push([to, out])
+          if (i.plain) writeFileSync(to, i.bytes(), { mode: 0o600 }); else vault.sealTo(i.bytes(), to)
+        }
+      } catch (e) {
+        if (!board) throw e
+        for (const [to] of staged) { rmSync(to, { force: true }); rmSync(`${to}.tmp-${process.pid}`, { force: true }) }
+        // what mastermind has of it stays, with the fingerprint it was sealed from: the next run seals it again
+        let had = 0
+        for (const i of g) if (existsSync(join(CHECKOUT, i.path))) { had++; if (prev[i.path]) next[i.path] = prev[i.path] }
+        const m = (e as Error).message, why = m.startsWith(`${board}: `) ? m.slice(board.length + 2) : m
+        failed.push(board)
+        steps.push({ step: `backup ${board}`, status: 'fail', detail: `${why.split('\n')[0]} (${had ? 'mastermind keeps its last backup' : 'none in mastermind yet'})` })
+        continue
+      }
+      for (const [to, out] of staged) if (to !== out) renameSync(to, out)
+      Object.assign(next, fps); sealed += staged.length; kept += k
     }
     steps.push({ step: 'seal', status: 'ok', detail: `${sealed} sealed, ${kept} unchanged` })
     writeFileSync(join(CHECKOUT, 'README.md'), README)
@@ -229,7 +262,7 @@ export function sync(o: SyncOpts = {}): { steps: Step[]; ok: boolean; commit?: s
     if (!o.fresh && !git(['status', '--porcelain']).out.trim()) {
       writeFileSync(STATE, JSON.stringify(next, null, 1), { mode: 0o600 })
       steps.push({ step: 'commit', status: 'skip', detail: 'nothing changed' })
-      return { steps, ok: true, commit: git(['rev-parse', 'HEAD']).out.trim() }
+      return done({ ok: true, commit: git(['rev-parse', 'HEAD']).out.trim() })
     }
     const when = new Date().toISOString().slice(0, 16) + 'Z'
     const c = git(['commit', '-q', '-m', o.fresh ? `fresh start ${when} (mm ${pkg.version})` : `sync ${when}`])
@@ -238,10 +271,10 @@ export function sync(o: SyncOpts = {}): { steps: Step[]; ok: boolean; commit?: s
     const head = git(['rev-parse', 'HEAD']).out.trim()
     steps.push({ step: 'commit', status: 'ok', detail: `${head.slice(0, 12)} (${git(['show', '--stat', '--format=', 'HEAD']).out.trim().split('\n').pop()?.trim()})` })
     if (o.fresh) git(['branch', '-M', branch()])
-    if (o.push === false) { steps.push({ step: 'push', status: 'skip', detail: '--no-push' }); return { steps, ok: true, commit: head } }
+    if (o.push === false) { steps.push({ step: 'push', status: 'skip', detail: '--no-push' }); return done({ ok: true, commit: head }) }
     const p = git(['push', '-q', ...(o.fresh ? ['--force'] : []), 'origin', `HEAD:refs/heads/${branch()}`])
     steps.push(p.ok ? { step: 'push', status: 'ok', detail: `${remote()} ${branch()}${o.fresh ? ' (history replaced)' : ''}` } : { step: 'push', status: 'fail', detail: short(p) })
-    return { steps, ok: p.ok, commit: head }
+    return done({ ok: p.ok, commit: head })
   } catch (e) {
     undo(); return fail('sync', (e as Error).message)
   } finally {
