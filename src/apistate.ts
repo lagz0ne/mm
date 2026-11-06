@@ -59,7 +59,8 @@ export function granted(project: string, dir = API_DIR): Granted {
   return {
     routes: arr<Granted['routes'][number]>(j.routes).filter((r) => ROUTE_NAME.test(s(r?.name)) && s(r?.host).startsWith(`${r.name}.${project}.`)).map((r) => ({ name: r.name, host: r.host, open: r.open === true, id: s(r.id) })),
     egress: arr<Granted['egress'][number]>(j.egress).filter((e) => SITE.test(s(e?.site))).map((e) => ({ site: e.site, id: s(e.id) })),
-    release: j.release && BUILD.test(s(j.release.build)) && !j.release.build.includes('..') ? { build: j.release.build, id: s(j.release.id) } : null,
+    // a build under release/, or (only as mm box on records the app the host ran, id box-on) `.`: release/ itself
+    release: j.release && ((BUILD.test(s(j.release.build)) && !j.release.build.includes('..')) || (j.release.build === '.' && j.release.id === 'box-on')) ? { build: j.release.build, id: s(j.release.id) } : null,
     secrets: arr<Granted['secrets'][number]>(j.secrets).filter((x) => SECRET_NAME.test(s(x?.name))).map((x) => ({ name: x.name, id: s(x.id) })),
   }
 }

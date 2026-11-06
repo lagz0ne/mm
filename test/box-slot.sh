@@ -80,12 +80,16 @@ check "the test's store removed: the app slot runs release/ again (as before the
 check "the machine's own store noted (its config had the API on), the API off now: release/ again (the owner turned it off)" sh -c "MM_API_ENABLED=1 bun '$T/w.ts' reload && jq -e --arg d '$MM_HOME/api' '.dir == \$d' '$MM_HOME/box/acme-shop/api-store.json' && [ \"\$(OTHER slot)\" = '$R/release' ]"
 check "nothing of the box on the host's process manager" sh -c "! grep -q 'acme-shop\\.' '$T/pc.log' 2>/dev/null"
 
-echo "== the app the host ran, into the box at box on and back at box off (sy-im89)"
-rm -rf "$T/store" "$R/release"; mkdir -p "$R/release/lib"; echo 'srv' >"$R/release/server.js"; echo 'x' >"$R/release/lib/x.js"
-check "box on with the API on: the host's app moves to release/host-<time>/, recorded as the box's build (id box-on)" sh -c "TESTAPI carry >'$T/carry.out' && b=\$(jq -r '.release.build' '$T/store/granted/acme-shop.json') && echo \"\$b\" | grep -Eq '^host-[0-9]{8}t[0-9]{6}\$' && jq -e '.release.id == \"box-on\"' '$T/store/granted/acme-shop.json' && [ -f '$R/release/'\$b/server.js ] && [ -f '$R/release/'\$b/lib/x.js ] && [ ! -e '$R/release/server.js' ]"
-check "...the box's app slot runs it" sh -c "b=\$(jq -r '.release.build' '$T/store/granted/acme-shop.json'); [ \"\$(TESTAPI slot)\" = '$R/release/'\$b ]"
+echo "== the app the host ran, carried into the box in place at box on, and back at box off (sy-im89, sy-jif0)"
+rm -rf "$T/store" "$R/release"; mkdir -p "$R/release/lib"; echo 'srv' >"$R/release/server.js"; echo 'x' >"$R/release/lib/x.js"; echo 'gitdir: x' >"$R/release/.git"
+check "box on with the API on: release/ itself is recorded as the box's build (build ., id box-on); nothing moves (its .git link stays)" sh -c "TESTAPI carry >'$T/carry.out' && jq -e '.release.build == \".\" and .release.id == \"box-on\"' '$T/store/granted/acme-shop.json' && [ -f '$R/release/server.js' ] && [ -f '$R/release/lib/x.js' ] && [ -f '$R/release/.git' ] && ! ls '$R/release' | grep -q '^host-'"
+check "...the box's app slot runs release/ itself" sh -c "[ \"\$(TESTAPI slot)\" = '$R/release' ]"
 check "...a second box on carries nothing more (a build is granted already)" sh -c "TESTAPI carry | grep -qx '\\[\\]'"
-check "box off: the app is back in release/, its record gone, and the host runs release/ again" sh -c "TESTAPI uncarry >/dev/null && [ -f '$R/release/server.js' ] && [ -f '$R/release/lib/x.js' ] && ! ls '$R/release' | grep -q '^host-' && jq -e '.release == null' '$T/store/granted/acme-shop.json'"
+check "box off: its record gone, the files where they were, and the host runs release/ again" sh -c "TESTAPI uncarry >/dev/null && [ -f '$R/release/server.js' ] && jq -e '.release == null' '$T/store/granted/acme-shop.json' && [ \"\$(TESTAPI slot)\" = none ]"
+check "a build . is taken only from box on's own record (id box-on): an API grant named . is dropped" sh -c "TESTAPI grant . && [ \"\$(TESTAPI slot)\" = none ]"
+# what an older box on left (moved into release/host-<time>/, as playground's at 18:12): box off moves it back
+mkdir -p "$R/release/host-20261106t181223/data"; mv "$R/release/server.js" "$R/release/lib" "$R/release/.git" "$R/release/host-20261106t181223/"
+check "an older box on's release/host-<time>/: box off moves it back into release/ (.git and data too) and drops the record" sh -c "jq '.release = {build: \"host-20261106t181223\", id: \"box-on\"}' '$T/store/granted/acme-shop.json' >'$T/g.new' && mv '$T/g.new' '$T/store/granted/acme-shop.json' && chmod 600 '$T/store/granted/acme-shop.json' && TESTAPI uncarry >/dev/null && [ -f '$R/release/server.js' ] && [ -f '$R/release/.git' ] && [ -d '$R/release/data' ] && [ ! -e '$R/release/host-20261106t181223' ] && jq -e '.release == null' '$T/store/granted/acme-shop.json'"
 check "...a build the owner approved through the API (not carried) stays where it is at box off" sh -c "TESTAPI grant v9 && mkdir -p '$R/release/v9' && TESTAPI uncarry | grep -qx '\\[\\]' && [ -d '$R/release/v9' ] && jq -e '.release.build == \"v9\"' '$T/store/granted/acme-shop.json'"
 check "with the API off: nothing is carried (the slot runs release/ as on the host)" sh -c "rm -rf '$T/store' && OTHER carry | grep -qx '\\[\\]' && [ -f '$R/release/server.js' ]"
 

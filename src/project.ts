@@ -233,7 +233,7 @@ export function resolve(root: string, o: { names?: NamesMode } = {}) {
   const boxRelease = api?.on ? api.granted.release : undefined
   for (const [n, s0] of Object.entries(spec.services)) {
     let s = s0
-    if (n === 'app' && boxRelease !== undefined) { if (!boxRelease) continue; s = { ...s0, workdir: `{root}/release/${boxRelease.build}` } }
+    if (n === 'app' && boxRelease !== undefined) { if (!boxRelease) continue; s = { ...s0, workdir: boxRelease.build === '.' ? '{root}/release' : `{root}/release/${boxRelease.build}` } } // `.`: the app the host ran, in place (sy-jif0)
     else if (s.optional && n === 'app' && !existsSync(join(root, 'release'))) continue // app starts once something is deployed
     // any other optional service (e.g. doop) runs only when the project's answers turn it on: `mm doop on <project>`
     if (s.optional && n !== 'app' && !(a.services_on || []).includes(n)) continue

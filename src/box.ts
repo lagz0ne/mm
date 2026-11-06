@@ -629,13 +629,11 @@ export function carryHostApp(root: string): Step[] {
   const rel = join(realpathSync(root), 'release')
   let st: Stats; try { st = lstatSync(rel) } catch { return [] }
   if (!st.isDirectory()) return [{ step: 'app', status: 'fail', detail: 'release/ is not a folder: no app carried into the box' }]
-  const top = readdirSync(rel)
-  if (!top.length) return []
-  const build = `host-${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15).toLowerCase()}` // host-20261106t174512
-  const dest = join(rel, build)
-  try { mkdirSync(dest); for (const f of top) renameSync(join(rel, f), join(dest, f)) } catch (e) { return [{ step: 'app', status: 'fail', detail: `could not move the host's app into release/${build}/: ${(e as Error).message}` }] }
-  saveGranted(a.project, { ...granted(a.project), release: { build, id: CARRIED_ID } })
-  return [{ step: 'app', status: 'ok', detail: `the app the host ran is the box's build release/${build}/ (carried over at box on; a new build goes through the project API)` }]
+  if (!readdirSync(rel).length) return []
+  // in place (sy-jif0): release/ stays what services.yaml, the project's deploy and git's worktree link expect (moving
+  // it into a build folder broke the worktree, and a deploy would have made a release/ without the app's data)
+  saveGranted(a.project, { ...granted(a.project), release: { build: '.', id: CARRIED_ID } })
+  return [{ step: 'app', status: 'ok', detail: "the app the host ran (release/, in place) is the box's build (carried over at box on; a new build goes through the project API)" }]
 }
 /**
  * The carried-over build's files become the box user's (with the box stopped: up() runs this before the box starts).
@@ -647,23 +645,31 @@ export function carryHostApp(root: string): Step[] {
  * (reclaim's take), with the rest of the project.
  */
 function giveBuild(root: string, build: string, uid: number, gid: number): Step | null {
-  const rel = join(realpathSync(root), 'release'), dir = join(rel, build), me = String(process.getuid?.() ?? 1000)
-  try { if (!lstatSync(dir).isDirectory()) return { step: 'app build', status: 'fail', detail: `release/${build} is not a folder` } } catch { return null }
+  // the folder whose entries are given: release/<build>, as one entry of release/; or (build `.`, in place: sy-jif0)
+  // each entry of release/ itself, so release/ stays where it is (a git worktree, the project's deploy target)
+  const rel = join(realpathSync(root), 'release'), dir = build === '.' ? rel : join(rel, build), me = String(process.getuid?.() ?? 1000)
+  const shown = build === '.' ? 'release/' : `release/${build}/`
+  try { if (!lstatSync(dir).isDirectory()) return { step: 'app build', status: 'fail', detail: `${shown} is not a folder` } } catch { return null }
   const left = run(['find', dir, '!', '-user', String(uid), '-print', '-quit'])
   if (!left.ok || !left.out.trim()) return null
+  const names = build === '.' ? readdirSync(rel).filter((f) => !/^\..+\.(box|host)$/.test(f)) : [build]
+  if (!names.length) return null
   run(['find', dir, '-user', me, '(', '(', '-type', 'd', '-exec', 'chmod', 'g+rwxs', '{}', '+', ')', '-o', '(', '-type', 'f', '-exec', 'chmod', 'g+rw', '{}', '+', ')', ')'])
   try { chmodSync(rel, (lstatSync(rel).mode & 0o7777) | 0o2070) } catch {}
-  const tmp = `.${build}.box`, old = `.${build}.host`
+  // each entry: a copy the box's uid owns, the old one renamed aside, the copy into its place (nothing removed first)
   const c = docker('run', '--rm', '--network', 'none', '--user', `${uid}:${gid}`, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-    '-v', `${rel}:${rel}`, '--entrypoint', 'sh', IMAGE(), '-c', 'set -e; cd "$1"; rm -rf "$3"; cp -a "$2" "$3"; rm -rf "$4"; mv "$2" "$4"; mv "$3" "$2"', 'sh', rel, build, tmp, old)
-  if (!c.ok) return { step: 'app build', status: 'fail', detail: `release/${build}/ stays the host owner's (its app may not set its own modes): ${short(c)}` }
-  rmSync(join(rel, old), { recursive: true, force: true })
-  return { step: 'app build', status: 'ok', detail: `release/${build}/ is the box user's now (its app sets its own modes, as on the host)` }
+    '-v', `${rel}:${rel}`, '--entrypoint', 'sh', IMAGE(), '-c', 'set -e; cd "$1"; shift; for n in "$@"; do rm -rf ".$n.box"; cp -a "$n" ".$n.box"; rm -rf ".$n.host"; mv "$n" ".$n.host"; mv ".$n.box" "$n"; done', 'sh', rel, ...names)
+  if (!c.ok) return { step: 'app build', status: 'fail', detail: `${shown} stays the host owner's (its app may not set its own modes): ${short(c)}` }
+  for (const n of names) rmSync(join(rel, `.${n}.host`), { recursive: true, force: true })
+  return { step: 'app build', status: 'ok', detail: `${shown} is the box user's now (its app sets its own modes, as on the host)` }
 }
 export function uncarryHostApp(root: string): Step[] {
   const a = readAnswers(root)
   if (!apiEnabled()) return []
   const g = granted(a.project), b = g.release?.id === CARRIED_ID ? g.release.build : ''
+  // in place (sy-jif0): the files are where the host runs them already; only the record goes
+  if (b === '.') { saveGranted(a.project, { ...g, release: null }); return [{ step: 'app', status: 'ok', detail: "release/ runs on the host again (the box's record of it dropped)" }] }
+  // an older box on moved it into release/host-<time>/: back to release/
   if (!/^host-\d{8}t\d{6}$/.test(b)) return []
   const rel = join(realpathSync(root), 'release'), src = join(rel, b)
   let st: Stats; try { st = lstatSync(src) } catch { saveGranted(a.project, { ...g, release: null }); return [] }

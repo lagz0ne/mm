@@ -335,10 +335,11 @@ check "...as the box user, and not on the host's process manager" sh -c "[ \"\$(
 check "...mm api undo: the build leaves the app slot" sh -c "mm api undo '$QR' >/dev/null && for i in \$(seq 1 30); do IN 'curl -sf --max-time 3 http://app.$PROJECT.localhost:1355/' 2>/dev/null | grep -q QA-APP-OK || exit 0; sleep 2; done; exit 1"
 # the app the host ran, carried over at box on (sy-im89): made by the host's owner, its data folder 0700 (as playground's),
 # and an app that sets its own data folder's mode at start (EPERM unless the box's user owns it)
-CB=host-20260101t000000; mkdir -p "$ROOT/release/$CB/data"; chmod 700 "$ROOT/release/$CB/data"
-echo 'const fs = require("fs"); fs.chmodSync("data", 0o700); require("http").createServer((q, s) => s.end("QA-CARRIED-OK")).listen(process.env.PORT, process.env.HOST)' >"$ROOT/release/$CB/server.js"
-GF="$AIT/api/granted/$PROJECT.json"; jq --arg b "$CB" '.release = { build: $b, id: "box-on" }' "$GF" >"$GF.new" && mv "$GF.new" "$GF"
-check "a carried-over build (the host owner's, data 0700, an app that chmods it): after mm up its files are the box user's and the app runs (sy-im89)" sh -c "mm up '$REF' >/tmp/box-carry.out 2>&1 && [ \"\$(stat -c %u '$ROOT/release/$CB/server.js')\" -ge 200000 ] && for i in \$(seq 1 40); do IN 'curl -sf --max-time 3 http://app.$PROJECT.localhost:1355/' | grep -q QA-CARRIED-OK && exit 0; sleep 2; done; tail -5 /tmp/box-carry.out; exit 1"
+# (in place, as box on records it: release/ itself, build `.`; sy-jif0)
+mkdir -p "$ROOT/release/data"; chmod 700 "$ROOT/release/data"
+echo 'const fs = require("fs"); fs.chmodSync("data", 0o700); require("http").createServer((q, s) => s.end("QA-CARRIED-OK")).listen(process.env.PORT, process.env.HOST)' >"$ROOT/release/server.js"
+GF="$AIT/api/granted/$PROJECT.json"; jq '.release = { build: ".", id: "box-on" }' "$GF" >"$GF.new" && mv "$GF.new" "$GF"
+check "a carried-over app in release/ itself (the host owner's, data 0700, an app that chmods it): after mm up its files are the box user's, release/ stays, and the app runs (sy-im89, sy-jif0)" sh -c "mm up '$REF' >/tmp/box-carry.out 2>&1 && [ \"\$(stat -c %u '$ROOT/release/server.js')\" -ge 200000 ] && [ \"\$(stat -c %u '$ROOT/release/data')\" -ge 200000 ] && for i in \$(seq 1 40); do IN 'curl -sf --max-time 3 http://app.$PROJECT.localhost:1355/' | grep -q QA-CARRIED-OK && exit 0; sleep 2; done; tail -5 /tmp/box-carry.out; exit 1"
 jq '.release = null' "$GF" >"$GF.new" && mv "$GF.new" "$GF"; mm up "$REF" >/dev/null 2>&1
 OUT=$(APICALL secret '{"name":"qa-secret"}'); QS=$(echo "$OUT" | jq -r .id); QSH=$(mm api show "$QS" -o json | jq -r .hash)
 check "secret qa-secret: pending; approved: mm needs lists $PROJECT:qa-secret for the owner to fill (no value went anywhere)" sh -c "echo '$OUT' | jq -e '.status == \"pending\"' && CODE '$QS' | mm api approve '$QS' --hash ${QSH:0:12} >/dev/null && mm needs -p '$PROJECT' -o json | jq -e '.[] | select(.name == \"qa-secret\" and .status == \"missing\")'"
