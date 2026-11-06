@@ -101,6 +101,10 @@ let G = {}
 try { G = JSON.parse(fs.readFileSync(path.join(P, 'governance.json'), 'utf8')) } catch (e) { if (fs.existsSync(path.join(P, 'governance.json'))) bad(`governance.json unreadable (${e.message})`) }
 // {brain} {projects} {mm}: the machine's folders, from mm (one-root boxes keep them under $MM_HOME)
 const D = dirs()
+// the folders ahead of /usr/bin in a lead's PATH (review sy-jm5 2): mm's from what the host knows (a run file that names
+// another folder is not followed), and no role may write a file into any of them, so nothing there shadows git or bd
+const MM_DIR = MMS.includes(D.mm) ? D.mm : MMS[0]
+const PATH_FIRST = [path.join(P, 'bin'), path.join(MM_DIR, 'bin'), path.join(MM_DIR, 'npm', 'bin'), `${HOME}/.local/bin`, `${HOME}/.npm-global/bin`]
 // a project has no business in the brain (review sy-5ag): all of it is denied to a board outside it (the system board
 // lives in it, and keeps its own rules). The brain's folder in either layout, as for its keys
 const BRAINS = [...new Set([D.brain, `${HOME}/.mm/brain`, `${HOME}/brain`])]
@@ -125,7 +129,7 @@ function render(tmpl, role, assistant = false) {
   // env bin/lead gave it at start, but Claude Code applies this to every session in this folder, however it started
   const who = assistant ? {} : { env: { ...(tmpl.env || {}), BEADS_ACTOR: role, GIT_AUTHOR_NAME: role, GIT_COMMITTER_NAME: role,
     GIT_AUTHOR_EMAIL: `${role}@${projectName()}.local`, GIT_COMMITTER_EMAIL: `${role}@${projectName()}.local`,
-    PATH: [path.join(P, 'bin'), path.join(D.mm, 'bin'), path.join(D.mm, 'npm', 'bin'), `${HOME}/.local/bin`, `${HOME}/.npm-global/bin`, '/usr/local/bin', '/usr/bin', '/bin'].join(':') } }
+    PATH: [...PATH_FIRST, '/usr/local/bin', '/usr/bin', '/bin'].join(':') } }
   return { ...tmpl, ...who, ...(hooks ? { hooks } : {}), permissions: { ...p,
     ...(p.additionalDirectories ? { additionalDirectories: p.additionalDirectories.map(fill) } : {}),
     // a rule naming a service that doesn't run yet ({url:app} before the first deploy) is left out, not half-rendered
@@ -164,7 +168,8 @@ function mandatoryDeny(role) {
   const d = [`Read(/${R}/secrets/**)`, 'Bash(git push*)', ...RAW_STATUS, `Edit(/${R}/code/**)`, `Write(/${R}/code/**)`,
     `Edit(/${R}/control/**)`, `Write(/${R}/control/**)`, `Edit(/${R}/leads/**)`, `Write(/${R}/leads/**)`,
     `Edit(/${R}/CLAUDE.md)`, `Write(/${R}/CLAUDE.md)`, `Edit(/${R}/worktrees/CLAUDE.md)`, `Write(/${R}/worktrees/CLAUDE.md)`,
-    `Edit(/${R}/setup/**)`, `Write(/${R}/setup/**)`, `Edit(/${R}/release/**)`, `Write(/${R}/release/**)`]
+    `Edit(/${R}/setup/**)`, `Write(/${R}/setup/**)`, `Edit(/${R}/release/**)`, `Write(/${R}/release/**)`,
+    ...PATH_FIRST.flatMap((d) => [`Edit(/${d}/**)`, `Write(/${d}/**)`])]
   if (WORKERS.has(role)) d.push('mcp__paseo__get_agent_activity', `Edit(/${R}/worktrees/**)`, `Write(/${R}/worktrees/**)`)
   d.push(...(G.deny_all || []).map(grule))
   return d

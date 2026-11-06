@@ -3,7 +3,8 @@
 # (the template rendered, the run files written), nothing started. Proves: the machine's secret paths come from mm's own
 # folder, never from a run file the project (or a box) can write, with the fixed list as the floor (review sy-v92 2);
 # the design lead, a worker and another project's lead can't run the Doop headers helper or read a project's Doop
-# secrets in any spelling (cat, cp to /tmp, Read; review sy-7452 2); bin/doop-run takes an image by digest only (sy-7452 1).
+# secrets in any spelling (cat, cp to /tmp, Read; review sy-7452 2); no role can write into a folder ahead of /usr/bin
+# in its PATH (review sy-jm5 2); bin/doop-run takes an image by digest only (sy-7452 1).
 #   test/denies.sh
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -109,6 +110,18 @@ done
 check "each of $n spellings is denied by the rendered denies (cat, cp to /tmp, Read, the helper)" test ${#miss[@]} = 0
 [ ${#miss[@]} = 0 ] || { echo "       ${#miss[@]} not denied:"; printf '       %s\n' "${miss[@]}"; }
 check "...while the project's own files stay readable (the denies name secrets/, not the project)" bash -c "! denied '$A' design '$D' Bash 'cat ../../services.yaml' && ! denied '$A' design '$D' Read '$A/leads/design/CLAUDE.md' && ! denied '$A' code '$W' Bash 'cat src/config/secrets.ts'"
+
+echo "== nothing ahead of /usr/bin in a lead's PATH can be written by a role (review sy-jm5 2)"
+ROLES=$(jq -r '.roles[].id' "$A/leads/roles.json" | tr '\n' ' ')
+PATH_WANT="$A/bin:$MM_HOME/bin:$MM_HOME/npm/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin"
+check "every role ($ROLES): its PATH is the project's bin/, mm's, ~/.local/bin, ~/.npm-global/bin, then the system's" bash -c "for r in $ROLES; do jq -e --arg p '$PATH_WANT' '.env.PATH == \$p' '$A/leads/'\$r'/.claude/settings.json' || exit 1; done"
+check "...and no role may Edit or Write a file into any of those first five (bin/git, bin/bd, mm's bin/, ~/.local/bin)" bash -c "for r in $ROLES; do for t in Edit Write; do for f in '$A/bin/git' '$A/bin/bd' '$A/bin/lib/x.mjs' '$MM_HOME/bin/git' '$MM_HOME/npm/bin/bd' '$HOME/.local/bin/git' '$HOME/.npm-global/bin/git'; do denied '$A' \$r '$A/leads/'\$r \$t \$f >/dev/null || { echo \"not denied: \$r \$t \$f\"; exit 1; }; done; done; done"
+check "...nor by a path relative to its folder or a worktree (../../bin/git)" bash -c "denied '$A' qa '$A/leads/qa' Edit ../../bin/git && denied '$A' code '$W' Write ../../bin/bd"
+# the run file names another mm folder, one the project can write
+jq --arg m "$A/code/fake-mm" '.dirs.mm = $m' "$A/.run/endpoints.json" >"$T/ep" && cp "$T/ep" "$A/.run/endpoints.json"
+check "a run file that names another mm folder (one the project can write): it is not put on the PATH" bash -c "render '$A' && jq -e --arg p '$PATH_WANT' '.env.PATH == \$p' '$A/leads/code/.claude/settings.json'"
+check "settings that lost one of these denies: config-check says so" bash -c "cd '$A' && jq --arg d 'Edit(/$A/bin/**)' '.permissions.deny -= [\$d]' leads/qa/.claude/settings.json >'$T/s' && cp '$T/s' leads/qa/.claude/settings.json && ! node bin/config-check 2>'$T/cc' && grep -qF 'qa: settings.json lost the safety deny Edit(/$A/bin/**)' '$T/cc'"
+render "$A" >/dev/null
 
 echo "== bin/doop-run runs Doop's image by digest only (review sy-7452 1)"
 # docker: a stub that records what it is asked, and starts nothing
