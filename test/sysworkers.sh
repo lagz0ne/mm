@@ -80,7 +80,7 @@ for d in "Edit(/$HOME/mm/**)" "Edit(/$HOME/.mm/brain/**)" "Edit(/$W/review-r1/**
   "Bash(*test/lifecycle.sh*)" "Bash(*test/box.sh*)" "Read(/$HOME/.mm/vault/**)"; do
   check "platform-w1 denies $d" has "$P1" "$d"
 done
-check "...and runs the guard" bash -c "jq -e '.hooks.PreToolUse[0].hooks[0].command | endswith(\"/bin/guard\")' '$P1/.claude/$S' >/dev/null"
+check "...and runs the guard" bash -c "jq -e '.hooks.PreToolUse[0].hooks[0].command | startswith(\"mm_g=\$( \") and contains(\"/bin/guard\\n)\")' '$P1/.claude/$S' >/dev/null"
 
 echo "== a review worker reads only; an ops worker reads and comments"
 check "review-r1 refuses what is not allowed (defaultMode dontAsk)" test "$(jq -r .permissions.defaultMode "$R1/.claude/$S")" = dontAsk

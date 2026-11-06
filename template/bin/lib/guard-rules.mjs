@@ -18,12 +18,20 @@
 //   WRITE   a verb that writes a file (sed -i, tee, >, cp, mv, rm, install, ln, truncate, open(…), …)
 //   APPROVAL the approval path's files: Claude settings (not the .tmpl.json the setup agent edits) and hooks, this
 //           guard (the board's own bin/guard, not a template copy elsewhere), the bridge, mm's process definitions, and
-//           the board's .run/endpoints.json (mm writes it: the gateway's key the board checks, the owner's name)
+//           the board's .run/endpoints.json (mm writes it: the gateway's key the board checks, the owner's name) and its
+//           supervisor.json (bin/supervisor's approver list, sy-1jmi)
+//   APPROVAL_BASE those files by base name, wherever the shell is (endpoints.json, supervisor.json, bin/guard,
+//           guard-rules.mjs; not under /tmp/, not mm's template/bin/guard): bash only, a file tool's path is absolute
 //   APPROVER an actor whose `approved` counts (bin/supervisor, bin/flow): the bridge's (`bridge`) and the owner's name
 //   BD      bd as a command word (bd, bin/bd, ~/.mm/…/bin/bd, "bd"), then a space
 // rules, checked in order; the first that matches denies with its reason:
-//   on: bash (tool_input.command) | file (Read Edit Write MultiEdit NotebookEdit Grep: the path) | file-write (not Read
-//       or Grep). re must match; and, if given, must match too.
+//   on: bash (tool_input.command) | file (Read Edit Write MultiEdit NotebookEdit Grep Glob: the path) | file-write (not
+//       Read, Grep or Glob). re must match; and, if given, must match too.
+//   A bash rule sees the command in several forms (sy-in54; bin/guard's forms()): raw; dequoted as the shell would
+//   (\-newlines joined, quotes and backslashes dropped, $'…' decoded) with // /./ and a leading ./ resolved; that with
+//   the wrappers stripped at each command position (VAR=x, env, ionice, nice, timeout N, xargs, command, exec, sh -c, …;
+//   /usr/bin/ps named ps); and with quoted argv lists (["bd", "label", …]) read as words. And a word with a glob is
+//   also tried as each sensitive name the glob can match. A match on any form denies.
 //   pre: checked before the board-only free path (a bd command with read-only steps around it: its text never runs).
 //   boards: project = not on the system board (its ops and review use sudo -n for machine facts; the brain's guard and
 //       the program govern them there).
@@ -44,7 +52,8 @@ export const RULES = // BEGIN RULES
     "WRITE": "(?:\\bsed\\s+(?:-\\w+\\s+)*-i|\\bperl\\s+(?:-\\w+\\s+)*-\\w*i|\\btee\\b|>>?|\\b(?:cp|mv|rm|install|ln|truncate|chmod|chown|touch|patch|dd|rsync|unlink)\\b|\\b(?:open|write\\w*|append\\w*)\\(\\s*['\"]?)",
     "APPROVER": "(?:[bB][rR][iI][dD][gG][eE]|{{OWNER}})",
     "BD": "(?:^|[\\s;&|(){}`'\"/])bd['\"]?(?=\\s)",
-    "APPROVAL": "(?:\\.claude/settings(?!\\.tmpl)[\\w.-]*\\.json|\\.claude/hooks/|\\.local/lib/(?:paseo-telegram|brain)/|{{MMDIR}}/(?:claude/(?:[\\w.-]+/)?settings[\\w.-]*\\.json|pc/[\\w.-]+\\.ya?ml)|(?:^|[\\s'\"=])(?:\\.\\./)*bin/(?:guard|lib/guard-rules\\.mjs)(?![\\w.-])|{{ROOT}}/bin/(?:guard|lib/guard-rules\\.mjs)(?![\\w.-])|(?:^|[\\s'\"=])(?:\\.\\./)*\\.run/endpoints\\.json(?![\\w.-])|{{ROOT}}/\\.run/endpoints\\.json(?![\\w.-]))"
+    "APPROVAL": "(?:\\.claude/settings(?!\\.tmpl)[\\w.-]*\\.json|\\.claude/hooks/|\\.local/lib/(?:paseo-telegram|brain)/|{{MMDIR}}/(?:claude/(?:[\\w.-]+/)?settings[\\w.-]*\\.json|pc/[\\w.-]+\\.ya?ml)|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*bin/(?:guard|lib/guard-rules\\.mjs)(?![\\w.-])|{{ROOT}}/bin/(?:guard|lib/guard-rules\\.mjs)(?![\\w.-])|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*\\.run/endpoints\\.json(?![\\w.-])|{{ROOT}}/\\.run/endpoints\\.json(?![\\w.-])|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*supervisor\\.json(?![\\w.-])|{{ROOT}}/supervisor\\.json(?![\\w.-]))",
+    "APPROVAL_BASE": "(?:^|(?<=[\\s'\"=<>:]))(?!/tmp/)(?:[^\\s'\"=<>;&|]*/)?(?:endpoints\\.json|supervisor\\.json|guard-rules\\.mjs|(?<!template/)bin/guard)(?![\\w.-])"
   },
   "rules": [
     {
@@ -86,7 +95,7 @@ export const RULES = // BEGIN RULES
       "id": "proc-env",
       "on": "bash",
       "pre": true,
-      "re": "(?:/proc/[^\\s'\"`;|&<>]*/mem|/(?:environ|cmdline|auxv))(?![\\w.-])",
+      "re": "(?:/proc/[^\\s'\"`;|&<>]*/mem|/(?:environ|cmdline|auxv))(?![\\w.-])|\\b(?:cd|pushd)\\s[^\\n]*?(?:^|[\\s<'\"=(])(?:environ|cmdline|auxv)(?![\\w.-])|\\b(?:cd|pushd)\\s+\\S*/proc\\b[^\\n]*?(?:^|[\\s<'\"=(])mem(?![\\w.-])",
       "why": "reads another process's environment or command line (/proc/<pid>/environ, cmdline): tokens live there. Use ps -o pid,comm, or the named /proc files (meminfo, loadavg, uptime, pressure)."
     },
     {
@@ -96,10 +105,16 @@ export const RULES = // BEGIN RULES
       "why": "reads another process's environment or command line: tokens live there."
     },
     {
+      "id": "proc-dir",
+      "on": "file",
+      "re": "^/proc(?:/(?:\\d+|self|thread-self)(?:/task(?:/\\d+)?)?)?/?$",
+      "why": "searches a process's /proc folder, where its environment and command line are: tokens live there."
+    },
+    {
       "id": "ps-env",
       "on": "bash",
       "pre": true,
-      "re": "(?:^|[\\s;&|(`$])ps\\s+[a-zA-Z]*e[a-zA-Z]*(?=$|[\\s|;&)`])",
+      "re": "(?:^|[\\s;&|(`$])ps\\s+[a-zA-Z]*e[a-zA-Z]*(?=$|[\\s|;&)`])|(?:^|[;&|(){}`\\n])\\s*ps(?:\\s+[^\\s;&|`)]+)*?\\s+[^\\s;&|`)-][^\\s;&|`)]*\\s+[a-zA-Z]*e[a-zA-Z]*(?=$|[\\s|;&)`])",
       "why": "ps with its BSD-style e option prints every process's environment, where tokens live. Use ps -ef or ps -o."
     },
     {
@@ -149,7 +164,7 @@ export const RULES = // BEGIN RULES
       "id": "approver-actor",
       "on": "bash",
       "pre": true,
-      "re": "(?:--actor['\"]?(?:=|\\s+)|\\b(?:BEADS_ACTOR|BD_ACTOR|USER|LOGNAME)=|\\buser\\.name['\"]?(?:=|\\s+))['\"]?{{APPROVER}}['\"]?(?![\\w.-])",
+      "re": "(?:--actor['\"]?(?:=|\\s+)|\\b(?:BEADS_ACTOR|BD_ACTOR|USER|LOGNAME)=|\\buser\\.name['\"]?(?:=|\\s+))['\"]?{{APPROVER}}['\"]?(?![\\w.-])|\\bxargs\\b[^;&|\\n]*--actor(?:=|\\s+)?(?:\\{\\}|\\s*(?=$|[;&|\\n)]))",
       "why": "writes to the board as an approver (the bridge or the owner): only their own `approved` counts, so an agent never writes under their name. Write as yourself; the owner approves on the board's public address or with the bridge's button."
     },
     {
@@ -163,7 +178,7 @@ export const RULES = // BEGIN RULES
       "id": "approved-label",
       "on": "bash",
       "pre": true,
-      "re": "{{BD}}[^;&|\\n]*?(?:\\slabel\\s+(?:add|remove)\\s[^;&|\\n]*?|\\s--(?:add-label|remove-label|set-labels)(?:=|\\s+)['\"]?(?:[^\\s,'\"]+,\\s*)*|\\screate\\s[^;&|\\n]*?\\s(?:-l=?\\s*|--labels(?:=|\\s+))['\"]?(?:[^\\s,'\"]+,\\s*)*)(?<![\\w.:-])['\"]?approved(?![\\w.:-])",
+      "re": "{{BD}}[^;&|\\n]*?(?:\\slabel\\s+(?:add|remove)\\s[^;&|\\n]*?|\\s--(?:add-label|remove-label|set-labels)(?:=|\\s+)['\"]?(?:[^\\s,'\"]+,\\s*)*|\\screate\\s[^;&|\\n]*?\\s(?:-l=?\\s*|--labels(?:=|\\s+))['\"]?(?:[^\\s,'\"]+,\\s*)*)(?<![\\w.:-])['\"]?approved(?![\\w.:-])|\\bxargs\\b[^;&|\\n]*{{BD}}[^;&|\\n]*?\\s(?:label\\s+(?:add|remove)|--(?:add-label|remove-label|set-labels)|create\\s[^;&|\\n]*?\\s(?:-l|--labels))\\b",
       "why": "sets or removes `approved`: that is the owner's T2 go, never an agent's. The owner gives it on the board's public address (signed in as the owner) or with the bridge's Approve button; ask for it on the item."
     },
     {
@@ -171,6 +186,12 @@ export const RULES = // BEGIN RULES
       "on": "bash",
       "re": "{{WRITE}}[^;&|]*{{APPROVAL}}",
       "why": "changes the approval path (Claude settings and hooks, this guard, the bridge, mm's process definitions, the board's endpoints file): mm and the owner change it, never an agent."
+    },
+    {
+      "id": "approval-base",
+      "on": "bash",
+      "re": "{{WRITE}}[^;&|]*{{APPROVAL_BASE}}|\\b(?:cd|pushd)\\s+\\S*\\bbin/?(?=[\\s;&|)]|$)[^\\n]*?{{WRITE}}[^;&|\\n]*(?:^|(?<=[\\s'\"=<>]))(?:guard|lib/guard-rules\\.mjs)(?![\\w.-])",
+      "why": "changes a file of the approval path (a guard, the board's endpoints file, supervisor.json), named by its base name: mm and the owner change those, never an agent."
     },
     {
       "id": "ssh-write",

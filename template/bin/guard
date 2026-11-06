@@ -7,7 +7,8 @@
 // commands and sockets, the approval path's files, writing to the board as an approver or setting `approved`, …). It
 // never asks and never allows on its own.
 // An internal error (bad input, a broken rules file, a bug) denies the call: fail closed. A syntax error in this file
-// exits non-zero, and Claude Code lets the call through; mm update and the box seal keep this file as mm made it.
+// exits non-zero: the hook config-check renders wraps it, and any exit but 0 prints a deny (sy-in54). mm update and the
+// box seal keep this file as mm made it.
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -81,16 +82,22 @@ function freeOnly(cmd, bdCmd) {
     for (const tag of tags) { while (i < lines.length && lines[i].trim() !== tag) i++; i++ }
   }
   const s = kept.join('\n'), sk = []
+  // skeleton: only the shell structure is left. Quotes go as the shell drops them, and a quoted or escaped character
+  // stays only when it is a word's (letters, digits, . , : / = @ + % - _), else it is _: `bd "sync"` is bd sync, and
+  // quoted text ("a; b") is one word that runs nothing (sy-in54)
+  const keep = (ch) => (/[\w.,:/=@+%-]/.test(ch) ? ch : '_')
   let q = null
-  for (let k = 0; k < s.length; k++) { // skeleton: quoted text goes, only the shell structure is left
+  for (let k = 0; k < s.length; k++) {
     const ch = s[k], nxt = s[k + 1] || ''
-    if (q === "'") { if (ch === "'") { q = null; sk.push("'") } }
+    if (q === "'") { if (ch === "'") q = null; else sk.push(keep(ch)) }
     else if (q === '"') {
-      if (ch === '\\') k++
+      if (ch === '\\') { if (nxt !== '\n') sk.push(keep(nxt)); k++ }
       else if (ch === '`' || (ch === '$' && nxt === '(')) return false
-      else if (ch === '"') { q = null; sk.push('"') }
-    } else if (ch === "'" || ch === '"') { q = ch; sk.push(ch + '_') }
-    else if (ch === '\\') { sk.push('_'); k++ }
+      else if (ch === '"') q = null
+      else sk.push(keep(ch))
+    } else if (ch === "'" || ch === '"') { q = ch; sk.push('') }
+    else if (ch === '$' && nxt === "'") return false // $'…': escapes the skeleton does not read
+    else if (ch === '\\') { if (nxt !== '\n') sk.push(keep(nxt)); k++ }
     else if (ch === '`' || (ch === '$' && nxt === '(') || ((ch === '<' || ch === '>') && nxt === '(')) return false
     else sk.push(ch)
   }
@@ -121,8 +128,146 @@ function freeOnly(cmd, bdCmd) {
   return saw
 }
 
-const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Grep'])
-const READ_TOOLS = new Set(['Read', 'Grep'])
+// Normalizing (sy-in54): the rules see a command as the shell would run it as well as its raw text; a deny on any form
+// denies. dequote: `\`-newlines joined, quotes and backslashes dropped as the shell drops them (br''idge, s\udo, "ps",
+// $'\x73udo'). paths: `//`, `/./` and a leading `./` resolved. strip: at every command position (line start, after
+// ; & | ( ) { } ` $( and newlines) the VAR=value words, shell keywords and wrappers (env, ionice, nice, timeout N, xargs,
+// command, exec, nohup, time, stdbuf, setsid, eval, sh -c) with their options go, and a command named by its path
+// (/usr/bin/ps) is named by its base name. argv: a list of quoted words (["bd", "label", …], as python3 -c or node -e
+// pass them) read as words.
+function dequote(s) {
+  let out = '', q = null
+  const ESC = { n: '\n', t: '\t', r: '\r', e: '\x1b', E: '\x1b', a: '\x07', b: '\b', f: '\f', v: '\v' }
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i], n = s[i + 1]
+    if (q === "'") { if (c === "'") q = null; else out += c; continue }
+    if (q === '$') { // $'…': ANSI-C escapes
+      if (c === "'") { q = null; continue }
+      if (c !== '\\' || n === undefined) { out += c; continue }
+      const rest = s.slice(i + 1)
+      let m
+      if ((m = /^x([0-9a-fA-F]{1,2})/.exec(rest))) out += String.fromCharCode(parseInt(m[1], 16))
+      else if ((m = /^u([0-9a-fA-F]{1,4})/.exec(rest)) || (m = /^U([0-9a-fA-F]{1,8})/.exec(rest))) out += String.fromCodePoint(Math.min(parseInt(m[1], 16), 0x10ffff))
+      else if ((m = /^[0-7]{1,3}/.exec(rest))) out += String.fromCharCode(parseInt(m[0], 8) & 0xff)
+      else { m = [n]; out += ESC[n] ?? n }
+      i += m[0].length
+      continue
+    }
+    if (q === '"') {
+      if (c === '"') q = null
+      else if (c === '\\' && n !== undefined && '$`"\\\n'.includes(n)) { if (n !== '\n') out += n; i++ }
+      else out += c
+      continue
+    }
+    if (c === "'" || c === '"') { q = c; continue }
+    if (c === '$' && n === "'") { q = '$'; i++; continue }
+    if (c === '$' && n === '"') continue
+    if (c === '\\') { if (n !== undefined && n !== '\n') out += n; i++; continue }
+    out += c
+  }
+  return out
+}
+function paths(s) {
+  let t = s.replace(/(?<!:)\/{2,}/g, '/'), prev
+  do { prev = t; t = t.replace(/\/\.(?=\/)/g, '').replace(/(^|[\s=<>:(`;&|])\.\/(?=[^\s/])/g, '$1') } while (t !== prev)
+  return t
+}
+// a wrapper: [its short options that take a value, its long ones, the words after its options (timeout's duration)]
+const WRAP = {
+  env: ['uCS', ['--unset', '--chdir', '--split-string'], 0], ionice: ['cnpPtu', ['--class', '--classdata', '--pid', '--pgid', '--uid'], 0],
+  nice: ['n', ['--adjustment'], 0], timeout: ['sk', ['--signal', '--kill-after'], 1],
+  xargs: ['naILPdEs', ['--max-args', '--replace', '--max-lines', '--max-procs', '--delimiter', '--eof', '--max-chars', '--arg-file'], 0],
+  command: ['', [], 0], builtin: ['', [], 0], exec: ['a', [], 0], nohup: ['', [], 0], time: ['f', ['--format', '--output'], 0],
+  stdbuf: ['ioe', [], 0], setsid: ['', [], 0], eval: ['', [], 0], chrt: ['', [], 1], taskset: ['', [], 1], unbuffer: ['', [], 0],
+}
+const SHELLS = new Set(['sh', 'bash', 'dash', 'zsh', 'ksh', 'ash'])
+const KEYWORDS = new Set(['then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '}'])
+function stripWords(w) {
+  for (let n = 0; n < 64 && w.length; n++) {
+    if (/^[A-Za-z_]\w*=/.test(w[0]) || KEYWORDS.has(w[0])) { w = w.slice(1); continue }
+    const name = w[0].replace(/^.*\//, '')
+    if (SHELLS.has(name)) { // sh -c 'cmd': the command is what runs
+      const k = w.findIndex((x, i) => i > 0 && /^-\w*c\w*$/.test(x))
+      if (k > 0 && w.slice(1, k).every((x) => x.startsWith('-'))) { w = w.slice(k + 1); continue }
+      break
+    }
+    const spec = WRAP[name]
+    if (!spec) break
+    let i = 1
+    while (i < w.length && w[i].startsWith('-') && w[i] !== '-') {
+      const o = w[i++]
+      if (o === '--') break
+      if ((/^-[A-Za-z]$/.test(o) && spec[0].includes(o[1])) || spec[1].includes(o)) i++
+    }
+    w = w.slice(i + spec[2])
+  }
+  if (w.length && /\/[^/]+$/.test(w[0])) w = [w[0].replace(/^.*\//, ''), ...w.slice(1)]
+  return w
+}
+function strip(s) {
+  return s.split(/(\|\||&&|\$\(|<\(|>\(|[;&|(){}`\n])/).map((seg, i) => {
+    if (i % 2) return seg
+    const words = seg.split(/[ \t]+/).filter(Boolean)
+    return words.length ? seg.match(/^\s*/)[0] + stripWords(words).join(' ') + seg.match(/\s*$/)[0] : seg
+  }).join('')
+}
+const argv = (s) => s.replace(/(['"])\s*,\s*(?=[['"])/g, '$1 ').replace(/([[(])\s*(?=['"])/g, '$1 ')
+/** The forms of a command the rules see: raw; dequoted; dequoted and stripped; and with argv lists read as words. */
+function forms(cmd) {
+  const d = paths(dequote(cmd))
+  return [...new Set([cmd, d, strip(d), strip(paths(dequote(dequote(argv(cmd)))))])]
+}
+
+// Globs (sy-in54): a word with ? * or [ in it can name a secret or an approval-path file. Each glob part of a word is
+// tried as each of these names that it matches (and as the word without its glob): when the command with that name in
+// its place is denied, so is the command with the glob.
+const NAMES = ['key', 'environ', 'cmdline', 'auxv', 'mem', 'endpoints.json', 'supervisor.json', 'guard', 'guard-rules.mjs', 'secrets',
+  '.ssh', '.keys', '.config', '.claude', '.credentials.json', 'settings.json', 'settings.local.json', 'hooks', 'gh', 'hosts.yml', '.paseo',
+  'paseo', 'local-credential', 'daemon-keypair.json', 'vault', 'auth', 'ai', 'api', 'shadow', 'gshadow', 'id_ed25519', 'id_rsa', 'id_ecdsa',
+  '.cloudflared', 'cloudflared', 'proc', '1', 'self', 'bin', 'lib', '.run', '.mm', 'run', 'brain', 'projects', 'etc', '.local',
+  'paseo-telegram', 'pc', 'claude', 'ssh_host_ed25519_key', 'auth.sock', 'ai.sock', 'approve.sock', 'doop-mcp-headers',
+  'sudo', 'su', 'doas', 'pkexec', 'run0', 'sudoedit', 'ps', 'mm', 'x.password']
+const PROC_NAMES = new Set(['environ', 'cmdline', 'auxv', 'mem']), PROC_ONLY = /\/proc\b|\b(?:cd|pushd)\s/
+function globRe(part) {
+  let re = ''
+  for (let i = 0; i < part.length; i++) {
+    const c = part[i]
+    if (c === '*') re += '.*'
+    else if (c === '?') re += '.'
+    else if (c === '[') {
+      const j = part.indexOf(']', i + 2)
+      if (j < 0) { re += '\\['; continue }
+      re += `[${part.slice(i + 1, j).replace(/^[!^]/, '^').replace(/[\\[]/g, '\\$&')}]`; i = j
+    } else re += c.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
+  }
+  try { return new RegExp(`^${re}$`) } catch { return /^/ }
+}
+function* globForms(cmd) {
+  let n = 0
+  for (const m of [...cmd.matchAll(/[^\s;&|()<>`'"=]*[*?[][^\s;&|()<>`'"=]*/g)].slice(0, 16)) {
+    const parts = m[0].split('/'), at = parts.map((p, i) => (/[*?[]/.test(p) ? i : -1)).filter((i) => i >= 0)
+    // environ … only under /proc or after a cd; mm's sockets only in a word that names a socket or a run folder
+    // the host keys only where ssh is named; a glob names a dot file only when it starts with the dot (as the shell does)
+    const names = NAMES.filter((x) => (!PROC_NAMES.has(x) || PROC_ONLY.test(cmd)) && (!x.endsWith('.sock') || /sock|\/run\//.test(m[0]))
+      && (!x.startsWith('ssh_host') || /ssh/.test(cmd)))
+    const choices = at.map((i) => {
+      const re = globRe(parts[i]), dot = parts[i].startsWith('.')
+      const last = i === parts.length - 1 // environ … are files: only a word's last part names one
+      return [parts[i].replace(/[*?[\]]/g, '') || 'x', ...names.filter((x) => re.test(x) && (dot || !x.startsWith('.')) && (last || !PROC_NAMES.has(x)))]
+    })
+    const combos = at.length <= 2 ? choices.reduce((acc, c) => acc.flatMap((a) => c.map((x) => [...a, x])), [[]])
+      : at.flatMap((_, k) => choices[k].map((x) => at.map((__, j) => (j === k ? x : choices[j][0]))))
+    for (const combo of combos) {
+      if (++n > 20000) throw new Error('too many globs to check')
+      const p = [...parts]
+      at.forEach((i, k) => { p[i] = combo[k] })
+      yield cmd.slice(0, m.index) + p.join('/') + cmd.slice(m.index + m[0].length)
+    }
+  }
+}
+
+const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Grep', 'Glob'])
+const READ_TOOLS = new Set(['Read', 'Grep', 'Glob'])
 
 async function main() {
   if (process.env.MM_GUARD_TEST_RAISE === '1') throw new Error('injected') // tests only: an error must deny
@@ -142,19 +287,25 @@ async function main() {
   if (tool === 'Bash') {
     const cmd = inp.command
     if (typeof cmd !== 'string') throw new Error('input: no command')
-    for (const r of rules) if (r.on === 'bash' && r.pre && hit(r, cmd)) answer(r.why)
+    const seen = forms(cmd), globbed = [...new Set(seen.flatMap((f) => [...globForms(f)]))]
+    const check = (pre) => {
+      for (const r of rules) if (r.on === 'bash' && !!r.pre === pre && seen.some((f) => hit(r, f))) answer(r.why)
+      for (const r of rules) if (r.on === 'bash' && !!r.pre === pre && globbed.some((f) => hit(r, f))) answer(`${r.why} (a glob here can name it)`)
+    }
+    check(true)
     const bdCmd = new RegExp(`^(?:(?:~|\\$HOME|/home/[\\w-]+)/\\.mm/(?:system|projects/[\\w.-]+/[\\w.-]+)/bin/|${parts.ROOT}/bin/)?bd$`)
     if (freeOnly(cmd, bdCmd)) return
-    for (const r of rules) if (r.on === 'bash' && !r.pre && hit(r, cmd)) answer(r.why)
+    check(false)
   } else if (FILE_TOOLS.has(tool)) {
     const base = typeof data.cwd === 'string' && data.cwd.startsWith('/') ? data.cwd : ROOT
     const paths = [inp.file_path, inp.notebook_path, inp.path].filter((p) => typeof p === 'string' && p)
+    const glob = tool === 'Glob' ? inp.pattern : inp.glob // Grep's pattern is a regex of the content, not a path
     const seen = []
     for (const p of paths) seen.push(p, `${p}/`, path.resolve(base, p), `${path.resolve(base, p)}/`)
-    if (typeof inp.glob === 'string' && inp.glob) seen.push(inp.glob, ...paths.map((p) => `${path.resolve(base, p)}/${inp.glob}`))
+    if (typeof glob === 'string' && glob) seen.push(glob, path.resolve(base, glob), ...paths.map((p) => `${path.resolve(base, p)}/${glob}`))
     for (const r of rules) {
       if (r.on === 'bash' || (r.on === 'file-write' && READ_TOOLS.has(tool))) continue
-      if (seen.some((s) => hit(r, s))) answer(`${r.why} (${paths[0] || inp.glob})`)
+      if (seen.some((s) => hit(r, s))) answer(`${r.why} (${paths[0] || glob})`)
     }
   }
 }

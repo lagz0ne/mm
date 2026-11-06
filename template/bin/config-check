@@ -109,7 +109,7 @@ for (const d of fs.readdirSync(path.join(P, 'leads'), { withFileTypes: true })) 
 // Optional governance.json (humans only, like setup/): a stricter or wider profile than the default, as data.
 //   read: [path]          extra roots any lead may Read      write: {role: [path]}  extra roots that role may Edit/Write
 //   deny_all: [rule]      denies every role must keep        bash_ok: [regex]       allow rules exempt from the forbidden list
-//   hooks_required: [cmd] PreToolUse hook commands every role's settings must run
+//   hooks_required: [cmd] PreToolUse hook commands every role's settings must run (rendered wrapped: a crash denies)
 // Paths and rules use {home}/{root}; Read/Edit/Write rules get Claude Code's // prefix like the templates.
 let G = {}
 try { G = JSON.parse(fs.readFileSync(path.join(P, 'governance.json'), 'utf8')) } catch (e) { if (fs.existsSync(path.join(P, 'governance.json'))) bad(`governance.json unreadable (${e.message})`) }
@@ -137,13 +137,22 @@ const G_BASH_OK = (G.bash_ok || []).map((x) => new RegExp(x))
 // working folder chooses another; on the tools it reads, for every lead and setup.
 const GUARD = path.join(P, 'bin', 'guard')
 const GUARD_CMD = /^[\w./+-]+$/.test(GUARD) ? GUARD : `'${GUARD.replaceAll("'", "'\\''")}'`
-const GUARD_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Grep']
-/** Every PreToolUse hook command, as written (a command with quotes in it is compared as itself, not as JSON text). */
-const hookCmds = (pre) => (Array.isArray(pre) ? pre : []).flatMap((m) => (Array.isArray(m?.hooks) ? m.hooks : []).map((h) => String(h?.command ?? '')))
-const hasGuard = (h) => (h?.PreToolUse || []).some((e) => typeof e?.matcher === 'string' && GUARD_TOOLS.every((t) => e.matcher.split('|').includes(t))
-  && (e.hooks || []).some((x) => x?.type === 'command' && x.command === GUARD_CMD))
+const GUARD_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Grep', 'Glob']
+// A hook that exits non-zero without its answer lets the call through (Claude Code reads only exit 0's JSON, and exit 1
+// is "go on"); a guard that crashes must deny (sy-in54). So every guard hook runs wrapped: its own answer on exit 0
+// passes through as it is; any other exit (a crash, a syntax error, a missing interpreter) prints a deny instead.
+// The wrapped command runs in a subshell, so an `exec` or `exit` in it ends only that subshell.
+const [DENY_A, DENY_B] = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
+  permissionDecisionReason: '[guard hook] the guard failed (exit @RC@) without an answer: the call is denied; fix the guard or ask the owner' } }).split('@RC@')
+const wrapHook = (cmd) => `mm_g=$( ${cmd}\n); mm_r=$?; if [ "$mm_r" = 0 ]; then [ -z "$mm_g" ] || printf '%s\\n' "$mm_g"; exit 0; fi; `
+  + `printf '%s%s%s\\n' '${DENY_A}' "$mm_r" '${DENY_B}'; exit 0`
+const GUARD_HOOK = wrapHook(GUARD_CMD)
+/** A PreToolUse entry runs cmd (exactly) on every tool the guard reads. */
+const runsHook = (h, cmd) => (h?.PreToolUse || []).some((e) => typeof e?.matcher === 'string' && GUARD_TOOLS.every((t) => e.matcher.split('|').includes(t))
+  && (e.hooks || []).some((x) => x?.type === 'command' && x.command === cmd))
+const hasGuard = (h) => runsHook(h, GUARD_HOOK)
 function guarded(who, j) {
-  if (!hasGuard(j.hooks)) bad(`${who}: settings.json must run the guard hook ${GUARD_CMD} (PreToolUse, matcher ${GUARD_TOOLS.join('|')})`)
+  if (!hasGuard(j.hooks)) bad(`${who}: settings.json must run the guard hook ${GUARD_CMD}, wrapped so a crash denies (PreToolUse, matcher ${GUARD_TOOLS.join('|')}; config-check --render writes it)`)
   if (j.disableAllHooks) bad(`${who}: disableAllHooks is not allowed (it turns the guard off)`)
 }
 try { fs.accessSync(GUARD, fs.constants.X_OK) } catch { bad('bin/guard is missing or not executable (the hook every lead and setup runs)') }
@@ -156,10 +165,11 @@ function render(tmpl, role, assistant = false, worker = null) {
   // governance.json adds its denies and required hooks to every role, so no template can forget one
   let hooks = tmpl.hooks ? JSON.parse(fill(JSON.stringify(tmpl.hooks))) : undefined
   // the guard hook (sy-8t0.5): every lead and setup, first, by this board's own bin/guard; never an assistant's (no hooks)
-  if (!assistant && !hasGuard(hooks)) hooks = { ...(hooks || {}), PreToolUse: [{ matcher: GUARD_TOOLS.join('|'), hooks: [{ type: 'command', command: GUARD_CMD, timeout: 10 }] }, ...(hooks?.PreToolUse || [])] }
+  if (!assistant && !hasGuard(hooks)) hooks = { ...(hooks || {}), PreToolUse: [{ matcher: GUARD_TOOLS.join('|'), hooks: [{ type: 'command', command: GUARD_HOOK, timeout: 10 }] }, ...(hooks?.PreToolUse || [])] }
+  // governance's required hooks (the system board: the brain's guard), wrapped the same way, on the same tools
   for (const h of (G.hooks_required || []).map(gfill)) {
-    if (hookCmds(hooks?.PreToolUse).includes(h)) continue
-    hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: 'Bash|Read|Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: h, timeout: 10 }] }] }
+    if (runsHook(hooks, wrapHook(h))) continue
+    hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: GUARD_TOOLS.join('|'), hooks: [{ type: 'command', command: wrapHook(h), timeout: 10 }] }] }
   }
   const govDeny = [...ALWAYS_DENY.map(gfill), ...BRAIN_DENY, ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? (worker ? worker.deny : mandatoryDeny(role)) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
   // who the session is, in the settings themselves (sy-670): a lead that Paseo resumes from `closed` runs without the
@@ -264,8 +274,7 @@ for (const role of ROLES) {
   }
   // write roots of another role are never allowed (one writer per repo)
   for (const [other, roots] of Object.entries(G_WRITE)) if (other !== role) for (const a of j.permissions?.allow || []) if (/^(Edit|Write)\(/.test(a) && under(a, roots)) bad(`${role}: writes ${other}'s area (${a})`)
-  const cmds = hookCmds(j.hooks?.PreToolUse)
-  for (const h of (G.hooks_required || []).map(gfill)) if (!cmds.includes(h)) bad(`${role}: settings.json must run the hook ${h}`)
+  for (const h of (G.hooks_required || []).map(gfill)) if (!runsHook(j.hooks, wrapHook(h))) bad(`${role}: settings.json must run the hook ${h}, wrapped so a crash denies (matcher ${GUARD_TOOLS.join('|')}; config-check --render writes it)`)
   guarded(role, j)
   if (j.permissions?.defaultMode === 'bypassPermissions') bad(`${role}: bypassPermissions is not allowed`)
   const sk = path.join(P, 'leads', role, '.claude', 'skills')

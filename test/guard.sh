@@ -40,7 +40,7 @@ check "the project renders (config-check --render)" cc "$PROJ" --render
 check "the system board renders" cc "$SYS" --render
 for B in "$PROJ" "$SYS"; do
   n=0; for f in $(settings "$B"); do
-    if jq -e --arg g "$B/bin/guard" '.hooks.PreToolUse[0] | (.matcher | split("|")) as $m | (["Bash","Read","Edit","Write","MultiEdit","NotebookEdit","Grep"] - $m | length == 0) and .hooks[0].type == "command" and .hooks[0].command == $g' "$f" >/dev/null
+    if jq -e --arg g "$B/bin/guard" '.hooks.PreToolUse[0] | (.matcher | split("|")) as $m | (["Bash","Read","Edit","Write","MultiEdit","NotebookEdit","Grep","Glob"] - $m | length == 0) and .hooks[0].type == "command" and (.hooks[0].command | startswith("mm_g=$( " + $g + "\n)"))' "$f" >/dev/null
     then n=$((n+1)); else bad "no guard hook first in ${f#$T/}"; fi
   done
   [ "$n" -ge 4 ] && ok "${B#$T/}: the guard runs first in all $n settings (leads and setup), as $B/bin/guard"
@@ -52,10 +52,20 @@ printf '%s' "$BG" >"$T/bg.sh"   # the hook command as rendered (the installed gu
 check "...with no installed guard: the hook denies (the deny answer, exit 0)" bash -c "out=\$(echo '{}' | sh '$T/bg.sh') && echo \"\$out\" | jq -e '.hookSpecificOutput.permissionDecision == \"deny\"' >/dev/null"
 mkdir -p "$HOME/.local/lib/brain"; printf '#!/bin/sh\necho installed-guard-ran\n' >"$HOME/.local/lib/brain/guard"; chmod +x "$HOME/.local/lib/brain/guard"
 check "...with the installed guard: it runs, and only it answers" bash -c "[ \"\$(echo '{}' | sh '$T/bg.sh')\" = installed-guard-ran ]"
+check "...on Grep and Glob too (sy-in54)" bash -c "for f in $SYS/leads/*/.claude/settings.json; do jq -e '.hooks.PreToolUse[1].matcher | split(\"|\") | index(\"Grep\") and index(\"Glob\")' \"\$f\" >/dev/null || exit 1; done"
+printf '#!/bin/sh\necho half-an-answer; exit 1\n' >"$HOME/.local/lib/brain/guard"
+check "...an installed guard that crashes (exit 1): the hook denies, and says the exit (sy-in54)" bash -c "out=\$(echo '{}' | sh '$T/bg.sh'); [ \$? = 0 ] && echo \"\$out\" | jq -e '.hookSpecificOutput.permissionDecision == \"deny\" and (.hookSpecificOutput.permissionDecisionReason | test(\"exit 1\"))' >/dev/null"
+printf '#!/bin/sh\nexit 2\n' >"$HOME/.local/lib/brain/guard"
+check "...exit 2 with no answer: denied too" bash -c "echo '{}' | sh '$T/bg.sh' | jq -e '.hookSpecificOutput.permissionDecision == \"deny\"' >/dev/null"
 rm -rf "$HOME/.local/lib/brain"
 check "an assistant does not get the guard (a read-only assistant has no tool it reads)" bash -c "! grep -q '$SYS/bin/guard' '$SYS/assistants/_template/.claude/settings.json'"
-CMD=$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$PROJ/leads/code/.claude/settings.json")
-check "the rendered hook command runs: sudo true is denied, git status passes" bash -c "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sudo true\"}}' | sh -c '$CMD' | grep -q '\"deny\"' && test -z \"\$(printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"}}' | sh -c '$CMD')\""
+jq -r '.hooks.PreToolUse[0].hooks[0].command' "$PROJ/leads/code/.claude/settings.json" >"$T/hook.sh"
+check "the rendered hook command runs: sudo true is denied, git status passes" bash -c "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sudo true\"}}' | sh '$T/hook.sh' | grep -q '\"deny\"' && test -z \"\$(printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"}}' | sh '$T/hook.sh')\""
+cp -p "$PROJ/bin/guard" "$T/guard.keep"; printf '#!/usr/bin/env node\nthis is not javascript(\n' >"$PROJ/bin/guard"
+check "...a guard that does not parse (node exits 1): the rendered hook denies (sy-in54)" bash -c "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"}}' | sh '$T/hook.sh' 2>/dev/null | jq -e '.hookSpecificOutput.permissionDecision == \"deny\"' >/dev/null"
+rm -f "$PROJ/bin/guard"
+check "...a guard that is gone: the rendered hook denies" bash -c "printf '%s' '{}' | sh '$T/hook.sh' 2>/dev/null | jq -e '.hookSpecificOutput.permissionDecision == \"deny\"' >/dev/null"
+cp -p "$T/guard.keep" "$PROJ/bin/guard"
 
 echo "== config-check refuses a settings file without it"
 f="$PROJ/leads/code/.claude/settings.json"; cp "$f" "$T/keep.json"
@@ -65,6 +75,10 @@ jq --arg g "$T/other/bin/guard" '.hooks.PreToolUse[0].hooks[0].command = $g' "$T
 check "...a hook naming another guard: refused" bash -c "! cc '$PROJ' >/dev/null 2>&1"
 jq '.hooks.PreToolUse[0].matcher = "Bash"' "$T/keep.json" >"$f"
 check "...the guard on Bash only: refused" bash -c "! cc '$PROJ' >/dev/null 2>&1"
+jq '.hooks.PreToolUse[0].matcher = "Bash|Read|Edit|Write|MultiEdit|NotebookEdit|Grep"' "$T/keep.json" >"$f"
+check "...the guard without Glob: refused (sy-in54)" bash -c "! cc '$PROJ' >/dev/null 2>&1"
+jq --arg g "$PROJ/bin/guard" '.hooks.PreToolUse[0].hooks[0].command = $g' "$T/keep.json" >"$f"
+check "...the guard not wrapped (a crash would let the call through): refused (sy-in54)" bash -c "! cc '$PROJ' >'$T/cc.out' 2>&1 && grep -q 'wrapped so a crash denies' '$T/cc.out'"
 jq '.disableAllHooks = true' "$T/keep.json" >"$f"
 check "...disableAllHooks: refused" bash -c "! cc '$PROJ' >'$T/cc.out' 2>&1 && grep -q 'disableAllHooks is not allowed' '$T/cc.out'"
 cp "$T/keep.json" "$f"
@@ -81,6 +95,8 @@ check "...and a render puts a removed hook back" bash -c "jq 'del(.hooks)' '$T/k
 echo "== what it denies and allows (cases: test/lib/guard-cases.mjs)"
 check "a project lead: the brain guard's cases that apply, the spellings it adds, and 34 normal commands" node "$SRC/test/lib/guard-run.mjs" "$PROJ" BRAIN OWN NORMAL
 sed -n 's/^\(BRAIN\|OWN\|NORMAL\): /       /p' "$T/check.out"
+check "normalizing (sy-in54): quoted, escaped, prefixed, relative and globbed forms are denied; normal work passes" node "$SRC/test/lib/guard-run.mjs" "$PROJ" NORM
+sed -n 's/^NORM: /       /p' "$T/check.out"
 check "the system board: sudo -n is its ops' and review's (the brain's guard governs it); every other rule holds" node "$SRC/test/lib/guard-run.mjs" "$SYS" SYSTEM NORMAL
 sed -n 's/^\(SYSTEM\|NORMAL\): /       /p' "$T/check.out"
 cp -r "$PROJ" "$T/boxed"; printf 'profile: system\nbox: true\n' >"$T/boxed/.mm-answers.yaml"

@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process'
 import * as CASES from './guard-cases.mjs'
 
 const [root, ...lists] = process.argv.slice(2)
-const KEY = { Bash: 'command', Read: 'file_path', Edit: 'file_path', Write: 'file_path', NotebookEdit: 'notebook_path', Grep: 'path' }
+const KEY = { Bash: 'command', Read: 'file_path', Edit: 'file_path', Write: 'file_path', NotebookEdit: 'notebook_path', Grep: 'path', Glob: 'pattern' }
 function call(tool, value) {
   const input = { [KEY[tool]]: value, ...(tool === 'Grep' ? { pattern: 'x' } : {}), ...(tool === 'Edit' ? { old_string: 'a', new_string: 'b' } : {}) }
   return new Promise((resolve) => {
