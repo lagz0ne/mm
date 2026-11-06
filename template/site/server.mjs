@@ -82,7 +82,7 @@ async function accessEmail(req) {
 
 // Self-identification: the visitor picks a name (cookie board_user). Lead and system names are reserved, so a human
 // can never post as a lead. A verified Access login, when configured, always wins.
-const RESERVED = new Set([...ROLES, 'setup', 'wake', 'watchdog', 'smoke', 'ui', 'beads', 'system', 'admin', 'brain', 'mm-upstream'])
+const RESERVED = new Set([...ROLES, 'setup', 'wake', 'watchdog', 'smoke', 'ui', 'beads', 'system', 'admin', 'brain', 'mm-upstream', 'bridge'])
 function cookieUser(req) {
   const m = /(?:^|;\s*)board_user=([^;]*)/.exec(req.headers.cookie || '')
   const name = m ? decodeURIComponent(m[1]).trim().toLowerCase() : ''
@@ -123,7 +123,11 @@ async function readBody(req) {
 // members steer like the owner (create, prioritise, assign, comment, close, reopen), but only the owner gives the T2 go
 // (`approved`) or changes a risk tier (t1/t2/t3), and only the leads sign off or audit. Each write carries its
 // author's role: `by:<role>` on a new item, a `[<role>]` prefix on a comment. Unknown label fields: refused.
+// The local side (no gateway assertion: a self-chosen name, or the default actor) never adds or removes `approved`
+// (sy-h2yt): it says nothing signed about who writes. The owner gives the T2 go on the public side, signed in as the
+// owner, or with the bridge's Approve button; the Supervisor counts `approved` only from those two actors.
 const OWNER_ONLY = new Set(['approved', 't1', 't2', 't3']), LEADS_ONLY = new Set(['signed-off', 'audit'])
+const SIGNED_ONLY = new Set(['approved'])
 function railRefusal(role, added, removed) {
   for (const l of [...added, ...removed]) {
     if (LEADS_ONLY.has(l)) return `only the leads change "${l}"`
@@ -132,27 +136,40 @@ function railRefusal(role, added, removed) {
   }
   return null
 }
+function localRefusal(added, removed) {
+  for (const l of [...added, ...removed]) {
+    if (SIGNED_ONLY.has(l)) return `"${l}" is not changed on the local side (the owner gives the T2 go signed in on the board's public address, or with the bridge's Approve button)`
+  }
+  return null
+}
 async function currentLabels(id) {
   const r = await fetch(new URL(`/v0/beads/issues/${encodeURIComponent(id)}`, BD)).then((x) => x.json()).catch(() => null)
   return Array.isArray(r?.labels) ? r.labels : null
 }
-async function rails(req, apiPath, data) {
-  const g = req.gateway; if (!g) return null // the local side: as before
-  if (req.method === 'POST' && apiPath === '/v0/beads/issues') {
-    const why = railRefusal(g.r, data.labels || [], []); if (why) return why
-    data.labels = [...new Set([...(data.labels || []), `by:${g.r}`])]
-  } else if (req.method === 'PATCH') {
-    const patch = data.patch || {}, keys = Object.keys(patch).filter((k) => /label/i.test(k))
-    if (keys.some((k) => !['labels', 'add_labels', 'remove_labels'].includes(k))) return 'unknown label field'
-    let added = [...(patch.add_labels || [])], removed = [...(patch.remove_labels || [])]
-    if (patch.labels) {
-      const cur = await currentLabels(apiPath.split('/').pop()); if (!cur) return 'could not read the item to check its labels'
-      added = added.concat(patch.labels.filter((l) => !cur.includes(l))); removed = removed.concat(cur.filter((l) => !patch.labels.includes(l)))
-    }
-    const why = railRefusal(g.r, added, removed); if (why) return why
-  } else if (apiPath.endsWith('/comments')) {
-    data.text = `[${g.r}] ${String(data.text || '')}`
+const LABEL_FIELDS = { create: ['labels'], patch: ['labels', 'add_labels', 'remove_labels'] }
+const names = (v) => v === undefined || (Array.isArray(v) && v.every((l) => typeof l === 'string'))
+/** The labels a write adds and removes: { added, removed }, or { why } when it can't be told (a field it does not know). */
+async function labelChange(req, apiPath, data) {
+  const create = req.method === 'POST' && apiPath === '/v0/beads/issues'
+  if (!create && req.method !== 'PATCH') return { added: [], removed: [] }
+  const obj = create ? data : (data.patch || {}), known = LABEL_FIELDS[create ? 'create' : 'patch']
+  if (Object.keys(obj).some((k) => /label/i.test(k) && !known.includes(k))) return { why: 'unknown label field' }
+  if (!known.every((k) => names(obj[k]))) return { why: 'labels are a list of names' }
+  if (create) return { added: [...(obj.labels || [])], removed: [] }
+  let added = [...(obj.add_labels || [])], removed = [...(obj.remove_labels || [])]
+  if (obj.labels) {
+    const cur = await currentLabels(apiPath.split('/').pop()); if (!cur) return { why: 'could not read the item to check its labels' }
+    added = added.concat(obj.labels.filter((l) => !cur.includes(l))); removed = removed.concat(cur.filter((l) => !obj.labels.includes(l)))
   }
+  return { added, removed }
+}
+async function rails(req, apiPath, data) {
+  const g = req.gateway, ch = await labelChange(req, apiPath, data)
+  if (ch.why) return ch.why
+  if (!g) return localRefusal(ch.added, ch.removed) // the local side: as before, but approved
+  const why = railRefusal(g.r, ch.added, ch.removed); if (why) return why
+  if (req.method === 'POST' && apiPath === '/v0/beads/issues') data.labels = [...new Set([...(data.labels || []), `by:${g.r}`])]
+  else if (apiPath.endsWith('/comments')) data.text = `[${g.r}] ${String(data.text || '')}`
   return null
 }
 
@@ -166,7 +183,7 @@ async function proxy(req, res, apiPath, search) {
     try { data = JSON.parse((await readBody(req)) || '{}') } catch { return send(res, 400, { title: 'Bad JSON' }) }
     const actor = who(req)
     const refused = await rails(req, apiPath, data)
-    if (refused) { log('info', `refused on the public side: ${refused}`, { op: 'rails', actor, role: req.gateway?.r, path: apiPath }); return send(res, 403, { title: `Not allowed: ${refused}.` }) }
+    if (refused) { log('info', `refused on the ${req.gateway ? 'public' : 'local'} side: ${refused}`, { op: 'rails', actor, role: req.gateway?.r, path: apiPath }); return send(res, 403, { title: `Not allowed: ${refused}.` }) }
     if (apiPath.endsWith('/comments')) { data.author = actor; delete data.actor } else { data.actor = actor }
     if (req.method === 'POST' && apiPath === '/v0/beads/issues') data.owner = actor
     body = JSON.stringify(data)
