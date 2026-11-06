@@ -1,6 +1,7 @@
 // Zero side effects (sy-8w1): everything mm touches lives under $MM_HOME, but for the boot unit and a PATH line. The list is
 // env.ts outsidePaths() (plus the manifest's secret inputs, and the tools mm manages); here are its doctor check and the
-// one-time move of an older box's folders (`mm up`, `mm onboard`, `mm doctor --fix`).
+// one-time move of an older box's folders: only `mm onboard` and `mm doctor --fix`, never `mm up` (a test's mm up
+// must not move live folders; until the move, mm uses what portlessDir() finds).
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { DIRS, HOME, outsidePaths, run, tilde, which, within, type Outside } from './env'
@@ -59,11 +60,11 @@ export function outsideChecks(): Row[] {
     else if (o.use === 'theirs') row(o.id, 'ok', `${at}: ${o.what}, not mm's${o.note ? `; ${o.note}` : ''}`)
     else if (o.use === 'move' && leftLink(o)) row(o.id, 'warn', `${at} is the link mm left to ${to} (for what still ran with the old path)`,
       restartedSince(o) ? 'mm doctor --fix (removes the link)' : `after the process manager restarts: mm doctor --fix (or rm ${at})`)
-    else if (o.use === 'move') row(o.id, 'warn', `${at}: ${o.what}; mm keeps it in ${to}`, 'mm doctor --fix (or the next mm up) moves it')
+    else if (o.use === 'move') row(o.id, 'warn', `${at}: ${o.what}; mm keeps it in ${to}`, 'mm doctor --fix (or mm onboard) moves it')
     else row(o.id, 'warn', `${at}: ${o.what}${o.note ? `; ${o.note}` : ''}`, o.use === 'old' ? `rm -r ${at} once nothing runs from it` : undefined)
   }
   for (const t of toolsOutside()) row(`tool ${t.name}`, 'warn', `runs from ${tilde(t.path)}, outside ${tilde(DIRS.mm)}`, 'mm onboard (installs its own into ~/.mm)')
-  for (const p of secretsOutside()) row('secret', 'warn', `${tilde(p)}: a secret input's file outside ${tilde(DIRS.mm)}`, 'the vault holds secrets (docs/vault.md); mm never moves one')
+  for (const p of secretsOutside()) row('secret', 'warn', `${tilde(p)}: a secret input's file outside ${tilde(DIRS.mm)}; the vault takes it (sealed into ${tilde(DIRS.vault)}, docs/vault.md)`, 'mm never moves a secret: seal it into the vault, then remove the file')
   if (!rows.some((r) => r.status !== 'ok')) row('outside $MM_HOME', 'ok', `nothing of mm's outside ${tilde(DIRS.mm)} but the allowed`)
   return rows
 }

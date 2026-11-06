@@ -64,7 +64,7 @@ for (const [k, v] of Object.entries(toolEnv())) process.env[k] ||= v
 
 /**
  * Every path mm itself uses, or used, outside $MM_HOME: the one list `mm doctor` checks ("outside $MM_HOME") and
- * `mm up` / `mm doctor --fix` move from. `allowed`: outside by design. `move`: mm moves it to `to`, once, by rename and
+ * `mm onboard` / `mm doctor --fix` move from (never `mm up`). `allowed`: outside by design. `move`: mm moves it to `to`, once, by rename and
  * only into an empty place; `link`: a link is left at the old path while the process manager runs (its processes may
  * still use the old path until it restarts). `old`: mm no longer uses it, but doesn't move it (something not mm's may
  * still run from it): removed by hand. `later`: still used; its move is another item's. `theirs`: not mm's.
@@ -77,7 +77,7 @@ export interface Outside {
 export function outsidePaths(): Outside[] {
   const h = (...p: string[]) => join(HOME, ...p)
   const legacy = one ? [] : (['projects', 'brain', 'system', 'backups', 'archive'] as const).map((k): Outside => ({
-    id: `layout ${k}`, path: DIRS[k], what: `the ${k} folder (legacy layout)`, use: 'later', to: join(MM, k), note: 'the one-root move (the whole layout at once, by ops; not mm up)' }))
+    id: `layout ${k}`, path: DIRS[k], what: `the ${k} folder (legacy layout)`, use: 'later', to: join(MM, k), note: 'the one-root move (the whole layout at once, by ops)' }))
   const runtime = process.env.MM_SECRETS_DIR || join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 0}`, 'mm', 'secrets')
   return [
     { id: 'boot unit', path: h('.config', 'systemd', 'user', 'mm-pc.service'), what: 'the systemd user unit that starts the process manager at boot', use: 'allowed' },

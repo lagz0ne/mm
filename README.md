@@ -24,8 +24,9 @@ ones are there.
 Everything mm installs, runs and keeps lives under `~/.mm` (`$MM_HOME`): its tools, the process manager's files and
 settings, the names proxy's state, the projects, the brain, the vault, the backups. Only two things are outside: the
 systemd user unit that starts the process manager at boot, and a PATH line in `~/.profile` / `~/.bashrc`. `mm doctor`
-lists what it finds outside ("outside $MM_HOME"); on a box set up by an older mm, `mm doctor --fix` (or the next
-`mm up`) moves the rest in once, by rename and only into an empty place.
+lists what it finds outside ("outside $MM_HOME"); on a box set up by an older mm, `mm doctor --fix` (or `mm onboard`)
+moves the rest in once, by rename and only into an empty place. `mm up` never moves anything: until the move, it keeps
+using the old folders.
 
 ## Use
 

@@ -8,7 +8,8 @@
 #  2. doctor's "outside $MM_HOME" check: ok for the allowed ones; a planted old path, an old npm prefix's tool, an old
 #     tool store, as warn with the move
 #  3. the move of an old layout (~/.portless, ~/.config/process-compose): by rename, a link left only while the process
-#     manager runs, removed once it restarted; refused when both are there; idempotent
+#     manager runs, removed once it restarted; refused when both are there; idempotent; only by onboard and doctor
+#     --fix: mm up moves nothing (it keeps the old ~/.portless meanwhile); a secret's file outside: warn, the vault's
 #  4. installs stay in MM_HOME: npm's cache (onboard reinstalls a tool found in ~/.npm-global), claude's release binary
 #     (checksum checked, a wrong one refused)
 #   test/outside.sh [mm command]       default: bun <repo>/src/cli.ts
@@ -107,6 +108,14 @@ is "~/.portless: warn, kept in ~/.mm/portless, fix doctor --fix ($(row 'portless
 is "~/.config/process-compose: warn, kept in ~/.mm/pc/config" bash -c "jq -e '.[] | select(.item == \"process-compose config\" and .status == \"warn\" and (.detail | test(\"~/.mm/pc/config\")))' '$T/doc2.json' >/dev/null"
 is "portless run from ~/.npm-global: warn, fix mm onboard" bash -c "jq -e '.[] | select(.item == \"tool portless\" and .status == \"warn\" and (.detail | test(\"~/.npm-global/bin/portless\")) and (.fix | test(\"mm onboard\")))' '$T/doc2.json' >/dev/null"
 is "the old npm prefix and the old tool store: warn, removed by hand" bash -c "jq -e '[.[] | select((.item == \"npm tools (old prefix)\" or .item == \"tool store victoria-logs\") and .status == \"warn\" and (.fix | test(\"^rm -r \")))] | length == 2' '$T/doc2.json' >/dev/null"
+is "a secret input's file outside MM_HOME: warn, the vault takes it, mm never moves it" bash -c "mkdir -p '$HOME/.config/secrets' && printf test-dummy >'$HOME/.config/secrets/claude-oauth.token' && chmod 600 '$HOME/.config/secrets/claude-oauth.token' && $MMC doctor -o json 2>/dev/null | jq -e '.[] | select(.layer == \"outside\" and .item == \"secret\" and .status == \"warn\" and (.detail | test(\"claude-oauth.token.*the vault takes it\")) and (.fix | test(\"never moves\")))' >/dev/null; rc=\$?; rm -rf '$HOME/.config/secrets'; exit \$rc"
+"$BUN" -e "
+  import { up } from '$SRC/src/project.ts'
+  try { up('$T/no-such-project') } catch {}" >/dev/null 2>&1
+is "mm up moves nothing: ~/.portless and ~/.config/process-compose stay real folders (only onboard and doctor --fix move)" \
+  bash -c "[ -d '$HOME/.portless' ] && ! [ -L '$HOME/.portless' ] && [ -f '$HOME/.portless/routes.json' ] && [ -d '$HOME/.config/process-compose' ] && ! [ -e '$MM_HOME/portless' ] && ! [ -e '$MM_HOME/pc/config' ]"
+is "...and gives the projects' wrappers the old ~/.portless meanwhile (one folder for all)" \
+  bash -c "\"$BUN\" -e \"import { portlessDir } from '$SRC/src/env.ts'; console.log(portlessDir())\" | grep -qx '$HOME/.portless'"
 
 echo "== 3. the move: by rename, a link only while the process manager runs, idempotent"
 rm -f "$T/pc.up"   # not running: nothing can use the old paths
@@ -125,8 +134,8 @@ is "both ~/.portless and ~/.mm/portless there: refused, says why, exit 1, nothin
 "$BUN" -e "import { writeBase } from '$SRC/src/pc.ts'; writeBase()"
 is "...while ~/.portless is a real folder, the proxy and the launcher keep using it (one folder for all, never split)" \
   bash -c "grep -q 'PORTLESS_STATE_DIR=$HOME/.portless' '$MM_HOME/pc/base.yaml' && grep -qx 'export PORTLESS_STATE_DIR=\"$HOME/.portless\"' '$MM_HOME/bin/mm-pc-up'"
-up_out=$("$BUN" -e "import { moveOutside } from '$SRC/src/outside.ts'; console.log(JSON.stringify(moveOutside()))")
-is "mm up's move (moveOutside) refuses the same way, without unlinking or moving" bash -c "echo '$up_out' | jq -e 'length == 1 and .[0].status == \"refused\"' >/dev/null"
+ob_out=$("$BUN" -e "import { moveOutside } from '$SRC/src/outside.ts'; console.log(JSON.stringify(moveOutside()))")
+is "onboard's move (moveOutside) refuses the same way, without unlinking or moving" bash -c "echo '$ob_out' | jq -e 'length == 1 and .[0].status == \"refused\"' >/dev/null"
 
 newhome live; touch "$T/pc.up"   # the process manager runs: a link is left for its processes
 mkdir -p "$HOME/.portless" "$MM_HOME/portless"; echo '{}' >"$HOME/.portless/routes.json"   # an empty target is fine
