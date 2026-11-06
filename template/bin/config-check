@@ -155,8 +155,16 @@ function guarded(who, j) {
   if (!hasGuard(j.hooks)) bad(`${who}: settings.json must run the guard hook ${GUARD_CMD}, wrapped so a crash denies (PreToolUse, matcher ${GUARD_TOOLS.join('|')}; config-check --render writes it)`)
   if (j.disableAllHooks) bad(`${who}: disableAllHooks is not allowed (it turns the guard off)`)
 }
+// allow-only (sy-txfn): dontAsk's effect for a read or board worker, which Paseo starts in auto (it has no dontAsk): a
+// PreToolUse hook on every tool, first, that refuses whatever the worker's own allow list does not name (its rules:
+// bin/lib/allow-only.mjs). `|| exit 2`: if node itself fails, the call is blocked, not let through.
+const ALLOW_ONLY = path.join(P, 'bin', 'lib', 'allow-only.mjs')
+const shq = (s) => (/^[\w./+-]+$/.test(s) ? s : `'${s.replaceAll("'", "'\\''")}'`)
+const allowOnlyCmd = (kind, folder) => `${shq(ALLOW_ONLY)} ${kind} ${shq(folder)} || exit 2`
+try { fs.accessSync(ALLOW_ONLY, fs.constants.X_OK) } catch { bad('bin/lib/allow-only.mjs is missing or not executable (the hook of every read and board worker)') }
 try { fs.accessSync(GUARD, fs.constants.X_OK) } catch { bad('bin/guard is missing or not executable (the hook every lead and setup runs)') }
-// worker: { actor, deny } for a worker's folder (sy-asaw): its own actor, and its denies instead of its lead's
+// worker: { actor, deny, allowOnly? } for a worker's folder (sy-asaw): its own actor, and its denies instead of its
+// lead's; allowOnly (read and board workers, sy-txfn): the allow-only hook's command, put first
 function render(tmpl, role, assistant = false, worker = null) {
   const fill = (v) => gfill(v).replaceAll('{project}', projectName())
     .replace(/\{url:([\w-]+)\}/g, (m, n) => svcUrl(n) || m) // where the process manager put that service
@@ -171,6 +179,8 @@ function render(tmpl, role, assistant = false, worker = null) {
     if (runsHook(hooks, wrapHook(h))) continue
     hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: GUARD_TOOLS.join('|'), hooks: [{ type: 'command', command: wrapHook(h), timeout: 10 }] }] }
   }
+  if (worker?.allowOnly) hooks = { ...(hooks || {}), PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: worker.allowOnly, timeout: 10 }] },
+    ...(hooks?.PreToolUse || []).filter((e) => !hookCmds([e]).includes(worker.allowOnly))] }
   const govDeny = [...ALWAYS_DENY.map(gfill), ...BRAIN_DENY, ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? (worker ? worker.deny : mandatoryDeny(role)) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
   // who the session is, in the settings themselves (sy-670): a lead that Paseo resumes from `closed` runs without the
   // env bin/lead gave it at start, but Claude Code applies this to every session in this folder, however it started
@@ -303,7 +313,9 @@ if (fs.existsSync(path.join(P, 'setup', '.claude', 'settings.tmpl.json'))) {
 //   write (platform): also the machine's mm altogether, bin/brain, and every board write;
 //   read (review): also Edit/Write/NotebookEdit altogether, git's writing commands, rm, and every board write;
 //   board (ops): as read, but it may comment (its board actor is <role>/<name>).
-// read and board workers refuse whatever is not allowed (defaultMode dontAsk), so no request reaches a phone.
+// read and board workers refuse whatever is not allowed, so no request reaches a phone: Paseo starts every worker in
+// auto (its Claude provider has no dontAsk), and the allow-only hook, first on every tool, denies what no allow rule of
+// the worker's own settings names (defaultMode dontAsk stays in the file, for a session started any other way).
 const BOARD_WRITE = ['bd', 'bin/bd'].flatMap((b) => ['comments add', 'update', 'close', 'create', 'reopen', 'label', 'dep', 'delete', 'assign', 'edit', 'set-state'].map((c) => `Bash(${b} ${c}*)`))
 const MM_ACTS = ['update', 'up', 'restart', 'new', 'archive', 'restore', 'doop', 'box', 'system', 'config set', 'cron', 'onboard', 'install', 'revoke', 'expose'].map((c) => `Bash(mm ${c}*)`)
 const GIT_WRITE = ['commit', 'add', 'checkout', 'switch', 'reset', 'rebase', 'merge', 'stash', 'branch', 'worktree', 'cherry-pick', 'revert', 'clean', 'restore', 'am', 'apply', 'pull', 'fetch', 'config', 'rm', 'mv', 'gc', 'update-ref'].map((c) => `Bash(git ${c}*)`)
@@ -346,7 +358,8 @@ for (const f of WF) {
     const repo = s.repoRaw.startsWith('{') ? s.repoRaw : `/${s.repo}` // a placeholder, or //<absolute> (Read/Edit/Write form)
     const filled = JSON.parse(JSON.stringify(t).replaceAll('{worktree}', `{root}/worktrees/${f.dir}`).replaceAll('{repo}', repo))
     fs.mkdirSync(path.dirname(out), { recursive: true })
-    fs.writeFileSync(out, JSON.stringify(render(filled, f.role, false, { actor: `${f.role}/${f.name}`, deny }), null, 2) + '\n')
+    const allowOnly = s.kind === 'write' ? undefined : allowOnlyCmd(s.kind, `${R}/worktrees/${f.dir}`)
+    fs.writeFileSync(out, JSON.stringify(render(filled, f.role, false, { actor: `${f.role}/${f.name}`, deny, allowOnly }), null, 2) + '\n')
   }
   let j
   try { j = JSON.parse(fs.readFileSync(out, 'utf8')) } catch { bad(`${who}: missing or invalid .claude/settings.local.json (config-check --render)`); continue }
@@ -357,6 +370,10 @@ for (const f of WF) {
   const mode = j.permissions?.defaultMode
   if (mode === 'bypassPermissions') bad(`${who}: bypassPermissions is not allowed`)
   if (s.kind !== 'write' && mode !== 'dontAsk') bad(`${who}: a ${s.kind} worker's defaultMode must be dontAsk (refuse, never ask)`)
+  if (s.kind !== 'write') {
+    const first = j.hooks?.PreToolUse?.[0], cmd = allowOnlyCmd(s.kind, `${R}/worktrees/${f.dir}`)
+    if (!(first?.matcher === '*' && (first.hooks || []).some((x) => x?.type === 'command' && x.command === cmd))) bad(`${who}: a ${s.kind} worker must run the allow-only hook first, on every tool (PreToolUse, matcher *): ${cmd}`)
+  }
   const readRoot = (a) => (/^Read\(\/(\/.*?)(?:\/\*\*)?\)$/.exec(a) || [])[1]
   const okGov = (a) => G_BASH_OK.some((re) => re.test(a)) || (!!readRoot(a) && underAny(readRoot(a), [...G_READ, ...(G_WRITE[f.role] || [])]))
   const mineW = (a) => new RegExp(`^(Edit|Write)\\(//(tmp/|${esc(R.slice(1))}/worktrees/${esc(f.dir)}/)`).test(a)

@@ -130,7 +130,9 @@ async function start(P, role, name, o) {
   const project = projectName(), actor = `${role}/${name}`, model = o.model || s.model || 'claude/claude-opus-5-5'
   const prompt = `You are ${actor}, a worker of the ${role} lead of ${project}, for item ${o.item}. Your folder: ${W}. ` +
     'Follow ../CLAUDE.md (the worker brief): your final reply is your report, and the lead reads only that.\n\nThe lead\'s brief:\n\n' + brief
-  const args = ['run', '--no-wait', '-q', '--title', `${project} · ${role} worker ${name} on ${o.item}`, '--provider', model, '--mode', s.kind === 'write' ? 'auto' : 'dontAsk',
+  // every kind in auto (Paseo's Claude provider has no dontAsk, and default would ask the owner's phone): a read or
+  // board worker's allow-only hook refuses what its allow list does not name, first (config-check renders it)
+  const args = ['run', '--no-wait', '-q', '--title', `${project} · ${role} worker ${name} on ${o.item}`, '--provider', model, '--mode', 'auto',
     '--cwd', W, '--label', `project=${project}`, '--label', `role=${role}-worker`, '--label', `worker=${name}`, '--label', `item=${o.item}`,
     '--env', `CLAUDE_CONFIG_DIR=${cdir}`, '--env', `BEADS_ACTOR=${actor}`, '--env', `GIT_AUTHOR_NAME=${actor}`, '--env', `GIT_COMMITTER_NAME=${actor}`,
     '--env', `GIT_AUTHOR_EMAIL=${role}@${project}.local`, '--env', `GIT_COMMITTER_EMAIL=${role}@${project}.local`, '--env', `PATH=${path.join(P, 'bin')}:${E.PATH || '/usr/bin:/bin'}`, prompt]

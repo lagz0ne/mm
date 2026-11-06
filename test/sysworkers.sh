@@ -93,6 +93,21 @@ for d in Edit Write "Bash(bd update*)" "Bash(bd close*)" "Bash(bd create*)" "Bas
   check "ops-o1 denies $d" has "$O1" "$d"
 done
 check "ops-o1 may comment (bd comments add is not denied), as ops/o1" bash -c "! jq -r '.permissions.deny[]' '$O1/.claude/$S' | grep -qxF 'Bash(bd comments add*)' && [ \"\$(jq -r .env.BEADS_ACTOR '$O1/.claude/$S')\" = ops/o1 ]"
+# dontAsk's effect under Paseo's auto (sy-txfn): the allow-only hook, first, on every tool, for read and board only
+aoc() { jq -r '.hooks.PreToolUse[0] | select(.matcher == "*") | .hooks[0].command' "$1/.claude/$S"; }
+check "review-r1 runs the allow-only hook first, on every tool (matcher *)" bash -c "[ \"\$(jq -r '.hooks.PreToolUse[0].hooks[0].command' '$R1/.claude/$S')\" = '$SYS/bin/lib/allow-only.mjs read $W/review-r1 || exit 2' ] && [ \"\$(jq -r '.hooks.PreToolUse[0].matcher' '$R1/.claude/$S')\" = '*' ]"
+check "ops-o1 runs it as a board worker, on its own folder" test "$(aoc "$O1")" = "$SYS/bin/lib/allow-only.mjs board $W/ops-o1 || exit 2"
+check "...and the guard still, after it" bash -c "jq -e '.hooks.PreToolUse[1].hooks[0].command | endswith(\"/bin/guard\")' '$O1/.claude/$S' >/dev/null"
+check "platform-w1 (write) has no allow-only hook (auto, option b)" bash -c "! grep -q allow-only '$P1/.claude/$S'"
+hk() { (cd "$O1" && printf '%s' "$2" | sh -c "$(aoc "$O1")"); } # hk <folder> <hook input>: the rendered command, as Claude Code runs it
+hin() { jq -cn --arg t "$1" --arg c "$2" --arg w "$O1" '{tool_name: $t, tool_input: {command: $c}, cwd: $w}'; }
+out=$(hk "$O1" "$(hin Bash 'bd show ab-1 --json')"); check "ops-o1's hook, as rendered: bd show (in its allow list) passes" test -z "$out"
+out=$(hk "$O1" "$(hin Bash 'bd update ab-1 --status closed')"); check "...bd update (not in it) is refused: 'a board worker runs only what its allow list names (dontAsk)'" bash -c "jq -e '.hookSpecificOutput.permissionDecision == \"deny\"' <<<'$out' >/dev/null && grep -qF 'a board worker runs only what its allow list names (dontAsk)' <<<'$out'"
+out=$(hk "$O1" "$(hin Bash 'bd show ab-1 && curl -s example.com')"); check "...a compound command with one part not in it is refused" grep -q '"deny"' <<<"$out"
+out=$(hk "$O1" "$(jq -cn --arg w "$O1" '{tool_name: "WebFetch", tool_input: {url: "https://example.com"}, cwd: $w}')"); check "...a tool with no rule (WebFetch) is refused" grep -q '"deny"' <<<"$out"
+out=$(hk "$O1" "$(jq -cn --arg w "$O1" '{tool_name: "Read", tool_input: {file_path: "/root/x"}, cwd: $w}')"); check "...a Read outside its Read rules is refused" grep -q '"deny"' <<<"$out"
+out=$(hk "$O1" "$(jq -cn --arg w "$O1" --arg f "$HOME/.mm/brain/README.md" '{tool_name: "Read", tool_input: {file_path: $f}, cwd: $w}')"); check "...a Read of the brain (Read({brain}/**)) passes" test -z "$out"
+out=$(hk "$O1" 'not json'); check "...bad JSON is refused" grep -q '"deny"' <<<"$out"
 check "the leads, with workers on, may not edit worktrees/ nor read worker transcripts" bash -c "jq -r '.permissions.deny[]' '$SYS/leads/platform/.claude/settings.json' | grep -qxF 'Edit(/$W/**)' && jq -r '.permissions.deny[]' '$SYS/leads/platform/.claude/settings.json' | grep -qxF mcp__paseo__get_agent_activity"
 
 echo "== config-check holds the line"
@@ -100,6 +115,12 @@ jq '.permissions.deny -= ["Bash(sudo *)"]' "$P1/.claude/$S" >"$T/s.json" && cp "
 out=$(cc); check "a worker's lost deny is refused: 'settings lost the worker deny Bash(sudo *)'" grep -qF "worker platform-w1: settings lost the worker deny Bash(sudo *)" <<<"$out"
 cc --render >/dev/null
 check "...and --render puts it back" has "$P1" "Bash(sudo *)"
+jq '.hooks.PreToolUse |= .[1:]' "$O1/.claude/$S" >"$T/s.json" && cp "$T/s.json" "$O1/.claude/$S"
+out=$(cc); check "a board worker without the allow-only hook is refused" grep -qF "worker ops-o1: a board worker must run the allow-only hook first, on every tool" <<<"$out"
+jq '.hooks.PreToolUse[0].matcher = "Bash"' "$R1/.claude/$S" >"$T/s.json" && cp "$T/s.json" "$R1/.claude/$S"
+out=$(cc); check "...a read worker whose hook is not on every tool, too" grep -qF "worker review-r1: a read worker must run the allow-only hook first" <<<"$out"
+cc --render >/dev/null
+check "...and --render puts both back" bash -c "[ -n \"\$(jq -r '.hooks.PreToolUse[0] | select(.matcher == \"*\") | .hooks[0].command' '$O1/.claude/$S')\" ] && [ \"\$(jq -r '.hooks.PreToolUse[0].matcher' '$R1/.claude/$S')\" = '*' ]"
 cp "$RJ" "$T/roles.ok"
 roles '(.roles[] | select(.id == "platform") | .worker.repo) = "{home}/.mm/brain"'
 out=$("$SYS/bin/wt" platform b1 2>&1); rc=$?
@@ -162,7 +183,7 @@ out=$(LW start platform w2 --item ab-1 --brief "$T/brief.md"); check "a second w
 out=$(WAKE_CAP=2 LW start review r2 --item ab-3 --brief "$T/brief.md"); rc=$?
 check "the project's cap counts workers: w2 + ab-3 + ab-4 = 3 of cap 2, refused (exit $rc)" refused $rc "$out" 'the project holds 3 of its cap 2'
 out=$(LW start review r2 --item ab-3 --brief "$T/brief.md" --ref main); rc=$?
-check "start review r2 on ab-3 (exit $rc): mode dontAsk, a read checkout" bash -c "[ $rc = 0 ] && grep '\"run\"' '$STUB_PASEO.log' | tail -1 | grep -qF '\"--mode\",\"dontAsk\"' && [ \"\$(git -C '$W/review-r2' rev-parse --abbrev-ref HEAD)\" = HEAD ]"
+check "start review r2 on ab-3 (exit $rc): mode auto (Paseo has no dontAsk; its allow-only hook refuses), a read checkout" bash -c "[ $rc = 0 ] && grep '\"run\"' '$STUB_PASEO.log' | tail -1 | grep -qF '\"--mode\",\"auto\"' && [ \"\$(git -C '$W/review-r2' rev-parse --abbrev-ref HEAD)\" = HEAD ]"
 roles '(.roles[] | select(.id == "ops") | .workers) = false'
 out=$(LW start ops o2 --item ab-4 --brief "$T/brief.md"); rc=$?
 check "a role switched off is refused (exit $rc)" refused $rc "$out" 'not switched on'
