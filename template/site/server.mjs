@@ -220,13 +220,14 @@ async function leads() {
 }
 
 // From the Beads event journal: who created each item (bd serve leaves created_by empty) and the last comment.
-const meta = { seq: 0, creators: {}, last: {}, lastAct: {} }
+const meta = { seq: 0, creators: {}, last: {}, lastAct: {}, lastTs: 0 }
 async function refreshMeta() {
   for (;;) {
     const r = await fetch(new URL(`/v0/beads/events?since=${meta.seq}&limit=500`, BD), { minMs: 1000 }).then((x) => x.json())
     const recs = r.records || []
     for (const e of recs) {
       meta.seq = Math.max(meta.seq, e.seq)
+      const t = Date.parse(e.ts); if (t > meta.lastTs) meta.lastTs = t
       if (e.op === 'create' && e.actor && !meta.creators[e.issue_id]) meta.creators[e.issue_id] = e.actor
       if (e.op === 'comment' && e.comment) meta.last[e.issue_id] = { author: e.comment.author, at: e.comment.created_at || e.ts }
       if (e.actor) meta.lastAct[e.actor] = { item: e.issue_id, at: e.ts }
@@ -243,6 +244,35 @@ async function sendMeta(res) {
     try { raci = JSON.parse(readText('leads/raci.json') || 'null') } catch {}
     send(res, 200, { project: PROJECT, leads: l, creators: meta.creators, last: meta.last, personas, roles: ROLE_DEFS, raci, panels: PANELS })
   } catch (e) { send(res, 502, { title: 'meta failed', detail: e.message }) }
+}
+
+// The board's summary for the gateway's home page (sy-ukbz): counts and one time only, never item text. Read-only, so a
+// viewer may read it; on the public side it is checked like every other request (handlePublic). "mine" = the open items
+// assigned to the asking person; "needs_you" = items labelled needs-you, and for the owner also the t2 items review
+// signed off that wait for the owner's approved.
+async function sendSummary(req, res) {
+  const me = who(req), owner = req.gateway?.r === 'owner'
+  const items = new Map() // by id: a page seen twice never counts twice
+  let cursor = ''
+  for (let page = 0; page < 20; page++) {
+    const r = await fetch(new URL(`/v0/beads/issues?limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, BD)).then((x) => (x.ok ? x.json() : Promise.reject(new Error(`bd serve ${x.status}`))))
+    for (const i of Array.isArray(r?.items) ? r.items : []) if (i && typeof i.id === 'string') items.set(i.id, i)
+    cursor = r?.has_more && typeof r.next_cursor === 'string' ? r.next_cursor : ''
+    if (!cursor) break
+  }
+  if (cursor) throw new Error('too many items to count') // the card says unavailable rather than a wrong number
+  await Promise.race([refreshMeta().catch(() => {}), new Promise((ok) => setTimeout(ok, 1000))]) // the gateway waits 3 s in all
+  const open = [...items.values()].filter((i) => i.status !== 'closed'), labels = (i) => (Array.isArray(i.labels) ? i.labels : [])
+  let last = meta.lastTs
+  for (const i of open) { const t = Date.parse(i.updated_at); if (t > last) last = t }
+  send(res, 200, {
+    open: open.length,
+    p0: open.filter((i) => i.priority === 0).length,
+    blocked: open.filter((i) => i.status === 'blocked').length,
+    needs_you: open.filter((i) => labels(i).includes('needs-you') || (owner && labels(i).includes('t2') && labels(i).includes('signed-off') && !labels(i).includes('approved'))).length,
+    mine: open.filter((i) => i.assignee && i.assignee === me).length,
+    ...(last > 0 ? { last: new Date(last).toISOString() } : {}),
+  })
 }
 
 // ---------- panels (off unless the board's env turns them on: BOARD_PANELS=machine; the system profile does) ----------
@@ -642,6 +672,7 @@ async function handle(req, res) {
     return send(res, 200, { actor: name, source: 'self' })
   }
   if (url.pathname === '/api/meta' && req.method === 'GET') return sendMeta(res)
+  if (url.pathname === '/api/summary' && req.method === 'GET') return sendSummary(req, res).catch(() => send(res, 502, { title: 'summary failed' }))
   if (url.pathname === '/api/links' && req.method === 'GET') return sendLinks(res)
   if (url.pathname === '/api/mermaid' && req.method === 'POST') return sendMermaid(req, res, url).catch((e) => send(res, 500, { error: e.message }))
   if (url.pathname === '/api/presence' && req.method === 'GET') return sendPresence(res)
