@@ -204,6 +204,31 @@ export function cli(name = SERVICE, attrs = {}) {
   return root
 }
 
+// ---------- series rebuilt from a journal (bin/flow) ----------
+// Samples and spans with their own times and fixed ids, so sending the same ones again (a rerun, a rebuild) gives the
+// same values. Each resolves to true when the store took them, or when that store is off (nothing to send to).
+const post = async (url, data, type) => {
+  try { const r = await globalThis.fetch(url, { method: 'POST', headers: type ? { 'content-type': type } : {}, body: data, signal: AbortSignal.timeout(10000) }); await r.arrayBuffer(); return r.ok } catch { return false }
+}
+/** Prometheus text lines, each with its timestamp in ms. */
+export async function pushSamples(lines) {
+  if (!METRICS || !lines.length) return true
+  let ok = true
+  for (let i = 0; i < lines.length; i += 5000) ok = (await post(METRICS, lines.slice(i, i + 5000).join('\n') + '\n')) && ok
+  return ok
+}
+/** Spans: { traceId, spanId, parentSpanId, name, start, end (ms), attrs }. */
+export async function pushSpans(list) {
+  if (!TRACES || !list.length) return true
+  let ok = true
+  for (let i = 0; i < list.length; i += 500) {
+    const spans = list.slice(i, i + 500).map((s) => ({ traceId: s.traceId, spanId: s.spanId, parentSpanId: s.parentSpanId || '', name: s.name, kind: 1,
+      startTimeUnixNano: `${Math.round(s.start)}000000`, endTimeUnixNano: `${Math.round(s.end)}000000`, attributes: kv(s.attrs || {}), status: { code: 1 } }))
+    ok = (await post(TRACES, body(spans), 'application/json')) && ok
+  }
+  return ok
+}
+
 // ---------- exit ----------
 /** Send what is queued. Await this before process.exit in scripts. */
 export const flush = () => flushTraces()

@@ -57,3 +57,4 @@ services:
 schedules:
   health: { every: 1m, command: "node {root}/bin/health" }
   backup: { every: "daily 03:30", command: "{root}/bin/backup" }
+  flow: { every: 5m, command: "node {root}/bin/flow" }   # the board's events -> one trace per item + flow metrics (mm obs flow)
