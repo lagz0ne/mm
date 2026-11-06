@@ -35,9 +35,12 @@ const RAW_STATUS = ['bd', 'bin/bd'].flatMap((b) => [`Bash(${b} update *--status 
 // gateway's socket, or reads its store or a box's Paseo password. `mm revoke` stays free (it only takes access away).
 // The same for spending (sy-b15.10): no agent sets an AI budget, or reads or edits the AI gateway's store (its keys'
 // hashes, budgets, use) or the machine's upstream key.
+// And what a box gets (sy-b15.8): no agent decides a project API request (mm api approve|deny|undo), talks to its
+// owner socket, or reads or edits its store (requests, grants).
 const OWNER_ONLY = ['Bash(mm user*)', 'Bash(mm grant*)', 'Bash(mm token*)', 'Bash(mm auth*)', 'Bash(*auth.sock*)',
   'Read(/{mm}/auth/**)', 'Edit(/{mm}/auth/**)', 'Read(/{mm}/paseo/**)', 'Edit(/{mm}/paseo/**)',
   'Bash(mm ai budget*)', 'Bash(*ai.sock*)', 'Read(/{mm}/ai/**)', 'Edit(/{mm}/ai/**)',
+  'Bash(mm api*)', 'Bash(*approve.sock*)', 'Bash(*{mm}/api/*)', 'Read(/{mm}/api/**)', 'Edit(/{mm}/api/**)',
   `Read(/${HOME}/.config/secrets/ai-upstream.key)`, `Edit(/${HOME}/.config/secrets/ai-upstream.key)`]
 // The machine's secrets (review sy-5ag): every path mm lists in .run/endpoints.json (machine_secrets: each secret input's
 // file and folder in the manifest, Paseo's home, Claude's login), so a new input is covered without a template change;
