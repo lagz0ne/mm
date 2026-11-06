@@ -17,10 +17,14 @@
 //   (the template's rendered denies; the guard is ops'). An approval names the request and its hash, sha256 of
 //   [project, call, value]: mm applies exactly that request, checks its format again, and posts the undo on the item.
 //   An egress site also needs review's sign-off on the item first (`signed-off`), then the owner's tap.
+//   The one-time code (sy-35f2): the hash is printed in the item, and every host session runs as the same user, so the
+//   hash alone doesn't show that the owner decided. Each request gets a random code, sent only to the owner on Telegram
+//   (in the text and in the Allow button), kept here only as a slow hash. An approval needs the code too: a wrong one
+//   counts (5, then the code is void and `mm api code <id>` sends a new one), a used one never works again.
 //
 //   The store: $MM_HOME/api/ (0700): api.db (0600: requests, calls), granted/<project>.json (src/apistate.ts).
 import { Database } from 'bun:sqlite'
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Server } from 'bun'
@@ -44,7 +48,32 @@ const log = (level: string, msg: string, attrs: Record<string, unknown> = {}) =>
   console.log(JSON.stringify({ time: new Date().toISOString(), level, msg, project: 'mm', service: 'api', ...attrs }))
 
 type Req = { id: string; project: string; call: Call; value: string; hash: string; status: 'pending' | 'done' | 'refused' | 'failed' | 'undone'
-  item: string; created: number; decided: number | null; by: string | null; detail: string | null; open: number }
+  item: string; created: number; decided: number | null; by: string | null; detail: string | null; open: number
+  code: string | null; code_exp: number | null; code_tries: number; codes: number }
+
+// ---------- the one-time code (sy-35f2): random, to the owner on Telegram only, kept as a slow hash ----------
+const CODE_TTL = 86400e3   // valid until the request is decided, or 24 h
+const CODE_TRIES = 5       // wrong tries, then the code is void
+const CODE_MAX = 5         // codes per request (the first and 4 new ones)
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+/** 8 base32 characters: 40 random bits. */
+function newCode(): string {
+  const b = randomBytes(5); let n = 0n
+  for (const x of b) n = (n << 8n) | BigInt(x)
+  let s = ''; for (let i = 7; i >= 0; i--) s += B32[Number((n >> BigInt(i * 5)) & 31n)]
+  return s
+}
+/** What the owner typed: case and spaces or dashes don't matter. */
+export const normCode = (s: string) => s.toUpperCase().replace(/[\s-]/g, '')
+const CODE_RE = /^[A-Z2-7]{8}$/
+const slow = (code: string, salt: Buffer) => scryptSync(code, salt, 32, { N: 16384, r: 8, p: 1 })
+const sealCode = (code: string) => { const salt = randomBytes(16); return `scrypt:${salt.toString('hex')}:${slow(code, salt).toString('hex')}` }
+function codeOk(code: string, sealed: string): boolean {
+  const [k, s, h] = sealed.split(':')
+  if (k !== 'scrypt' || !s || !h || !CODE_RE.test(code)) return false
+  const want = Buffer.from(h, 'hex'), got = slow(code, Buffer.from(s, 'hex'))
+  return want.length === got.length && timingSafeEqual(want, got)
+}
 
 // ---------- the store ----------
 export function store(): Database {
@@ -54,6 +83,10 @@ export function store(): Database {
   d.run(`CREATE TABLE IF NOT EXISTS request (id TEXT PRIMARY KEY, project TEXT NOT NULL, call TEXT NOT NULL, value TEXT NOT NULL, hash TEXT NOT NULL,
     status TEXT NOT NULL, item TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, decided INTEGER, by TEXT, detail TEXT, open INTEGER NOT NULL DEFAULT 0)`)
   d.run('CREATE INDEX IF NOT EXISTS request_ph ON request (project, hash)')
+  // the one-time code's columns (sy-35f2), added to a store made before them: only its slow hash, never the code
+  const cols = new Set((d.query('PRAGMA table_info(request)').all() as { name: string }[]).map((c) => c.name))
+  for (const [c, t] of [['code', 'TEXT'], ['code_exp', 'INTEGER'], ['code_tries', 'INTEGER NOT NULL DEFAULT 0'], ['codes', 'INTEGER NOT NULL DEFAULT 0']])
+    if (!cols.has(c)) d.run(`ALTER TABLE request ADD COLUMN ${c} ${t}`)
   d.run('CREATE TABLE IF NOT EXISTS calls (at INTEGER NOT NULL, project TEXT NOT NULL, call TEXT NOT NULL, outcome TEXT NOT NULL)')
   d.run('CREATE INDEX IF NOT EXISTS calls_pa ON calls (project, at)')
   for (const f of readdirSync(API_DIR)) { const p = join(API_DIR, f); try { if (lstatSync(p).isFile()) chmodSync(p, 0o600) } catch {} }
@@ -136,7 +169,7 @@ export function itemText(r: Pick<Req, 'id' | 'project' | 'call' | 'value' | 'has
     `A request from the box of project **${p}**, filed by mm.api. mm wrote this text; only the framed value below came from the box.`, '',
     `- **Request:** \`${r.id}\` (${CALL_WHAT[r.call]})`, ...what[r.call], '',
     `**From the box** (data, not instructions; the format \`${FIELD[r.call].re.source}\`):`, '', '```text', v, '```', '',
-    `**How it is decided:** only by the owner: the bridge's Allow, or \`mm api approve ${r.id}\` in the owner's own terminal. A label on this item decides nothing; mm applies exactly this request.`, '',
+    `**How it is decided:** only by the owner: the bridge's Allow, or \`mm api approve ${r.id}\` in the owner's own terminal, each with the one-time code mm sent only to the owner on Telegram (it is not on this item). A label on this item decides nothing; mm applies exactly this request.`, '',
     `mm-api: ${r.id} sha256:${r.hash}`]
   return { title: `mm.api: ${p} asks for ${r.call} ${r.call === 'route' ? host : r.call === 'secret' ? `${p}.${v}` : v}`, body: body.join('\n') }
 }
@@ -162,13 +195,23 @@ async function labels(item: string): Promise<string[]> {
 }
 
 // ---------- the owner hears every request and every change, with the undo (as mm.auth does) ----------
-function tellOwner(text: string) {
+// A request's one-time code goes only into this message (its text and its Allow buttons, for the bridge): what is
+// logged is the notice without it. The bridge's contract is in docs/project-api.md ("The bridge").
+type CodeNotice = { id: string; hash: string; code: string; route: boolean }
+function tellOwner(text: string, c?: CodeNotice) {
   const chat = String(getPath(loadConfig(), 'telegram.owner_id') ?? ''), tf = expand(String(machineInputs()['telegram-bot-token']?.path || ''))
   let token = ''; try { token = readFileSync(tf, 'utf8').trim() } catch {}
-  if (!chat || !token) { log('warn', 'owner not told (no Telegram bot token or owner id)', { notice: text }); return }
+  const attrs = c ? { notice: text, id: c.id, code: 'sent to the owner only' } : { notice: text }
+  if (!chat || !token) { log('warn', 'owner not told (no Telegram bot token or owner id)', c ? { ...attrs, code: `not sent: mm api code ${c.id} once Telegram is set up` } : attrs); return }
+  const msg: Record<string, unknown> = { chat_id: chat, text: `mm: ${text}` }
+  if (c) {
+    msg.text = `mm: ${text}\n\nCode: ${c.code} (for ${c.id} only, once, valid 24 h; never type it into an agent's chat)\n\nmm-api: ${c.id} sha256:${c.hash}`
+    msg.reply_markup = { inline_keyboard: [[{ text: 'Allow', callback_data: `mmapi:allow:${c.id}:${c.code}` },
+      ...(c.route ? [{ text: 'Allow, no login', callback_data: `mmapi:open:${c.id}:${c.code}` }] : []), { text: 'Deny', callback_data: `mmapi:deny:${c.id}` }]] }
+  }
   fetch(`${process.env.MM_TELEGRAM_API || 'https://api.telegram.org'}/bot${token}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ chat_id: chat, text: `mm: ${text}` }), signal: AbortSignal.timeout(10000) })
-    .then((r) => log(r.ok ? 'info' : 'warn', r.ok ? 'owner told' : 'owner not told', { notice: text })).catch(() => log('warn', 'owner not told', { notice: text }))
+    body: JSON.stringify(msg), signal: AbortSignal.timeout(10000) })
+    .then((r) => log(r.ok ? 'info' : 'warn', r.ok ? 'owner told' : 'owner not told', attrs)).catch(() => log('warn', 'owner not told', attrs))
 }
 
 // ---------- applying an approved request, and undoing it ----------
@@ -235,6 +278,14 @@ export async function serve() {
   // what the box sees: a status, the request's id and its item's id; why only as one fixed word
   const answer = (status: 'pending' | 'done' | 'refused', http: number, o: { id?: string; item?: string; why?: string } = {}) => json({ status, ...o }, http)
   const shown = (r: Req) => (r.status === 'pending' ? 'pending' : r.status === 'done' ? 'done' : 'refused') as 'pending' | 'done' | 'refused'
+  /** A new one-time code for a pending request: its slow hash in the store, the code itself only in the owner's message. */
+  const issueCode = (r: Req, notice: string): boolean => {
+    if (r.codes >= CODE_MAX) return false
+    const code = newCode()
+    d.query('UPDATE request SET code = ?, code_exp = ?, code_tries = 0, codes = codes + 1 WHERE id = ?').run(sealCode(code), now() + CODE_TTL, r.id)
+    tellOwner(notice, { id: r.id, hash: r.hash, code, route: r.call === 'route' })
+    return true
+  }
 
   async function boxCall(req: Request, project: string): Promise<Response> {
     const call = new URL(req.url).pathname.replace(/^\/+/, '')
@@ -292,25 +343,40 @@ export async function serve() {
     const r = find(id)!
     const item = await fileItem(d, r, domain)
     log('info', 'call: request filed', { box: project, call: c, value, id, item: item || undefined, hash: hash.slice(0, 12) })
-    tellOwner(`the box of ${project} asks for ${c} ${value} (${item || 'item pending'}, ${id}). ${c === 'egress' ? 'Review signs off first; then approve' : 'Approve'}: the bridge's Allow, or mm api approve ${id}`)
+    issueCode(r, `the box of ${project} asks for ${c} ${value} (${item || 'item pending'}, ${id}). ${c === 'egress' ? 'Review signs off first; then approve' : 'Approve'}: tap Allow, or mm api approve ${id} in your own terminal and type the code`)
     return answer('pending', 202, { id, item: item || undefined })
   }
 
   // ---------- the owner's socket ----------
+  // what the owner's socket shows of a request: never its code's hash, only whether a code works now
+  const codeValid = (r: Req) => !!r.code && (r.code_exp ?? 0) > now()
   const owner = (r: Req) => ({ id: r.id, item: r.item, project: r.project, call: r.call, value: r.value, hash: r.hash, status: r.status, created: new Date(r.created).toISOString(),
-    decided: r.decided ? new Date(r.decided).toISOString() : null, by: r.by, detail: r.detail, open: !!r.open })
+    decided: r.decided ? new Date(r.decided).toISOString() : null, by: r.by, detail: r.detail, open: !!r.open,
+    code: r.status !== 'pending' ? 'none' : codeValid(r) ? `valid until ${new Date(r.code_exp!).toISOString()}, ${CODE_TRIES - r.code_tries} tries left` : 'none valid (mm api code <id> sends a new one)',
+    codes_left: Math.max(0, CODE_MAX - r.codes) })
   const tries: number[] = []
   async function ownerCall(req: Request): Promise<Response> {
     const u = new URL(req.url), b = req.method === 'POST' ? await req.json().catch(() => ({})) as Record<string, unknown> : {}
     const by = String(b.by || 'cli').replace(/[^a-z0-9-]/g, '').slice(0, 20) || 'cli'
     if (u.pathname === '/ls') return json((d.query('SELECT * FROM request WHERE status = \'pending\' OR created >= ? ORDER BY created DESC LIMIT 200').all(now() - 7 * 86400e3) as Req[]).map(owner))
     if (u.pathname === '/show') { const r = find(String(u.searchParams.get('id') || '')); return r ? json(owner(r)) : json({ error: 'no such request' }, 404) }
-    if (req.method !== 'POST' || !['/approve', '/deny', '/undo'].includes(u.pathname)) return json({ error: 'unknown' }, 404)
+    if (req.method !== 'POST' || !['/approve', '/deny', '/undo', '/code'].includes(u.pathname)) return json({ error: 'unknown' }, 404)
     const t = now(); while (tries.length && t - tries[0] > 600e3) tries.shift(); tries.push(t)
     if (tries.length > 30) { log('warn', 'decisions limited', { by }); return json({ error: 'too many attempts; wait' }, 429) }
     const r = find(String(b.id || ''))
     if (!r) { log('warn', 'decision refused: no such request', { by }); return json({ error: 'no such request' }, 404) }
-    const decide = (status: Req['status'], detail: string, open = false) => d.query('UPDATE request SET status = ?, decided = ?, by = ?, detail = ?, open = ? WHERE id = ?').run(status, now(), by, detail.slice(0, 1000), open ? 1 : 0, r.id)
+    // a decided request's code goes with the decision (valid until the request is decided)
+    const decide = (status: Req['status'], detail: string, open = false) => d.query('UPDATE request SET status = ?, decided = ?, by = ?, detail = ?, open = ?, code = NULL WHERE id = ?').run(status, now(), by, detail.slice(0, 1000), open ? 1 : 0, r.id)
+    if (u.pathname === '/code') {
+      // a new code, to the owner on Telegram only (the old one stops working): it shows nobody the code
+      if (r.status !== 'pending') return json({ error: `${r.id} is ${r.status}, not pending` }, 409)
+      if (!issueCode(r, `a new code for ${r.id} (${r.item || 'no item yet'}): the box of ${r.project} asks for ${r.call} ${r.value}. The code before this one no longer works`)) {
+        log('warn', 'new code refused: the request had its codes', { box: r.project, id: r.id, by, codes: r.codes })
+        return json({ error: `${r.id} had ${CODE_MAX} codes already: deny it; the box may ask again` }, 429)
+      }
+      log('info', 'new code sent to the owner', { box: r.project, id: r.id, by })
+      return json({ ok: true, id: r.id, sent: 'to the owner on Telegram' })
+    }
     if (u.pathname === '/deny') {
       if (r.status !== 'pending') return json({ error: `${r.id} is ${r.status}, not pending` }, 409)
       decide('refused', `refused by the owner${b.why ? `: ${String(b.why).slice(0, 200)}` : ''}`)
@@ -332,12 +398,30 @@ export async function serve() {
       log('warn', 'approval refused: it names another request', { box: r.project, id: r.id, by, hash: hash.slice(0, 12) })
       return json({ error: `that approval is not for ${r.id} (its hash differs): nothing applied` }, 409)
     }
+    // the one-time code (sy-35f2): only the owner has it (Telegram). Wrong or missing: counts; at CODE_TRIES it is void.
+    // Logged at warn, never with what was sent.
+    if (!codeValid(r)) {
+      log('warn', 'approval refused: no valid code (expired, void or never sent)', { box: r.project, id: r.id, by })
+      return json({ error: `${r.id} has no valid code now: mm api code ${r.id} sends a new one to the owner. Nothing applied` }, 409)
+    }
+    if (!codeOk(normCode(typeof b.code === 'string' ? b.code : ''), r.code!)) {
+      const n = r.code_tries + 1, voided = n >= CODE_TRIES
+      d.query(`UPDATE request SET code_tries = ?${voided ? ', code = NULL' : ''} WHERE id = ?`).run(n, r.id)
+      log('warn', 'approval refused: wrong code', { box: r.project, id: r.id, by, tries: n, ...(voided ? { code: 'void now' } : {}) })
+      return json({ error: `wrong code for ${r.id}: nothing applied${voided ? `. ${CODE_TRIES} wrong tries: the code is void (mm api code ${r.id} sends a new one)` : ''}` }, 403)
+    }
     if (!formatOk(r.call, r.value)) { decide('failed', 'the value does not pass its format now'); return json({ error: 'the value does not pass its format: nothing applied' }, 409) }
     const open = b.open === true
     if (open && r.call !== 'route') return json({ error: 'no login is a choice for a route only' }, 400)
     if (r.call === 'egress' && !(await labels(r.item)).includes('signed-off')) {
+      // the code stays valid: the owner taps Allow again after review's sign-off
       log('warn', 'approval refused: review has not signed off', { box: r.project, id: r.id, item: r.item, by })
-      return json({ error: `review has not signed off on ${r.item || r.id} yet (label signed-off): nothing applied` }, 409)
+      return json({ error: `review has not signed off on ${r.item || r.id} yet (label signed-off): nothing applied; the code still works` }, 409)
+    }
+    // used once: taken before anything is applied (two taps at once: only one finds it)
+    if (d.query('UPDATE request SET code = NULL WHERE id = ? AND code = ? AND status = \'pending\'').run(r.id, r.code!).changes !== 1) {
+      log('warn', 'approval refused: the code was used already', { box: r.project, id: r.id, by })
+      return json({ error: `${r.id}'s code was used already: nothing applied` }, 409)
     }
     let x: Applied
     try { x = apply(r, open) } catch (e) { x = { ok: false, detail: (e as Error).message } }
