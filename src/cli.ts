@@ -20,6 +20,8 @@ import { exportFlow, flowRows, itemPath, tableRow } from './flow'
 import { findRoot, listProjects, namespaceOp, newProject, parseRef, processes, readAnswers, resolve, rootOf, setOptional, up } from './project'
 import * as boxMod from './box'
 import * as aiMod from './ai'
+import * as apiMod from './api'
+import { APPROVE_SOCK } from './apistate'
 import { type Format, print } from './out'
 import pkg from '../package.json'
 
@@ -259,6 +261,39 @@ auth.command('pending <code>').description('what is asking to sign in with this 
 auth.command('approve <code>').description('sign in the browser that shows this code, as a person (the owner\'s step; the bridge calls the same socket API)')
   .requiredOption('--as <name>', 'the person it signs in (mm user add first)')
   .action((code: string, o) => authCall('/approve', { code, name: o.as, by: 'cli' }))
+// the project API for boxes (src/api.ts, sy-b15.8): a box asks on its own socket; only the owner decides, here or with
+// the bridge's Allow (both call mm.api's owner socket). Refused in an agent's shell, as mm auth approve is: a brake (a
+// process can still reach the socket), with the template's denies and the guard as the rest
+const apiCmd = program.command('api').description('the project API for boxes: what a box asked for (route, egress, release, secret); only the owner decides (docs/project-api.md)')
+apiCmd.command('serve').description('(run by mm-pc as mm.api) the project API').action(async () => { await apiMod.serve() })
+const ownerOnly = (what: string) => { if (process.env.CLAUDECODE || process.env.PASEO_AGENT_ID) { console.error(`mm api ${what}: the owner decides what a box gets: run it yourself, in your own terminal`); process.exit(1) } }
+const apiCall = async (path: string, body?: Record<string, unknown>) => {
+  try { return await apiMod.callOwner(path, body) } catch (e) { console.error(`mm api: mm.api does not answer on ${tilde(APPROVE_SOCK)} (${(e as Error).message})`); process.exit(1) }
+}
+const apiOut = (r: { status: number; data: unknown }) => { const o = fmt(); if (o.format !== 'table') console.log(JSON.stringify(r.data, null, 2)); else if (Array.isArray(r.data)) print(r.data as Record<string, unknown>[], o); else console.log(JSON.stringify(r.data)); process.exit(r.status < 300 ? 0 : 1) }
+apiCmd.command('ls').description('the open requests, and those of the last 7 days').action(async () => {
+  const r = await apiCall('/ls'), o = fmt()
+  if (o.format !== 'table') return apiOut(r)
+  print((r.data as unknown as Record<string, unknown>[]).map((x) => ({ id: x.id, item: x.item, project: x.project, call: x.call, value: x.value, status: x.status, by: x.by || '' })), o, 'id')
+})
+apiCmd.command('show <id>').description('one request (its id or its item\'s id): what it asks for, its hash, its status').action(async (id: string) => apiOut(await apiCall(`/show?id=${encodeURIComponent(id)}`)))
+apiCmd.command('approve <id>').description('apply exactly this request (the owner\'s step; it shows the request and asks first)')
+  .option('--no-login', 'a route with no sign-in: anyone on the internet can open it (the owner\'s choice)')
+  .option('--hash <hash>', 'without a terminal to ask in: the first 12 or more characters of the hash on the item')
+  .action(async (id: string, o) => {
+    ownerOnly('approve')
+    const s = await apiCall(`/show?id=${encodeURIComponent(id)}`), r = s.data as Record<string, string>
+    if (s.status !== 200) { console.error(`mm api approve: ${r.error || 'no such request'}`); process.exit(1) }
+    console.log(`${r.id} (${r.item || 'no item yet'}): the box of ${r.project} asks for ${r.call} ${r.value}${o.login === false ? ', with NO login' : ''}\nhash ${r.hash}\nstatus ${r.status}`)
+    if (r.status !== 'pending') process.exit(1)
+    if (o.hash !== undefined) {
+      if (!/^[0-9a-f]{12,64}$/.test(String(o.hash)) || !r.hash.startsWith(String(o.hash))) { console.error('mm api approve: that hash is not this request\'s: nothing applied'); process.exit(1) }
+    } else if (!process.stdin.isTTY) { console.error('mm api approve: run it in your own terminal (it asks first), or pass --hash with the first 12 characters of the hash on the item'); process.exit(1) }
+    else if ((prompt('Approve exactly this? Type yes:') || '').trim().toLowerCase() !== 'yes') { console.error('not approved'); process.exit(1) }
+    apiOut(await apiCall('/approve', { id: r.id, hash: r.hash, open: o.login === false, by: 'cli' }))
+  })
+apiCmd.command('deny <id>').description('refuse a request (the box sees: refused)').option('--why <text>', 'a short reason, for the item').action(async (id: string, o) => { ownerOnly('deny'); apiOut(await apiCall('/deny', { id, why: o.why, by: 'cli' })) })
+apiCmd.command('undo <id>').description('take back what a done request granted (the route, the site, the build, the secret)').action(async (id: string) => { ownerOnly('undo'); apiOut(await apiCall('/undo', { id, by: 'cli' })) })
 // the AI gateway for project boxes (src/ai.ts, sy-b15.10): budgets and use; keys are made by mm up, never printed
 const ai = program.command('ai').description('the AI gateway for project boxes: every model call, its cost, budgets per project and person (mm.ai)')
 ai.command('serve').description('(run by mm-pc as mm.ai) the AI gateway').action(async () => { await aiMod.serve() })
