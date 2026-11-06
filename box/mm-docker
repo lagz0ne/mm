@@ -1,0 +1,695 @@
+#!/usr/bin/python3 -I
+# mm-docker: the only way mm reaches Docker once the host owner has no blanket sudo (plans/host-hardening.md step 3).
+# Installed root-owned (root:root 0755, e.g. /usr/local/libexec/mm-docker), with one sudoers entry that names only it;
+# mm calls it through its config: box.docker = "sudo -n /usr/local/libexec/mm-docker" (docs/mm-docker.md).
+#
+# It runs only the docker calls mm itself makes (src/box.ts, template/bin/doop-run, src/doctor.ts). Each subcommand is
+# an allowlist of exact options, each option's value is checked, and docker gets a command line the wrapper writes
+# itself (long options, `--opt=value`), never the caller's words: what was checked is what docker runs.
+# It refuses, among the rest: --privileged; a mount of a host path outside the project's own folders (after realpath,
+# so `..` and symlinks lead nowhere else); --pid/--ipc/--uts/--userns, --network host; --cap-add beyond mm's two fixed
+# sets; --device, --mount, --volumes-from; --security-opt other than no-new-privileges (always added); global options
+# (-H, --context, --config) and DOCKER_HOST (docker gets a clean environment); exec into a container that is not mm's
+# (its name and its mm.project label, then exec by its id); a build whose context is not a folder of the caller's own
+# files (copied, as checked, into a private folder first), or whose tag is not mm's.
+#
+# Config (root's, not the caller's): /etc/mm-docker.conf, `key = value` lines (docs/mm-docker.md). Run as a user
+# other than root (no sudo), the wrapper is in test mode: MM_DOCKER_CONF names its config, and it gives no right
+# that user doesn't already have.
+import os
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+CONF = '/etc/mm-docker.conf'
+REFUSED = 125  # docker's own exit code for its errors: mm sees a failed call
+SAFE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+
+
+class Refused(Exception):
+    pass
+
+
+def refuse(msg):
+    raise Refused(msg)
+
+
+def show(s):
+    """A word for a message: printable, short (a refused value may be anything)."""
+    s = str(s)
+    s = ''.join(c if c.isprintable() else '?' for c in s)
+    return s if len(s) <= 120 else s[:117] + '...'
+
+
+# ---------- who calls, and the config ----------
+
+def load_conf():
+    root = os.geteuid() == 0
+    path = CONF if root else os.environ.get('MM_DOCKER_CONF', '')
+    if not path:
+        refuse('test mode (not root) needs MM_DOCKER_CONF')
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as e:
+        refuse(f'no config {path} ({e.strerror})')
+    with os.fdopen(fd) as f:
+        st = os.fstat(f.fileno())
+        if root and (st.st_uid != 0 or st.st_mode & 0o022):
+            refuse(f'{path} must be root-owned and writable by root only')
+        conf = {}
+        for line in f:
+            line = line.split('#', 1)[0].strip()
+            if not line:
+                continue
+            k, sep, v = line.partition('=')
+            if not sep:
+                refuse(f'{path}: not "key = value": {show(line)}')
+            conf[k.strip()] = v.strip()
+    if root:
+        if 'SUDO_UID' not in os.environ or 'SUDO_GID' not in os.environ:
+            refuse('run through sudo by the owner (as root, use docker itself)')
+        uid, gid = int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID'])
+    else:
+        uid, gid = os.getuid(), os.getgid()
+    try:
+        pw = pwd.getpwuid(uid)
+    except KeyError:
+        refuse(f'uid {uid} has no account')
+    if root and conf.get('user', '') != pw.pw_name:
+        refuse(f'{pw.pw_name} is not the user in {path}')
+    if uid == 0:
+        refuse('the caller is root')
+    mm = conf.get('mm_home') or os.path.join(pw.pw_dir, '.mm')
+    c = {
+        'root': root, 'uid': uid, 'gid': gid, 'home': pw.pw_dir,
+        'docker': (conf.get('docker') or '/usr/bin/docker').split(),
+        'mm': os.path.realpath(mm),
+        'projects': os.path.realpath(conf.get('projects') or os.path.join(mm, 'projects')),
+        'secrets': os.path.realpath(conf.get('secrets') or f'/run/user/{uid}/mm/secrets'),
+        'root_containers': conf.get('root_containers', 'no') == 'yes',
+        'max_context': int(conf.get('max_context_mb', '64')) * 1024 * 1024 if re.fullmatch(r'\d{1,5}', conf.get('max_context_mb', '64')) else refuse('max_context_mb: a number'),
+    }
+    for k in ('mm', 'projects', 'secrets'):
+        if c[k] in ('/', '/home', '/root', '/etc', '/usr', '/var', '/run', '/tmp', pw.pw_dir):
+            refuse(f'{k} = {c[k]} is too wide')
+    return c
+
+
+def env(c):
+    e = {'PATH': SAFE_PATH, 'LANG': 'C.UTF-8', 'HOME': '/root' if c['root'] else c['home']}
+    t = os.environ.get('TERM', '')
+    if re.fullmatch(r'[A-Za-z0-9.+_-]{1,40}', t):
+        e['TERM'] = t
+    return e
+
+
+# ---------- names ----------
+
+P = r'[a-z][a-z0-9-]{0,62}'  # a project's name (src/lifecycle.ts)
+CONTAINER = re.compile(rf'mm-(box|egress|doop)-({P})')
+NETWORK = re.compile(rf'mm-(doop-net|net)-({P})')
+NET_ID = re.compile(r'[0-9a-f]{12}|[0-9a-f]{64}')
+IMAGE = re.compile(r'mm-(box|egress|doop)(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?')
+NAMED_DIGEST = re.compile(r'[a-z0-9][a-z0-9._/-]{0,200}(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?@sha256:[0-9a-f]{64}')
+DIGEST = re.compile(rf'sha256:[0-9a-f]{{64}}|{NAMED_DIGEST.pattern}')
+ID = re.compile(r'[0-9a-f]{64}')
+TEMPLATE_MAX = 400
+
+
+def container(name, kinds=('box', 'egress', 'doop')):
+    m = CONTAINER.fullmatch(name)
+    if not m or m.group(1) not in kinds:
+        refuse(f'{show(name)} is not one of mm\'s containers ({", ".join("mm-" + k + "-<project>" for k in kinds)})')
+    return m.group(1), m.group(2)
+
+
+def network(name):
+    m = NETWORK.fullmatch(name)
+    if not m:
+        refuse(f'{show(name)} is not one of mm\'s networks (mm-net-<project>, mm-doop-net-<project>)')
+    return ('doop' if m.group(1) == 'doop-net' else 'box'), m.group(2)
+
+
+def image(ref):
+    if not (IMAGE.fullmatch(ref) or DIGEST.fullmatch(ref)):
+        refuse(f'image {show(ref)}: only mm\'s own (mm-box, mm-egress, mm-doop) or one pinned by digest')
+    return ref
+
+
+def template(t):
+    if len(t) > TEMPLATE_MAX or '\n' in t:
+        refuse('a --format template longer than one short line')
+    return t
+
+
+# ---------- options, as docker (pflag) reads them ----------
+# spec: long name -> (short or None, takes a value). Returns [(long, value or True)], positionals.
+
+def parse(args, spec, interspersed):
+    shorts = {s: n for n, (s, _) in spec.items() if s}
+    opts, pos, i = [], [], 0
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a == '--':
+            pos += args[i:]
+            break
+        if a.startswith('--'):
+            name, eq, val = a.partition('=')
+            if name not in spec:
+                refuse(f'{show(name)} is not allowed{reason(name)}')
+            if spec[name][1]:
+                if not eq:
+                    if i >= len(args):
+                        refuse(f'{name} needs a value')
+                    val = args[i]
+                    i += 1
+                opts.append((name, val))
+            else:
+                if eq:
+                    refuse(f'{name} takes no value')
+                opts.append((name, True))
+        elif a.startswith('-') and a != '-':
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                name = shorts.get(ch)
+                if not name:
+                    refuse(f'-{show(ch)} is not allowed{reason("-" + ch)}')
+                j += 1
+                if spec[name][1]:
+                    val = a[j:]
+                    if val.startswith('='):
+                        val = val[1:]
+                    if not val:
+                        if i >= len(args):
+                            refuse(f'-{ch} needs a value')
+                        val = args[i]
+                        i += 1
+                    opts.append((name, val))
+                    break
+                opts.append((name, True))
+        else:
+            pos.append(a)
+            if not interspersed:
+                pos += args[i:]
+                break
+    return opts, pos
+
+
+WHY = {
+    '--privileged': ': a privileged container is root on the host',
+    '--pid': ': it would share a namespace with the host', '--ipc': ': it would share a namespace with the host',
+    '--uts': ': it would share a namespace with the host', '--userns': ': it would share a namespace with the host',
+    '--cgroupns': ': it would share a namespace with the host', '--net': ': use --network (mm\'s networks only)',
+    '--device': ': no host devices', '--device-cgroup-rule': ': no host devices', '--gpus': ': no host devices',
+    '--mount': ': mounts only as -v, checked', '--volumes-from': ': mounts only as -v, checked',
+    '--volume-driver': ': mounts only as -v, checked', '-H': ': docker\'s own daemon only',
+    '--host': ': docker\'s own daemon only', '--context': ': docker\'s own daemon only', '-c': ': docker\'s own daemon only',
+    '--config': ': docker\'s own config only', '-p': ': nothing is published on the host',
+    '--publish': ': nothing is published on the host', '-P': ': nothing is published on the host',
+    '--publish-all': ': nothing is published on the host', '--sysctl': ': no kernel settings',
+    '--runtime': ': docker\'s own runtime only', '--cgroup-parent': ': no host cgroups',
+    '--log-driver': ': docker\'s own log driver only', '--log-opt': ': docker\'s own log driver only',
+    '--secret': ': no host files in a build', '--ssh': ': no host keys in a build',
+    '--build-context': ': no host folders in a build', '--output': ': a build writes no host files',
+    '-o': ': no output or driver options', '--opt': ': no driver options', '--iidfile': ': a build writes no host files',
+    '--cache-to': ': a build writes no host files', '--cache-from': ': no host folders in a build',
+    '--allow': ': no build entitlements', '--network': ': not here',
+}
+
+
+def reason(name):
+    return WHY.get(name, ' (not an option mm uses here)')
+
+
+def emit(opts, skip=()):
+    return [f'{n}={v}' if v is not True else n for n, v in opts if n not in skip]
+
+
+def one(opts, name):
+    vals = [v for n, v in opts if n == name]
+    if len(vals) > 1:
+        refuse(f'{name} given twice')
+    return vals[0] if vals else None
+
+
+def every(opts, name):
+    return [v for n, v in opts if n == name]
+
+
+# ---------- host paths ----------
+
+def answers_project(d, c):
+    """The project named in d/.mm-answers.yaml (the caller's own file, never followed through a symlink)."""
+    try:
+        fd = os.open(os.path.join(d, '.mm-answers.yaml'), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, 'rb') as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != c['uid']:
+            return None
+        m = re.search(rb'^project:[ \t]*["\']?([a-z][a-z0-9-]{0,62})["\']?[ \t]*$', f.read(65536), re.M)
+    return m.group(1).decode() if m else None
+
+
+def inside(p, root):
+    return p.startswith(root + '/')
+
+
+def owner_project(real, c):
+    """Which project a host path belongs to, or None: inside one project's folder (its .mm-answers.yaml names it), or
+    under mm's per-project folders (box/, paseo/, claude/, egress/ in mm's home; the opened secrets' folder)."""
+    for base in [os.path.join(c['mm'], k) for k in ('box', 'paseo', 'claude', 'egress')] + [c['secrets']]:
+        if inside(real, base):
+            name = real[len(base) + 1:].split('/')[0]
+            return name if re.fullmatch(P, name) else None
+    if inside(real, c['projects']):
+        d = real
+        while inside(d, c['projects']):
+            got = answers_project(d, c)
+            if got:
+                return got
+            d = os.path.dirname(d)
+    return None
+
+
+def host_path(src, project, c, what):
+    """A host path a container may get: real (realpath, it must exist), a folder or a plain file, and one of the
+    project's own. Returns (real path, project)."""
+    if not src.startswith('/'):
+        refuse(f'{what} {show(src)}: only an absolute host path (no named volumes)')
+    try:
+        real = os.path.realpath(src, strict=True)
+    except OSError:
+        refuse(f'{what} {show(src)} does not exist (docker would make it, as root)')
+    st = os.lstat(real)
+    if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+        refuse(f'{what} {show(src)}: only a folder or a plain file')
+    if stat.S_ISREG(st.st_mode) and st.st_nlink != 1:
+        refuse(f'{what} {show(src)}: a file with other hard links')
+    got = owner_project(real, c)
+    if not got:
+        refuse(f'{what} {show(src)} (really {show(real)}) is outside the project\'s own folders')
+    if project and got != project:
+        refuse(f'{what} {show(src)} belongs to {got}, not {project}')
+    return real, got
+
+
+# ---------- run ----------
+
+RUN = {
+    '--detach': ('d', False), '--rm': (None, False), '--init': (None, False), '--read-only': (None, False),
+    '--name': (None, True), '--hostname': (None, True), '--label': ('l', True), '--network': (None, True),
+    '--ip': (None, True), '--restart': (None, True), '--dns': (None, True), '--user': ('u', True),
+    '--tmpfs': (None, True), '--cap-drop': (None, True), '--cap-add': (None, True), '--security-opt': (None, True),
+    '--pids-limit': (None, True), '--memory': ('m', True), '--cpus': (None, True), '--env': ('e', True),
+    '--env-file': (None, True), '--group-add': (None, True), '--volume': ('v', True), '--workdir': ('w', True),
+    '--entrypoint': (None, True),
+}
+EGRESS_CAPS = {'SETUID', 'SETGID'}
+CHOWN_CAPS = {'CHOWN', 'FOWNER', 'DAC_OVERRIDE'}
+
+
+def check_run(args, c):
+    opts, pos = parse(args, RUN, interspersed=False)
+    if not pos:
+        refuse('run: no image')
+    img, cmd = image(pos[0]), pos[1:]
+    name = one(opts, '--name')
+    kind, project = container(name) if name is not None else (None, None)
+    # labels: the project's, and Doop's service label on Doop's container
+    for lab in every(opts, '--label'):
+        k, _, v = lab.partition('=')
+        if k == 'mm.project' and re.fullmatch(P, v) and (project is None or v == project):
+            project = v
+        elif lab == 'mm.service=doop' and kind == 'doop':
+            pass
+        else:
+            refuse(f'label {show(lab)}: only mm.project=<its project> (and mm.service=doop on Doop)')
+    if name is not None and f'mm.project={project}' not in every(opts, '--label'):
+        refuse(f'{name} needs its label mm.project={project}')
+    if name is None and one(opts, '--rm') is None:
+        refuse('run: a container mm keeps has its name (mm-<kind>-<project>); a nameless one is --rm')
+    # capabilities: all dropped; added back only in mm's two fixed sets (below)
+    if every(opts, '--cap-drop') != ['ALL']:
+        refuse('run: --cap-drop ALL, once')
+    caps = set(every(opts, '--cap-add'))
+    for so in every(opts, '--security-opt'):
+        if so not in ('no-new-privileges', 'no-new-privileges=true', 'no-new-privileges:true'):
+            refuse(f'--security-opt {show(so)}: only no-new-privileges (seccomp, apparmor, label stay docker\'s)')
+    # the network: none, or the project's own
+    net = one(opts, '--network')
+    if net is not None and (net in ('host', 'bridge', 'default') or net.startswith('container:') or net.startswith('ns:')):
+        refuse(f'--network {show(net)}: it would share the host\'s (or another container\'s) network')
+    if net is not None and net != 'none':
+        nk, np = network(net)
+        if project is None or np != project:
+            refuse(f'--network {show(net)}: not the network of {project or "this container"}')
+        if (nk == 'doop') != (kind == 'doop'):
+            refuse(f'--network {show(net)}: not this container\'s kind of network')
+    ip = one(opts, '--ip')
+    if ip is not None and (net is None or net == 'none' or not re.fullmatch(r'10\.23[12]\.\d{1,3}\.\d{1,3}', ip)):
+        refuse(f'--ip {show(ip)}: only an address on the project\'s own network')
+    dns = one(opts, '--dns')
+    if dns is not None and dns != '127.0.0.1':
+        refuse('--dns: only 127.0.0.1 (no lookups out)')
+    restart = one(opts, '--restart')
+    if restart is not None and restart not in ('no', 'unless-stopped'):
+        refuse(f'--restart {show(restart)}: only no or unless-stopped')
+    for g in every(opts, '--group-add'):
+        if g != str(c['gid']):
+            refuse(f'--group-add {show(g)}: only the owner\'s own group ({c["gid"]})')
+    for k, rx in (('--pids-limit', r'[1-9]\d{0,5}'), ('--memory', r'[1-9]\d{0,6}[bkmgBKMG]?'), ('--cpus', r'\d{1,3}(\.\d{1,3})?'),
+                  ('--hostname', r'[a-z0-9][a-z0-9.-]{0,62}'), ('--workdir', r'/[^\0\n]{0,4000}')):
+        v = one(opts, k)
+        if v is not None and not re.fullmatch(rx, v):
+            refuse(f'{k} {show(v)}')
+    for t in every(opts, '--tmpfs'):
+        if not re.fullmatch(r'/[A-Za-z0-9._/-]{0,4000}(:[A-Za-z0-9=,._/-]{0,200})?', t):
+            refuse(f'--tmpfs {show(t)}')
+    for e in every(opts, '--env'):
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}=[^\0]*', e, re.S):
+            refuse(f'--env {show(e)}: only NAME=value')
+    entry = one(opts, '--entrypoint')
+    if entry is not None and entry not in ('sh', 'chown'):
+        refuse(f'--entrypoint {show(entry)}: only sh (Doop) or chown (mm\'s helper)')
+    # who it runs as: a box's or Doop's own uid (never a real account, never root) with the owner's group; or root in
+    # exactly one of mm's two fixed shapes
+    user = one(opts, '--user')
+    if user is not None and user != '0:0' and not re.fullmatch(r'[1-9]\d{0,9}:\d{1,10}', user):
+        refuse(f'--user {show(user)}: only <uid>:<gid>, by number')
+    as_root = user is None or user == '0:0'
+    if not as_root:
+        u, g = (int(x) for x in user.split(':'))
+        if u < 100000 or g != c['gid']:
+            refuse(f'--user {show(user)}: only a box\'s own uid (100000 and up) with the owner\'s group ({c["gid"]})')
+        try:
+            pwd.getpwuid(u)
+            refuse(f'--user {u}: a real account on this machine')
+        except KeyError:
+            pass
+        if caps:
+            refuse(f'--cap-add {",".join(sorted(caps))}: not for a box\'s own uid')
+        if entry == 'chown':
+            refuse('--entrypoint chown: only mm\'s chown helper')
+    # mounts, each one of the project's own folders (realpath)
+    vols = []
+    for v in every(opts, '--volume'):
+        parts = v.split(':')
+        if len(parts) not in (2, 3) or (len(parts) == 3 and parts[2] not in ('ro', 'rw')):
+            refuse(f'-v {show(v)}: only <host path>:<path>[:ro]')
+        if not re.fullmatch(r'/[^\0\n]{0,4000}', parts[1]):
+            refuse(f'-v {show(v)}: the path in the container is absolute')
+        real, project = host_path(parts[0], project, c, '-v')
+        vols.append((real, parts[1], parts[2] if len(parts) == 3 else ''))
+    env_file = one(opts, '--env-file')
+    keep_fds = []
+    if env_file is not None:
+        try:
+            fd = os.open(env_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            refuse(f'--env-file {show(env_file)}: not a plain file of the owner\'s')
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != c['uid'] or st.st_nlink != 1:
+            refuse(f'--env-file {show(env_file)}: not a plain file of the owner\'s')
+        real = os.readlink(f'/proc/self/fd/{fd}')
+        if owner_project(real, c) is None or (project and owner_project(real, c) != project):
+            refuse(f'--env-file {show(env_file)}: outside the project\'s own folders')
+        os.set_inheritable(fd, True)
+        keep_fds.append(fd)
+        env_file = f'/dev/fd/{fd}'
+    if as_root:
+        if not c['root_containers']:
+            refuse('run: this would run as root in the container (root_containers = no in the config)')
+        if user is None and kind == 'egress' and caps <= EGRESS_CAPS and net is None and IMAGE.fullmatch(img) \
+                and img.startswith('mm-egress') and entry is None:
+            pass  # the egress proxy (src/box.ts up): root in its image, it drops to its own user itself
+        elif user == '0:0' and name is None and net == 'none' and caps <= CHOWN_CAPS and entry == 'chown' \
+                and IMAGE.fullmatch(img) and img.startswith('mm-box') and not every(opts, '--env') and env_file is None:
+            # mm's chown helper (src/box.ts giveBack): the owner gets back what the box made, in its mounts only
+            dirs = cmd[3:]
+            if cmd[:3] != ['-R', '--no-dereference', f'{c["uid"]}:{c["gid"]}'] or not dirs \
+                    or sorted(dirs) != sorted(dst for _, dst, _ in vols):
+                refuse('chown helper: only chown -R --no-dereference <owner> <its own mounts>')
+            for real, dst, mode in vols:
+                if mode == 'ro':
+                    refuse('chown helper: its mounts are read-write')
+        else:
+            refuse('run: as root, or with capabilities, only mm\'s egress proxy and chown helper (exactly)')
+    out = ['run', '--pull=never', '--security-opt=no-new-privileges']
+    for n, val in opts:
+        if n in ('--security-opt', '--volume', '--env-file'):
+            continue
+        out.append(f'{n}={val}' if val is not True else n)
+    for real, dst, mode in vols:
+        out.append(f'--volume={real}:{dst}' + (f':{mode}' if mode else ''))
+    if env_file is not None:
+        out.append(f'--env-file={env_file}')
+    return out + [img] + cmd, keep_fds
+
+
+# ---------- exec ----------
+
+EXEC = {'--interactive': ('i', False), '--tty': ('t', False), '--workdir': ('w', True), '--env': ('e', True)}
+
+
+def check_exec(args, c):
+    opts, pos = parse(args, EXEC, interspersed=False)
+    if len(pos) < 2:
+        refuse('exec: a container and a command')
+    name, cmd = pos[0], pos[1:]
+    _, project = container(name, kinds=('box', 'doop'))
+    for e in every(opts, '--env'):
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}=[^\0]*', e, re.S):
+            refuse(f'--env {show(e)}: only NAME=value')
+    w = one(opts, '--workdir')
+    if w is not None and not re.fullmatch(r'/[^\0\n]{0,4000}', w):
+        refuse(f'--workdir {show(w)}')
+    # is it really mm's? Its own name and its project's label, by docker; then exec by its id (not a name that could
+    # change in between)
+    r = subprocess.run(c['docker'] + ['container', 'inspect', '--format',
+                                      '{{.Id}}|{{.Name}}|{{index .Config.Labels "mm.project"}}', name],
+                       env=env(c), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    got = r.stdout.strip().split('|') if r.returncode == 0 else []
+    if len(got) != 3 or not ID.fullmatch(got[0]) or got[1] != '/' + name or got[2] != project:
+        refuse(f'exec: {show(name)} is not labelled as mm\'s (mm.project={project})')
+    return ['exec'] + emit(opts) + [got[0]] + cmd, []
+
+
+# ---------- build ----------
+
+BUILD = {'--quiet': ('q', False), '--tag': ('t', True), '--file': ('f', True), '--build-arg': (None, True)}
+
+
+def copy_context(src, dst, c):
+    """The caller's build folder, copied as checked: only folders and plain files of the caller's own (each opened
+    without following a symlink, its owner read from the open file), nothing else. The build reads the copy, so a
+    file swapped in later is never read."""
+    total = 0
+    for top, dirs, files in os.walk(src, followlinks=False):
+        rel = os.path.relpath(top, src)
+        for d in dirs:
+            st = os.lstat(os.path.join(top, d))
+            if not stat.S_ISDIR(st.st_mode) or st.st_uid != c['uid']:
+                refuse(f'build: {show(os.path.join(rel, d))} is not a folder of the owner\'s')
+            os.mkdir(os.path.join(dst, rel, d), 0o755)
+        for f in files:
+            p = os.path.join(top, f)
+            try:
+                fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except OSError:
+                refuse(f'build: {show(os.path.join(rel, f))} is not a plain file of the owner\'s')
+            with os.fdopen(fd, 'rb') as fh:
+                st = os.fstat(fh.fileno())
+                if not stat.S_ISREG(st.st_mode) or st.st_uid != c['uid'] or st.st_nlink != 1:
+                    refuse(f'build: {show(os.path.join(rel, f))} is not a plain file of the owner\'s')
+                total += st.st_size
+                if total > c['max_context']:
+                    refuse('build: the folder is too big')
+                with open(os.path.join(dst, rel, f), 'xb') as out:
+                    shutil.copyfileobj(fh, out)
+                os.chmod(os.path.join(dst, rel, f), st.st_mode & 0o755)
+
+
+def check_build(args, c):
+    opts, pos = parse(args, BUILD, interspersed=True)
+    if len(pos) != 1:
+        refuse('build: one folder')
+    tag = one(opts, '--tag')
+    if tag is None or not re.fullmatch(r'mm-(box|egress)(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?', tag):
+        refuse(f'build: tag {show(tag)}: only mm-box or mm-egress')
+    for a in every(opts, '--build-arg'):
+        if a not in (f'UID={c["uid"]}', f'HOME_DIR={c["home"]}'):
+            refuse(f'build: --build-arg {show(a)}: only UID and HOME_DIR, the owner\'s')
+    ctx = pos[0]
+    if not ctx.startswith('/'):
+        refuse('build: the folder as an absolute path')
+    try:
+        real = os.path.realpath(ctx, strict=True)
+    except OSError:
+        refuse(f'build: {show(ctx)} does not exist')
+    st = os.lstat(real)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != c['uid'] or st.st_mode & 0o022 \
+            or not re.fullmatch(r'mm-box-build-[A-Za-z0-9_]{1,40}', os.path.basename(real)):
+        refuse(f'build: {show(ctx)} is not mm\'s build folder (mm-box-build-*, the owner\'s, not writable by others)')
+    f = one(opts, '--file')
+    rel = 'Dockerfile'
+    if f is not None:
+        fr = os.path.realpath(f) if f.startswith('/') else os.path.realpath(os.path.join(real, f))
+        if not inside(fr, real):
+            refuse(f'build: -f {show(f)} is outside the build folder')
+        rel = fr[len(real) + 1:]
+    return real, rel, opts
+
+
+def run_build(args, c):
+    real, rel, opts = check_build(args, c)
+    tmp = tempfile.mkdtemp(prefix='mm-docker-build-', dir='/var/tmp' if c['root'] else None)
+    try:
+        ctx = os.path.join(tmp, 'ctx')
+        os.mkdir(ctx, 0o755)
+        copy_context(real, ctx, c)
+        if not os.path.isfile(os.path.join(ctx, rel)):
+            refuse(f'build: no {show(rel)} in the folder')
+        argv = c['docker'] + ['build'] + emit(opts, skip=('--file',)) + [f'--file={os.path.join(ctx, rel)}', ctx]
+        return subprocess.run(argv, env=env(c), stdin=subprocess.DEVNULL).returncode
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------- the small ones ----------
+
+def check_small(sub, args, c):
+    if sub == 'inspect':
+        opts, pos = parse(args, {'--format': ('f', True)}, interspersed=True)
+        if not pos:
+            refuse('inspect: a name')
+        for n in pos:
+            if not (CONTAINER.fullmatch(n) or NETWORK.fullmatch(n)):
+                refuse(f'inspect: {show(n)} is not one of mm\'s containers or networks')
+        template(one(opts, '--format') or '')
+        return ['inspect'] + emit(opts) + pos
+    if sub == 'container':
+        if not args or args[0] != 'inspect':
+            refuse('container: only inspect')
+        opts, pos = parse(args[1:], {'--format': ('f', True)}, interspersed=True)
+        if len(pos) != 1:
+            refuse('container inspect: one container')
+        container(pos[0])
+        template(one(opts, '--format') or '')
+        return ['container', 'inspect'] + emit(opts) + pos
+    if sub in ('rm', 'restart', 'stop'):
+        spec = {'--force': ('f', False)} if sub == 'rm' else {'--timeout': ('t', True), '--time': (None, True)}
+        opts, pos = parse(args, spec, interspersed=True)
+        if len(pos) != 1:
+            refuse(f'{sub}: one container')
+        container(pos[0])
+        for n, v in opts:
+            if n != '--force' and not re.fullmatch(r'\d{1,3}', v):
+                refuse(f'{sub}: {n} {show(v)}')
+        return [sub] + emit(opts) + pos
+    if sub == 'ps':
+        opts, pos = parse(args, {'--all': ('a', False), '--quiet': ('q', False), '--format': (None, True)}, interspersed=True)
+        if pos:
+            refuse('ps: no names')
+        template(one(opts, '--format') or '')
+        return ['ps'] + emit(opts)
+    if sub == 'pull':
+        opts, pos = parse(args, {'--quiet': ('q', False)}, interspersed=True)
+        if len(pos) != 1 or not NAMED_DIGEST.fullmatch(pos[0]):
+            refuse('pull: one image, by digest (<name>@sha256:<64 hex>)')
+        return ['pull'] + emit(opts) + pos
+    if sub == 'image':
+        if not args or args[0] != 'inspect':
+            refuse('image: only inspect')
+        opts, pos = parse(args[1:], {'--format': ('f', True)}, interspersed=True)
+        if len(pos) != 1:
+            refuse('image inspect: one image')
+        image(pos[0])
+        template(one(opts, '--format') or '')
+        return ['image', 'inspect'] + emit(opts) + pos
+    if sub == 'network':
+        what, rest = (args[0], args[1:]) if args else ('', [])
+        if what == 'ls':
+            opts, pos = parse(rest, {'--quiet': ('q', False), '--format': (None, True)}, interspersed=True)
+            if pos:
+                refuse('network ls: no names')
+            template(one(opts, '--format') or '')
+            return ['network', 'ls'] + emit(opts)
+        if what == 'inspect':
+            opts, pos = parse(rest, {'--format': ('f', True)}, interspersed=True)
+            if not pos:
+                refuse('network inspect: a name')
+            for n in pos:
+                if not (NETWORK.fullmatch(n) or NET_ID.fullmatch(n)):
+                    refuse(f'network inspect: {show(n)} is not one of mm\'s networks or a network id')
+            template(one(opts, '--format') or '')
+            return ['network', 'inspect'] + emit(opts) + pos
+        if what == 'rm':
+            opts, pos = parse(rest, {}, interspersed=True)
+            if len(pos) != 1:
+                refuse('network rm: one network')
+            network(pos[0])
+            return ['network', 'rm'] + pos
+        if what == 'create':
+            opts, pos = parse(rest, {'--internal': (None, False), '--subnet': (None, True), '--gateway': (None, True),
+                                     '--label': (None, True)}, interspersed=True)
+            if len(pos) != 1:
+                refuse('network create: one name')
+            kind, project = network(pos[0])
+            o = '231' if kind == 'box' else '232'
+            sub_, gw = one(opts, '--subnet'), one(opts, '--gateway')
+            m = re.fullmatch(rf'10\.{o}\.(\d{{1,3}})\.0/24', sub_ or '')
+            if one(opts, '--internal') is None or not m or gw != f'10.{o}.{m.group(1)}.1':
+                refuse(f'network create: only --internal, 10.{o}.<n>.0/24 and its .1')
+            labels = sorted(every(opts, '--label'))
+            want = sorted([f'mm.project={project}'] + (['mm.service=doop'] if kind == 'doop' else []))
+            if labels != want:
+                refuse(f'network create: labels only {", ".join(want)}')
+            return ['network', 'create'] + emit(opts) + pos
+        if what == 'connect':
+            opts, pos = parse(rest, {'--ip': (None, True)}, interspersed=True)
+            if len(pos) != 2:
+                refuse('network connect: a network and a container')
+            nk, np = network(pos[0])
+            ck, cp = container(pos[1], kinds=('egress', 'box'))
+            ip = one(opts, '--ip')
+            if nk != 'box' or np != cp or (ip is not None and not re.fullmatch(r'10\.231\.\d{1,3}\.\d{1,3}', ip)):
+                refuse('network connect: only a project\'s own container to its own network')
+            return ['network', 'connect'] + emit(opts) + pos
+        refuse(f'network {show(what)}: only ls, inspect, create, connect, rm')
+    refuse(f'{show(sub)}: not a docker call mm makes')
+
+
+def main(argv):
+    c = load_conf()
+    if not argv:
+        refuse('no docker subcommand')
+    sub, args = argv[0], argv[1:]
+    if sub.startswith('-'):
+        refuse(f'{show(sub)}: no global options{reason(sub.split("=")[0])}')
+    if sub == 'build':
+        return run_build(args, c)
+    if sub == 'run':
+        out, fds = check_run(args, c)
+    elif sub == 'exec':
+        out, fds = check_exec(args, c)
+    else:
+        out, fds = check_small(sub, args, c), []
+    argv2 = c['docker'] + out
+    sys.stdout.flush()
+    os.execve(shutil.which(argv2[0], path=SAFE_PATH) if '/' not in argv2[0] else argv2[0], argv2, env(c))
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Refused as e:
+        print(f'mm-docker: refused: {e}', file=sys.stderr)
+        sys.exit(REFUSED)

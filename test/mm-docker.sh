@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+# Escape tests for box/mm-docker (sy-78dy; plans/host-hardening.md step 3), hermetic: the wrapper in test mode (not
+# root, its config from MM_DOCKER_CONF) in front of a stand-in docker that records what it would run. Every docker call
+# mm makes (src/box.ts, template/bin/doop-run, src/doctor.ts) passes, as the command line the wrapper writes; every
+# refusal (the item's list, review's list on sy-6fu, quoting tricks) exits 125 and runs nothing.
+#   test/mm-docker.sh
+# Then mm's own `box build` through the wrapper (bun src/cli.ts, a throwaway MM_HOME).
+set -uo pipefail
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+W="$HERE/box/mm-docker"
+T=$(mktemp -d); trap 'chmod -R u+w "$T" 2>/dev/null; rm -rf "$T"' EXIT
+pass=0; fail=0
+ok() { pass=$((pass+1)); echo "  ok   $*"; }; bad() { fail=$((fail+1)); echo "  FAIL $*"; }
+U=$(id -u); G=$(id -g); H=$(getent passwd "$U" | cut -d: -f6)
+
+# the stand-in docker: one line per call (each word %q-quoted); the wrapper's own label check answers from $T/labels
+cat >"$T/docker" <<'EOF'
+#!/usr/bin/env bash
+T=$(dirname "$0")
+if [ "$1 $2 $3" = "container inspect --format" ] && [[ $4 == '{{.Id}}|'* ]]; then
+  n=${!#}; l=$(grep "^$n " "$T/labels" 2>/dev/null | head -1)
+  [ -n "$l" ] || { echo "Error: No such container: $n" >&2; exit 1; }
+  set -- $l; echo "$2|/$1|${3:-}"; exit 0
+fi
+printf '%q ' "$@" >>"$T/calls"; echo >>"$T/calls"
+if [ "$1" = build ]; then ctx=${!#}; (cd "$ctx" && find . -type f | sort | tr '\n' ' ') >>"$T/calls"; echo >>"$T/calls"; fi
+exit 0
+EOF
+chmod 755 "$T/docker"
+MM="$T/mm"; PR="$MM/projects/acme/shop"; SEC="$T/secrets"
+mkdir -p "$PR"/{bin,secrets,data/doop,.git/hooks,.run/logs} "$MM/projects/acme/other" "$MM/box/acme-shop"/{cfg,sock,backup,ai,egress,api} \
+  "$MM/paseo/acme-shop" "$MM/claude/acme-shop" "$MM/egress/acme-shop" "$SEC/acme-shop" "$T/outside"
+printf 'client: acme\nname: shop\nproject: acme-shop\n' >"$PR/.mm-answers.yaml"
+printf 'project: "acme-other"\n' >"$MM/projects/acme/other/.mm-answers.yaml"
+echo '[core]' >"$PR/.git/config"; echo 'NODE_ENV=production' >"$PR/secrets/doop.env"; chmod 600 "$PR/secrets/doop.env"
+echo x >"$MM/egress/acme-shop/allow"; echo 'box:x' >"$MM/box/acme-shop/passwd"; echo 'box:x' >"$MM/box/acme-shop/group"
+echo s >"$T/outside/secret"
+ln -s "$T/outside" "$PR/evil"; ln -s / "$PR/rootlink"; ln -s "$T/outside/secret" "$PR/secrets/linked.env"
+echo h >"$PR/data/h"; ln "$PR/data/h" "$PR/hardlink"
+cat >"$T/conf" <<EOF
+# test config (the installed one is /etc/mm-docker.conf, root's)
+docker = $T/docker
+mm_home = $MM
+projects = $MM/projects
+secrets = $SEC
+root_containers = yes
+EOF
+export MM_DOCKER_CONF="$T/conf"
+
+# yes <desc> <grep -F for the recorded call | -> <args...>: passes, docker ran once, its line has the text
+yes() {
+  local d=$1 want=$2; shift 2; : >"$T/calls"
+  if out=$("$W" "$@" 2>&1) && [ "$(grep -c . "$T/calls")" -ge 1 ] && { [ "$want" = - ] || grep -qF -- "$want" "$T/calls"; }; then ok "$d"
+  else bad "$d"; echo "       exit/out: $out"; sed 's/^/       ran: /' "$T/calls"; fi
+}
+# no <desc> <args...>: exit 125, "refused", docker ran nothing (an exec's own label check is not a run)
+no() {
+  local d=$1; shift; : >"$T/calls"
+  out=$("$W" "$@" 2>&1); rc=$?
+  if [ $rc = 125 ] && grep -q 'refused' <<<"$out" && [ ! -s "$T/calls" ]; then ok "$d  ($(sed 's/^mm-docker: refused: //' <<<"$out" | head -c 90))"
+  else bad "$d (exit $rc)"; echo "       out: $out"; sed 's/^/       ran: /' "$T/calls"; fi
+}
+
+IMG=mm-box:0.1.1; EG=mm-egress:0.1.1; DIG=sha256:$(printf 'a%.0s' $(seq 64))
+BOXRUN=(run -d --name mm-box-acme-shop --hostname acme-shop --label mm.project=acme-shop --network mm-net-acme-shop --ip 10.231.40.10 --restart unless-stopped
+  --dns 127.0.0.1 --user 200040:"$G" --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 2048 --memory 4g --cpus 2
+  --tmpfs /tmp:rw,nosuid,nodev,size=1g,mode=1777 --tmpfs "$H:rw,nosuid,nodev,size=512m,uid=200040,gid=$G,mode=0700" -e "HOME=$H"
+  -v "$MM/box/acme-shop/passwd:/etc/passwd:ro" -v "$MM/box/acme-shop/group:/etc/group:ro" -v "$PR:$PR"
+  -v "$PR/bin:$PR/bin:ro" -v "$PR/.git/config:$PR/.git/config:ro" -v "$MM/box/acme-shop/cfg:/run/mm/cfg:ro" -v "$MM/box/acme-shop/sock:/run/mm/sock"
+  -v "$MM/box/acme-shop/backup:/run/mm/backup" -v "$MM/claude/acme-shop:$MM/claude/acme-shop" -v "$MM/paseo/acme-shop:$MM/paseo/acme-shop"
+  -v "$SEC/acme-shop:/run/mm/secrets:ro" -v "$MM/box/acme-shop/api:/run/mm/api:ro" -w "$PR" "$IMG" sh -c "umask 002 && exec process-compose up")
+EGRUN=(run -d --name mm-egress-acme-shop --label mm.project=acme-shop --restart unless-stopped --init --read-only --tmpfs /run:size=8m
+  --cap-drop ALL --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges --pids-limit 256 --memory 256m -e MM_EGRESS_DENY=10.0.0.0/8
+  --group-add "$G" -v "$MM/egress/acme-shop/allow:/etc/mm/allow:ro" -v "$MM/box/acme-shop/ai:/run/mm/ai" -v "$MM/box/acme-shop/egress:/run/mm/log" "$EG" sh -c 'exec mm-egress')
+CHOWN=(run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE -v "$PR:$PR" -v "$MM/box/acme-shop:$MM/box/acme-shop"
+  --entrypoint chown "$IMG" -R --no-dereference "$U:$G" "$PR" "$MM/box/acme-shop")
+DOOP=(run --rm --name mm-doop-acme-shop --label mm.project=acme-shop --label mm.service=doop --network mm-doop-net-acme-shop --ip 10.232.40.10 --dns 127.0.0.1
+  --user 210040:"$G" --read-only --tmpfs /tmp:rw,nosuid,nodev,size=512m --cap-drop ALL --security-opt no-new-privileges --memory 2g --pids-limit 1024
+  -v "$PR/data/doop:/app/data" --env-file "$PR/secrets/doop.env" --entrypoint sh "$DIG" -c 'umask 002; "$@"' sh node server.js)
+REGROUP=(run --rm --network none --user 210040:"$G" --read-only --cap-drop ALL --security-opt no-new-privileges -v "$PR/data/doop:/app/data" --entrypoint sh "$DIG" -c 'exit 0')
+printf 'mm-box-acme-shop %s acme-shop\nmm-doop-acme-shop %s acme-shop\nmm-box-nolabel %s\nmm-box-other %s acme-other\nmm-box-shortid %s acme-shortid\n' \
+  "$(printf 'b%.0s' $(seq 64))" "$(printf 'd%.0s' $(seq 64))" "$(printf 'c%.0s' $(seq 64))" "$(printf 'e%.0s' $(seq 64))" "abc" >"$T/labels"
+
+echo "== mm's own calls pass (as the wrapper's own command line)"
+yes "box: run" "--volume=$PR:$PR" "${BOXRUN[@]}"
+yes "box: no-new-privileges and never a pull, always" "run --pull=never --security-opt=no-new-privileges" "${BOXRUN[@]}"
+yes "egress proxy: run (root in its image, SETUID/SETGID only)" "--cap-add=SETUID" "${EGRUN[@]}"
+yes "chown helper (giveBack)" "--entrypoint=chown" "${CHOWN[@]}"
+yes "doop: run (env file passed as an open file)" "--env-file=/dev/fd/" "${DOOP[@]}"
+yes "doop: release regroup" "--user=210040:$G" "${REGROUP[@]}"
+yes "network create (box)" - network create --internal --subnet 10.231.40.0/24 --gateway 10.231.40.1 --label mm.project=acme-shop mm-net-acme-shop
+yes "network create (doop)" - network create --internal --subnet 10.232.40.0/24 --gateway 10.232.40.1 --label mm.project=acme-shop --label mm.service=doop mm-doop-net-acme-shop
+yes "network connect egress" - network connect --ip 10.231.40.2 mm-net-acme-shop mm-egress-acme-shop
+yes "network inspect -f subnet" - network inspect -f '{{(index .IPAM.Config 0).Subnet}}' mm-net-acme-shop
+yes "network inspect ids" - network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 0123456789ab ba9876543210
+yes "network ls -q" - network ls -q
+yes "network rm" - network rm mm-net-acme-shop
+yes "container inspect (exists)" - container inspect mm-box-acme-shop
+yes "inspect -f running" - inspect -f '{{.State.Running}}' mm-egress-acme-shop
+yes "inspect an mm network" - inspect mm-net-acme-shop
+yes "image inspect" - image inspect "$IMG"
+yes "image inspect by digest" - image inspect -f '{{.Id}}' "$DIG"
+yes "rm -f" - rm -f mm-box-acme-shop
+yes "restart -t 2" - restart -t 2 mm-egress-acme-shop
+yes "stop -t 20 doop" - stop -t 20 mm-doop-acme-shop
+yes "ps --format (doctor)" - ps --format '{{.Names}}'
+yes "pull by digest" - pull "ghcr.io/x/doop@$DIG"
+yes "exec into the box, by its id" "exec --workdir=$PR --env=A=1 $(printf 'b%.0s' $(seq 64)) sh -c" exec -w "$PR" -e A=1 mm-box-acme-shop sh -c 'echo hi'
+yes "exec -it (mm shell)" "--interactive --tty" exec -it -w "$PR" mm-box-acme-shop sh -c 'exec "$@"' sh bash
+yes "exec into doop (backup)" - exec mm-doop-acme-shop tar -czf - -C /app data
+yes "process-compose in the box (app slot)" - exec mm-box-acme-shop process-compose -U -u /run/mm/sock/pc.sock project update -f /run/mm/cfg/pc.yaml
+yes "a command word that looks like an option stays the container's" "$IMG --privileged" run --rm --network none --user 200040:"$G" --cap-drop ALL "$IMG" --privileged
+yes "a symlink inside the project to its own folder: mounted as the real path" "--volume=$PR/bin:/x" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$PR/./bin/../bin:/x" "$IMG"
+
+echo "== refused: the item's list"
+no "--privileged" run --privileged "${BOXRUN[@]:1}"
+no "--privileged=true" run --privileged=true "${BOXRUN[@]:1}"
+no "--privileged=false (no flag games at all)" run --privileged=false "${BOXRUN[@]:1}"
+no "-v /:/host" run -v /:/host "${BOXRUN[@]:1}"
+no "--volume=/:/host" run --volume=/:/host "${BOXRUN[@]:1}"
+no "-v/etc:/x (glued)" run -v/etc:/x "${BOXRUN[@]:1}"
+no "-dv /:/x (combined shorts)" run -dv /:/x --rm --network none --user 200040:"$G" --cap-drop ALL "$IMG"
+no "-v=/:/x" run -v=/:/x --rm --network none --user 200040:"$G" --cap-drop ALL "$IMG"
+no "a host path outside the project (home)" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$H:/x" "$IMG"
+no "the projects folder itself" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$MM/projects:/x" "$IMG"
+no "mm's home (vault, config)" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$MM:/x" "$IMG"
+no "../ out of the project" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$PR/../../../../outside:/x" "$IMG"
+no "a symlink in the project to outside" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$PR/evil:/x" "$IMG"
+no "a symlink in the project to /" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$PR/rootlink/etc:/x" "$IMG"
+no "another project's folder into this box" run -d --name mm-box-acme-shop --label mm.project=acme-shop --cap-drop ALL --user 200040:"$G" -v "$MM/projects/acme/other:/x" "$IMG"
+no "a missing host path (docker would make it as root)" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$PR/nothere:/x" "$IMG"
+no "a named volume" run --rm --network none --user 200040:"$G" --cap-drop ALL -v dokploy-postgres:/x "$IMG"
+no "a hard-linked file" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$PR/hardlink:/x" "$IMG"
+no "-v with :shared propagation" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$PR:/x:shared" "$IMG"
+no "-v with :z relabel" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$PR:/x:z" "$IMG"
+no "--mount type=bind,src=/" run --mount type=bind,src=/,dst=/h --rm --network none --user 200040:"$G" --cap-drop ALL "$IMG"
+no "--volumes-from" run --volumes-from dokploy --rm --network none --user 200040:"$G" --cap-drop ALL "$IMG"
+no "--pid=host" run --pid=host "${BOXRUN[@]:1}"
+no "--pid host" run --pid host "${BOXRUN[@]:1}"
+no "--ipc host" run --ipc host "${BOXRUN[@]:1}"
+no "--userns host" run --userns host "${BOXRUN[@]:1}"
+no "--uts host" run --uts host "${BOXRUN[@]:1}"
+no "--network=host" run --network=host --rm --user 200040:"$G" --cap-drop ALL "$IMG"
+no "--network host" run --network host --rm --user 200040:"$G" --cap-drop ALL "$IMG"
+no "--net=host (the alias)" run --net=host --rm --user 200040:"$G" --cap-drop ALL "$IMG"
+no "--network container:dokploy" run --network container:dokploy --rm --user 200040:"$G" --cap-drop ALL "$IMG"
+no "--network dokploy-network" run --network dokploy-network --rm --user 200040:"$G" --cap-drop ALL "$IMG"
+no "another project's network" run -d --name mm-box-acme-shop --label mm.project=acme-shop --network mm-net-acme-other --user 200040:"$G" --cap-drop ALL "$IMG"
+no "--cap-add SYS_ADMIN (box)" run --cap-add SYS_ADMIN "${BOXRUN[@]:1}"
+no "--cap-add=ALL (egress)" run --cap-add=ALL "${EGRUN[@]:1}"
+no "--cap-add NET_ADMIN on the egress proxy" run --cap-add NET_ADMIN "${EGRUN[@]:1}"
+no "egress caps on a box" run --cap-add SETUID "${BOXRUN[@]:1}"
+no "no --cap-drop ALL" run --rm --network none --user 200040:"$G" "$IMG"
+no "--cap-drop NET_RAW only" run --rm --network none --user 200040:"$G" --cap-drop NET_RAW "$IMG"
+no "--device /dev/sda" run --device /dev/sda "${BOXRUN[@]:1}"
+no "--device=/dev/kmsg" run --device=/dev/kmsg "${BOXRUN[@]:1}"
+no "--security-opt seccomp=unconfined" run --security-opt seccomp=unconfined "${BOXRUN[@]:1}"
+no "--security-opt apparmor=unconfined" run --security-opt apparmor=unconfined "${BOXRUN[@]:1}"
+no "--security-opt label=disable" run --security-opt=label=disable "${BOXRUN[@]:1}"
+no "--security-opt systempaths=unconfined" run --security-opt systempaths=unconfined "${BOXRUN[@]:1}"
+
+echo "== refused: exec into what is not mm's"
+no "exec into dokploy" exec dokploy sh
+no "exec into a container by its id" exec 0123456789ab sh
+no "exec into a name with no mm.project label" exec mm-box-nolabel sh
+no "exec into a box labelled for another project" exec mm-box-other sh
+no "exec into a container that is not there" exec mm-box-ghost sh
+no "exec when docker's answer has no full id" exec mm-box-shortid sh
+no "exec into the egress proxy (root)" exec mm-egress-acme-shop sh
+no "exec -u 0" exec -u 0 mm-box-acme-shop sh
+no "exec --user root" exec --user root mm-box-acme-shop sh
+no "exec --privileged" exec --privileged mm-box-acme-shop sh
+no "exec --env-file a host file" exec --env-file /etc/passwd mm-box-acme-shop sh
+no "exec -d detach-keys games" exec --detach-keys ctrl-x mm-box-acme-shop sh
+
+echo "== refused: root in a container, beyond mm's two fixed shapes"
+no "--user 0:0 on a box" run -d --name mm-box-acme-shop --label mm.project=acme-shop --network mm-net-acme-shop --user 0:0 --cap-drop ALL "$IMG"
+no "--user root (a name)" run --rm --network none --user root --cap-drop ALL "$IMG"
+no "--user 0" run --rm --network none --user 0 --cap-drop ALL "$IMG"
+no "--user 200040 (no group: root's)" run --rm --network none --user 200040 --cap-drop ALL "$IMG"
+no "--user <uid>:0 (root's group)" run --rm --network none --user 200040:0 --cap-drop ALL "$IMG"
+no "--user the owner's own uid" run --rm --network none --user "$U:$G" --cap-drop ALL "$IMG"
+no "--user a real account (nobody)" run --rm --network none --user "$(id -u nobody 2>/dev/null || echo 65534):$G" --cap-drop ALL "$IMG"
+no "--group-add 0" run --group-add 0 "${BOXRUN[@]:1}"
+no "--group-add wheel" run --group-add wheel "${BOXRUN[@]:1}"
+no "no --user on a box (the image's root)" run -d --name mm-box-acme-shop --label mm.project=acme-shop --cap-drop ALL "$IMG"
+no "the chown helper with another entrypoint" run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN -v "$PR:$PR" --entrypoint sh "$IMG" -c id
+no "the chown helper chowning to root" run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN -v "$PR:$PR" --entrypoint chown "$IMG" -R --no-dereference 0:0 "$PR"
+no "the chown helper on a path it did not mount" run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN -v "$PR:$PR" --entrypoint chown "$IMG" -R --no-dereference "$U:$G" /etc
+no "the chown helper with a network" run --rm --user 0:0 --cap-drop ALL --cap-add CHOWN -v "$PR:$PR" --entrypoint chown "$IMG" -R --no-dereference "$U:$G" "$PR"
+no "the egress shape with another image" run "${EGRUN[@]:1:$((${#EGRUN[@]}-5))}" "$IMG" sh -c id
+no "the egress shape on the host network" run --network host "${EGRUN[@]:1}"
+no "an --entrypoint other than sh/chown" run --entrypoint /bin/bash "${BOXRUN[@]:1}"
+sed -i 's/^root_containers = yes/root_containers = no/' "$T/conf"
+no "root_containers = no: the egress proxy" "${EGRUN[@]}"
+no "root_containers = no: the chown helper" "${CHOWN[@]}"
+yes "root_containers = no: a box still runs" - "${BOXRUN[@]}"
+sed -i 's/^root_containers = no/root_containers = yes/' "$T/conf"
+
+echo "== refused: other ways out"
+no "-p 0.0.0.0:80:80 (publish)" run -p 0.0.0.0:80:80 "${BOXRUN[@]:1}"
+no "--publish-all" run -P "${BOXRUN[@]:1}"
+no "--sysctl" run --sysctl net.ipv4.ip_forward=1 "${BOXRUN[@]:1}"
+no "--runtime" run --runtime runc-evil "${BOXRUN[@]:1}"
+no "--cgroup-parent" run --cgroup-parent / "${BOXRUN[@]:1}"
+no "--log-driver" run --log-driver syslog "${BOXRUN[@]:1}"
+ONE=(--rm --network none --user 210040:"$G" --cap-drop ALL -v "$PR/data/doop:/app/data")
+no "--env-file a host file (/etc/passwd)" run "${ONE[@]}" --env-file /etc/passwd "$DIG"
+no "--env-file through a symlink" run "${ONE[@]}" --env-file "$PR/secrets/linked.env" "$DIG"
+no "--env-file of another project" run --rm --network none --user 210040:"$G" --cap-drop ALL --env-file "$MM/projects/acme/other/.mm-answers.yaml" -v "$PR/data/doop:/app/data" "$DIG"
+no "-e without =value (the wrapper's env)" run -e SUDO_USER "${BOXRUN[@]:1}"
+no "an image that is not mm's" run --rm --network none --user 200040:"$G" --cap-drop ALL ubuntu:24.04
+no "an image dokploy uses" run --rm --network none --user 200040:"$G" --cap-drop ALL dokploy/dokploy:latest
+no "an image named like an option" run --rm --network none --user 200040:"$G" --cap-drop ALL -- --privileged
+no "-- then an option-looking image" run --rm --network none --user 200040:"$G" --cap-drop ALL -- -v
+no "a nameless container mm would keep (no --rm)" run --network none --user 200040:"$G" --cap-drop ALL "$IMG"
+no "a container not named mm's" run -d --name dokploy --label mm.project=acme-shop --cap-drop ALL --user 200040:"$G" "$IMG"
+no "a name and a label that differ" run -d --name mm-box-acme-shop --label mm.project=acme-other --cap-drop ALL --user 200040:"$G" "$IMG"
+no "a label of another kind" run --label traefik.enable=true "${BOXRUN[@]:1}"
+no "--dns 8.8.8.8" run --rm --network mm-net-acme-shop --label mm.project=acme-shop --dns 8.8.8.8 --user 200040:"$G" --cap-drop ALL "$IMG"
+no "an option given twice (--name)" run --name mm-box-x "${BOXRUN[@]:1}"
+no "a newline in a mount" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$PR:/x
+:ro" "$IMG"
+
+echo "== refused: global options, daemons, other subcommands"
+no "-H tcp://" -H tcp://127.0.0.1:2375 ps
+no "--host=unix:///" --host=unix:///var/run/docker.sock ps
+no "--context" --context evil ps
+no "--config (the CLI's plugins)" --config /tmp/evil ps
+no "-D (debug)" -D ps
+no "docker cp" cp mm-box-acme-shop:/etc/passwd /tmp/x
+no "docker create" create "${BOXRUN[@]:1}"
+no "docker commit" commit mm-box-acme-shop mm-box:evil
+no "docker tag (a moved tag)" tag ubuntu:24.04 mm-box:0.1.1
+no "docker load" load -i /tmp/x.tar
+no "docker plugin install" plugin install evil
+no "docker compose" compose up
+no "docker buildx" buildx build /
+no "docker volume create (a bind)" volume create -o type=none -o o=bind -o device=/ v
+no "docker service create" service create --mount type=bind,src=/,dst=/h alpine
+no "docker update --privileged" update mm-box-acme-shop
+no "docker network create without --internal" network create --subnet 10.231.40.0/24 --gateway 10.231.40.1 --label mm.project=acme-shop mm-net-acme-shop
+no "docker network create with a driver option" network create --internal -o com.docker.network.bridge.name=eth0 --subnet 10.231.40.0/24 --gateway 10.231.40.1 --label mm.project=acme-shop mm-net-acme-shop
+no "docker network create of another subnet" network create --internal --subnet 172.18.0.0/16 --gateway 172.18.0.1 --label mm.project=acme-shop mm-net-acme-shop
+no "docker network connect dokploy to a box net" network connect mm-net-acme-shop dokploy-traefik
+no "docker network connect a box to dokploy-network" network connect dokploy-network mm-box-acme-shop
+no "docker network connect across projects" network connect mm-net-acme-other mm-egress-acme-shop
+no "docker network rm dokploy-network" network rm dokploy-network
+no "docker rm -f dokploy" rm -f dokploy
+no "docker rm -f -- dokploy-traefik" rm -f -- dokploy-traefik
+no "docker stop traefik" stop -t 1 dokploy-traefik
+no "docker inspect dokploy (its env has secrets)" inspect dokploy
+no "docker container inspect dokploy" container inspect dokploy
+no "docker image inspect of another image" image inspect dokploy/dokploy
+no "docker pull by tag" pull alpine:latest
+no "docker ps --filter games" ps --filter label=x
+no "an empty call" ""
+
+echo "== build: mm's folder only, copied as checked, mm's tags only"
+B="$T/mm-box-build-abc123"; mkdir -p "$B/npm"; echo 'FROM scratch' >"$B/Dockerfile"; echo '{}' >"$B/npm/package.json"; chmod 700 "$B"
+yes "build (as mm box build)" "Dockerfile ./npm/package.json" build -q -t "$IMG" -f "$B/Dockerfile" --build-arg "UID=$U" --build-arg "HOME_DIR=$H" "$B"
+yes "build: docker reads a copy, not the owner's folder" "--file=/" build -q -t "$EG" -f "$B/Dockerfile" "$B"
+if grep -qF -- "$B" "$T/calls"; then bad "build: the owner's folder never reaches docker"; else ok "build: the owner's folder never reaches docker"; fi
+no "build -t over another image (dokploy)" build -q -t dokploy/dokploy:latest -f "$B/Dockerfile" "$B"
+no "build -t traefik" build -t traefik:v3.6.25 "$B"
+no "build -o (writes host files)" build -o type=local,dest=/etc -t "$IMG" "$B"
+no "build --output" build --output=/tmp/x -t "$IMG" "$B"
+no "build --iidfile" build --iidfile /etc/x -t "$IMG" "$B"
+no "build --secret" build --secret id=a,src=/etc/passwd -t "$IMG" "$B"
+no "build --build-context" build --build-context root=/ -t "$IMG" "$B"
+no "build --allow security.insecure" build --allow security.insecure -t "$IMG" "$B"
+no "build --network host" build --network host -t "$IMG" "$B"
+no "build --cache-from local" build --cache-from type=local,src=/ -t "$IMG" "$B"
+no "build --build-arg other" build --build-arg X=1 -t "$IMG" "$B"
+no "build --build-arg UID=0" build --build-arg UID=0 -t "$IMG" "$B"
+no "build of / " build -t "$IMG" /
+no "build of a folder not mm's (the home)" build -t "$IMG" "$H"
+no "build -f outside the folder" build -t "$IMG" -f /etc/passwd "$B"
+no "build -f ../ out of the folder" build -t "$IMG" -f "$B/../conf" "$B"
+no "build from a URL" build -t "$IMG" https://example.com/x.git
+no "build from stdin" build -t "$IMG" -
+mkdir -p "$T/mm-box-build-link"; echo 'FROM scratch' >"$T/mm-box-build-link/Dockerfile"; ln -s "$T/outside/secret" "$T/mm-box-build-link/s"
+no "build: a symlink in the folder" build -t "$IMG" "$T/mm-box-build-link"
+ln -s "$B" "$T/mm-box-build-viasym"
+yes "build: the folder through a symlink is its real one" - build -t "$IMG" "$T/mm-box-build-viasym"
+mkdir -p "$T/mm-box-build-wide"; echo 'FROM scratch' >"$T/mm-box-build-wide/Dockerfile"; chmod 777 "$T/mm-box-build-wide"
+no "build: a folder others can write" build -t "$IMG" "$T/mm-box-build-wide"
+
+echo "== the config and the caller"
+: >"$T/calls"; out=$(env -u MM_DOCKER_CONF "$W" ps 2>&1); rc=$?
+[ $rc = 125 ] && [ ! -s "$T/calls" ] && ok "no config: refused ($out)" || bad "no config (exit $rc: $out)"
+printf 'docker = %s\nmm_home = /\n' "$T/docker" >"$T/wide.conf"
+: >"$T/calls"; out=$(MM_DOCKER_CONF="$T/wide.conf" "$W" ps 2>&1); rc=$?
+[ $rc = 125 ] && [ ! -s "$T/calls" ] && ok "mm_home = / is refused as too wide" || bad "mm_home = / (exit $rc: $out)"
+cat >"$T/docker-env" <<'EOF'
+#!/usr/bin/env bash
+env >"$(dirname "$0")/env"
+EOF
+chmod 755 "$T/docker-env"; sed "s|^docker = .*|docker = $T/docker-env|" "$T/conf" >"$T/env.conf"
+DOCKER_HOST=tcp://evil:2375 DOCKER_CONFIG=/tmp/evil DOCKER_CONTEXT=evil LD_PRELOAD=/tmp/evil.so MM_DOCKER_CONF="$T/env.conf" "$W" ps >/dev/null 2>&1
+if [ -s "$T/env" ] && ! grep -qE '^(DOCKER_|LD_PRELOAD)' "$T/env"; then ok "docker gets a clean environment (no DOCKER_HOST, DOCKER_CONFIG, DOCKER_CONTEXT, LD_PRELOAD)"
+else bad "docker's environment"; cat "$T/env" 2>/dev/null | grep -E '^(DOCKER_|LD_)' | sed 's/^/       /'; fi
+
+echo "== mm's own code through the wrapper (bun src/cli.ts box build, a throwaway MM_HOME)"
+BUN=$(command -v bun || echo "$HOME/.bun/bin/bun")
+if [ -x "$BUN" ]; then
+  : >"$T/calls"; mkdir -p "$T/mmhome"
+  out=$(cd "$HERE" && MM_HOME="$T/mmhome" MM_DOCKER="$W" "$BUN" src/cli.ts box build 2>&1); rc=$?
+  if [ $rc = 0 ] && [ "$(grep -c '^build ' "$T/calls")" = 2 ] && grep -q 'Dockerfile' "$T/calls" && grep -q 'egress.Dockerfile' "$T/calls"; then ok "mm box build: both images, through the wrapper"
+  else bad "mm box build (exit $rc)"; echo "$out" | tail -5 | sed 's/^/       /'; sed 's/^/       ran: /' "$T/calls"; fi
+else echo "  skip mm box build (no bun)"; fi
+
+echo; echo "mm-docker: $pass passed, $fail failed"
+[ "$fail" = 0 ]
