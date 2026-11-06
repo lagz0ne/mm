@@ -205,6 +205,20 @@ check "the host's own services don't answer from the box (names proxy 1355, Vict
 ELOG="$MM_HOME_DIR/box/$PROJECT/egress/egress.log"
 check "every connection is logged on the host, for this project (the site on the list, and the one refused)" sh -c "grep -q 'github.com' '$ELOG' && grep -qi 'example.com' '$ELOG' && ! IN 'test -e $MM_HOME_DIR/box/$PROJECT/egress'"
 check "...and the shipper takes that log, stamped with the box's project" sh -c "mm ship --dry-run 2>/dev/null | grep 'example.com' | jq -e 'select(.project == \"$PROJECT\")' >/dev/null"
+# the proxy checks the address after DNS (sy-59m8): mm-egress, as its own user, with the machine's docker subnets
+check "the egress proxy runs as its own user, with no capabilities" sh -c "s=\$(D exec '$PX' sh -c 'for p in /proc/[0-9]*; do case \"\$(tr \"\\0\" \" \" <\$p/cmdline 2>/dev/null)\" in /usr/local/bin/mm-egress*) cat \$p/status;; esac; done'); echo \"\$s\" | grep -qE '^Uid:[[:space:]]+[1-9][0-9]*[[:space:]]' && echo \"\$s\" | grep -qE '^CapEff:[[:space:]]+0+\$'"
+check "...and refuses every docker network of this machine (MM_EGRESS_DENY: the default bridge, the box's network)" sh -c "e=\$(D inspect -f '{{range .Config.Env}}{{println .}}{{end}}' '$PX' | grep '^MM_EGRESS_DENY='); echo \"\$e\" | grep -q '172.17.0.0/16' && echo \"\$e\" | grep -qF \"\$(D network inspect -f '{{(index .IPAM.Config 0).Subnet}}' '$NET')\""
+check "through its proxy: plain http is refused (403), and logged" sh -c "[ \"\$(IN \"curl -s -o /dev/null -w '%{http_code}' --max-time 20 -x http://$PX:8888 http://github.com/\")\" = 403 ] && grep -F 'name=github.com' '$ELOG' | grep -q 'not GET'"
+check "...and a tunnel to port 80 (403), logged" sh -c "[ \"\$(IN \"curl -s -o /dev/null -w '%{http_connect}' -p --max-time 20 -x http://$PX:8888 http://github.com:80/\")\" = 403 ] && grep -F 'name=github.com port=80' '$ELOG' | grep -q 'only port 443'"
+# names on the list that resolve inside: public names that answer with the address they carry (sslip.io), put on the
+# box's list here (the proxy reads its list at each connection). If this machine's resolver drops such answers, the
+# name doesn't resolve: still refused, and logged.
+ALLOWF="$MM_HOME_DIR/egress/$PROJECT/allow"
+for A in 127.0.0.1 10.20.30.40 169.254.169.254 172.17.0.1; do
+  N="$A.sslip.io"; printf '^%s(:443)?$\n' "$(printf %s "$N" | sed 's/\./\\./g')" >>"$ALLOWF"
+  if getent ahostsv4 "$N" | grep -q "^$A "; then WHY="address=$A why="; else WHY="does not resolve"; fi
+  check "an allowed name that resolves to $A ($N): refused by the proxy, logged with the name and ${WHY%% *}" sh -c "c=\$(IN \"curl -s -o /dev/null -w '%{http_connect}' --max-time 20 -x http://$PX:8888 https://$N/\"); { [ \"\$c\" = 403 ] || [ \"\$c\" = 502 ]; } && grep ' refused ' '$ELOG' | grep -F 'name=$N' | grep -qF '$WHY'"
+done
 
 echo "== the box's own Paseo (M1-C)"
 PSOCK="$HD/sock/pc.sock"; PW="$MM_HOME_DIR/paseo/$PROJECT.password"
