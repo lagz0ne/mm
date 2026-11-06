@@ -265,32 +265,45 @@ export async function gateway() {
   // Each board is asked for this person with one fresh assertion (this person, this role, that board's host, 60 s), at
   // the address the host gave its route (never a project's .run/), no redirects, 3 s, 16 KB; all boards at once; no
   // cache, so a revoke shows on the next load. What a board sends back is untrusted: only whole numbers and one time.
-  const SUMMARY_MS = 3000, SUMMARY_MAX = 16 * 1024
-  const summaryFrom = async (project: string, host: string, up: string, name: string, role: Role, roles: Set<string>): Promise<Summary | null> => {
+  // The "Waiting for you" list (sy-vdi8; review's rules in sy-6h43 #5) is asked the same way, from /api/waiting, 32 KB:
+  // only id, plain title and age in minutes leave a board, with the labels the ask needs; the gateway checks each item
+  // (waitingOf) and writes the ask and the link itself. A board on an older template has no such answer: no list.
+  const SUMMARY_MS = 3000, SUMMARY_MAX = 16 * 1024, WAITING_MAX = 32 * 1024
+  /** One board's JSON answer for this person: one fresh assertion, no redirects, 3 s, at most `max` bytes. */
+  const askBoard = async <T,>(what: string, path: string, max: number, parse: (o: unknown) => T | null, quiet: (status: number) => boolean,
+    project: string, host: string, up: string, name: string, role: Role): Promise<{ v: T | null; older?: boolean }> => {
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), SUMMARY_MS)
     let why = ''
     try {
-      const r = await fetch(`${up}/api/summary?signal=1`, { redirect: 'manual', signal: ac.signal, headers: { 'x-mm-assertion': signAssertion(name, role, host),
+      const r = await fetch(`${up}${path}`, { redirect: 'manual', signal: ac.signal, headers: { 'x-mm-assertion': signAssertion(name, role, host),
         'x-forwarded-host': host, 'x-forwarded-proto': 'https', accept: 'application/json', 'accept-encoding': 'identity' } })
-      if (r.status !== 200 || !r.body) { why = `HTTP ${r.status}`; ac.abort(); return null }
-      if (Number(r.headers.get('content-length') || 0) > SUMMARY_MAX) { why = 'too big'; ac.abort(); return null }
+      if (r.status !== 200 || !r.body) { ac.abort(); if (quiet(r.status)) return { v: null, older: true }; why = `HTTP ${r.status}`; return { v: null } }
+      if (Number(r.headers.get('content-length') || 0) > max) { why = 'too big'; ac.abort(); return { v: null } }
       const rd = r.body.getReader(), parts: Uint8Array[] = []
       for (let n = 0; ;) {
         const { done, value } = await rd.read(); if (done) break
-        n += value.byteLength; if (n > SUMMARY_MAX) { why = 'too big'; ac.abort(); return null }
+        n += value.byteLength; if (n > max) { why = 'too big'; ac.abort(); return { v: null } }
         parts.push(value)
       }
-      let o: unknown; try { o = JSON.parse(Buffer.concat(parts).toString('utf8')) } catch { why = 'not JSON'; return null }
-      const sm = summaryOf(o, roles); if (!sm) why = 'not a summary'
-      return sm
-    } catch (e) { why = ac.signal.aborted ? 'timeout' : (e as Error).name || 'error'; return null }
-    finally { clearTimeout(timer); if (why) log('warn', 'board summary unavailable', { project, host, why }) }
+      let o: unknown; try { o = JSON.parse(Buffer.concat(parts).toString('utf8')) } catch { why = 'not JSON'; return { v: null } }
+      const v = parse(o); if (!v) why = `not a ${what}`
+      return { v }
+    } catch (e) { why = ac.signal.aborted ? 'timeout' : (e as Error).name || 'error'; return { v: null } }
+    finally { clearTimeout(timer); if (why) log('warn', `board ${what} unavailable`, { project, host, why }) }
   }
   const home = async (p: { userId: string; name: string }) => {
     const { hosts, ups, roles } = loadHosts()
     const granted = Object.entries(hosts).sort(([a], [b]) => a.localeCompare(b))
       .flatMap(([project, host]) => { const role = roleOn(p.userId, project); return role ? [{ project, host, role }] : [] })
-    const cards = await Promise.all(granted.map(async (c) => ({ ...c, s: ups[c.host] ? await summaryFrom(c.project, c.host, ups[c.host], p.name, c.role, roles[c.project] || new Set()) : null })))
+    const cards = await Promise.all(granted.map(async (c) => {
+      const up = ups[c.host]
+      if (!up) return { ...c, s: null, w: null, older: false }
+      const [s, w] = await Promise.all([
+        askBoard('summary', '/api/summary?signal=1', SUMMARY_MAX, (o) => summaryOf(o, roles[c.project] || new Set()), () => false, c.project, c.host, up, p.name, c.role),
+        // an older board answers 404 or 403 ("not allowed from the board"): no list, no error
+        askBoard('waiting list', '/api/waiting', WAITING_MAX, (o) => waitingOf(o, c.role === 'owner'), (st) => st === 404 || st === 403, c.project, c.host, up, p.name, c.role)])
+      return { ...c, s: s.v, w: w.v, older: !!w.older }
+    }))
     return html(homePage(p.name, cards))
   }
 
@@ -605,6 +618,47 @@ export function worstOf(s: Summary): { text: string; hot: boolean } | null {
   if (s.blocked > 0) return { text: `${s.blocked} blocked`, hot: false }
   return s.queue !== undefined ? { text: 'nothing waiting', hot: false } : null
 }
+/** One entry of the "Waiting for you" list (sy-vdi8): what the board sent, checked, and the ask the gateway wrote. */
+type Waiting = { id: string; title: string; age_min: number; ask: string; hot: boolean }
+const ITEM_ID = /^[a-z]+-[a-z0-9]+(\.[0-9]+)*$/ // the boards' id pattern (template/site/server.mjs ID_RE)
+// control characters (C0, DEL, C1), the line and paragraph separators, and the bidi controls
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/
+const ASK_LABELS = new Set(['needs-you', 't2', 'signed-off'])
+const WAIT_KEYS = new Set(['id', 'title', 'age_min', 'labels'])
+/** A board's /api/waiting answer, read strictly (review sy-6h43 #5). The answer: an object with `items` (an array) and
+ *  `more` (a whole number, optional), nothing else, or the board's whole list is dropped. Each item: an id of the boards'
+ *  pattern (at most 64 characters), a plain-text title (1..200 characters, no control characters), age_min a whole
+ *  number, labels only from needs-you/t2/signed-off, and nothing else, or that item is dropped. The ask is the gateway's:
+ *  for the owner "approve (t2, signed off)" (t2 + signed-off) or "needs you" (needs-you), else the item is dropped; for
+ *  anyone else "assigned to you" (the board sends them only their own items). A repeated id: kept once. */
+export function waitingOf(o: unknown, owner: boolean): { items: Waiting[]; more: number } | null {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null
+  const x = o as Record<string, unknown>
+  if (Object.keys(x).some((k) => k !== 'items' && k !== 'more') || !Array.isArray(x.items) || x.items.length > 1000) return null
+  const whole = (v: unknown, max: number) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= max
+  if (x.more !== undefined && !whole(x.more, 1e6)) return null
+  const items: Waiting[] = [], seen = new Set<string>()
+  for (const it of x.items as unknown[]) {
+    if (!it || typeof it !== 'object' || Array.isArray(it)) continue
+    const e = it as Record<string, unknown>
+    if (Object.keys(e).some((k) => !WAIT_KEYS.has(k))) continue
+    if (typeof e.id !== 'string' || e.id.length > 64 || !ITEM_ID.test(e.id) || seen.has(e.id)) continue
+    if (typeof e.title !== 'string' || CONTROL.test(e.title)) continue
+    const n = [...e.title].length; if (n < 1 || n > 200) continue
+    if (!whole(e.age_min, 1e8)) continue
+    const labels = e.labels === undefined ? [] : e.labels
+    if (!Array.isArray(labels) || labels.length > 3 || labels.some((l) => typeof l !== 'string' || !ASK_LABELS.has(l))) continue
+    let ask: string, hot: boolean
+    if (owner) {
+      if (labels.includes('t2') && labels.includes('signed-off')) { ask = 'approve (t2, signed off)'; hot = true }
+      else if (labels.includes('needs-you')) { ask = 'needs you'; hot = true }
+      else continue
+    } else { ask = 'assigned to you'; hot = false }
+    seen.add(e.id)
+    items.push({ id: e.id, title: e.title, age_min: e.age_min as number, ask, hot })
+  }
+  return { items, more: (x.more as number | undefined) ?? 0 }
+}
 // ---------- the gateway's pages (sy-vey6): the boards' Swiss style, one stylesheet, no inline style ----------
 // The CSP (default-src 'self') blocks style="" and <style>, so every page links /s/app.css, served from here. The same
 // header line as a board: the page's name large and bold, a small nav, a solid rule under it.
@@ -616,7 +670,25 @@ function shell(title: string, nav: string, body: string, tail = '') {
 }
 const SIGN_IN_NAV = '<span class="here">Sign in</span>'
 /** Made on the server, no script; every value escaped; the name and link from the gateway's own data, never a board's. */
-function homePage(name: string, cards: { project: string; host: string; role: string; s: Summary | null }[]) {
+type Card = { project: string; host: string; role: string; s: Summary | null; w: { items: Waiting[]; more: number } | null; older: boolean }
+/** The "Waiting for you" list (sy-vdi8), the first thing on the home page: every checked item of every board the person
+ *  holds a role on, oldest first: the ask, the title, the board, the id, the age. The link is the gateway's own: the
+ *  board's host (from the host's registry) and the checked id, through the one-redirect flow, to the board's item view
+ *  (`/?item=<id>`). No list at all when no board has one (boards on an older template); a board whose answer failed the
+ *  check is named in a note. */
+function waitingList(cards: Card[]) {
+  const withList = cards.filter((c) => c.w), failed = cards.filter((c) => !c.w && !c.older && c.s)
+  if (!withList.length && !failed.length) return ''
+  const rows = withList.flatMap((c) => c.w!.items.map((i) => ({ ...i, project: c.project, host: c.host })))
+    .sort((a, b) => b.age_min - a.age_min || a.project.localeCompare(b.project) || a.id.localeCompare(b.id))
+  const href = (host: string, id: string) => `/s?b=${encodeURIComponent(host)}&amp;r=${encodeURIComponent(`/?item=${id}`)}`
+  const row = (r: typeof rows[number]) => `<li><a href="${href(r.host, r.id)}"><span class="w-ask${r.hot ? ' hot' : ''}">${esc(r.ask)}</span><span class="w-age">${esc(mins(r.age_min))}</span><span class="w-title">${esc(r.title)}</span><span class="w-where"><span class="w-board">${esc(r.project)}</span><span class="w-id">${esc(r.id)}</span></span></a></li>`
+  const more = withList.filter((c) => c.w!.more > 0).map((c) => `<p class="w-note">${esc(c.project)}: ${c.w!.more} more on the board.</p>`).join('')
+  const notes = failed.map((c) => `<p class="w-note">${esc(c.project)}: the list is unavailable right now.</p>`).join('')
+  return `<section class="waiting" aria-labelledby="waiting-h"><h2 id="waiting-h">Waiting for you${rows.length ? ` <span class="w-n">${rows.length}</span>` : ''}</h2>
+${rows.length ? `<ol class="w-list">${rows.map(row).join('\n')}</ol>` : '<p class="w-none">Nothing is waiting for you.</p>'}${more}${notes}</section>\n`
+}
+function homePage(name: string, cards: Card[]) {
   const count = (label: string, hint: string, v: number, hot = false) => `<div${hot && v ? ' class="hot"' : ''} title="${hint}"><dt>${label}</dt><dd>${v}</dd></div>`
   const card = (c: typeof cards[number]) => `<section class="card"><h2>${esc(c.project)}</h2>
 <p class="role">You are <b>${esc(c.role)}</b>${c.role === 'viewer' ? ' (read-only)' : ''}</p>
@@ -624,7 +696,7 @@ ${(() => { const w = c.s && worstOf(c.s); return w ? `<p class="worst${w.hot ? '
 ${c.s.last ? `<p class="last">Last activity: ${esc(c.s.last.slice(0, 16).replace('T', ' '))} UTC</p>` : ''}` : '<p class="na">Summary unavailable right now.</p>'}
 <p class="go"><a class="${c.role === 'viewer' ? 'view' : 'open'}" href="/s?b=${encodeURIComponent(c.host)}&amp;r=%2F">${c.role === 'viewer' ? 'View the board (read-only)' : 'Open the board'}</a></p></section>`
   const nav = `<span class="here">Boards</span><span class="who">Signed in as <b>${esc(name)}</b></span><form method="post" action="/s/out"><button type="submit" class="quiet">Sign out</button></form>`
-  return shell('Your boards', nav, cards.length ? `<div class="cards">${cards.map(card).join('\n')}</div>` : '<p>You have no board yet; the owner can grant you one.</p>')
+  return shell('Your boards', nav, cards.length ? `${waitingList(cards)}<div class="cards">${cards.map(card).join('\n')}</div>` : '<p>You have no board yet; the owner can grant you one.</p>')
 }
 // the boards' tokens (template/site/src/index.css): near-black on near-white, hairline rules, one red, no radius
 const APP_CSS = `:root{--fg:oklch(0.16 0 0);--bg:oklch(0.995 0 0);--muted:oklch(0.48 0 0);--rule:oklch(0.88 0 0);--swiss:oklch(0.58 0.235 27)}
@@ -665,6 +737,21 @@ button.quiet:hover{border-bottom-color:var(--swiss);color:var(--swiss)}
 .card .go{margin:.9rem 0 0}
 .card .go a{font-size:14px;font-weight:600;text-decoration:none;border-bottom:2px solid var(--fg);padding-bottom:1px}
 .card .go a:hover{color:var(--swiss);border-bottom-color:var(--swiss)}
+.waiting{margin:0 0 2rem}
+.waiting h2{margin:0 0 .5rem;font-size:1.25rem;line-height:1.2;font-weight:700;letter-spacing:-.01em}
+.waiting .w-n{color:var(--swiss);font-variant-numeric:tabular-nums}
+.w-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--fg)}
+.w-list li{border-bottom:1px solid var(--rule)}
+.w-list a{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"ask age" "title title" "where where";gap:.2rem .75rem;min-height:44px;padding:.7rem 0;text-decoration:none}
+.w-list a:hover .w-title{color:var(--swiss)}
+.w-ask{grid-area:ask;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.w-ask.hot{color:var(--swiss)}
+.w-age{grid-area:age;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.w-title{grid-area:title;font-size:15px;font-weight:600;text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:3px;overflow-wrap:anywhere}
+.w-where{grid-area:where;display:flex;flex-wrap:wrap;gap:0 .75rem;font-size:13px;color:var(--muted)}
+.w-id{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.w-none,.w-note{margin:.6rem 0 0;font-size:13px;color:var(--muted)}
+@media (min-width:48rem){.w-list a{grid-template-columns:12rem minmax(0,1fr) 9rem 7rem 4.5rem;grid-template-areas:"ask title board id age";align-items:baseline}.w-where{display:contents}.w-board{grid-area:board;overflow-wrap:anywhere}.w-id{grid-area:id}}
 @media (min-width:40rem){.top{padding:1rem 1.5rem .75rem}.wrap{padding:2rem 1.5rem 3rem}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:64rem){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}`
 function codePage(code: string, board: string) {
