@@ -1,0 +1,152 @@
+#!/usr/bin/env node
+// guard — the PreToolUse hook of every lead and the setup agent, on every board (sy-8t0.5). config-check renders it
+// into each .claude/settings.json by its absolute path and refuses a settings file without it.
+//   stdin: the hook's JSON (tool_name, tool_input). stdout: nothing (no objection: the permission rules decide), or
+//   {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[guard] …"}}
+// What it denies is data, in lib/guard-rules.mjs (secret reads in any spelling, sudo and its kin, mm's owner-only
+// commands and sockets, the approval path's files, …). It never asks and never allows on its own.
+// An internal error (bad input, a broken rules file, a bug) denies the call: fail closed. A syntax error in this file
+// exits non-zero, and Claude Code lets the call through; mm update and the box seal keep this file as mm made it.
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+function answer(why) {
+  fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `[guard] ${why}` } }) + '\n')
+  process.exit(0)
+}
+
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
+/** This board's folder as a regex: absolute (as resolved and as real), and the ~, $HOME, ${HOME} forms under the home. */
+function rootPattern() {
+  const home = process.env.HOME || os.homedir()
+  let real = ROOT
+  try { real = fs.realpathSync(ROOT) } catch {}
+  const alts = new Set()
+  for (const r of [ROOT, real]) {
+    alts.add(esc(r))
+    if (home && r.startsWith(`${home}/`)) for (const h of ['~', '$HOME', '${HOME}']) alts.add(esc(h + r.slice(home.length)))
+  }
+  return `(?:${[...alts].join('|')})`
+}
+
+function expand(src, parts, depth = 0) {
+  if (depth > 8) throw new Error('rules: parts nest too deep')
+  return src.replace(/\{\{(\w+)\}\}/g, (m, n) => {
+    if (typeof parts[n] !== 'string') throw new Error(`rules: unknown part ${n}`)
+    return expand(parts[n], parts, depth + 1)
+  })
+}
+
+// The system board: its answers say profile: system and it is not a box (as config-check tells it). Anything else,
+// an unreadable answers file too, is a project board (the stricter rules).
+function systemBoard() {
+  let a = ''
+  try { a = fs.readFileSync(path.join(ROOT, '.mm-answers.yaml'), 'utf8') } catch { return false }
+  return /^profile:\s*["']?system["']?\s*$/m.test(a) && !/^box:\s*true\s*$/m.test(a)
+}
+
+// The board-only free path (the brain guard's board_only, ported): a command that runs only bd, local git steps
+// (add, commit, status, diff, log, show) and read-only steps is free after the pre rules, whatever its quoted text says:
+// that text never runs. Text a shell would run keeps the normal checks: $( or ` outside single quotes, <( >(, an
+// unquoted heredoc, a redirect to anything but /dev/null or /tmp/, any other program, a bd subcommand that runs a
+// program or sends the board out.
+const BD_NOT_FREE = new Set(['edit', 'dolt', 'sync', 'federation', 'github', 'gitlab', 'jira', 'linear', 'notion', 'ado', 'ship',
+  'init', 'setup', 'hooks', 'import', 'export', 'remote', 'push', 'pull'])
+const GIT_FREE = new Set(['add', 'commit', 'status', 'diff', 'log', 'show'])
+const STEPS = new Set(['cd', 'echo', 'printf', 'jq', 'head', 'tail', 'cut', 'grep', 'wc', 'sort', 'uniq', 'tr', 'column',
+  'cat', 'true', 'sleep', 'date', 'test', '['])
+const SHELL_WORDS = new Set(['do', 'done', 'then', 'fi', 'else', 'if', 'while', 'until', '!'])
+const ACTOR = /^(BEADS_ACTOR|BD_ACTOR|BEADS_DIR|BEADS_DB)=\S*$/
+function freeOnly(cmd, bdCmd) {
+  const lines = cmd.split('\n'), kept = []
+  for (let i = 0; i < lines.length;) { // a quoted heredoc ('EOF' / "EOF") is data: drop its body; an unquoted one expands $( )
+    const line = lines[i++]
+    if (/<<-?\s*[^'"\s]/.test(line)) return false
+    const tags = [...line.matchAll(/<<-?\s*['"]([A-Za-z_][\w-]*)['"]/g)].map((m) => m[1])
+    kept.push(line.replace(/<<-?\s*['"][A-Za-z_][\w-]*['"]/g, ' '))
+    for (const tag of tags) { while (i < lines.length && lines[i].trim() !== tag) i++; i++ }
+  }
+  const s = kept.join('\n'), sk = []
+  let q = null
+  for (let k = 0; k < s.length; k++) { // skeleton: quoted text goes, only the shell structure is left
+    const ch = s[k], nxt = s[k + 1] || ''
+    if (q === "'") { if (ch === "'") { q = null; sk.push("'") } }
+    else if (q === '"') {
+      if (ch === '\\') k++
+      else if (ch === '`' || (ch === '$' && nxt === '(')) return false
+      else if (ch === '"') { q = null; sk.push('"') }
+    } else if (ch === "'" || ch === '"') { q = ch; sk.push(ch + '_') }
+    else if (ch === '\\') { sk.push('_'); k++ }
+    else if (ch === '`' || (ch === '$' && nxt === '(') || ((ch === '<' || ch === '>') && nxt === '(')) return false
+    else sk.push(ch)
+  }
+  if (q) return false
+  let t = sk.join('').replace(/(^|\s)#[^\n]*/g, '$1')
+  for (const m of t.matchAll(/&?>>?|</g)) { // redirects: fd dups, /dev/null, /tmp/ only
+    const rest = t.slice(m.index + m[0].length).trimStart()
+    if (!/^(&\d|\/dev\/null|\/tmp\/[\w./-]+)(?=[\s;&|()<>]|$)/.test(rest)) return false
+  }
+  t = t.replace(/\d*&?>>?\s*(&\d|[^\s;&|()<>]+)|\d*<\s*[^\s;&|()<>]+/g, ' ')
+  let saw = false
+  for (const seg of t.split(/&&|\|\||[;&|(){}\n]/)) {
+    let w = seg.split(/\s+/).filter(Boolean)
+    while (w.length && (SHELL_WORDS.has(w[0]) || ACTOR.test(w[0]))) w = w.slice(1)
+    if (!w.length) continue
+    if (w[0] === 'for' && w.length >= 3 && /^[A-Za-z_]\w*$/.test(w[1]) && w[2] === 'in') continue
+    if (w[0] === 'export' && w.slice(1).every((x) => ACTOR.test(x))) continue
+    if (bdCmd.test(w[0])) {
+      if (w.slice(1).some((x) => BD_NOT_FREE.has(x))) return false
+      saw = true
+    } else if (w[0] === 'git') {
+      let i = 1
+      while (w[i] === '-C' && w[i + 1]) i += 2
+      if (!GIT_FREE.has(w[i])) return false
+      saw = true
+    } else if (!STEPS.has(w[0])) return false
+  }
+  return saw
+}
+
+const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Grep'])
+const READ_TOOLS = new Set(['Read', 'Grep'])
+
+async function main() {
+  if (process.env.MM_GUARD_TEST_RAISE === '1') throw new Error('injected') // tests only: an error must deny
+  const { RULES } = await import('./lib/guard-rules.mjs')
+  if (!RULES || !Array.isArray(RULES.rules) || typeof RULES.parts !== 'object') throw new Error('rules: bad shape')
+  const parts = { ...RULES.parts, ROOT: rootPattern() }
+  const system = systemBoard()
+  const rules = RULES.rules.map((r) => {
+    if (!['bash', 'file', 'file-write'].includes(r.on) || typeof r.re !== 'string' || typeof r.why !== 'string') throw new Error(`rules: bad rule ${r.id}`)
+    return { ...r, re: new RegExp(expand(r.re, parts)), and: r.and ? new RegExp(expand(r.and, parts)) : null }
+  }).filter((r) => !(r.boards === 'project' && system))
+  const data = JSON.parse(fs.readFileSync(0, 'utf8'))
+  if (!data || typeof data !== 'object') throw new Error('input: not an object')
+  const tool = data.tool_name, inp = data.tool_input ?? {}
+  if (typeof inp !== 'object') throw new Error('input: tool_input is not an object')
+  const hit = (r, s) => r.re.test(s) && (!r.and || r.and.test(s))
+  if (tool === 'Bash') {
+    const cmd = inp.command
+    if (typeof cmd !== 'string') throw new Error('input: no command')
+    for (const r of rules) if (r.on === 'bash' && r.pre && hit(r, cmd)) answer(r.why)
+    const bdCmd = new RegExp(`^(?:(?:~|\\$HOME|/home/[\\w-]+)/\\.mm/(?:system|projects/[\\w.-]+/[\\w.-]+)/bin/|${parts.ROOT}/bin/)?bd$`)
+    if (freeOnly(cmd, bdCmd)) return
+    for (const r of rules) if (r.on === 'bash' && !r.pre && hit(r, cmd)) answer(r.why)
+  } else if (FILE_TOOLS.has(tool)) {
+    const base = typeof data.cwd === 'string' && data.cwd.startsWith('/') ? data.cwd : ROOT
+    const paths = [inp.file_path, inp.notebook_path, inp.path].filter((p) => typeof p === 'string' && p)
+    const seen = []
+    for (const p of paths) seen.push(p, `${p}/`, path.resolve(base, p), `${path.resolve(base, p)}/`)
+    if (typeof inp.glob === 'string' && inp.glob) seen.push(inp.glob, ...paths.map((p) => `${path.resolve(base, p)}/${inp.glob}`))
+    for (const r of rules) {
+      if (r.on === 'bash' || (r.on === 'file-write' && READ_TOOLS.has(tool))) continue
+      if (seen.some((s) => hit(r, s))) answer(`${r.why} (${paths[0] || inp.glob})`)
+    }
+  }
+}
+
+main().catch((e) => answer(`guard error (${e?.message || e}): the call is denied; fix the guard or ask the owner`))
