@@ -4,12 +4,63 @@
 // box), leaves .dolt/mysql.sock behind. The next Dolt then can't take it ("file already in use"), serves TCP only, and
 // bd, which talks to it over that socket, never gets a server: the board stays Pending. A socket something still
 // answers on is left alone and the start refused: two Dolts on one database must never run.
+// Before that (sy-a0ac): a `dolt sql-server` for this board's own data (control/.beads: its working folder, or its
+// --config / --data-dir) that no dolt-run of this board runs is an orphan: bd started it while this Dolt was down, and
+// it holds the database lock ("database is locked by another dolt process"), so this Dolt would fail on every restart.
+// It is stopped (TERM, then KILL after 10 s) and logged at warn with its pid. A Dolt of another board's data, a Dolt
+// another dolt-run of this board runs, and any other process are never touched.
 import fs from 'node:fs'
 import net from 'node:net'
+import path from 'node:path'
 import { spawn } from 'node:child_process'
 
 const [sock, cmd, ...args] = process.argv.slice(2)
 if (!sock || !cmd) { console.error('usage: dolt-run <socket> <dolt> [args...]'); process.exit(2) }
+
+const real = (p) => { try { return fs.realpathSync(p) } catch { return path.resolve(p) } } // /proc shows real paths
+const ME = real(process.argv[1])
+const BEADS = real(path.join(path.dirname(ME), '..', 'control', '.beads')) // this board's Beads data: bin/ -> root
+const inBeads = (p) => p === BEADS || p.startsWith(`${BEADS}/`)
+const proc = (pid, f) => { try { return fs.readFileSync(`/proc/${pid}/${f}`, 'utf8') } catch { return '' } }
+const argvOf = (pid) => proc(pid, 'cmdline').split('\0').filter(Boolean)
+const statOf = (pid) => { const st = proc(pid, 'stat'); return st ? st.slice(st.lastIndexOf(')') + 2).split(' ') : [] } // [state, ppid, ...]
+const alive = (pid) => { const st = statOf(pid); return st.length > 0 && st[0] !== 'Z' } // a zombie has ended
+const warn = (msg, attrs) => console.log(JSON.stringify({ time: new Date().toISOString(), level: 'warn', msg, ...attrs }))
+
+/** `dolt sql-server` processes for this board's data that no dolt-run of this board runs: [{ pid, argv }]. */
+function orphans() {
+  const mine = new Set(); for (let p = process.pid; p > 1;) { mine.add(p); p = Number(statOf(p)[1]) || 0 }
+  const hits = []
+  for (const d of fs.readdirSync('/proc')) {
+    const pid = Number(d); if (!pid || mine.has(pid)) continue
+    const argv = argvOf(pid)
+    const i = argv.slice(0, 2).findIndex((a) => path.basename(a) === 'dolt') // dolt itself, or a script run by its interpreter
+    if (i < 0 || !argv.slice(i + 1).includes('sql-server')) continue
+    let cwd; try { cwd = fs.readlinkSync(`/proc/${pid}/cwd`) } catch { continue } // not ours to read: not ours to stop
+    const dirs = [cwd]
+    argv.forEach((a, k) => {
+      const m = /^--(config|data-dir)(?:=(.*))?$/.exec(a); if (!m) return
+      const v = m[2] ?? argv[k + 1]; if (v) dirs.push(real(path.resolve(cwd, v)))
+    })
+    if (!dirs.some(inBeads)) continue
+    const parent = argvOf(Number(statOf(pid)[1]) || 0)
+    if (parent.slice(0, 3).some((a) => a.includes('dolt-run') && real(a) === ME)) continue // another dolt-run runs it
+    hits.push({ pid, argv })
+  }
+  return hits
+}
+
+const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms))
+for (const o of orphans()) {
+  const what = { pid: o.pid, command: o.argv.join(' ').slice(0, 300) }
+  try { process.kill(o.pid, 'SIGTERM') } catch (e) { warn(`dolt-run: could not stop an orphan Dolt on this board's data (pid ${o.pid}): ${e.code}`, what); continue }
+  for (let i = 0; i < 100 && alive(o.pid); i++) await sleep(100)
+  const stubborn = alive(o.pid)
+  if (stubborn) { try { process.kill(o.pid, 'SIGKILL') } catch {} for (let i = 0; i < 30 && alive(o.pid); i++) await sleep(100) }
+  warn(`dolt-run: stopped an orphan Dolt on this board's data (pid ${o.pid}, not started by dolt-run; ${stubborn ? 'KILL after 10 s' : 'TERM'})`, what)
+}
+const left = orphans().filter((o) => alive(o.pid))
+if (left.length) { console.error(`dolt-run: a Dolt on this board's data still runs (pid ${left.map((o) => o.pid).join(', ')}): not starting a second one on the same database`); process.exit(1) }
 
 /** 'none' (no file), 'stale' (a socket nothing answers on), 'live' (something answers), 'other' (not a socket). */
 function state(p) {
