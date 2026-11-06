@@ -169,6 +169,7 @@ export function upstreamInput(c = loadConfig()): string {
 }
 // an OAuth token (ai.upstream_auth: oauth) goes as `Authorization: Bearer`, with this beta, which the API needs for it
 export const OAUTH_BETA = 'oauth-2025-04-20'
+export const OAUTH_IDENTITY = ['user-agent', 'x-app']
 export function mergeBeta(v: string | null, add: string): string {
   return [...new Set([...(v || '').split(',').map((x) => x.trim()).filter(Boolean), add])].join(',')
 }
@@ -277,6 +278,9 @@ export async function serve() {
     let beta = betaHeader(req.headers.get('anthropic-beta'), serverOk); if (auth === 'oauth') beta = mergeBeta(beta, OAUTH_BETA)
     if (beta) headers.set('anthropic-beta', beta)
     if (auth === 'bearer' || auth === 'oauth') headers.set('authorization', `Bearer ${key}`); else headers.set('x-api-key', key)
+    // oauth only: the client's own identity (Claude Code's user-agent and x-app) goes up as it came, so the upstream sees
+    // the client its token is for. Not secret; each cut to 256 characters, dropped if it holds a control character
+    if (auth === 'oauth') for (const n of OAUTH_IDENTITY) { const v = req.headers.get(n); if (v && !/[\x00-\x1f\x7f]/.test(v)) headers.set(n, v.slice(0, 256)) }
     let model = messages ? String(parsed.model || '') : ''
     if (messages) inflight.set(project, (inflight.get(project) || 0) + 1)
     let released = false

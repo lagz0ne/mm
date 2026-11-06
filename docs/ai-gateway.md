@@ -95,7 +95,9 @@ mm config set ai.upstream_auth oauth
   `claude-oauth-token` are allowed, never a path. Anything else stops mm.ai at start, with a log line that says why.
   If the config changes while mm.ai runs, each call gets `503` with the same reason.
 - `ai.upstream_auth: oauth` sends the token as `Authorization: Bearer`, with no `x-api-key`, and adds the beta
-  `oauth-2025-04-20` to the client's `anthropic-beta` (once).
+  `oauth-2025-04-20` to the client's `anthropic-beta` (once). It also passes the client's `user-agent` and `x-app` as
+  they came, so the upstream sees Claude Code's own identity (each cut to 256 characters, dropped if it holds a
+  control character). The other modes drop both.
 - The token stays on the host, in mm.ai. mm.ai reads it by path at each call. It never logs it, and never passes it to a
   box. Boxes still get only their own per-run keys from mm, and the box's key never goes upstream.
 - Budgets, the cap and the logs work as before. Use shows in `mm usage`. Its cost there is the list price for the

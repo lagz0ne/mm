@@ -25,7 +25,7 @@ cat >"$T/up.mjs" <<'EOF'
 import http from 'node:http'; import fs from 'node:fs'
 const [port, out] = process.argv.slice(2)
 http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', async () => {
-  fs.appendFileSync(out, JSON.stringify({ path: req.url, key: req.headers['x-api-key'] || '', auth: req.headers.authorization || '', version: req.headers['anthropic-version'] || '', beta: req.headers['anthropic-beta'] || '', server_tool: b.includes('web_search') }) + '\n')
+  fs.appendFileSync(out, JSON.stringify({ path: req.url, key: req.headers['x-api-key'] || '', auth: req.headers.authorization || '', version: req.headers['anthropic-version'] || '', beta: req.headers['anthropic-beta'] || '', ua: req.headers['user-agent'] || '', app: req.headers['x-app'] || '', server_tool: b.includes('web_search') }) + '\n')
   // the machine's key as x-api-key; or (ai.upstream_auth: oauth) its Claude token as a Bearer, which, like the real API,
   // needs the oauth beta and no x-api-key
   const oauth = req.headers.authorization === 'Bearer oauth-standin-7' && (req.headers['anthropic-beta'] || '').split(',').includes('oauth-2025-04-20') && !req.headers['x-api-key']
@@ -156,6 +156,14 @@ call "$S1" "$K1" -H 'anthropic-beta: interleaved-thinking-2025-05-14' -d "$MSG" 
 check "...and added to the client's betas when it sent none of its own" last '.beta == "interleaved-thinking-2025-05-14,oauth-2025-04-20"'
 check "the box's key as a Bearer (ANTHROPIC_AUTH_TOKEN): the upstream still gets only the machine's token" bash -c "[ \"\$(curl -s --unix-socket '$S1' -H 'authorization: Bearer $K1' -H 'x-api-key: $K1' -o /dev/null -w '%{http_code}' -d '$MSG' http://ai/v1/messages)\" = 200 ] && tail -1 '$T/up.jsonl' | jq -e '.auth == \"Bearer oauth-standin-7\" and .key == \"\"' && ! grep -q mmk_ '$T/up.jsonl'"
 check "a stream passes, and the calls show in mm usage as before" bash -c "call '$S1' '$K1' -N -d '$STREAM' http://ai/v1/messages | grep -q 'hello from upstream' && sleep 0.3 && [ \"\$(mm ai usage -o json | jq '[.[0].rows[] | select(.project==\"acme-shop\" and .model==\"claude-sonnet-5-5\") | .calls] | add')\" = $((C0 + 4)) ]"
+UA='claude-cli/2.1.318 (external, cli)'
+ident() { call "$S1" "$K1" -H "user-agent: $1" -H "x-app: $2" -d "$MSG" http://ai/v1/messages >/dev/null; }
+ident "$UA" cli
+check "oauth mode: the client's user-agent and x-app go up as they came (Claude Code's own identity)" last '.ua == "claude-cli/2.1.318 (external, cli)" and .app == "cli"'
+ident "claude-cli/$(printf 'x%.0s' $(seq 1 300))" cli
+check "...a user-agent over 256 characters is cut to 256" last '(.ua | length) == 256 and (.ua | startswith("claude-cli/xxx"))'
+ident "$UA" "$(printf 'cli\tx')"
+check "...one with a control character is dropped (the other still goes)" last '.app == "" and .ua == "claude-cli/2.1.318 (external, cli)"'
 mv "$TOK" "$T/tok"
 check "no Claude token on the machine: 503, it names claude-oauth-token" bash -c "call '$S1' '$K1' -d '$MSG' http://ai/v1/messages | grep -q 'mm fill claude-oauth-token'"
 mv "$T/tok" "$TOK"
@@ -168,8 +176,12 @@ MM_HOME="$T/bad" timeout 20 mm ai serve >"$T/bad.log" 2>&1; BADRC=$?
 check "a free path as ai.upstream_key_input: mm.ai refuses to start, with a clear log line (and no socket, no store)" bash -c "[ $BADRC != 0 ] && [ $BADRC != 124 ] && grep -q 'refused to start' '$T/bad.log' && grep -q 'may only be' '$T/bad.log' && ! grep -q /some/free/path '$T/bad.log' && ! test -e '$T/bad/box' && ! test -e '$T/bad/ai'"
 cfg ''
 check "back to the default: the upstream gets the machine's key as x-api-key, no Authorization, no oauth beta" bash -c "[ \"\$(code '$S1' '$K1' -d '$MSG' http://ai/v1/messages)\" = 200 ] && tail -1 '$T/up.jsonl' | jq -e '.key == \"upstream-secret-1\" and .auth == \"\" and .beta == \"\"'"
+ident "$UA" cli
+check "...and the client's user-agent and x-app are dropped there" last '.app == "" and (.ua | contains("claude-cli") | not)'
 cfg '  upstream_auth: bearer\n'
 check "...and ai.upstream_auth: bearer is as before (Bearer <the machine's key>, no oauth beta)" bash -c "call '$S1' '$K1' -d '$MSG' http://ai/v1/messages >/dev/null; tail -1 '$T/up.jsonl' | jq -e '.auth == \"Bearer upstream-secret-1\" and .key == \"\" and .beta == \"\"'"
+ident "$UA" cli
+check "...where the client's user-agent and x-app are dropped too" last '.app == "" and (.ua | contains("claude-cli") | not)'
 cfg ''
 
 echo '== keys end'
