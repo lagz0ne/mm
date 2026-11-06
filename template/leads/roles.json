@@ -22,6 +22,7 @@
       "initial": "C",
       "color": "#1e7e34",
       "workers": true,
+      "capacity": 3,
       "summary": "Orchestrates workers that build, and lands their work."
     },
     {

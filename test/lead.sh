@@ -2,7 +2,7 @@
 # template/bin/lead, hermetic (sy-8n1): a fake paseo and a fake board in a throwaway folder; no agent starts.
 # Proves: a busy old lead is waited for, then interrupted; a lead that can't be archived stops the start (never two
 # leads of one role), with paseo's reason; `stop` fails the same way; the new lead's first prompt carries the role's
-# open items (in progress, blocked), and nothing when there are none.
+# open items (in progress, blocked), and nothing when there are none; and the queue head wake hands it (LEAD_NEXT).
 #   test/lead.sh
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -53,6 +53,9 @@ reset old-1 -1; touch "$T/st/stuck"
 check "an old lead that can't be archived: no second lead starts, exit 1, paseo's reason shown" bash -c "! '$P/bin/lead' start qa >'$T/out' 2>&1 && ! test -e '$T/st/prompt' && grep -q 'could not archive qa lead old-1: daemon refused' '$T/out' && grep -q 'not starting a second qa lead' '$T/out'"
 reset old-1 0; rm -f "$T/st/items.json"
 check "no open items: no handover in the prompt" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && test -s '$T/st/prompt' && ! grep -q Handover '$T/st/prompt'"
+reset old-1 0
+check "the queue head from wake (LEAD_NEXT): in the first prompt, with how to claim it" bash -c "LEAD_NEXT='- sy-3 (P1): the next thing' '$P/bin/lead' start qa >'$T/out' 2>&1 && grep -q 'Next in your queue' '$T/st/prompt' && grep -q -- '- sy-3 (P1): the next thing' '$T/st/prompt' && grep -q 'bd update <id> --claim' '$T/st/prompt'"
+check "...and nothing of it without LEAD_NEXT" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && ! grep -q 'Next in your queue' '$T/st/prompt'"
 printf 'old-1\nold-2\n' >"$T/st/agents"
 check "two old leads of the role (the sy-8n1 state): both archived, then one starts" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && [ \"\$(grep -c 'archived previous qa lead' '$T/out')\" = 2 ] && ! test -s '$T/st/agents'"
 

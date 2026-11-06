@@ -125,6 +125,7 @@ node test/supervisor.mjs     # the system profile's supervisor (stall, handoff, 
 node test/wake-stall.mjs     # bin/wake recovers from an event stream that hangs (fake board, stub paseo)
 node test/wake-signals.mjs   # bin/wake: bd state changes (reassign, blocked, dep add, reopen, close) wake who acts next
 node test/wake-ondemand.mjs  # bin/wake starts a lead with no agent on demand, closes idle ones, honours the restore hold
+node test/wake-reconcile.mjs # bin/wake's reconcile loop: queue heads within capacity, expired claims requeued, restarts lose nothing
 node test/lead-state.mjs     # the board's lead states (ready / working on / waiting for you / blocked / start failed)
 test/machine-panel.sh        # the system board's machine panel (SITE_NODE_MODULES=<a site's node_modules>)
 ```

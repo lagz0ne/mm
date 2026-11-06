@@ -26,6 +26,11 @@ const HOME = process.env.HOME || os.homedir()
 // bd stays quiet (the owner, sy-8s1): no agent installs bd's git hooks, runs its setup or init, or turns hooks, metrics
 // or its git operations back on, whichever way it calls bd.
 const BD_QUIET = ['bd', 'bin/bd', 'tools/bd'].flatMap((b) => ['hooks', 'setup', 'init', 'config set no-hooks', 'config set metrics', 'config set no-git-ops'].map((c) => `Bash(${b} ${c}*)`))
+// The pull model (plans/slp): a lead claims with `bd update <id> --claim` (atomic) and hands over with the compare-and-set
+// guards (--if-assignee/--if-status), never by a raw edit. Refused: setting in_progress by hand, and `bd assign` (a
+// reassign with no guard). `-a` without a guard cannot be told apart by a rule; the brief and bd's guard cover it.
+const RAW_STATUS = ['bd', 'bin/bd'].flatMap((b) => [`Bash(${b} update *--status in_progress*)`, `Bash(${b} update *--status=in_progress*)`,
+  `Bash(${b} update *-s in_progress*)`, `Bash(${b} assign *)`])
 // Access is the owner's (review sy-b15.13): no agent makes people, sign-in links, grants or tokens, talks to the
 // gateway's socket, or reads its store or a box's Paseo password. `mm revoke` stays free (it only takes access away).
 // The same for spending (sy-b15.10): no agent sets an AI budget, or reads or edits the AI gateway's store (its keys'
@@ -63,6 +68,7 @@ const WORKERS = new Set(DEF.filter((r) => r.workers).map((r) => r.id))
 for (const r of DEF) {
   if (!/^[a-z][a-z0-9-]{1,23}$/.test(r.id) || !/^[A-Z]$/.test(r.initial || '') || !r.title || !/^#[0-9a-fA-F]{6}$/.test(r.color || '')) problems.push(`roles.json: bad entry ${JSON.stringify(r)}`)
   if (!fs.existsSync(path.join(P, 'leads', r.id))) problems.push(`roles.json lists ${r.id} but leads/${r.id}/ is missing`)
+  if (r.capacity !== undefined && !(Number.isInteger(r.capacity) && r.capacity >= 1)) problems.push(`roles.json: ${r.id}'s capacity must be a whole number, 1 or more (items it holds in progress at once)`)
 }
 for (const d of fs.readdirSync(path.join(P, 'leads'), { withFileTypes: true })) if (d.isDirectory() && !ROLES.includes(d.name)) problems.push(`leads/${d.name}/ is not in roles.json`)
 
@@ -136,7 +142,7 @@ for (const dir of SETTINGS_DIRS) {
 }
 
 function mandatoryDeny(role) {
-  const d = [`Read(/${R}/secrets/**)`, 'Bash(git push*)', `Edit(/${R}/code/**)`, `Write(/${R}/code/**)`,
+  const d = [`Read(/${R}/secrets/**)`, 'Bash(git push*)', ...RAW_STATUS, `Edit(/${R}/code/**)`, `Write(/${R}/code/**)`,
     `Edit(/${R}/control/**)`, `Write(/${R}/control/**)`, `Edit(/${R}/leads/**)`, `Write(/${R}/leads/**)`,
     `Edit(/${R}/CLAUDE.md)`, `Write(/${R}/CLAUDE.md)`, `Edit(/${R}/worktrees/CLAUDE.md)`, `Write(/${R}/worktrees/CLAUDE.md)`,
     `Edit(/${R}/setup/**)`, `Write(/${R}/setup/**)`, `Edit(/${R}/release/**)`, `Write(/${R}/release/**)`]
