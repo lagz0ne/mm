@@ -366,6 +366,19 @@ clock = T0 + 126 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('rollback clears sy-27, the owner\'s approved clears sy-26', openKeys() === DIRTY && /Cleared/.test(items.get(G.id).comments.at(-1).text))
 
+step('run 9h: a summary from an older Supervisor is read again from the start (sy-m5qr)')
+item('sy-30', { title: 't2, approved by the bridge before an upgrade', priority: 2, assignee: 'ops', labels: ['t2'] })
+update('sy-30', { labels: ['t2', 'approved'] }, 'bridge')
+clock = T0 + 131 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('the state carries its version', JSON.parse(fs.readFileSync(STATE, 'utf8')).v === 2)
+// as an older Supervisor left it: no version, its position at the head, and no summary of sy-30's approval
+{ const s = JSON.parse(fs.readFileSync(STATE, 'utf8')); delete s.v; delete s.items['sy-30']; fs.writeFileSync(STATE, JSON.stringify(s)) }
+migration('1800000014-fw', 'open a port (sy-30)', true)
+clock = T0 + 136 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('the bridge\'s approval from before the upgrade still counts: no finding for sy-30', !openOf(T2('sy-30')) && openKeys() === DIRTY)
+
 step('run 10: the board is down: exit non-zero, nothing written')
 fs.writeFileSync(path.join(T, 'bd.fail'), '')
 const n = sup().length

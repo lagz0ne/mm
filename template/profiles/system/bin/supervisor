@@ -86,6 +86,11 @@ async function bd(method, p, body) {
 const state = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } })()
 for (const k of ['muted', 'notes', 'items', 'running', 'idle']) state[k] ||= {}
 state.seq ||= 0
+// the summary's version: when what is folded from the journal changes (approvals and t2 labels per item, sy-7xq0; closed
+// items kept), a summary from an older Supervisor misses what happened before the upgrade (sy-m5qr: an approval by the
+// bridge at 16:36 never seen after 17:00). So a new version reads the whole journal again, from the start.
+const STATE_V = 2
+if (state.v !== STATE_V) { state.seq = 0; state.items = {}; state.v = STATE_V }
 state.t2since ||= NOW // closed items: only migrations applied since this check first ran (no flood from older ones)
 
 const DEFS = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'leads', 'roles.json'), 'utf8')).roles.filter((r) => r && r.id) } catch { return [] } })()
