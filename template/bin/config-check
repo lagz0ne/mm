@@ -264,7 +264,7 @@ if (fs.existsSync(path.join(P, 'setup', '.claude', 'settings.tmpl.json'))) {
   if (j) guarded('setup', j)
 }
 // Assistants: read-only by permissions, whatever their brief says.
-const SYSTEM_NAMES = new Set(['wake', 'watchdog', 'brain', 'ui', 'beads', 'smoke', 'system', 'admin', 'setup', 'guest', 'human'])
+const SYSTEM_NAMES = new Set(['wake', 'watchdog', 'brain', 'ui', 'beads', 'smoke', 'system', 'admin', 'setup', 'guest', 'human', 'mm-upstream'])
 for (const u of ASSISTANTS) {
   const dir = path.join(ASSIST_ROOT, u), who = `assistant ${u}`
   if (u !== '_template' && (!/^[a-z][a-z0-9._-]{1,31}$/.test(u) || ROLES.includes(u) || SYSTEM_NAMES.has(u))) bad(`${who}: not a usable person's name (a role or system name, or not a-z0-9._-)`)
