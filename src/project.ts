@@ -176,7 +176,8 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
 
 // ---------- services.yaml -> process-compose project file + .run/ ----------
 type Svc = { about?: string; command: string; secrets?: string[]; workdir?: string; env?: Record<string, string>; port?: 'http' | 'internal' | 'none'
-  public?: { name: string; auth: string }; depends_on?: Record<string, string>; ready?: { http?: string; socket?: string; exec?: string }; restart?: string; optional?: boolean; outward?: boolean }
+  public?: { name: string; auth: string }; depends_on?: Record<string, string>; ready?: { http?: string; socket?: string; exec?: string }; restart?: string; optional?: boolean; outward?: boolean
+  stop_seconds?: number } // how long the manager waits after TERM before it kills (process-compose's default: 10)
 
 /** Does this board's server have the gateway-checked public side (BOARD_PUBLIC_PORT)? Older templates don't. */
 function boardHasPublicSide(root: string) {
@@ -259,6 +260,7 @@ export function serviceProcess(root: string, project: string, n: string, s: SvcR
     log_location: join(root, '.run', 'logs', `${n}.log`),
     log_configuration: PROJECT_LOG_CONFIG,
     availability: { restart: s.restart === 'on_failure' ? 'on_failure' : 'always', backoff_seconds: 3 },
+    ...(Number(s.stop_seconds) > 0 ? { shutdown: { timeout_seconds: Math.min(120, Math.round(Number(s.stop_seconds))) } } : {}),
     ...(probe ? { readiness_probe: { ...probe, initial_delay_seconds: 1, period_seconds: 3, timeout_seconds: 4, failure_threshold: 20 } } : {}),
     // hung (running, not answering) for ~1 min: the manager restarts it (health only reports)
     ...(s.ready?.http ? { liveness_probe: { ...probe, initial_delay_seconds: 30, period_seconds: 10, timeout_seconds: 5, failure_threshold: 6 } } : {}),

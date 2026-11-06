@@ -56,6 +56,7 @@ services:
     port: http
     ready: { http: /healthz }
     restart: always
+    stop_seconds: 30   # its database closes, then it regroups its files (bin/doop-run): more than the default 10s
 schedules:
   health: { every: 1m, command: "node {root}/bin/health" }
   backup: { every: "daily 03:30", command: "{root}/bin/backup" }
