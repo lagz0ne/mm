@@ -279,7 +279,11 @@ function migrations() {
   let names; try { names = fs.readdirSync(dir) } catch (e) { if (e.code === 'ENOENT') return out; throw e }
   for (const name of names.filter((n) => n.endsWith('.sh') && !n.endsWith('.rollback.sh')).sort()) {
     let mark; try { mark = fs.readFileSync(path.join(done, name), 'utf8') } catch (e) { if (e.code === 'ENOENT') continue; throw e } // not applied
-    const summary = /^# brain:summary=(.*)$/m.exec(fs.readFileSync(path.join(dir, name), 'utf8'))?.[1] || ''
+    const text = fs.readFileSync(path.join(dir, name), 'utf8')
+    // only a tier-2 migration (or one with no tier line: the safe default, as bin/brain reads it) can be a t2 item's
+    // step; a tier-1 one that names a t2 item only as its reason (podman for sy-puxt) raises nothing (sy-hqa1)
+    if (/^# brain:tier=1\s*$/m.test(text)) continue
+    const summary = /^# brain:summary=(.*)$/m.exec(text)?.[1] || ''
     const at = Date.parse(mark.trim().split(/\s+/)[0]) || fs.statSync(path.join(done, name)).mtimeMs
     for (const [id] of summary.matchAll(/\b[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*\b/g)) (out[id] ||= []).push({ name, at })
   }
