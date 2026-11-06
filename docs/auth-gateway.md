@@ -116,13 +116,31 @@ subscription, never on the owner's (sy-8n4w).
   the token goes into that run's environment only, as `CLAUDE_CODE_OAUTH_TOKEN`, in the unmodified Claude Code binary.
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` are empty for it (nothing else signs its calls,
   and its token goes to the model's own API only), `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` keeps it out of the shells and
-  hooks the run starts, and the run is labelled `person=<name>`. Like every lead, it is that role's one lead.
+  hooks the run starts, and the run is labelled `person=<name>` and `paseo-worker=<the daemon's worker>` (its pid and
+  start; a daemon that can't say its worker gets no run). Like every lead, it is that role's one lead.
+- **After a Paseo restart:** Paseo keeps no run's environment, so a person's run the daemon held before it restarted
+  could come back only on the daemon's own token (the owner's). bin/wake archives every person run of its project
+  whose `paseo-worker` is not the daemon's current worker (each pass: at its start, at least once a minute and soon
+  after a board change), and never sends a message to one.
+- **wake starts runs per person** (`mm config set wake.person_runs true`; off by default; on the host only): work on
+  an item runs as its requester (who created it, else the first person who commented on it; the owner's chat bridge
+  is the owner), upkeep and background as the project's sponsor (its owner, `owner_name`). wake starts the lead through
+  `mm run-as`, gives it only that person's items in its handover, and sends it only that person's share; an idle
+  lead held by one person while only another person's work waits makes way (at most once per `WAKE_RESUME_MS` per
+  role). A person with no token: no run, wake says so on the item once, and tries again later (the other people's work
+  goes on meanwhile). A kept role (the owner's contact) gets everything, as before. Every person who asks for work
+  then needs an account (mm.auth) and a token; the owner without one runs on the machine's own token.
 - **No token, no run:** a person without one gets "set your Claude token on the home page", and nothing starts. The
   owner's token is never used for anyone else. The owner without a personal token runs on the machine's own token
   (which is the owner's), as every lead does.
 - **In a box:** the token goes over `docker exec -i`'s stdin to bin/lead in the box; it never enters a box's files.
-  The run calls the model's own API, not mm.ai, so the box's egress list must have `api.anthropic.com`; without it,
-  `mm run-as` refuses (the owner decides: that way skips mm.ai's check of server-side tools).
+  The run calls the model's own API, not mm.ai, so mm puts `api.anthropic.com` on the box's egress list when a
+  person's run starts there (the owner's answer, sy-q8fv; its proxy restarts once to read it), and takes it off once
+  none is left: the host's record of the box's person runs (`$MM_HOME/person-runs/<project>.json`, 0600, no token),
+  swept once a minute by mm cron (and at each `mm run-as`) against the box's own Paseo list; a run that does not start
+  takes it off at once. A box that declares `api.anthropic.com` itself (or the owner granted it) keeps it. While it is
+  there, that box's other agents can reach the model's API directly too, past mm.ai's check of server-side tools. The
+  box's wake doesn't start person runs (it can't reach mm or the vault).
 - **The terms:** this follows Anthropic's "an end user signing in to the unmodified Claude Code binary with their own
   Claude subscription, including where a platform hosts Claude Code". The owner reads the terms
   (code.claude.com/docs/en/legal-and-compliance) and decides; this note is not legal advice.
