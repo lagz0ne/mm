@@ -277,21 +277,27 @@ apiCmd.command('ls').description('the open requests, and those of the last 7 day
   print((r.data as unknown as Record<string, unknown>[]).map((x) => ({ id: x.id, item: x.item, project: x.project, call: x.call, value: x.value, status: x.status, by: x.by || '' })), o, 'id')
 })
 apiCmd.command('show <id>').description('one request (its id or its item\'s id): what it asks for, its hash, its status').action(async (id: string) => apiOut(await apiCall(`/show?id=${encodeURIComponent(id)}`)))
-apiCmd.command('approve <id>').description('apply exactly this request (the owner\'s step; it shows the request and asks first)')
+apiCmd.command('approve <id>').description('apply exactly this request (the owner\'s step; it shows the request and asks for the one-time code sent to you on Telegram)')
   .option('--no-login', 'a route with no sign-in: anyone on the internet can open it (the owner\'s choice)')
-  .option('--hash <hash>', 'without a terminal to ask in: the first 12 or more characters of the hash on the item')
+  .option('--hash <hash>', 'without a terminal to ask in: the first 12 or more characters of the hash on the item (the code is then read from stdin)')
   .action(async (id: string, o) => {
     ownerOnly('approve')
     const s = await apiCall(`/show?id=${encodeURIComponent(id)}`), r = s.data as Record<string, string>
     if (s.status !== 200) { console.error(`mm api approve: ${r.error || 'no such request'}`); process.exit(1) }
-    console.log(`${r.id} (${r.item || 'no item yet'}): the box of ${r.project} asks for ${r.call} ${r.value}${o.login === false ? ', with NO login' : ''}\nhash ${r.hash}\nstatus ${r.status}`)
+    console.log(`${r.id} (${r.item || 'no item yet'}): the box of ${r.project} asks for ${r.call} ${r.value}${o.login === false ? ', with NO login' : ''}\nhash ${r.hash}\nstatus ${r.status}\ncode ${r.code}`)
     if (r.status !== 'pending') process.exit(1)
+    // the one-time code (sy-35f2): only on the owner's Telegram; asked here, never an argument (no shell history, no ps)
+    let code = ''
     if (o.hash !== undefined) {
       if (!/^[0-9a-f]{12,64}$/.test(String(o.hash)) || !r.hash.startsWith(String(o.hash))) { console.error('mm api approve: that hash is not this request\'s: nothing applied'); process.exit(1) }
-    } else if (!process.stdin.isTTY) { console.error('mm api approve: run it in your own terminal (it asks first), or pass --hash with the first 12 characters of the hash on the item'); process.exit(1) }
-    else if ((prompt('Approve exactly this? Type yes:') || '').trim().toLowerCase() !== 'yes') { console.error('not approved'); process.exit(1) }
-    apiOut(await apiCall('/approve', { id: r.id, hash: r.hash, open: o.login === false, by: 'cli' }))
+      code = process.stdin.isTTY ? (prompt('The code from the Telegram message:') || '') : (await Bun.stdin.text()).split('\n')[0]
+    } else if (!process.stdin.isTTY) { console.error('mm api approve: run it in your own terminal (it asks for the code), or pass --hash with the first 12 characters of the hash on the item and the code on stdin'); process.exit(1) }
+    else code = prompt('To approve exactly this, type the code from the Telegram message (empty: cancel):') || ''
+    if (!code.trim()) { console.error('mm api approve: no code: not approved'); process.exit(1) }
+    apiOut(await apiCall('/approve', { id: r.id, hash: r.hash, code: code.trim(), open: o.login === false, by: 'cli' }))
   })
+apiCmd.command('code <id>').description('send a new one-time code for this request to the owner on Telegram (the old one stops working)')
+  .action(async (id: string) => { ownerOnly('code'); apiOut(await apiCall('/code', { id, by: 'cli' })) })
 apiCmd.command('deny <id>').description('refuse a request (the box sees: refused)').option('--why <text>', 'a short reason, for the item').action(async (id: string, o) => { ownerOnly('deny'); apiOut(await apiCall('/deny', { id, why: o.why, by: 'cli' })) })
 apiCmd.command('undo <id>').description('take back what a done request granted (the route, the site, the build, the secret)').action(async (id: string) => { ownerOnly('undo'); apiOut(await apiCall('/undo', { id, by: 'cli' })) })
 // the AI gateway for project boxes (src/ai.ts, sy-b15.10): budgets and use; keys are made by mm up, never printed
