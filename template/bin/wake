@@ -243,6 +243,8 @@ async function board(fresh = false) {
 // A role's share of the board: its queue (ready items assigned to it; one waiting for the human, `needs-you`, is not
 // work it can do), the places it holds (its items in progress, claimed by it or a worker `<role>/...`, and its live
 // workers, each once: bin/lib/places.mjs), and its free capacity within the role's `capacity` and the project's cap.
+const mineOf = (role, i) => i.assignee === role || String(i.assignee || '').startsWith(`${role}/`)
+const inProgress = (b, role) => b.all.filter((i) => i.status === 'in_progress' && mineOf(role, i))
 // The setup agent (governance requests from humans) is not a lead: no capacity holds it back and no claim of its expires.
 function share(b, role) {
   const queue = b.ready.filter((i) => i.assignee === role && i.status === 'open' && !(i.labels || []).includes('needs-you'))
