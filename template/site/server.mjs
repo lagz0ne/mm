@@ -14,11 +14,12 @@ import { leadState } from './lead-state.mjs'
 import { foldRequeues, pullState } from './pull-state.mjs'
 import { exportQuery, flowRows, parseExport, PAIRS } from './flow-rows.mjs'
 import { waitingFor } from './waiting.mjs'
+import { designsApi } from './designs.mjs'
 import * as P_ from '../bin/lib/paseo.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const DIST = path.join(here, 'dist')
-import { dirs, endpoints, projectName, requireUrl, servicesDef, svcPublic } from '../bin/lib/svc.mjs'
+import { dirs, endpoints, projectName, requireUrl, servicesDef, svcPublic, svcUrl } from '../bin/lib/svc.mjs'
 // PORT is assigned by the process manager (portless); HOST is where the machine wants services bound.
 const PORT = Number(process.env.PORT || process.env.BOARD_PORT)
 if (!PORT) { console.error('board: set PORT'); process.exit(2) }
@@ -745,6 +746,12 @@ async function handlePublic(req, res) {
   return handle(req, res)
 }
 
+// Designs (plans/doop.md; site/designs.mjs): the project's Doop frames an item links, read on loopback with the design
+// lead's agent key, which never leaves this process. GET only: on the public side, every role may read them.
+const getItem = (id) => fetch(new URL(`/v0/beads/issues/${encodeURIComponent(id)}`, BD)).then((x) => (x.ok ? x.json() : null)).catch(() => null)
+const designs = designsApi({ ROOT, send, getItem, allItems, svcUrl, svcPublic,
+  me: (req) => (req.gateway ? req.gateway.u : cookieUser(req) || '') })
+
 let cfg
 startMetrics()
 http.createServer((req, res) => withSpan(httpSpan(req, res, req.method === 'GET' ? { minMs: 300 } : {}), () => handle(req, res)).catch((e) => {
@@ -779,6 +786,7 @@ async function handle(req, res) {
   if (url.pathname === '/api/links' && req.method === 'GET') return sendLinks(res)
   if (url.pathname === '/api/mermaid' && req.method === 'POST') return sendMermaid(req, res, url).catch((e) => send(res, 500, { error: e.message }))
   if (url.pathname === '/api/presence' && req.method === 'GET') return sendPresence(res)
+  if (url.pathname.startsWith('/api/designs/') && await designs(req, res, url)) return
   const wm = /^\/api\/workers\/([\w.-]+)$/.exec(url.pathname)
   if (wm && req.method === 'GET') return sendWorkers(res, wm[1]).catch((e) => send(res, 500, { title: e.message }))
   const cm = /^\/api\/content\/([\w.-]+)$/.exec(url.pathname)
