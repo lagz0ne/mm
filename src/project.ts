@@ -254,7 +254,7 @@ export const boxHook: { up: ((root: string) => Step[]) | null; down: ((root: str
  * says (no symlink on the way from the project root); the file goes to a fresh temp name ('wx': not an existing name or
  * link) and is renamed over the old name, which replaces a planted link instead of following it.
  */
-export function writeInProject(root: string, rel: string, data: string) {
+export function writeInProject(root: string, rel: string, data: string | Uint8Array) {
   const dir = dirname(join(root, rel)), want = join(realpathSync(root), dirname(rel))
   mkdirSync(dir, { recursive: true })
   if (realpathSync(dir) !== want) throw new Error(`${dirname(rel)} in ${root} goes through a symlink: not writing ${rel}`)
@@ -333,7 +333,7 @@ export function templateVars(root: string): Record<string, string> {
 const ENGINE_SKIP = ['site/node_modules', 'site/dist']
 const isEngine = (p: string) => /^(bin|site)\//.test(p) && !ENGINE_SKIP.some((s) => p === s || p.startsWith(`${s}/`))
 const sha256 = (b: Uint8Array) => createHash('sha256').update(b).digest('hex')
-const sealFile = (project: string) => join(DIRS.mm, 'box', project, 'engine.json')
+export const sealFile = (project: string) => join(DIRS.mm, 'box', project, 'engine.json')
 /** The engine's files on disk and their sha256. A link or any other odd file is named so, never followed or read. */
 function engineOnDisk(root: string): Record<string, string> {
   const out: Record<string, string> = {}
@@ -389,6 +389,24 @@ export function recordTemplate(root: string, commit?: string) {
   const f = templateRecFile(a.project)
   mkdirSync(dirname(f), { recursive: true, mode: 0o755 })
   writeFileSync(f, JSON.stringify({ commit: c, recorded: new Date().toISOString() }, null, 2))
+}
+/** The privilege files a box project's host record carries (sy-b15.19): read-only in the box, so the host's copies. */
+export const BOX_RECORD_FILES = ['.mm-answers.yaml', 'services.yaml', 'secrets.json', 'governance.json', 'tools.json']
+export type BoxRecord = { box: boolean; project: string; files: Record<string, string>; engine: unknown; template: { commit?: string } | null }
+/**
+ * A box project's record for mastermind (mm sync; sy-b15.19), made by the host from the host's disk, never from the
+ * box's backup: whether it is a box, the host's copies of its privilege files (base64), the engine's seal and the
+ * mm-template record. A file that is not a plain file is not followed: the record is refused.
+ */
+export function boxRecord(root: string): BoxRecord {
+  const a = readAnswers(root), files: Record<string, string> = {}
+  for (const f of BOX_RECORD_FILES) {
+    let st; try { st = lstatSync(join(root, f)) } catch { continue }
+    if (!st.isFile()) throw new Error(`${a.project}: ${f} is not a plain file; not following it into the box's record`)
+    files[f] = readFileSync(join(root, f)).toString('base64')
+  }
+  const host = (p: string) => { try { return JSON.parse(readFileSync(p, 'utf8')) } catch { return null } }
+  return { box: !!a.box, project: a.project, files, engine: host(sealFile(a.project)), template: host(templateRecFile(a.project)) }
 }
 /**
  * A box project's history against its read-only files: HEAD must hold exactly what is on disk there. The box can't

@@ -12,7 +12,7 @@ import { install } from './install'
 import { type Install, manifest } from './manifest'
 import { onboard } from './onboard'
 import { pcRunning } from './pc'
-import { engineRefusal, installTools, processes, readAnswers, up } from './project'
+import { BOX_RECORD_FILES, type BoxRecord, engineRefusal, hostGitEnv, installTools, processes, readAnswers, sealFile, templateRecFile, up, writeInProject } from './project'
 import { ALLOW } from './sync'
 import * as vault from './vault'
 
@@ -79,10 +79,16 @@ const open = (file: string, identity: string): Uint8Array => {
   if (r.status !== 0) throw new Error(`${file.split('/').slice(-3).join('/')}: the recovery identity could not open it (${String(r.stderr).trim().slice(0, 120)})`)
   return r.stdout
 }
+/** No repo hook runs in what restore does itself (its checkouts and commits, and the board tools it runs): a bundle can
+ *  carry a box's own ops/githooks (sy-b15.19). core.hooksPath is set only after the box record is applied. */
+const NO_HOOKS = { GIT_NO_REPLACE_OBJECTS: '1', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: '/dev/null' }
+/** restore's own git on a board: no hooks; for a box (as its answers now say), the host's hardened git (hostGitEnv). */
+const restoreGit = (root: string) => { const h = hostGitEnv(root); return h.GIT_CONFIG_COUNT ? h : { ...h, ...NO_HOOKS } }
+
 /** A repo from a bundle, with every branch as a local branch (not only the default one) and no remote left. */
 function fromBundle(bundle: string, dir: string, who: { name: string; email: string }) {
   mkdirSync(dir, { recursive: true })
-  const g = (a: string[]) => { const r = run(['git', '-C', dir, ...a], { timeoutMs: 600_000 }); if (!r.ok) throw new Error(`${tl(dir)}: git ${a[0]}: ${short(r)}`); return r.out }
+  const g = (a: string[]) => { const r = run(['git', '-C', dir, ...a], { env: NO_HOOKS, timeoutMs: 600_000 }); if (!r.ok) throw new Error(`${tl(dir)}: git ${a[0]}: ${short(r)}`); return r.out }
   g(['init', '-q', '-b', 'main'])
   g(['fetch', '-q', '--update-head-ok', bundle, '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*'])
   const heads = run(['git', 'bundle', 'list-heads', bundle]).out
@@ -193,20 +199,33 @@ async function restoreWith(src: string, o: RestoreOpts): Promise<{ steps: Step[]
     for (const d of dirs) {
       const root = d === 'system' ? DIRS.system : join(DIRS.projects, ...d.split('/').slice(1))
       fromBundle(unseal(`${d}/config.bundle.age`), root, { name: 'mm', email: 'mm@localhost' })
-      const a = Bun.YAML.parse(readFileSync(join(root, '.mm-answers.yaml'), 'utf8')) as { project: string; root?: string }
+      // a box's bundle is the box's own history: the host's record (mm sync) decides its privilege files and whether it
+      // is a box, over whatever the box committed (sy-b15.19)
+      const rec = existsSync(join(M, d, 'box.json.age')) ? applyBoxRecord(root, Buffer.from(open(join(M, d, 'box.json.age'), o.identity)).toString('utf8')) : null
+      const a = Bun.YAML.parse(readFileSync(join(root, '.mm-answers.yaml'), 'utf8')) as { project: string; root?: string; box?: boolean }
       run(['git', '-C', root, 'config', 'user.email', `mm@${a.project}.local`])
-      if (existsSync(join(root, 'ops', 'githooks'))) run(['git', '-C', root, 'config', 'core.hooksPath', 'ops/githooks'])
+      const commit: string[] = rec ? [...rec.files] : []
       if (a.root && a.root !== root) { // the answers name the old box's folder: point them here
-        writeFileSync(join(root, '.mm-answers.yaml'), readFileSync(join(root, '.mm-answers.yaml'), 'utf8').replace(/^root:.*$/m, `root: ${root}`))
-        run(['git', '-C', root, 'commit', '-q', '-m', 'mm restore: root on this box', '.mm-answers.yaml'], { env: { SETUP_HUMAN: '1' } })
+        writeInProject(root, '.mm-answers.yaml', readFileSync(join(root, '.mm-answers.yaml'), 'utf8').replace(/^root:.*$/m, `root: ${root}`))
+        commit.push('.mm-answers.yaml')
       }
+      if (commit.length) { // restore's own commit: no repo hook runs (a box's bundle can carry its own)
+        const g = (args: string[]) => run(['git', '-C', root, ...args], { env: { SETUP_HUMAN: '1', ...restoreGit(root) } })
+        g(['add', '--', ...new Set(commit)])
+        if (!g(['diff', '--cached', '--quiet']).ok) {
+          const c = g(['commit', '-q', '-m', rec ? `mm restore: the host's record of this box over its own history${a.root && a.root !== root ? '; root on this box' : ''}` : 'mm restore: root on this box'])
+          if (!c.ok) throw new Error(`${d}: commit: ${short(c)}`)
+        }
+      }
+      // the repo's hooks only now, after the check (for a box, the host's git never runs them: hostGitEnv)
+      if (existsSync(join(root, 'ops', 'githooks'))) run(['git', '-C', root, 'config', 'core.hooksPath', 'ops/githooks'])
       if (existsSync(join(M, d, 'code.bundle.age'))) fromBundle(unseal(`${d}/code.bundle.age`), join(root, 'code'), { name: 'mm', email: `mm@${a.project}.local` })
       const stage = join(root, '.restore'); mkdirSync(stage, { recursive: true, mode: 0o700 })
       const x = run(['tar', '-xf', unseal(`${d}/board.tar.age`), '-C', stage], { timeoutMs: 600_000 })
       if (!x.ok) throw new Error(`${d}: board data: ${short(x)}`)
       const items = existsSync(join(stage, 'board.jsonl')) ? readFileSync(join(stage, 'board.jsonl'), 'utf8').split('\n').filter(Boolean).length : 0
       boards.push(a.project)
-      steps.push({ step: `board ${a.project}`, status: 'ok', detail: `${tl(root)}: config${existsSync(join(root, 'code', '.git')) ? ' + product' : ''} repo, board data staged (${items} record(s))` })
+      steps.push({ step: `board ${a.project}`, status: 'ok', detail: `${tl(root)}: config${existsSync(join(root, 'code', '.git')) ? ' + product' : ''} repo, board data staged (${items} record(s))${rec ? `; ${rec.detail}` : ''}` })
     }
     if (o.dataOnly) { steps.push({ step: 'start', status: 'skip', detail: '--data-only: data in place; nothing started' }); return { steps, ok: true, boards } }
 
@@ -241,6 +260,33 @@ async function restoreWith(src: string, o: RestoreOpts): Promise<{ steps: Step[]
   }
 }
 
+/**
+ * A box project's record from mastermind (sy-b15.19). mm sync made it on the old machine's host, from the host's disk,
+ * never from the box's backup. Its privilege files replace what the box's bundle checked out; a recorded box is a box
+ * whatever its own answers said; the host's seal of its engine and its mm-template record go back where mm keeps them.
+ * Returns the files to commit.
+ */
+function applyBoxRecord(root: string, text: string): { files: string[]; detail: string } {
+  const r = JSON.parse(text) as BoxRecord
+  if (!r || typeof r !== 'object' || !r.files || typeof r.files !== 'object' || !/^[a-z][a-z0-9-]{0,62}$/.test(String(r.project))) throw new Error(`${tl(root)}: the box record is not one mm sync made`)
+  const odd = Object.keys(r.files).filter((f) => !BOX_RECORD_FILES.includes(f))
+  if (odd.length) throw new Error(`${tl(root)}: the box record names ${odd.join(', ')}, not a privilege file`)
+  // never through a link the bundle checked out: each file goes to a fresh name, renamed over the old one
+  for (const [f, b64] of Object.entries(r.files)) writeInProject(root, f, Buffer.from(String(b64), 'base64'))
+  const af = join(root, '.mm-answers.yaml'), at = readFileSync(af, 'utf8'), ans = Bun.YAML.parse(at) as { project?: string; box?: boolean }
+  if (ans.project !== r.project) throw new Error(`${tl(root)}: the box record is for ${r.project}, but the answers name ${ans.project}`)
+  if (r.box && ans.box !== true) writeInProject(root, '.mm-answers.yaml', `${at.replace(/^box:.*\n?/m, '').trimEnd()}\nbox: true\n`)
+  const hd = dirname(sealFile(r.project)); mkdirSync(hd, { recursive: true, mode: 0o755 })
+  if (r.engine) writeFileSync(sealFile(r.project), JSON.stringify(r.engine, null, 2))
+  if (r.template) writeFileSync(templateRecFile(r.project), JSON.stringify(r.template, null, 2))
+  // mm-template back on the commit mm recorded, when the bundle has it (else mm update refuses, and says why; sy-055t)
+  const c = String(r.template?.commit || ''), env = restoreGit(root)
+  const base = !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(c) ? ''
+    : run(['git', '-C', root, 'cat-file', '-e', `${c}^{commit}`], { env }).ok && run(['git', '-C', root, 'update-ref', 'refs/heads/mm-template', c], { env }).ok
+      ? `, mm-template at ${c.slice(0, 12)}` : `, mm-template: the recorded ${c.slice(0, 12)} is not in the bundle`
+  return { files: [...Object.keys(r.files), '.mm-answers.yaml'], detail: `${r.box ? 'a box' : 'once a box'}: ${Object.keys(r.files).length} privilege file(s)${r.engine ? ', the engine seal' : ''}${base} from the host's record (sy-b15.19)` }
+}
+
 /** The restored board's folder by its project id (system, or projects/<client>/<name>). */
 function findBoard(project: string): string {
   if (project === 'system') return DIRS.system
@@ -264,7 +310,7 @@ async function bringUp(root: string, work: string): Promise<{ steps: Step[]; ok:
   // a box's bundle is the box's own history: the host runs its bin/ and site/ (init, npm, config-check, wt, bd) only
   // if they are mm's engine (review sy-b15.6 follow-up 2)
   const no = engineRefusal(root); if (no) { steps.push({ step: `${a.project}: engine`, status: 'fail', detail: `refused: ${no}` }); return res(false) }
-  if (!must('board database (bin/init)', run([join(root, 'bin', 'init'), a.short], { cwd: root, timeoutMs: 300_000 }))) return res(false)
+  if (!must('board database (bin/init)', run([join(root, 'bin', 'init'), a.short], { cwd: root, env: NO_HOOKS, timeoutMs: 300_000 }))) return res(false)
   const db = JSON.parse(readFileSync(join(root, 'control', '.beads', 'metadata.json'), 'utf8')).dolt_database as string
   const denv = { DOLT_ROOT_PATH: join(root, '.dolt-root'), XDG_CONFIG_HOME: join(root, '.config') }
   if (!must(`board data -> ${db} (dolt backup restore)`, run([join(root, 'tools', 'dolt'), 'backup', 'restore', '--force', `file://${join(stage, 'board.dolt')}`, db], { cwd: join(root, 'control', '.beads', 'dolt'), env: denv, timeoutMs: 600_000 }))) return res(false)
@@ -278,13 +324,14 @@ async function bringUp(root: string, work: string): Promise<{ steps: Step[]; ok:
   steps.push({ step: `${a.project}: project identity`, status: 'ok', detail: `${pid} (the database's)` })
   if (existsSync(join(root, 'site', 'package.json')) && !must('board build', run(['sh', '-c', 'npm ci --no-audit --no-fund --silent && npm run build --silent'], { cwd: join(root, 'site'), timeoutMs: 900_000 }))) return res(false)
   if (existsSync(join(root, 'bin', 'config-check'))) {
-    if (!must('governance check', run([join(root, 'bin', 'config-check'), '--render'], { cwd: root }))) return res(false)
-    if (run(['git', '-C', root, 'status', '--porcelain', '--untracked-files=no']).out.trim())
-      run(['git', '-C', root, 'commit', '-qam', 'mm restore: rendered for this box'], { env: { SETUP_HUMAN: '1' } })
+    if (!must('governance check', run([join(root, 'bin', 'config-check'), '--render'], { cwd: root, env: NO_HOOKS }))) return res(false)
+    // restore's own commit: no repo hook runs (sy-b15.19)
+    if (run(['git', '-C', root, 'status', '--porcelain', '--untracked-files=no'], { env: restoreGit(root) }).out.trim())
+      run(['git', '-C', root, 'commit', '-qam', 'mm restore: rendered for this box'], { env: { SETUP_HUMAN: '1', ...restoreGit(root) } })
   }
   try {
     const roles = JSON.parse(readFileSync(join(root, 'leads', 'roles.json'), 'utf8')).roles as { id: string; workers?: boolean }[]
-    if (existsSync(join(root, 'code', '.git'))) for (const r of roles.filter((x) => !x.workers)) run([join(root, 'bin', 'wt'), `lead-${r.id}`], { cwd: root })
+    if (existsSync(join(root, 'code', '.git'))) for (const r of roles.filter((x) => !x.workers)) run([join(root, 'bin', 'wt'), `lead-${r.id}`], { cwd: root, env: NO_HOOKS })
   } catch {}
   for (const s of up(root)) steps.push({ ...s, step: `${a.project}: ${s.step}` })
   let ready = false

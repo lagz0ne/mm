@@ -96,6 +96,58 @@ check "hook: a file off the allowlist can't be committed in the checkout" hooked
 check "hook: a secret key can't be committed in the checkout" hooked vault/x.age AGE-SECRET-KEY-1X 'holds an age secret key'
 check "control: the hook lets an allowlisted file through" bash -c "cd '$CK' && echo x >>README.md && git commit -qam ok && git reset -q --hard HEAD~1"
 
+echo "== a box project: the host's record (sy-b15.19)"
+# a docker stand-in: `exec` runs the box's job here (its staging folder is the host's); `run --rm` (mm's chown helper)
+# does nothing. The box can't write its privilege files, only its repo's history.
+cat >"$T/fake-docker" <<'EOF'
+#!/bin/bash
+case "$1" in
+  exec) shift; env=(); cwd=.
+    while [ $# -gt 0 ]; do case "$1" in -w) cwd=$2; shift 2 ;; -e) case "$2" in MM_PROJECT=*|BACKUP_DIR=*) env+=("$2") ;; esac; shift 2 ;; -i|-it) shift ;; *) break ;; esac; done
+    stage=$MM_HOME/box/${1#mm-box-}/backup; shift
+    args=(); for x in "$@"; do args+=("${x//\/run\/mm\/backup/$stage}"); done
+    cd "$cwd" && exec env "${env[@]//\/run\/mm\/backup/$stage}" "${args[@]}" ;;
+  run) for x in "$@"; do [ "$x" = --rm ] && exit 0; done; exit 1 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$T/fake-docker"; export MM_DOCKER="$T/fake-docker"   # from here on: the box's jobs never reach a real docker
+BX="$MM_HOME/projects/acme/boxed"; board "$BX" acme boxed acme-boxed project 0
+printf 'version: 1\nservices:\n  board: { command: "node site/server.mjs" }\n' >"$BX/services.yaml"; echo 'box: true' >>"$BX/.mm-answers.yaml"
+git -C "$BX" add -A && git -C "$BX" commit -qm 'box on'
+mkdir -p "$MM_HOME/pc/boxes" "$MM_HOME/box/acme-boxed"; mv "$MM_HOME/pc/projects/acme-boxed.yaml" "$MM_HOME/pc/boxes/"
+echo '{"files":{"bin/backup":"seal-marker-6170"}}' >"$MM_HOME/box/acme-boxed/engine.json"
+echo "{\"commit\":\"$(git -C "$BX" rev-parse HEAD)\"}" >"$MM_HOME/box/acme-boxed/template.json"
+# the box's commit: box: false and its own command, with plumbing (the files on disk stay the host's)
+(cd "$BX" && export GIT_INDEX_FILE="$T/box.idx" && git read-tree HEAD && sed 's/^box: true$/box: false/' .mm-answers.yaml >"$T/b.a" && sed 's|node site/server.mjs|touch /tmp/box-ran|' services.yaml >"$T/b.s" \
+  && printf '#!/bin/sh\ntouch %s/hook-ran\n' "$T" >"$T/b.h" && h=$(git hash-object -w "$T/b.h") \
+  && git update-index --cacheinfo "100644,$(git hash-object -w "$T/b.a"),.mm-answers.yaml" --cacheinfo "100644,$(git hash-object -w "$T/b.s"),services.yaml" \
+     --add --cacheinfo "100755,$h,ops/githooks/pre-commit" --cacheinfo "100755,$h,ops/githooks/post-commit" --cacheinfo "100755,$h,ops/githooks/post-checkout" \
+  && git update-ref refs/heads/main "$(git commit-tree "$(git write-tree)" -p HEAD -m 'box: its own')") >>"$LOG" 2>&1
+mm sync >>"$LOG" 2>&1 && ok "mm sync with a box project" || { bad "mm sync (box)"; tail -10 "$LOG"; }
+age -d -i "$T/recovery.key" "$CK/projects/acme/boxed/box.json.age" >"$T/box.json" 2>>"$LOG"
+check "mastermind holds the box's record, sealed" bash -c "git -C '$R' ls-tree -r --name-only main | grep -qx projects/acme/boxed/box.json.age && head -c 21 '$CK/projects/acme/boxed/box.json.age' | grep -qx 'age-encryption.org/v1'"
+check "...made from the host's disk: a box, the host's services.yaml and answers" bash -c "jq -e '.box == true and .project == \"acme-boxed\"' '$T/box.json' && [ \"\$(jq -r '.files[\"services.yaml\"]' '$T/box.json' | base64 -d)\" = \"\$(cat '$BX/services.yaml')\" ] && jq -r '.files[\".mm-answers.yaml\"]' '$T/box.json' | base64 -d | grep -qx 'box: true'"
+check "...not from the box's backup (its bundle has box: false and its own command)" bash -c "age -d -i '$T/recovery.key' '$CK/projects/acme/boxed/config.bundle.age' >'$T/bx.bundle' && git clone -q '$T/bx.bundle' '$T/bx' && grep -qx 'box: false' '$T/bx/.mm-answers.yaml' && grep -q box-ran '$T/bx/services.yaml' && ! jq -r '.files[\"services.yaml\"]' '$T/box.json' | base64 -d | grep -q box-ran"
+check "...with the engine's seal and the template base" bash -c "jq -e '.engine.files[\"bin/backup\"] == \"seal-marker-6170\" and (.template.commit | length == 40)' '$T/box.json'"
+check "...and its secrets.json (names only)" bash -c "jq -r '.files[\"secrets.json\"]' '$T/box.json' | base64 -d | grep -q API_KEY"
+H4=$(heads); mm sync >>"$LOG" 2>&1
+check "nothing changed: no commit (the record is resealed only when it changes)" test "$(heads)" = "$H4"
+ln -s /etc/hostname "$BX/governance.json"
+check "a privilege file that is a link: not followed, the sync refuses, nothing committed" bash -c "! mm sync >'$T/s.out' 2>&1 && grep -q 'governance.json is not a plain file' '$T/s.out' && [ \"\$(git -C '$R' rev-parse main)\" = '$H4' ]"
+rm -f "$BX/governance.json"
+# a blank machine restores from it (--drill --data-only: test keys, nothing started)
+NB="$T/blank"; mkdir -p "$NB"; RB="$NB/.mm/projects/acme/boxed"
+(export HOME="$NB" MM_HOME="$NB/.mm"; unset MM_LAYOUT; mm restore --drill --data-only "$R" --identity "$T/recovery.key" --accept "$(git -C "$R" rev-parse main)" -o json) >"$T/restore.json" 2>>"$LOG" \
+  && ok "a blank machine: mm restore --drill --data-only" || { bad "restore (box)"; jq -r '.[] | select(.status=="fail") | "       \(.step): \(.detail)"' "$T/restore.json" 2>/dev/null; }
+check "(the bundle brought the box's own commit)" bash -c "git -C '$RB' log --format=%s | grep -qx 'box: its own'"
+check "the project is a box: its answers on disk and in HEAD say box: true" bash -c "grep -qx 'box: true' '$RB/.mm-answers.yaml' && git -C '$RB' show HEAD:.mm-answers.yaml | grep -qx 'box: true'"
+check "services.yaml is the host's, not the box's" cmp "$BX/services.yaml" "$RB/services.yaml"
+check "restore made its own commit over the box's history, and no hook of the box's ran" bash -c "git -C '$RB' log -1 --format=%s | grep -q \"host's record\" && ! test -e '$T/hook-ran'"
+check "the repo's hooks are set only after that" test "$(git -C "$RB" config core.hooksPath)" = ops/githooks
+check "control: a plain git commit there now runs the box's hook (so the check above could see one)" bash -c "git -C '$RB' commit -q --allow-empty -m control && test -e '$T/hook-ran'"
+check "the engine seal and the template base are back on the host, mm-template on the recorded commit" bash -c "jq -e '.files[\"bin/backup\"] == \"seal-marker-6170\"' '$NB/.mm/box/acme-boxed/engine.json' && [ \"\$(jq -r .commit '$NB/.mm/box/acme-boxed/template.json')\" = \"\$(git -C '$RB' rev-parse refs/heads/mm-template)\" ]"
+
 echo '== a project goes away'
 rm "$MM_HOME/pc/projects/acme-shop.yaml"; mm sync >>"$LOG" 2>&1
 check "its files are dropped (history keeps them)" bash -c "! git -C '$R' ls-tree -r --name-only main | grep -q '^projects/acme/shop/' && git -C '$R' log --oneline main -- projects/acme/shop | grep -q ."

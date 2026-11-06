@@ -7,7 +7,7 @@ import { dirname, join, relative } from 'node:path'
 import { getPath, held, loadConfig, saveConfig, setPath } from './config'
 import { DIRS, HOME, run } from './env'
 import { expand, machineInputs } from './inputs'
-import { engineRefusal, listProjects, readAnswers } from './project'
+import { boxish, boxRecord, engineRefusal, listProjects, readAnswers } from './project'
 import * as vault from './vault'
 import { jobArgs, landBackup } from './box'
 import pkg from '../package.json'
@@ -17,7 +17,7 @@ export const CHECKOUT = join(DIRS.mm, 'state', 'mastermind')
 const STATE = join(DIRS.mm, 'state', 'mastermind.json') // path -> fingerprint of what was sealed there (local only)
 const ID = '[a-z][a-z0-9-]{0,30}'
 /** What may be in mastermind, and nothing else (the pre-commit hook in the checkout checks the same). */
-export const ALLOW = new RegExp(`^(MANIFEST|README\\.md|config\\.yaml\\.age|vault/(recipients\\.txt|digests\\.txt|[a-z][a-z0-9_.-]{1,63}\\.age)|brain/repo\\.bundle\\.age|system/(config\\.bundle|board\\.tar)\\.age|projects/${ID}/${ID}/(config\\.bundle|code\\.bundle|board\\.tar)\\.age)$`)
+export const ALLOW = new RegExp(`^(MANIFEST|README\\.md|config\\.yaml\\.age|vault/(recipients\\.txt|digests\\.txt|[a-z][a-z0-9_.-]{1,63}\\.age)|brain/repo\\.bundle\\.age|system/(config\\.bundle|board\\.tar)\\.age|projects/${ID}/${ID}/(config\\.bundle|code\\.bundle|board\\.tar|box\\.json)\\.age)$`)
 const SECRET_KEY = 'AGE-SECRET-KEY-'
 const AGE_HEADER = 'age-encryption.org/v1\n'
 const sha = (b: Buffer | Uint8Array | string) => createHash('sha256').update(b).digest('hex')
@@ -71,7 +71,7 @@ export function init(url: string): Step[] {
   return [{ step: 'init', status: 'ok', detail: `${url} -> ${tl(CHECKOUT)} (hook installed)` }]
 }
 
-type Board = { id: string; root: string; dir: string; box?: boolean } // dir: where its files go in mastermind
+type Board = { id: string; root: string; dir: string; box?: boolean; boxish?: boolean } // dir: where its files go in mastermind
 /** The system board and every project that isn't a throwaway. */
 export function boards(): Board[] {
   const out: Board[] = []
@@ -82,7 +82,7 @@ export function boards(): Board[] {
     try {
       const a = readAnswers(root)
       if (a.profile === 'system') continue
-      out.push({ id: a.project, root, dir: `projects/${a.client}/${a.name}`, ...(a.box ? { box: true } : {}) })
+      out.push({ id: a.project, root, dir: `projects/${a.client}/${a.name}`, ...(a.box ? { box: true } : {}), ...(boxish(root) ? { boxish: true } : {}) })
     } catch {}
   }
   return out
@@ -134,6 +134,13 @@ function plan(work: string, steps: Step[]): Item[] {
       fp: () => { const d = backup(); return sha(readFileSync(join(d, 'board.jsonl')) + (existsSync(join(d, 'releases')) ? readFileSync(join(d, 'releases'), 'utf8') : '')) },
       bytes: () => { const d = backup(); return tarOf(d, ['board.dolt', 'board.jsonl', ...(existsSync(join(d, 'releases')) ? ['releases'] : [])]) },
     })
+    // a box (or a project that was one): the backup above is the box's own, so the host adds its own record, made from
+    // the host's disk: restore takes the privilege files from it, and restores a recorded box as a box (sy-b15.19)
+    if (b.boxish) {
+      let rec: Buffer | undefined
+      const bytes = () => (rec ??= Buffer.from(JSON.stringify(boxRecord(b.root), null, 1)))
+      items.push({ path: `${b.dir}/box.json.age`, from: `${b.id}: the host's record of a box (its privilege files, engine seal, template base)`, fp: () => sha(bytes()), bytes })
+    }
   }
   return items
 }
