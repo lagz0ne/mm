@@ -96,7 +96,7 @@ try {
   hold(false)
   ok('the hold is lifted: qa is started within one check (bin/lead start)', await until(() => starts('qa') === 1, 1500))
   ok('...logged as a start from no agent, with its reasons', await until(() => /started qa \(no agent\): 1 reason\(s\) wait for it/.test(opsLog())))
-  ok('...and the new lead gets the item', await until(() => /q-1 "a new item for qa"/.test(to('qa'))))
+  ok('...and the new lead gets the item', await until(() => /q-1: a new item for qa/.test(to('qa'))))
   ok('one agent per role: started once', starts('qa') === 1)
 
   console.log('== idle leads are closed, never busy ones')
@@ -125,7 +125,7 @@ try {
   console.log('== the next request starts it again')
   create('r-1', 'rev', 'a review for rev')
   ok('rev is started again through the same path', await until(() => starts('rev') === 1, 2000))
-  ok('...and gets the item', await until(() => /r-1 "a review for rev"/.test(to('rev'))))
+  ok('...and gets the item', await until(() => /r-1: a review for rev/.test(to('rev'))))
 
   console.log('== a failed start is an error on the item')
   fs.writeFileSync(path.join(T, 'failstart'), '')
@@ -134,7 +134,7 @@ try {
   ok('...and kept for the Leads page', wstate().sec?.startError?.items?.includes('s-1'))
   ok('...the next check starts it', await until(() => starts('sec') === 1))
   ok('...the error is cleared, and was said once', await until(() => !wstate().sec?.startError) && (bdlog().match(/comments add s-1 Error/g) || []).length === 1)
-  ok('...and sec gets the item', await until(() => /s-1 "a finding for sec"/.test(to('sec'))))
+  ok('...and sec gets the item', await until(() => /s-1: a finding for sec/.test(to('sec'))))
 } finally {
   w.kill(); srv.close(); for (const s of streams) s.destroy()
   if (fail) console.log(`--- wake output\n${opsLog().split('\n').slice(-30).join('\n')}\n${out.slice(-1500)}\n--- archived\n${archived()}`)

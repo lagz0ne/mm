@@ -86,8 +86,8 @@ const to = (role) => read(SENT).split('----\n').filter((b) => b.startsWith(`TO a
 try {
   console.log('== one worker on the one item plat holds: 1 place, at capacity 1')
   ok('p-2 waits in plat\'s queue: "plat has 1 of 1 in progress"', await until(() => /plat has 1 of 1 in progress \(the project 1 of its cap 2\): waiting in its queue p-2/.test(logs())))
-  ok('...and the project has room: rev is handed r-1', await until(() => /r-1 "title of r-1"[^\n]*is next in your queue/.test(to('rev'))))
-  ok('plat is not handed p-2', !/p-2 "title of p-2"[^\n]*is next in your queue/.test(to('plat')))
+  ok('...and the project has room: rev is handed r-1', await until(() => /r-1 \(P\d\) is next in your queue/.test(to('rev'))))
+  ok('plat is not handed p-2', !/p-2 \(P\d\) is next in your queue/.test(to('plat')))
 
   console.log('== the worker finishes its turn (running, then idle): its lead is told')
   setWorkers([['w1', 'p-1', 'idle']])
@@ -104,7 +104,7 @@ try {
   setWorkers([['w1', 'p-1', 'idle']])
   ok('"plat has 1 of 1": the stray worker holds its place', await until(() => /plat has 1 of 1 in progress \(the project 1 of its cap 2\): waiting in its queue p-2/.test(logs())))
   setWorkers([])
-  ok('archived: p-2 is handed to plat', await until(() => /p-2 "title of p-2"[^\n]*is next in your queue/.test(to('plat'))))
+  ok('archived: p-2 is handed to plat', await until(() => /p-2 \(P\d\) is next in your queue/.test(to('plat'))))
 } finally {
   w.kill(); srv.close()
   if (fail && process.env.KEEP) console.log(`kept ${T}`); else fs.rmSync(T, { recursive: true, force: true })

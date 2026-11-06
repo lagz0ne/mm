@@ -81,13 +81,13 @@ try {
   ok('wake starts', await until(() => /watching .* from seq (\d+)/.test(opsLog())))
   ok(`...from the board's head (seq ${HEAD}), past the first page of the journal`, new RegExp(`from seq ${HEAD} `).test(opsLog()))
   ok('the journal is read page by page (since 0, 500, ...)', reads.includes(0) && reads.includes(500))
-  ok('an item whose last comment is a human\'s gets a start note', await until(() => /a-2 "title of a-2" has an unanswered comment from alex/.test(to('platform'))))
+  ok('an item whose last comment is a human\'s gets a start note', await until(() => /a-2 has an unanswered comment from alex[\s\S]*a-2: title of a-2/.test(to('platform'))))
   await sleep(1500)
   const p = to('platform')
   ok('an item whose last comment is its lead\'s own (past the first page) gets no start note', !/a-1/.test(p))
   ok('a comment by brain is never "unanswered from a human"', !/from brain/.test(sent()) && !/b-1/.test(sent()))
   ok(`the events missed while stopped are all replayed (${HEAD - SAVED}, more than a page): the late comment on a-3 is delivered`,
-    /alex commented on a-3 "title of a-3": "late question on a-3"/.test(p) && new RegExp(`replayed ${HEAD - SAVED} event\\(s\\)`).test(opsLog()))
+    /alex commented on a-3 \(quoted below\)[\s\S]*a-3: title of a-3\na-3 comment by alex: late question on a-3/.test(p) && new RegExp(`replayed ${HEAD - SAVED} event\\(s\\)`).test(opsLog()))
 } finally {
   w.kill(); srv.close()
   if (fail) console.log(`--- wake output\n${opsLog().split('\n').slice(-25).join('\n')}\n${out.slice(-1500)}\n--- sent\n${sent().slice(-2500)}`)

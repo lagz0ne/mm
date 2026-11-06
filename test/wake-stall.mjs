@@ -79,40 +79,40 @@ try {
   ok('wake starts watching', await until(() => watches >= 1 && /watching/.test(opsLog())))
   records.push(ev(1, 't-1', 'stalled item'))
   ok('the stall is logged (error level, with the count)', await until(() => /"level":"error"[^\n]*stream stalled: 1 event/.test(opsLog())))
-  ok('the lead is woken for the missed event', await until(() => /t-1 "stalled item"/.test(sent())))
+  ok('the lead is woken for the missed event', await until(() => /t-1: stalled item/.test(sent())))
   ok('the stream reconnects', await until(() => watches >= 2 && /stream reconnecting from seq 1/.test(opsLog())))
 
   console.log('== a healthy stream: the event comes through it, once')
   streamLive = true
   const e2 = ev(2, 't-2', 'live item'); records.push(e2)
   for (const s of streams) s.write(`data: ${JSON.stringify(e2)}\n\n`)
-  ok('the lead is woken for it', await until(() => /t-2 "live item"/.test(sent())))
+  ok('the lead is woken for it', await until(() => /t-2: live item/.test(sent())))
   await sleep(3000) // past STALL_MS: the poll must find nothing missing
   ok('no stall reported for it', (opsLog().match(/stream stalled/g) || []).length === 1)
-  ok('delivered once (not again by the poll)', (sent().match(/t-2 "live item"/g) || []).length === 1)
-  ok('the missed event was delivered once too', (sent().match(/t-1 "stalled item"/g) || []).length === 1)
+  ok('delivered once (not again by the poll)', (sent().match(/t-2: live item/g) || []).length === 1)
+  ok('the missed event was delivered once too', (sent().match(/t-1: stalled item/g) || []).length === 1)
 
   console.log('== the hop limit pauses visibly, never drops silently')
-  for (let i = 1; i <= 3; i++) { emit(byOps('h-1', `hop item ${i}`)); ok(`lead-to-lead wake ${i} of 3 is sent`, await until(() => times(/h-1 "hop item/g) === i)) }
+  for (let i = 1; i <= 3; i++) { emit(byOps('h-1', `hop item ${i}`)); ok(`lead-to-lead wake ${i} of 3 is sent`, await until(() => times(/h-1: hop item/g) === i)) }
   emit(byOps('h-1', 'hop item 4'))
-  ok('the 4th is not sent', !(await until(() => times(/h-1 "hop item/g) > 3, 2500)))
+  ok('the 4th is not sent', !(await until(() => times(/h-1: hop item/g) > 3, 2500)))
   ok('...the item is labelled needs-you (pause visible)', await until(() => /label add h-1 needs-you/.test(bdlog())))
   ok('...with a Paused note on it', /comments add h-1 Paused:/.test(bdlog()))
   emit(byOps('h-1', 'hop item 5')); await sleep(1500)
   ok('paused once, not on every later event', (bdlog().match(/label add h-1 needs-you/g) || []).length === 1)
   emit(byHuman('h-1', 'human resumes'))
-  ok('a human event resumes it (the lead is woken)', await until(() => /h-1 "human resumes"/.test(sent())))
+  ok('a human event resumes it (the lead is woken)', await until(() => /h-1: human resumes/.test(sent())))
 
   console.log('== a burst of events from one lead action is one hop')
   for (let i = 0; i < 5; i++) emit(byOps('h-2', `burst ${i}`))
-  ok('one wake for the burst', await until(() => times(/h-2 "burst/g) === 1) && !(await until(() => times(/h-2 "burst/g) > 1, 1500)))
+  ok('one wake for the burst', await until(() => times(/h-2: burst/g) === 1) && !(await until(() => times(/h-2: burst/g) > 1, 1500)))
   ok('...and no pause for it', !/label add h-2/.test(bdlog()))
 
   console.log('== a failed send keeps its reasons')
   fs.writeFileSync(path.join(T, 'failsend'), '')
   emit(byHuman('f-1', 'after a failed send'))
   ok('the send fails once (logged)', await until(() => /send to qa failed \(reasons kept\)/.test(opsLog())))
-  ok('...and the reason goes out on the next try', await until(() => /f-1 "after a failed send"/.test(sent())))
+  ok('...and the reason goes out on the next try', await until(() => /f-1: after a failed send/.test(sent())))
 
   console.log('== events while wake is stopped are replayed when it starts')
   await sleep(2500) // the last seq is saved (2 s throttle)
@@ -121,7 +121,7 @@ try {
   e9.seq = ++seq; records.push(e9) // on the board, while no wake runs
   start()
   ok('wake replays it (logged)', await until(() => /replayed 1 event/.test(opsLog())))
-  ok('...and wakes the lead for it', await until(() => /r-1 "while stopped"/.test(sent())))
+  ok('...and wakes the lead for it', await until(() => /r-1: while stopped/.test(sent())))
 } finally {
   w.kill(); srv.close(); for (const s of streams) s.destroy()
   if (fail) console.log(`--- wake output\n${opsLog().split('\n').slice(-15).join('\n')}\n${out.slice(-1500)}`)
