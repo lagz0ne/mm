@@ -49,11 +49,12 @@ services:
     ready: { http: / }
     restart: always
   doop:
-    about: "Optional design canvas (Doop, the pinned image mm names in .run/endpoints.json): loopback only, its data in data/doop/, its own account and agent key in secrets/. The design lead reaches it by MCP. On with `mm doop on <project>` (plans/doop.md)."
+    about: "Optional design canvas (Doop, the pinned image mm names in .run/endpoints.json): its data in data/doop/, its own account and agent key in secrets/. The design lead reaches it by MCP on loopback; people open it at its public name behind the sign-in gateway (the mm fork checks the gateway's assertion: no second login; box/doop/). On with `mm doop on <project>` (plans/doop.md)."
     optional: true
     command: "{root}/bin/doop-run"
     env: { DOOP_URL: "{url:doop}" }
     port: http
+    public: { name: "doop-{{name}}-{{client}}", auth: required }   # names: project -> doop.<project>
     ready: { http: /healthz }
     restart: always
     stop_seconds: 30   # its database closes, then it regroups its files (bin/doop-run): more than the default 10s

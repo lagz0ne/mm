@@ -115,8 +115,9 @@ const upstreamOf = (bind: string | undefined, port: number | undefined) => {
  * come from resolve() (services.yaml and .mm-answers.yaml, read-only in a box), as mm cron takes a box's jobs; a box's
  * routes from the host's own record of what the owner granted (never the box's files).
  */
-export function hostClaims(names?: NamesMode): { claims: Record<string, Map<string, string>>; routes: Record<string, Set<string>>; odd: string[]; roots: Record<string, string>; hosts: Record<string, Set<string>> } {
+export function hostClaims(names?: NamesMode): { claims: Record<string, Map<string, string>>; routes: Record<string, Set<string>>; odd: string[]; roots: Record<string, string>; hosts: Record<string, Set<string>>; boards: Set<string> } {
   const claims: Record<string, Map<string, string>> = {}, routes: Record<string, Set<string>> = {}, odd: string[] = [], roots: Record<string, string> = {}
+  const boards = new Set<string>() // the hosts of boards (service `board`); a project's other gated hosts (its Doop) are no card
   const hosts: Record<string, Set<string>> = {} // every public host (a board's or an open one, e.g. the app slot) -> its projects
   const boxes = new Set<string>()
   for (const pdir of [join(DIRS.pc, 'projects'), join(DIRS.pc, 'boxes')]) for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
@@ -131,13 +132,14 @@ export function hostClaims(names?: NamesMode): { claims: Record<string, Map<stri
         if (sv.public_url) (hosts[new URL(sv.public_url).host] ||= new Set()).add(project)
         if (sv.public_url && sv.public?.auth === 'required') (claims[new URL(sv.public_url).host] ||= new Map()).set(project, upstreamOf(sv.public_bind, sv.public_port))
       }
+      if (r.services.board?.public_url) boards.add(new URL(r.services.board.public_url).host)
     } catch (e) { if (/names: project|config names/.test((e as Error).message)) odd.push(`${f}: ${(e as Error).message}`) }
   }
   for (const p of grantedProjects()) {
     if (!boxes.has(p)) continue // a project that is no box (any more) has no box routes
     for (const r of granted(p).routes) if (!r.open) (routes[r.host] ||= new Set()).add(p)
   }
-  return { claims, routes, odd, roots, hosts }
+  return { claims, routes, odd, roots, hosts, boards }
 }
 /**
  * `mm names` (read-only, sy-b15.3): each registered project's public hosts under both rules, what is wrong under each
@@ -269,12 +271,13 @@ export async function gateway() {
   const loadHosts = () => {
     if (now() - hostMap.at < HOST_CACHE_MS) return hostMap
     const map: Record<string, string> = {}, hosts: Record<string, string> = {}, ups: Record<string, string> = {}
-    const { claims, routes, odd, roots } = hostClaims()
+    const { claims, routes, odd, roots, boards } = hostClaims()
     const roles = Object.fromEntries(Object.entries(roots).map(([p, root]) => [p, rolesAt(root)]))
     // a host two projects claim goes to neither (no "last one wins"); a board's host is never also a box's route
     for (const [host, ps] of Object.entries(claims)) {
       if (ps.size > 1 || routes[host]) { odd.push(`${host}: claimed by ${[...new Set([...ps.keys(), ...(routes[host] || [])])].sort().join(', ')}`); continue }
-      const [[p, up]] = ps; map[host] = p; hosts[p] ||= host; if (up) ups[host] = up
+      // forward-auth takes every gated host of a project (its board, its Doop: sy-3yz); the home card is its board's
+      const [[p, up]] = ps; map[host] = p; if (boards.has(host)) hosts[p] ||= host; if (up) ups[host] = up
     }
     // a box's route the owner granted behind the sign-in (src/api.ts): forward-auth knows its project; it is no board,
     // so it gets no card on the home page

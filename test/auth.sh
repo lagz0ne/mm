@@ -34,6 +34,10 @@ echo "# from $T/proj/services.yaml" >"$MM_HOME/pc/projects/acme-shop.yaml"; echo
 fakeproj() { mkdir -p "$1/.run"; printf 'client: acme\nname: %s\nproject: %s\nshort: x\nroot: %s\ntemplate_version: test\ncreated: test\n' "${2#acme-}" "$2" "$1" >"$1/.mm-answers.yaml"
   printf 'services:\n  board:\n    command: "true"\n    port: http\n    public: { name: %s, auth: required }\n' "$3" >"$1/services.yaml"; }
 fakeproj "$T/proj" acme-shop board-shop-acme; fakeproj "$T/proj2" acme-other board-other-acme
+# acme-shop's Doop is on, behind the gateway on its own host (sy-3yz; its bin/doop-run has the public side)
+DOOPH=doop-shop-acme.example.org
+printf '  doop:\n    optional: true\n    command: "true"\n    port: http\n    public: { name: doop-shop-acme, auth: required }\n' >>"$T/proj/services.yaml"
+echo 'services_on: [doop]' >>"$T/proj/.mm-answers.yaml"; mkdir -p "$T/proj/bin"; echo ': "${DOOP_PUBLIC_PORT:-}"' >"$T/proj/bin/doop-run"
 # the projects' roles as the gateway knows them (leads/roles.json in each project's folder; the home card's role id)
 mkdir -p "$T/proj/leads" "$T/proj2/leads"; echo '{"roles":[{"id":"ops"},{"id":"code"}]}' >"$T/proj/leads/roles.json"
 echo '{"roles":[{"id":"review"},{"id":"platform"},{"id":"Bad Id"}]}' >"$T/proj2/leads/roles.json"
@@ -120,7 +124,13 @@ check "only the exact callback path skips forward-auth: /_mm/auth/../api/items, 
 check "the identity headers are always set (to '-') on a refusal (a client's copy can't pass)" bash -c "curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' $G/verify | grep -qiE '^x-board-role: -[[:space:]]*\$'"
 mm grant alex acme-shop --as designer >/dev/null
 check "mm grant --as designer: the next assertion says designer" bash -c "node '$T/verify.mjs' \"\$(v | sed -n 's/^x-mm-assertion: \\(.*\\)\\r\$/\\1/ip')\" '$MM_HOME/auth/signing.key' '$BOARD' alex designer"
+CBD=$(gw -D - -o /dev/null -H "cookie: $S1" "$G/s?b=$DOOPH&r=/" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
+curl -s -c "$T/bjd" -H "x-forwarded-host: $DOOPH" -o /dev/null "$G$CBD"
+check "the project's Doop on its own host (sy-3yz): the same session opens it, and its assertion names that host, alex, designer" bash -c "node '$T/verify.mjs' \"\$(curl -s -D - -o /dev/null -b '$T/bjd' -H 'x-forwarded-host: $DOOPH' $G/verify | sed -n 's/^x-mm-assertion: \\(.*\\)\\r\$/\\1/ip')\" '$MM_HOME/auth/signing.key' '$DOOPH' alex designer"
+check "...the board's cookie does not open the Doop host (302: its own callback first)" bash -c "v $DOOPH | head -1 | grep -q 302"
 mm grant alex acme-shop >/dev/null
+check "...the role follows the grant: member on the Doop host too" bash -c "node '$T/verify.mjs' \"\$(curl -s -D - -o /dev/null -b '$T/bjd' -H 'x-forwarded-host: $DOOPH' $G/verify | sed -n 's/^x-mm-assertion: \\(.*\\)\\r\$/\\1/ip')\" '$MM_HOME/auth/signing.key' '$DOOPH' alex member"
+check "...and the home page has one card for acme-shop: its board's link, never its Doop's" bash -c "gw -H 'cookie: $S1' $G/s/done >'$T/hd'; grep -q '/s?b=$BOARD&amp;r=%2F' '$T/hd' && ! grep -q '$DOOPH' '$T/hd'"
 
 echo '== the owner'
 LB=$(link_of boss); open_link "$LB" "$T/hb"; SB=$(sess "$T/hb")
