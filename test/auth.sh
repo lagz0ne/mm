@@ -128,6 +128,11 @@ CBB=$(gw -D - -o /dev/null -H "cookie: $SB" "$G/s?b=$BOARD2&r=/" | sed -n 's/^lo
 curl -s -c "$T/bjb" -H "x-forwarded-host: $BOARD2" -o /dev/null "$G$CBB"
 check "the owner opens any board with no grant (acme-other), as owner" bash -c "node '$T/verify.mjs' \"\$(curl -s -D - -o /dev/null -b '$T/bjb' -H 'x-forwarded-host: $BOARD2' $G/verify | sed -n 's/^x-mm-assertion: \\(.*\\)\\r\$/\\1/ip')\" '$MM_HOME/auth/signing.key' '$BOARD2' boss owner"
 check "a grant to the owner is refused (owner everywhere already)" bash -c "! mm grant boss acme-shop"
+# the system board: owner only, ever (sy-qq61): any role there can steer ops
+check "a grant on the system board is refused in the terminal, and it says why" bash -c "! mm grant alex system >'$T/sg.out' 2>&1 && grep -q 'the system board' '$T/sg.out'"
+check "...as designer or viewer too" bash -c "! mm grant alex system --as designer >/dev/null 2>&1 && ! mm grant alex system --as viewer >/dev/null 2>&1"
+check "...and through the socket the bridge uses (403)" bash -c "[ \"\$(curl -s --unix-socket '$MM_HOME/run/auth.sock' -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -d '{\"name\":\"alex\",\"project\":\"system\",\"by\":\"bridge\"}' http://mm/grant)\" = 403 ]"
+check "...nothing was made for it (no system organization, alex's grants unchanged)" bash -c "mm user ls -o json | jq -e '.[] | select(.name==\"alex\") | (.grants | test(\"system\") | not)'"
 
 echo '== tokens for tools'
 TK=$(mm token alex acme-shop -o json | jq -r .token)

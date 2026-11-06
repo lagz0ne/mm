@@ -292,10 +292,18 @@ export async function gateway() {
   const userById = (id: string) => db.query('SELECT * FROM user WHERE id = ?').get(id) as { id: string; name: string; role?: string; banned?: number } | null
   const isOwner = (u: { role?: string } | null) => u?.role === 'admin'
   const orgOf = (project: string) => db.query('SELECT id FROM organization WHERE slug = ?').get(project) as { id: string } | null
-  /** A person's role on a project, or null: the owner is owner everywhere; anyone else needs a membership. */
+  /** The system board's project id: `project:` in its answers (DIRS.system), else "system"; both always count. */
+  const isSystemBoard = (project: string) => {
+    let id = 'system'
+    try { id = /^project:\s*["']?([\w.-]+)/m.exec(readFileSync(join(DIRS.system, '.mm-answers.yaml'), 'utf8'))?.[1] || 'system' } catch {}
+    return project === 'system' || project === id
+  }
+  /** A person's role on a project, or null: the owner is owner everywhere; anyone else needs a membership. On the system
+   *  board nobody but the owner ever has a role, whatever the store holds (sy-qq61: any role there steers ops). */
   const roleOn = (userId: string, project: string | null): Role | null => {
     const u = userById(userId); if (!u || u.banned || !project) return null
     if (isOwner(u)) return 'owner'
+    if (isSystemBoard(project)) return null
     const o = orgOf(project); if (!o) return null
     const m = db.query('SELECT role FROM member WHERE organizationId = ? AND userId = ?').get(o.id, userId) as { role: string } | null
     return m && ROLES.includes(m.role as Role) ? (m.role as Role) : null
@@ -613,6 +621,8 @@ export async function gateway() {
       if (!usr) return json({ error: `no user ${name} (mm user add ${name})` }, 404)
       if (isOwner(usr)) return json({ error: `${name} is the owner (every project already)` }, 400)
       if (!PROJECT.test(project)) return json({ error: 'a project id (mm ls)' }, 400)
+      // the system board: owner only, ever (sy-qq61). Any role there can steer ops, which reaches the whole machine.
+      if (isSystemBoard(project)) { log('warn', 'grant refused: the system board', { name, project, by: String(b.by || 'cli') }); return json({ error: `${project} is the system board: only the owner works there (any role on it can steer ops, which reaches the whole machine)` }, 403) }
       let org = orgOf(project)
       if (!org) { // the project's organization, made on the first grant, owned by the owner
         const own = db.query("SELECT id FROM user WHERE role = 'admin'").get() as { id: string } | null
