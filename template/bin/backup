@@ -19,7 +19,9 @@ PROJECT=$(sed -n 's/^project:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p' "$P/.mm-ans
 BK=$(sed -n 's/.*"backups": *"\([^"]*\)".*/\1/p' "$P/.run/endpoints.json" 2>/dev/null | head -1); BK=${BK:-${MM_BACKUPS:-$HOME/.local/share/backups}}
 ROOT=${BACKUP_DIR:-$BK/$NAME}
 D=$ROOT/$(date -u +%Y-%m-%dT%H%MZ)
-mkdir -p "$D"; chmod 700 "$ROOT"
+# the host's backup root is the owner's, so it can be made 0700; a box's staging folder (BACKUP_DIR) is the host's, and
+# the box may not change it (what the box writes in it is 0700/0600 already, and mm takes it back before it lands)
+mkdir -p "$D"; chmod 700 "$ROOT" 2>/dev/null || [ -n "${BACKUP_DIR:-}" ]
 # Dolt's TCP port: where the process manager runs it (.run/services.json), else bd's own config
 PORT=$(sed -n 's/.*"dolt_port": *\([0-9]*\).*/\1/p' "$P/.run/services.json" 2>/dev/null | head -1)
 [ -n "$PORT" ] || PORT=$(sed -n 's/^ *port: *\([0-9]*\).*/\1/p' "$P/control/.beads/dolt-server-config.yaml" | head -1)

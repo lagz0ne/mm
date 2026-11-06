@@ -5,6 +5,7 @@
 // Shell engine scripts trace themselves with one line at the top:
 //   [ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$0")/trace" <name> -- "$0" "$@"
 import { spawn } from 'node:child_process'
+import fs from 'node:fs'
 import { cli, current } from './lib/obs.mjs'
 
 const argv = process.argv.slice(2), i = argv.indexOf('--')
@@ -20,10 +21,17 @@ child.on('error', (e) => { span.set('error', e.message); process.exit(127) })
 // bd's answers to its caller, not failures of the board: a guarded update that lost (exit 13), an item that can't be
 // claimed or closed, an id that isn't there. Anything else (Dolt down, a crash) stays a failure.
 const BD_REFUSED = /issue not claimable|already claimed|cannot close blocked issue|no issues found matching|issue [a-z]+-[a-z0-9.]+ not found|precondition failed/i
-const refusedBy = (code) => name.startsWith('bd') && (code === 13 || (code === 1 && BD_REFUSED.test(tail)))
+// land's answers to its caller (sy-4dg8): a branch it won't take (uncommitted changes, a conflict with main, its check
+// said no, a bad or missing worktree). A busy lock or anything else stays a failure.
+const LAND_REFUSED = /^land: (bad name|no worktree |.+ has uncommitted changes|code\/ has local edits|.+ conflicts with main|.+ refused by ops\/land-check)/m
+const refusedBy = (code) => (name.startsWith('bd') && (code === 13 || (code === 1 && BD_REFUSED.test(tail))))
+  || (name.startsWith('land') && (code === 1 || code === 2) && LAND_REFUSED.test(tail))
+// exit 141 (128 + SIGPIPE) with our stdout a pipe: the reader stopped reading (`deploy status | head`), not a failure
+let pipeOut = false; try { pipeOut = fs.fstatSync(1).isFIFO() } catch {}
 child.on('close', (code, sig) => {
   if ((code || sig) && tail) span.set('stderr_tail', tail)
   if (sig) span.set('signal', sig)
   if (!sig && code && refusedBy(code)) span.refused = true
+  if (code === 141 && pipeOut) span.readerClosed = true
   process.exit(code ?? 128)
 })

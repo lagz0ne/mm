@@ -27,7 +27,7 @@ for _ in $(seq 1 50); do [ -s "$T/spans.port" ] && break; sleep 0.1; done
 export MM_OBS_TRACES="http://127.0.0.1:$(cat "$T/spans.port")/v1/traces" MM_OBS_METRICS=
 
 # one run: name, exit code, stderr; then the last ops.log line and the collected span
-run() { : > "$T/spans"; "$T/bin/trace" "$1" -- "$T/fake-bd" "$2" "$3" 2>/dev/null; echo $? > "$T/code"; tail -1 "$T/.run/logs/ops.log" > "$T/last"; }
+run() { : > "$T/spans"; "$T/bin/trace" "$1" -- "$T/fake-bd" "$2" "$3" >"$T/stdout" 2>/dev/null; echo $? > "$T/code"; tail -1 "$T/.run/logs/ops.log" > "$T/last"; }  # stdout a file, not a pipe
 refused() { jq -e '.level == "warn" and .outcome == "refused"' "$T/last" && ! grep -q '"code":2' "$T/spans" && [ "$(cat "$T/code")" = "$1" ]; }
 failed() { jq -e '.level == "error" and (.outcome == null)' "$T/last" && grep -q '"code":2' "$T/spans" && [ "$(cat "$T/code")" = "$1" ]; }
 
@@ -49,5 +49,22 @@ run "deploy" 13 "issue not claimable"
 check "not bd: the same text and exit 13 are still a failure" failed 13
 run "bd ready" 0 ""
 check "a good run: info, done" jq -e '.level == "info"' "$T/last"
+
+echo "== land's answers to its caller (sy-4dg8): refused, not failed"
+run "land" 1 "land: w-pg-1 refused by ops/land-check (fix it on the branch, then land again)"
+check "its check said no: refused, exit 1 kept" refused 1
+run "land" 1 "land: w-pg-1 conflicts with main; rebase and resolve in the worktree, then land again"
+check "a conflict with main: refused" refused 1
+run "land" 1 "land: w-pg-1 has uncommitted changes; commit first"
+check "uncommitted changes: refused" refused 1
+run "land" 2 "land: no worktree w-pg-9"
+check "no such worktree (exit 2): refused" refused 2
+run "land" 1 "land: lock busy for 120s"
+check "...but a busy lock stays a failure" failed 1
+echo "== exit 141 (SIGPIPE): the reader closed the pipe"
+: > "$T/spans"; "$T/bin/trace" "deploy" -- "$T/fake-bd" 141 "" 2>/dev/null | true; tail -1 "$T/.run/logs/ops.log" > "$T/last"
+check "piped (deploy status | head): info, outcome reader-closed, the span not failed" sh -c "jq -e '.level == \"info\" and .outcome == \"reader-closed\"' '$T/last' && ! grep -q '\"code\":2' '$T/spans'"
+run "deploy" 141 ""
+check "...not piped: exit 141 is still a failure" failed 141
 
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]
