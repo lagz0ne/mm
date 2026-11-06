@@ -12,7 +12,7 @@ import { AI_PORT, aiEnabled, aiSocket, mintKey, revokeKeys, store as aiStore } f
 import { mkdtempSync, rmSync } from 'node:fs'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, HOME, run, which } from './env'
-import { BOX_READONLY, BOXES, boxHook, gitRefusal, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, resolve, routeUp, sealEngine, serviceProcess, up as projectUp, writeRunFiles } from './project'
+import { BOX_READONLY, BOXES, boxHook, gitRefusal, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, up as projectUp, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
 import paseoJoinScript from '../box/paseo-join.mjs' with { type: 'text' }
@@ -392,6 +392,8 @@ export function on(root: string): Step[] {
   if (!l.ok) return steps
   // the engine as the host has it now (the host's own files): what the host may run of it later (review sy-b15.6)
   sealEngine(root); steps.push({ step: 'engine', status: 'ok', detail: 'bin/ and site/ sealed on the host' })
+  // ...and the mm-template commit (the base of every later mm update), from the host's own repo (review sy-055t)
+  recordTemplate(root); steps.push({ step: 'template base', status: 'ok', detail: recordedTemplate(a.project) ? `mm-template ${recordedTemplate(a.project).slice(0, 12)} recorded on the host` : 'no mm-template branch to record (mm update refuses until it has one)' })
   steps.push(setBox(root, true), ...up(root))
   return steps
 }

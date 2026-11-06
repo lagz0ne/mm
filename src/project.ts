@@ -128,6 +128,7 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
   // the pure render is main's first commit and the mm-template branch: the base for every later `mm update`
   const base = templateCommit(root, vars, `template ${t.version}`, undefined, t)
   must('template baseline', git(['reset', '-q', base])); git(['branch', 'mm-template', base])
+  if (answers.box) recordTemplate(root, base) // the update's merge base, on the host (review sy-055t)
   if (product) { // the product repo (code/); the system profile has none: its leads work on the machine's own repos
     mkdirSync(join(root, 'code'), { recursive: true })
     const code = join(root, 'code')
@@ -372,6 +373,22 @@ export function sealEngine(root: string) {
   const a = readAnswers(root), f = sealFile(a.project)
   mkdirSync(dirname(f), { recursive: true, mode: 0o755 })
   writeFileSync(f, JSON.stringify({ sealed: new Date().toISOString(), template: a.template_version, files: engineOnDisk(root) }, null, 2))
+}
+/** Where mm keeps the mm-template commit it last put in a box project's config repo (review sy-055t): next to the
+ *  engine's seal, in a folder the box never sees. The box can write the branch; mm update merges from this commit. */
+export const templateRecFile = (project: string) => join(DIRS.mm, 'box', project, 'template.json')
+export function recordedTemplate(project: string): string {
+  try { const c = String(JSON.parse(readFileSync(templateRecFile(project), 'utf8')).commit || ''); return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(c) ? c : '' } catch { return '' }
+}
+/** Each time mm itself moves mm-template on a box project (mm new --box, mm box on, a checked update): that commit, on
+ *  the host. With no commit given, the branch as it is now (mm box on: the host's own repo until then). */
+export function recordTemplate(root: string, commit?: string) {
+  const a = readAnswers(root)
+  const c = commit ?? run(['git', '-C', root, 'rev-parse', '-q', '--verify', 'refs/heads/mm-template^{commit}'], { env: hostGitEnv(root) }).out.trim()
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(c)) return
+  const f = templateRecFile(a.project)
+  mkdirSync(dirname(f), { recursive: true, mode: 0o755 })
+  writeFileSync(f, JSON.stringify({ commit: c, recorded: new Date().toISOString() }, null, 2))
 }
 /**
  * A box project's history against its read-only files: HEAD must hold exactly what is on disk there. The box can't

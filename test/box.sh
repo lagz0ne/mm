@@ -144,6 +144,24 @@ check "the box's bin/config-check on disk: mm update refuses to run it, and says
 check "...mm doctor doesn't run the box's bin/ either" sh -c "mm doctor >/tmp/box-doctor.out 2>&1; grep -q 'not checked' /tmp/box-doctor.out && ! test -e '$PWN'"
 git -C "$ROOT" update-index --no-assume-unchanged bin/config-check; git -C "$ROOT" reset -q --hard "$ORIG"
 check "...back to mm's: mm update works again" sh -c "mm update '$REF' >/tmp/box-upd3.out 2>&1 || { cat /tmp/box-upd3.out; false; }"
+
+echo "== the update's merge base is mm's, not the box's (review sy-055t)"
+MT=$(git -C "$ROOT" rev-parse refs/heads/mm-template); MAIN=$(git -C "$ROOT" rev-parse HEAD)
+check "mm recorded the mm-template commit on the host, out of the box's sight" sh -c "[ \"\$(jq -r .commit '$HD/template.json')\" = '$MT' ] && ! IN 'test -e $HD/template.json'"
+# the box makes its own "template" commit (main's tree: every project line would look like the template's) on top of
+# mm's, and points mm-template at it
+IN "cd $ROOT && G='git -c safe.directory=*' && export GIT_AUTHOR_NAME=box GIT_AUTHOR_EMAIL=box@box GIT_COMMITTER_NAME=box GIT_COMMITTER_EMAIL=box@box && c=\$(\$G commit-tree HEAD^{tree} -p $MT -m 'template 0.0.0') && \$G update-ref refs/heads/mm-template \$c" >/tmp/box-mt-evil.out 2>&1
+check "(the box moved mm-template)" sh -c "[ \"\$(git -C '$ROOT' rev-parse refs/heads/mm-template)\" != '$MT' ]"
+check "mm update: refused, mm-template is not the commit mm recorded, and it says why" sh -c "! mm update '$REF' >/tmp/box-mt.out 2>&1 && grep -q 'mm-template is' /tmp/box-mt.out && grep -q 'sy-055t' /tmp/box-mt.out"
+check "...mm update --dry-run too" sh -c "! mm update '$REF' --dry-run >/tmp/box-mt.out 2>&1 && grep -q 'sy-055t' /tmp/box-mt.out"
+IN "git -c safe.directory='*' -C $ROOT update-ref refs/heads/mm-template $MT" >/dev/null 2>&1
+check "...put back: mm update works" sh -c "mm update '$REF' >/tmp/box-mt2.out 2>&1 || { cat /tmp/box-mt2.out; false; }"
+# the box leaves mm-template alone and rewrites main without it (the same tree: what is on disk), so git would take
+# another base
+IN "cd $ROOT && G='git -c safe.directory=*' && export GIT_AUTHOR_NAME=box GIT_AUTHOR_EMAIL=box@box GIT_COMMITTER_NAME=box GIT_COMMITTER_EMAIL=box@box && c=\$(\$G commit-tree HEAD^{tree} -m 'main, without mm-template') && \$G update-ref refs/heads/main \$c" >/tmp/box-mt-evil.out 2>&1
+check "mm update: refused, the recorded mm-template is not in main's history, and it says why" sh -c "! mm update '$REF' >/tmp/box-mt3.out 2>&1 && grep -q \"not in main's history\" /tmp/box-mt3.out"
+IN "git -c safe.directory='*' -C $ROOT update-ref refs/heads/main $MAIN" >/dev/null 2>&1
+check "...main back: mm update works" sh -c "mm update '$REF' >/tmp/box-mt4.out 2>&1 || { cat /tmp/box-mt4.out; false; }"
 rm -f "$PWN"
 
 echo "== the way out"

@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative } from 'node:path'
 import { canon, DIRS, HOME, run, within } from './env'
-import { BOXES, boxHook, boxish, engineRefusal, gitRefusal, headDrift, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, resolve, routeRm, sealEngine, templateVars, up, writeRunFiles } from './project'
+import { BOXES, boxHook, boxish, engineRefusal, gitRefusal, headDrift, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, resolve, routeRm, sealEngine, templateRecFile, templateVars, up, writeRunFiles } from './project'
 import { template, templateCommit } from './template'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
@@ -68,9 +68,23 @@ export function update(root: string, o: UpdateOpts = {}): UpdateResult {
   if (dirty) return fail('clean tree', `commit or discard local changes first:\n${dirty}`)
 
   const old = git(['rev-parse', '-q', '--verify', 'refs/heads/mm-template']).out.trim()
-  if (!old && !o.adopt) return fail('baseline', 'no mm-template branch (project predates mm update). Adopt once with the template it was made from: MM_TEMPLATE_DIR=<old template> mm update <project> --adopt')
+  // a box project: the merge base is the commit mm recorded on the host when it last moved mm-template, never one the
+  // box put there (it can write the branch, and with its own base it would choose, hunk by hunk, whether a file keeps
+  // the project's version or the template's; review sy-055t)
+  const box = boxish(root), rec = box ? recordedTemplate(a.project) : '', rf = templateRecFile(a.project).replace(HOME, '~')
+  if (box) {
+    if (!old) return fail('baseline', `refused: this box project has no mm-template branch. mm made it, and a box can remove it; mm won't take a new base for a box project (review sy-055t)`)
+    if (rec && old !== rec) return fail('baseline', `refused: refs/heads/mm-template is ${old.slice(0, 12)}, not ${rec.slice(0, 12)} as mm recorded in ${rf} when it last moved it. A box can write that branch, and it is the base of the update's merge (review sy-055t). Put it back: git -C ${root.replace(HOME, '~')} update-ref refs/heads/mm-template ${rec}`)
+    if (!git(['merge-base', '--is-ancestor', old, 'HEAD']).ok) return fail('baseline', `refused: the mm-template commit ${old.slice(0, 12)} is not in main's history, so the merge would take another base (a box can rewrite main's history; review sy-055t)`)
+  }
   const next = templateCommit(root, vars, `template ${t.version}`, old || undefined, t, hostGitEnv(root))
-  if (old && git(['rev-parse', `${old}^{tree}`]).out === git(['rev-parse', `${next}^{tree}`]).out) {
+  const sameTree = !!old && git(['rev-parse', `${old}^{tree}`]).out === git(['rev-parse', `${next}^{tree}`]).out
+  if (box && !rec) { // a box made before mm kept the record: the branch is taken only if it is exactly mm's own render
+    if (!sameTree) return fail('baseline', `refused: mm has no record of this box project's mm-template commit (${rf}), and ${old.slice(0, 12)} is not mm's own render of template ${t.version} for it. Run once with the template it last took (${a.template_version}): MM_TEMPLATE_DIR=<that template> mm update ${a.client}/${a.name}. If the branch is exactly that render, mm records it (review sy-055t)`)
+    if (!o.dryRun) recordTemplate(root, old)
+    steps.push({ step: 'template base', status: 'ok', detail: `mm-template ${old.slice(0, 12)} is mm's render of template ${t.version}: ${o.dryRun ? 'would record it' : `recorded in ${rf}`}` })
+  }
+  if (sameTree) {
     steps.push({ step: 'template', status: 'ok', detail: `already at ${a.template_version === t.version ? t.version : 'the current template'}` })
     res.ok = true; return res
   }
@@ -146,7 +160,8 @@ function finish(root: string, res: UpdateResult): UpdateResult {
   if (!c.ok) return fail('commit', c)
   git(['branch', '-f', 'mm-template', next])
   steps.push({ step: 'commit', status: 'ok', detail: git(['log', '-1', '--format=%h %s']).out.trim() })
-  if (boxish(root)) { rmSync(updRecFile(root), { force: true }); sealEngine(root) } // the checked engine is the new seal
+  // the checked engine is the new seal, and the template commit merged is the next update's base (review sy-055t)
+  if (boxish(root)) { rmSync(updRecFile(root), { force: true }); sealEngine(root); recordTemplate(root, next) }
 
   // apply: reload the service definitions, then restart what runs changed code (services.yaml changes restart via reload)
   steps.push(...up(root))
