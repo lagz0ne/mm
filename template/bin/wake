@@ -21,10 +21,12 @@
 // Person runs (sy-q8fv; see personRuns() below): a run made for one person on their own Claude token (mm run-as) that
 // the Paseo daemon held before it restarted is archived, and wake, when `wake.person_runs` is on, starts each lead as one
 // person: item work as the item's requester, upkeep as the project's sponsor (WAKE_PERSON_RUNS=1|0 overrides; WAKE_MM:
-// the mm to run, default `mm`).
+// the mm to run, default `mm`). In a box, the host decides and starts them (sy-9618): wake asks on the box's own mm.api
+// socket (WAKE_DISPATCH_SOCK, default /run/mm/api/api.sock).
 import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/obs.mjs'
 import * as P_ from './lib/paseo.mjs'
 import { places, total as placesTotal, workersOf } from './lib/places.mjs'
+import http from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -397,8 +399,9 @@ function editState(fn) {
   try { const st = (() => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return {} } })(); fn(st); fs.writeFileSync(`${f}.tmp`, JSON.stringify(st)); fs.renameSync(`${f}.tmp`, f) } catch {}
 }
 const readState = () => { try { return JSON.parse(fs.readFileSync(path.join(P, '.wake-state.json'), 'utf8')) } catch { return {} } }
-// a person's run (sy-q8fv): mm run-as <person> (their own token, from the vault), with only their items in progress
-const leadStart = (role, next, person = null, own = []) => new Promise((ok, no) => execFile(...(person ? [MM, ['run-as', person, PROJECT, role]] : [path.join(P, 'bin', 'lead'), ['start', role]]),
+// a person's run (sy-q8fv): mm run-as <person> (their own token, from the vault), with only their items in progress; in
+// a box, the host starts it (askHost, sy-9618)
+const leadStart = (role, next, person = null, own = []) => (person && BOXED) ? askHost(role, person, own, next) : new Promise((ok, no) => execFile(...(person ? [MM, ['run-as', person, PROJECT, role]] : [path.join(P, 'bin', 'lead'), ['start', role]]),
   { cwd: P, timeout: 180000, env: { ...process.env, LEAD_NEXT: next.map((i) => `- ${i.id} (P${i.priority ?? '?'}): ${clip(i.title, 100)}`).join('\n'), ...(person ? { LEAD_ITEMS: own.join(' ') } : {}) } },
   (e, out, err) => (e ? no(new Error(String(err || e.message).trim().split('\n').filter((l) => !/^(archived |mm run-as: \S+ is the owner)/.test(l)).join(' ').slice(0, 400) || e.message)) : ok(out))))
 
@@ -567,12 +570,52 @@ async function keptBack(role, a, b) {
 // on the item once, tries again later (the backoff), and starts the other people's work meanwhile. A lead that holds one
 // person's run, idle, while only another person's work waits, is archived and the other one started (at most once per
 // WAKE_RESUME_MS per role). A plain lead (no person label: the daemon's token, the owner's) counts as the sponsor's. A
-// kept role (the owner's contact) gets everything, as before: the owner chose it. Only on the host: a box's wake can't
-// reach mm or the vault, so its leads stay as they are (the box's runs on a person's token come from mm run-as).
+// kept role (the owner's contact) gets everything, as before: the owner chose it.
+// In a box (sy-9618): its wake can't reach mm or the vault, so it asks the host, on the box's own mm.api socket (the one
+// way a box has to the host; src/boxruns.ts). The host says whether person runs are on (wake.person_runs, the machine's)
+// and who the sponsor is (lookHost(), each reconcile pass), and starts each run (askHost()) with the same rules as mm
+// run-as: a role on the project, the person's own token (none: no run, and the same words for the item), never the
+// owner's instead. The host unreachable: wake keeps what the host said last (no plain lead for a person's work).
 const BOXED = (() => { try { return /^box:[ \t]*true\b/m.test(fs.readFileSync(path.join(P, '.mm-answers.yaml'), 'utf8')) } catch { return false } })()
 const MM = process.env.WAKE_MM || 'mm'
+const HOST_SOCK = process.env.WAKE_DISPATCH_SOCK || '/run/mm/api/api.sock'
+const hostSays = { on: false, sponsor: '', said: '' }
+/** One call on the box's socket: { code, body } (the host's JSON answer). */
+const hostCall = (method, body, timeout) => new Promise((ok, no) => {
+  const r = http.request({ socketPath: HOST_SOCK, path: '/person-run', method, headers: { 'content-type': 'application/json' }, timeout }, (res) => {
+    let s = ''; res.setEncoding('utf8'); res.on('data', (d) => (s += d)); res.on('end', () => { let j = {}; try { j = JSON.parse(s) || {} } catch {} ok({ code: res.statusCode, body: j }) })
+  })
+  r.on('timeout', () => r.destroy(new Error(`no answer in ${Math.round(timeout / 1000)} s`))); r.on('error', no)
+  r.end(body ? JSON.stringify(body) : undefined)
+})
+async function lookHost() {
+  if (!BOXED) return
+  let on = hostSays.on, said
+  if (process.env.WAKE_PERSON_RUNS === '0') { on = false; said = 'off here (WAKE_PERSON_RUNS=0)' }
+  else if (!fs.existsSync(HOST_SOCK)) { on = false; said = `off: no host socket (${HOST_SOCK})` }
+  else {
+    try {
+      const r = await hostCall('GET', null, 10000)
+      if (r.body.status === 'on' || r.body.status === 'off') {
+        on = r.body.status === 'on'; hostSays.sponsor = /^[a-z][a-z0-9._-]{1,31}$/.test(r.body.sponsor || '') ? r.body.sponsor : ''
+        said = on ? `on: the host starts them${hostSays.sponsor ? ` (the sponsor: ${hostSays.sponsor})` : ''}` : 'off on the host (wake.person_runs)'
+      } else said = `the host's answer was ${r.code} (kept: ${on ? 'on' : 'off'})`
+    } catch (e) { said = `the host's socket did not answer (kept: ${on ? 'on' : 'off'}): ${e.message}` }
+  }
+  hostSays.on = on
+  if (said !== hostSays.said) { hostSays.said = said; log(`person runs in this box: ${said}`) }
+}
+/** A person's run in a box, started by the host: resolves to its agent id; refused: an Error with the host's words. */
+async function askHost(role, person, own, next) {
+  const body = { role, person, items: own.slice(0, 40),
+    next: next.slice(0, 10).map((i) => ({ id: i.id, priority: Number.isInteger(i.priority) ? i.priority : null, title: clip(i.title, 80) })) }
+  let r
+  try { r = await hostCall('POST', body, 300000) } catch (e) { throw new Error(`the host's socket did not answer: ${e.message}`) }
+  if (r.body.status === 'done' && r.body.agent) return String(r.body.agent)
+  throw new Error(clip(String(r.body.message || r.body.why || `the host answered ${r.code}`), 400))
+}
 function personRuns() {
-  if (BOXED) return false
+  if (BOXED) return hostSays.on
   if (process.env.WAKE_PERSON_RUNS !== undefined) return process.env.WAKE_PERSON_RUNS === '1'
   return /^wake:[ \t]*\n(?:[ \t]+.*\n)*?[ \t]+person_runs:[ \t]*["']?(true|on|yes)\b/m.test(machineConfig())
 }
@@ -583,8 +626,8 @@ function remember(e) {
   if (e.op === 'create' && e.actor && !creators.has(e.issue_id)) creators.set(e.issue_id, e.actor)
   if (e.op === 'comment' && e.comment && isHuman(e.comment.author) && !askers.has(e.issue_id)) askers.set(e.issue_id, e.comment.author)
 }
-const sponsor = () => ownerName()
-const asPerson = (actor) => (actor === 'bridge' ? ownerName() : actor)
+const sponsor = () => (BOXED && hostSays.sponsor) || ownerName() // a box can't read the machine's config: the host says
+const asPerson = (actor) => (actor === 'bridge' ? sponsor() : actor)
 /** The person an item's work is for, or null (nobody asked: upkeep). */
 function requester(id) {
   const c = creators.get(id)
@@ -773,6 +816,7 @@ async function reconcile1() {
   loadRoles()
   const b = await board(true)
   workersDone(b)
+  await lookHost()
   try { await tidyPersonRuns() } catch (e) { log('person runs: tidy failed:', e.message) }
   const agents = {}
   for (const role of ROLES) {
