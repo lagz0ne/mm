@@ -88,8 +88,9 @@ const srv = http.createServer(async (req, res) => {
   let m
   if (fs.existsSync(path.join(T, 'bd.fail'))) return json({ error: 'down' }, 503)
   if (req.method === 'GET' && u.pathname === '/v0/beads/issues') {
-    const label = u.searchParams.get('label')
-    return json({ items: [...items.values()].filter((i) => !label || i.labels.includes(label)).map(snap), has_more: false })
+    // as bd serve does: closed items are left out unless a status asks for them (sy-7xq0)
+    const label = u.searchParams.get('label'), status = u.searchParams.get('status')?.split(',')
+    return json({ items: [...items.values()].filter((i) => (!label || i.labels.includes(label)) && (status ? status.includes(i.status) : i.status !== 'closed')).map(snap), has_more: false })
   }
   if (req.method === 'GET' && u.pathname === '/v0/beads/ready') return json({ items: [...items.values()].filter((i) => i.status === 'open').map(snap) })
   if (req.method === 'GET' && u.pathname === '/v0/beads/events') {
@@ -256,10 +257,11 @@ step('run 9c (+86 min): t2 items that go ahead without the approver\'s approved 
 fs.mkdirSync(path.join(SYS, '.run'), { recursive: true }); fs.writeFileSync(path.join(SYS, '.run/endpoints.json'), JSON.stringify({ owner_name: 'alex', services: {} }))
 const BRAIN = ENV.MM_BRAIN, MIGS = path.join(BRAIN, 'migrations'), DONE = path.join(ENV.BRAIN_STATE, 'migrations')
 fs.mkdirSync(MIGS, { recursive: true }); fs.mkdirSync(DONE, { recursive: true })
-const migration = (name, summary, applied, tier = 2) => {
-  fs.writeFileSync(path.join(MIGS, `${name}.sh`), `# brain:summary=${summary}\n${tier ? `# brain:tier=${tier}\n` : ''}true\n`)
-  fs.writeFileSync(path.join(MIGS, `${name}.rollback.sh`), `# brain:summary=undo (${summary})\ntrue\n`)
-  if (applied) fs.writeFileSync(path.join(DONE, `${name}.sh`), `${iso(clock)} abc1234\n`)
+// tier: the header's (0: no tier line); body/rollback: the scripts' commands; mark: the tier bin/brain wrote in the state mark
+const migration = (name, summary, applied, tier = 2, { body = 'true', rollback = 'true', mark } = {}) => {
+  fs.writeFileSync(path.join(MIGS, `${name}.sh`), `# brain:summary=${summary}\n${tier ? `# brain:tier=${tier}\n` : ''}${body}\n`)
+  fs.writeFileSync(path.join(MIGS, `${name}.rollback.sh`), `# brain:summary=undo (${summary})\n${rollback}\n`)
+  if (applied) fs.writeFileSync(path.join(DONE, `${name}.sh`), `${iso(clock)} abc1234${mark ? ` tier=${mark}` : ''}\n`)
 }
 clock = T0 + 86 * MIN
 item('sy-11', { title: 't2 claimed, no approval', priority: 2, assignee: 'ops', labels: ['t2', 'signed-off'] })
@@ -305,6 +307,59 @@ update('sy-18', { labels: ['t2', 'signed-off'] }, 'ops'); update('sy-18', { labe
 clock = T0 + 96 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('approved removed, then set by the bridge: cleared', openKeys() === DIRTY)
+
+step('run 9e (+101 min): the tier bin/brain applied, not the header (sy-7xq0 point 1)')
+clock = T0 + 101 * MIN
+item('sy-21', { title: 't2, a tier-1 header that writes /etc/', priority: 2, assignee: 'ops', labels: ['t2'] })
+migration('1800000006-wrap', 'wrapper policy (sy-21)', true, 1, { body: 'install -m 644 policy /etc/mm-docker.conf' })
+item('sy-22', { title: 't2, a tier-1 header whose rollback writes /usr/local/', priority: 2, assignee: 'ops', labels: ['t2'] })
+migration('1800000007-bin', 'a tool (sy-22)', true, 1, { rollback: 'rm -f /usr/local/bin/tool' })
+item('sy-23', { title: 't2, a tier-1 header, /etc/ only in a comment', priority: 2, assignee: 'ops', labels: ['t2'] })
+migration('1800000008-doc', 'a note (sy-23)', true, 1, { body: '# nothing under /etc/ here\ntrue' })
+item('sy-24', { title: 't2, a tier-1 header, the mark says tier 2', priority: 2, assignee: 'ops', labels: ['t2'] })
+migration('1800000009-guard', 'guarded (sy-24)', true, 1, { mark: 2 })
+item('sy-25', { title: 't2, no tier line, the mark says tier 1', priority: 2, assignee: 'ops', labels: ['t2'] })
+migration('1800000010-small', 'small (sy-25)', true, 0, { mark: 1 })
+ok('exit 0', (await supervise()) === 0)
+ok('open: sy-21 (/etc/ in the script), sy-22 (/usr/local/ in the rollback), sy-24 (mark tier=2); not sy-23 (a comment), sy-25 (mark tier=1)',
+  openKeys() === `${DIRTY} ${T2('sy-21')} ${T2('sy-22')} ${T2('sy-24')}`)
+ok('the finding names the tier it read', /tier-2 migration 1800000006-wrap\.sh/.test(openOf(T2('sy-21'))?.description || ''))
+for (const id of ['sy-21', 'sy-22', 'sy-24']) update(id, { labels: ['t2', 'approved'] }, 'bridge')
+clock = T0 + 106 * MIN
+await supervise()
+ok('approved by the bridge: cleared', openKeys() === DIRTY)
+
+step('run 9f (+111 min): an item a tier-2 migration names is t2 without the label; taking t2 off is reported (sy-7xq0 point 2)')
+clock = T0 + 111 * MIN
+item('sy-26', { title: 'no t2 label, a tier-2 migration names it', priority: 2, assignee: 'ops', labels: ['t1'] })
+migration('1800000011-bridge', 'bridge v2 (sy-26)', true)
+item('sy-27', { title: 'labelled t2, then a lead takes it off', priority: 2, assignee: 'ops', labels: ['t2'] })
+migration('1800000012-probe', 'probe (sy-27)', true)
+update('sy-27', { labels: [] }, 'platform')
+item('sy-29', { title: 'no label, only a tier-1 migration names it', priority: 2, assignee: 'ops' })
+migration('1800000013-tool', 'a tool (sy-29)', true, 1)
+ok('exit 0', (await supervise()) === 0)
+ok('open: sy-26 (no label), sy-27 (label removed); not sy-29 (tier 1)', openKeys() === `${DIRTY} ${T2('sy-26')} ${T2('sy-27')}`)
+ok('sy-26\'s finding says it is not labelled t2', /not labelled t2, but a tier-2 migration names it/.test(openOf(T2('sy-26'))?.description || ''))
+ok('sy-27\'s finding names who took t2 off', /removed by platform/.test(openOf(T2('sy-27'))?.description || '') && /platform removed its t2 label/.test(openOf(T2('sy-27'))?.title || ''))
+
+step('run 9g (+116..131 min): a t2-unapproved finding is never muted by closing it; a closed t2 item stays watched (sy-7xq0 point 3)')
+const F = openOf(T2('sy-26'))
+update(F.id, { status: 'closed' }, 'ops') // a lead closes the finding; sy-26 is still unapproved
+clock = T0 + 116 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('it is back on the next run: a new item, not muted', !!openOf(T2('sy-26')) && openOf(T2('sy-26')).id !== F.id && !JSON.parse(fs.readFileSync(STATE, 'utf8')).muted[T2('sy-26')])
+ok('the new item says the earlier one was closed', /earlier item was closed/.test(openOf(T2('sy-26'))?.description || ''))
+const G = openOf(T2('sy-27'))
+update('sy-27', { status: 'closed' }, 'ops') // the item itself closes before any approval (sy-2c3w): closed items are left out of the board's default list
+clock = T0 + 121 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('the closed item\'s finding stays open (the same item, not cleared)', items.get(G.id).status !== 'closed' && openOf(T2('sy-27'))?.id === G.id)
+fs.rmSync(path.join(DONE, '1800000012-probe.sh')) // rolled back: its state mark is gone
+update('sy-26', { labels: ['t1', 'approved'] }, 'alex')
+clock = T0 + 126 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('rollback clears sy-27, the owner\'s approved clears sy-26', openKeys() === DIRTY && /Cleared/.test(items.get(G.id).comments.at(-1).text))
 
 step('run 10: the board is down: exit non-zero, nothing written')
 fs.writeFileSync(path.join(T, 'bd.fail'), '')

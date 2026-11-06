@@ -7,10 +7,13 @@
 //     handoff:<item>     an item reassigned to a role (`bd update -a <role>`) with no act from that role after 10 min P1
 //     idle:<role>        a lead not working (idle, closed, gone) for 10 min while ready P0 work waits for it   P1
 //     dirty:<worktree>   uncommitted files, none touched for 30 min (git worktrees of the mm repo and of each project) P2
-//     t2-unapproved:<item> an item labelled t2 in progress, or one a brain migration names in its summary and that is
-//                        applied (since this check first ran, when the item is closed), with no `approved` from an
-//                        approver: read from the event journal with its actor, never from the label alone. Clears when
-//                        an approver sets approved, or the item leaves in progress with no applied migration    P1
+//     t2-unapproved:<item> an item labelled t2 in progress, or one (labelled or not) an applied tier-2 brain migration
+//                        names in its summary (since this check first ran, when the item is closed), with no
+//                        `approved` from an approver: read from the event journal with its actor, never from the label
+//                        alone. The tier is the one bin/brain applied (its state mark), else the header, read as 2
+//                        when the migration writes under /etc/ or /usr/local/. It says who took `t2` off such an item.
+//                        Clears when an approver sets approved, or no applied migration names it and it is not in
+//                        progress (with the label). Never muted: closed by hand, it opens again       P1
 //     overcap:<role>     a role with workers holds more places than its capacity (each live worker one, each item in
 //                        progress no worker works on one; +1 while it holds a P0), or, while any role has workers, the
 //                        board more than its cap (overcap:board)                                                    P2
@@ -26,7 +29,7 @@
 // (comma list, tests) overrides both. Config `ignore` never silences a t2-unapproved finding. `approved` counts only
 // from the journal record that added it, with an approver as its actor. A migration is applied when the brain's state
 // has its name (BRAIN_STATE, else $XDG_STATE_HOME/brain, else ~/.local/state/brain: <state>/migrations/<name>).
-// An item someone closes while its finding is still there mutes that finding until it clears.
+// An item someone closes while its finding is still there mutes that finding until it clears (not t2-unapproved).
 // The board is the truth for which items are open (label `supervisor`, line "supervisor key: `<key>`"); .supervisor.json
 // keeps the journal position and a summary per item, notes, mutes, and when leads were seen running or idle.
 // Optional config supervisor.json (this board's root):
@@ -92,13 +95,19 @@ const roleOf = (actor) => ROLES.find((r) => actor === r || String(actor || '').s
 
 // ---------- shared reads (once per run; a check that needs one that failed fails with it) ----------
 const once = (fn) => { let p; return () => (p ||= fn()) }
-const issues = once(async () => { // every item, all pages
-  const all = new Map(); let cursor = ''
-  for (let page = 0; page < 40; page++) {
-    const r = await bd('GET', `/v0/beads/issues?limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)
-    for (const i of r.items || []) all.set(i.id, i)
-    cursor = r.has_more && r.next_cursor ? r.next_cursor : ''
-    if (!cursor) break
+// Every item, all pages, closed ones too: bd serve's list leaves closed items out unless asked (status=closed), and a
+// closed t2 item with an applied migration still needs the owner's approval (sy-7xq0: a t2 item closed before its
+// approval vanished from the check, and its finding cleared)
+const issues = once(async () => {
+  const all = new Map()
+  for (const q of ['', '&status=closed']) {
+    let cursor = ''
+    for (let page = 0; page < 40; page++) {
+      const r = await bd('GET', `/v0/beads/issues?limit=500${q}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)
+      for (const i of r.items || []) all.set(i.id, i)
+      cursor = r.has_more && r.next_cursor ? r.next_cursor : ''
+      if (!cursor) break
+    }
   }
   return [...all.values()]
 })
@@ -121,6 +130,9 @@ const journal = once(async () => {
         const labels = e.issue.labels || [], had = s.lb ? s.lb.includes('approved') : e.op !== 'create' && labels.includes('approved')
         if (labels.includes('approved') && !had) s.ap = { ok: APPROVERS.has(String(e.actor || '')), by: String(e.actor || ''), at: t }
         if (!labels.includes('approved')) delete s.ap
+        // `t2` taken off (sy-7xq0): who and when, kept until it is back (read against the item's applied migrations)
+        if (s.lb?.includes('t2') && !labels.includes('t2')) s.t2off = { by: String(e.actor || ''), at: t }
+        if (labels.includes('t2')) delete s.t2off
         s.lb = labels
       }
       if (who === 'wake' && was.st === 'in_progress' && e.issue?.status === 'open') s.rq = { seq: e.seq, at: t } // a requeue
@@ -274,40 +286,65 @@ async function dirty() {
   return { prefix: 'dirty:', problems }
 }
 
-/** The brain's applied migrations, by the item ids their summary names: { id: [{ name, at }] }. No brain: none. */
-function migrations() {
-  const dir = path.join(dirs().brain, 'migrations'), done = path.join(BRAIN_STATE, 'migrations'), out = {}
-  let names; try { names = fs.readdirSync(dir) } catch (e) { if (e.code === 'ENOENT') return out; throw e }
-  for (const name of names.filter((n) => n.endsWith('.sh') && !n.endsWith('.rollback.sh')).sort()) {
-    let mark; try { mark = fs.readFileSync(path.join(done, name), 'utf8') } catch (e) { if (e.code === 'ENOENT') continue; throw e } // not applied
-    const text = fs.readFileSync(path.join(dir, name), 'utf8')
-    // only a tier-2 migration (or one with no tier line: the safe default, as bin/brain reads it) can be a t2 item's
-    // step; a tier-1 one that names a t2 item only as its reason (podman for sy-puxt) raises nothing (sy-hqa1)
-    if (/^# brain:tier=1\s*$/m.test(text)) continue
-    const summary = /^# brain:summary=(.*)$/m.exec(text)?.[1] || ''
-    const at = Date.parse(mark.trim().split(/\s+/)[0]) || fs.statSync(path.join(done, name)).mtimeMs
-    for (const [id] of summary.matchAll(/\b[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*\b/g)) (out[id] ||= []).push({ name, at })
-  }
-  return out
+// A path a migration may write that only a tier-2 change may touch: the root wrapper's policy and the like (sy-7xq0)
+const ROOT_PATH = /\/(?:etc|usr\/local)(?:\/|\b)/
+/** A migration's tier as bin/brain applied it (sy-7xq0): `tier=N` in its state mark (`<iso> <hash> tier=N`), which
+ * bin/brain writes as the higher of the header and its guard's tier. A mark without it: the header, but a header of 1
+ * counts as 2 when the script or its rollback mentions /etc/ or /usr/local/ on a non-comment line (the header is only
+ * the author's claim; err toward 2). No tier line: 2, as bin/brain reads it. */
+function tierOf(mark, text, rollback) {
+  const m = /(?:^|\s)tier=(\d+)(?:\s|$)/.exec(mark)
+  if (m) return Number(m[1])
+  const h = /^# brain:tier=(\d+)\s*$/m.exec(text)
+  if (!h) return 2
+  const n = Number(h[1])
+  if (n < 2 && [text, rollback].some((s) => s.split('\n').some((l) => !/^\s*#/.test(l) && ROOT_PATH.test(l)))) return 2
+  return n
 }
+/** The brain's applied tier-2 (or higher) migrations, by the item ids their summary names: { id: [{ name, at, tier }] }.
+ * No brain: none. A tier-1 one that names a t2 item only as its reason (podman for sy-puxt) raises nothing (sy-hqa1). */
+const migrations = (() => { let out; return () => (out ||= read()) // once per run
+  function read() {
+    const dir = path.join(dirs().brain, 'migrations'), done = path.join(BRAIN_STATE, 'migrations'), out = {}
+    let names; try { names = fs.readdirSync(dir) } catch (e) { if (e.code === 'ENOENT') return out; throw e }
+    for (const name of names.filter((n) => n.endsWith('.sh') && !n.endsWith('.rollback.sh')).sort()) {
+      let mark; try { mark = fs.readFileSync(path.join(done, name), 'utf8') } catch (e) { if (e.code === 'ENOENT') continue; throw e } // not applied
+      const text = fs.readFileSync(path.join(dir, name), 'utf8')
+      let rollback = ''; try { rollback = fs.readFileSync(path.join(dir, name.replace(/\.sh$/, '.rollback.sh')), 'utf8') } catch {}
+      const tier = tierOf(mark.trim(), text, rollback)
+      if (tier < 2) continue
+      const summary = /^# brain:summary=(.*)$/m.exec(text)?.[1] || ''
+      const at = Date.parse(mark.trim().split(/\s+/)[0]) || fs.statSync(path.join(done, name)).mtimeMs
+      for (const [id] of summary.matchAll(/\b[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*\b/g)) (out[id] ||= []).push({ name, at, tier })
+    }
+    return out
+  }
+})()
+// An item is t2 for this check when it has the `t2` label, or an applied tier-2 migration names it (sy-7xq0: the label
+// is any lead's to set or remove; the migration is what ran). Its finding clears only on an approver's approved, or
+// when no applied migration names it any more (rolled back: its state mark is gone) and it is not in progress.
 async function t2() {
   const [all, sum] = await Promise.all([issues(), journal()])
   const mig = migrations(), problems = []
   for (const i of all) {
-    if (mine(i) || !(i.labels || []).includes('t2')) continue
+    const labelled = (i.labels || []).includes('t2')
+    if (mine(i) || (!labelled && !mig[i.id])) continue
     const ap = sum[i.id]?.ap
     if (ap?.ok) continue
     const applied = (mig[i.id] || []).filter((m) => i.status !== 'closed' || m.at >= state.t2since)
-    const going = i.status === 'in_progress'
+    const going = labelled && i.status === 'in_progress'
     if (!going && !applied.length) continue
-    const what = [...(going ? ['it is in progress'] : []), ...applied.map((m) => `its migration ${m.name} is applied (${at(m.at)})`)]
+    const off = !labelled && sum[i.id]?.t2off
+    const what = [...(going ? ['it is in progress'] : []), ...applied.map((m) => `its tier-${m.tier} migration ${m.name} is applied (${at(m.at)})`),
+      ...(off ? [`its t2 label was removed by ${off.by || 'an unknown actor'} at ${at(off.at)}`] : [])]
     const label = ap ? `approved was added by ${ap.by || 'an unknown actor'} at ${at(ap.at)}, who is not an approver` : 'no approved from an approver'
-    problems.push({ key: `t2-unapproved:${i.id}`, priority: 1, title: `Unapproved t2: ${i.id} (${i.assignee || 'nobody'}) ${applied.length ? 'has an applied migration' : 'is in progress'} without the owner's approval`,
+    problems.push({ key: `t2-unapproved:${i.id}`, priority: 1, title: `Unapproved t2: ${i.id} (${i.assignee || 'nobody'}) ${applied.length ? 'has an applied migration' : 'is in progress'} without the owner's approval${off ? `; ${off.by || 'someone'} removed its t2 label` : ''}`,
       note: `${i.status}; ${what.join('; ')}; ${label}`,
-      body: `**${i.id}** "${i.title}" is labelled t2, and ${what.join(', and ')}. The board's journal has ${label} on it ` +
+      body: `**${i.id}** "${i.title}" is ${labelled ? 'labelled t2' : 'not labelled t2, but a tier-2 migration names it'}, and ${what.join(', and ')}. The board's journal has ${label} on it ` +
         `(approvers: ${[...APPROVERS].join(', ') || 'none'}; a label added by anyone else does not count).\n\n` +
         `A t2 change runs only after the owner's approval. Find out what ran without it, and stop or roll it back, or get the owner's approval. ` +
-        `This item closes itself when an approver sets approved on ${i.id}, or ${i.id} leaves in progress with no applied migration.` })
+        `This item closes itself when an approver sets approved on ${i.id}, or no migration naming it is applied any more (rolled back) and it is not in progress. ` +
+        `Closing it by hand does not silence it: it opens again on the next run.` })
   }
   return { prefix: 't2-unapproved:', problems }
 }
@@ -360,10 +397,15 @@ for (const src of results) {
       }
       continue
     }
-    if (state.muted[p.key]) continue
-    if (state.notes[p.key] !== undefined) { state.muted[p.key] = now; console.log(`${p.key}: closed by someone while still there; quiet until it clears`); continue }
+    // closed by someone while still there: quiet until it clears; but never an unapproved t2 change (sy-7xq0): only an
+    // approver's approved or a rollback ends that one, so it opens again, and says it was closed
+    const unmutable = p.key.startsWith('t2-unapproved:'), again = state.notes[p.key] !== undefined
+    if (unmutable) delete state.muted[p.key]
+    else if (state.muted[p.key]) continue
+    else if (again) { state.muted[p.key] = now; console.log(`${p.key}: closed by someone while still there; quiet until it clears`); continue }
     const r = await bd('POST', '/v0/beads/issues', { title: p.title.slice(0, 200), issue_type: 'task', priority: p.priority, assignee: ASSIGNEE, labels: ['supervisor'],
-      actor: ACTOR, owner: ACTOR, description: `${p.body}\n\nsupervisor key: \`${p.key}\`` })
+      actor: ACTOR, owner: ACTOR, description: `${p.body}${again ? '\n\nIts earlier item was closed while the finding was still there; a closed item does not end this finding.' : ''}\n\nsupervisor key: \`${p.key}\`` })
+    if (again && r.id) console.log(`${p.key}: closed by someone while still there; opened again`)
     if (r.id) { state.notes[p.key] = p.note; opened++; console.log(`${p.key}: opened ${r.id}`) }
   } catch (e) { keyFailed++; console.error(`${p.key}: its item could not be opened or updated (tried again next run): ${e.message}`) }
   // gone, from a check that ran fine: close it
@@ -385,8 +427,12 @@ for (const src of results) {
 
 // forget what can no longer matter: items closed on the board, lead sightings older than any window
 const known = new Map((await issues().catch(() => [])).map((i) => [i.id, i.status]))
-// (a closed t2 item keeps its summary: who set approved still matters for its migrations)
-if (known.size) for (const id of Object.keys(state.items)) if (!known.has(id) || (known.get(id) === 'closed' && !(state.items[id].lb || []).includes('t2'))) delete state.items[id]
+// (a closed t2 item, or one a migration names, keeps its summary: who set approved, or took t2 off, still matters)
+const named = (() => { try { return migrations() } catch { return null } })()
+if (known.size) for (const id of Object.keys(state.items)) {
+  const s = state.items[id], keep = (s.lb || []).includes('t2') || s.t2off || !named || named[id]
+  if (!known.has(id) || (known.get(id) === 'closed' && !keep)) delete state.items[id]
+}
 for (const [r, t] of Object.entries(state.running)) if (NOW - t > 24 * 3600e3) delete state.running[r]
 fs.writeFileSync(STATE, JSON.stringify(state, null, 1))
 // a failed check is on the board (supervisor:<check>); exit 0 so it is not reported twice
