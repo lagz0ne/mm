@@ -99,8 +99,8 @@ check "hook: a secret key can't be committed in the checkout" hooked vault/x.age
 check "control: the hook lets an allowlisted file through" bash -c "cd '$CK' && echo x >>README.md && git commit -qam ok && git reset -q --hard HEAD~1"
 
 echo "== a box project: the host's record (sy-b15.19)"
-# a docker stand-in: `exec` runs the box's job here (its staging folder is the host's); `run --rm` (mm's chown helper)
-# does nothing. The box can't write its privilege files, only its repo's history.
+# a docker stand-in: `exec` runs the box's job here (its staging folder is the host's); `run --rm` (giveBack's regroup,
+# only when a file there is not the owner's) does nothing. The box can't write its privilege files, only its repo's history.
 cat >"$T/fake-docker" <<'EOF'
 #!/bin/bash
 case "$1" in

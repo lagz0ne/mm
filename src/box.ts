@@ -4,7 +4,7 @@
 // project folder is mounted at the same path (so every generated path stays right); the kernel and every file that
 // decides what the box may do are mounted read-only on top (review sy-b15.6). The box's network is `internal`: the
 // only way out is the project's own egress proxy, with its allowlist (the base list + the project's `egress:`).
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { type Stats, chmodSync, constants as fsc, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -54,8 +54,12 @@ function netOf(project: string, net: string): { subnet: string; ip: string } | n
   }
   return null
 }
-/** The box's uid on this machine: 200000 + the third octet of its subnet (unique per box, never a real user's). */
-const boxIds = (subnet: string) => ({ uid: 200000 + Number(subnet.split('.')[2]) })
+/** The box's uid on this machine: 200000 + the third octet of its subnet (unique per box, never a real user's); its
+ *  egress proxy's: 190000 + the same (sy-58fo: the proxy starts as its own uid, never root). */
+const boxIds = (subnet: string) => ({ uid: 200000 + Number(subnet.split('.')[2]), egress: 190000 + Number(subnet.split('.')[2]) })
+/** mm's uids for a project's containers, never a real account's: an egress proxy's (190010-190249), a box's
+ *  (200010-200249), a Doop's (210010-210249). */
+const mmUid = (u: number) => [190000, 200000, 210000].some((b) => u >= b + 10 && u <= b + 249)
 /** The box's Paseo password: made by mm once, kept on the host (0600); the box sees it only in its tmpfs mount. */
 export function paseoPasswordFile(project: string) {
   const d = join(DIRS.mm, 'paseo'); mkdirSync(d, { recursive: true, mode: 0o700 }); chmodSync(d, 0o700)
@@ -267,17 +271,19 @@ export function up(root: string): Step[] {
   // its connection log (every allowed and refused site) into a host folder the shipper reads, stamped with the project
   // by mm, never by the line (sy-b15.1: each connection logged per project)
   const elog = join(hostDir(a.project), 'egress'); mkdirSync(elog, { recursive: true, mode: 0o770 }); chmodSync(elog, 0o770)
-  // the file made here, group-writable: the proxy (root with no capabilities, plus the owner's group) appends to it,
+  // the file made here, group-writable: the proxy (its own uid with the owner's group, no capabilities) appends to it,
   // also after mm box off has given the box's files back to the owner
   const ef = join(elog, 'egress.log')
   try { if (!existsSync(ef)) writeFileSync(ef, '', { mode: 0o660 }); if (statSync(ef).uid === process.getuid?.()) chmodSync(ef, 0o660) } catch {}
-  // the proxy (mm-egress, box/egress/main.go) drops to its own user; it refuses any name that resolves to a non-public
-  // address or to a docker network of this machine (MM_EGRESS_DENY), and connects only to the address it checked
-  const fwd = `while :; do socat TCP-LISTEN:${AI_PORT},bind=${pip},fork,reuseaddr UNIX-CONNECT:/run/mm/ai/ai.sock 2>/dev/null; sleep 1; done & exec setpriv --reuid=egress --regid=egress --clear-groups /usr/local/bin/mm-egress >>/run/mm/log/egress.log 2>&1`
+  // the proxy (mm-egress, box/egress/main.go) and the AI forwarder start as the proxy's own uid (190000 + n, never an
+  // account, never root) with the owner's group, and no capabilities at all (sy-58fo); the proxy refuses any name that
+  // resolves to a non-public address or to a docker network of this machine (MM_EGRESS_DENY), and connects only to the
+  // address it checked
+  const fwd = `while :; do socat TCP-LISTEN:${AI_PORT},bind=${pip},fork,reuseaddr UNIX-CONNECT:/run/mm/ai/ai.sock 2>/dev/null; sleep 1; done & exec /usr/local/bin/mm-egress >>/run/mm/log/egress.log 2>&1`
   const px = docker('run', '-d', '--name', n.proxy, '--label', `mm.project=${a.project}`, '--restart', 'unless-stopped', '--init', '--read-only', '--tmpfs', '/run:size=8m',
-    '--cap-drop', 'ALL', '--cap-add', 'SETUID', '--cap-add', 'SETGID', '--security-opt', 'no-new-privileges', '--pids-limit', '256', '--memory', '256m',
+    '--user', `${boxIds(net.subnet).egress}:${process.getgid?.() ?? 1000}`, '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256', '--memory', '256m',
     '-e', `MM_EGRESS_DENY=${dockerSubnets().join(',')}`,
-    '--group-add', String(process.getgid?.() ?? 1000), '-v', `${join(edir, 'allow')}:/etc/mm/allow:ro`, '-v', `${aiDir}:/run/mm/ai`, '-v', `${elog}:/run/mm/log`, EGRESS_IMAGE(), 'sh', '-c', fwd)
+    '-v', `${join(edir, 'allow')}:/etc/mm/allow:ro`, '-v', `${aiDir}:/run/mm/ai`, '-v', `${elog}:/run/mm/log`, EGRESS_IMAGE(), 'sh', '-c', fwd)
   if (!px.ok) return fail('egress proxy', short(px))
   const cn = docker('network', 'connect', '--ip', pip, n.net, n.proxy); if (!cn.ok) return fail('egress proxy', short(cn))
   steps.push({ step: 'egress proxy', status: 'ok', detail: `${n.proxy}: ${hosts.length} name(s) (${hosts.slice(0, 4).join(', ')}${hosts.length > 4 ? ', …' : ''})` })
@@ -391,20 +397,108 @@ export function down(root: string): Step[] {
   return steps.length ? steps : [{ step: 'down', status: 'skip', detail: 'not running' }]
 }
 
-/** Give the host's owner the files the box made (some are 0600, as their programs make them): before the host packs
- *  or moves the project (mm archive). mm is the only holder of Docker access, so a short-lived root helper does it,
- *  with the project as its only mount. Run only with the box stopped. */
-/** chown -R (no symlinks followed) to the host's owner, by a one-shot root helper with no network. */
-function giveBack(dirs: string[]) {
-  const uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000
-  return docker('run', '--rm', '--network', 'none', '--user', '0:0', '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--cap-add', 'FOWNER', '--cap-add', 'DAC_OVERRIDE',
-    ...dirs.flatMap((d) => ['-v', `${d}:${d}`]), '--entrypoint', 'chown', IMAGE(), '-R', '--no-dereference', `${uid}:${gid}`, ...dirs)
+/** What a box's (or Doop's) uid runs over its folders, in a container as that uid (only a file's owner may change its
+ *  mode): its own files group-readable and -writable, its folders group-writable and setgid (as bin/doop-run release).
+ *  find never follows a symlink. */
+const REGROUP = 'find "$@" -user "$(id -u)" \\( \\( -type d -exec chmod g+rwxs {} + \\) -o \\( -type f -exec chmod g+rwX {} + \\) \\) 2>/dev/null; exit 0'
+/** The uids of what the host's owner can't read, change or remove in these folders (a file without g+rw, a folder
+ *  without g+rwx), not the owner's and not symlinks. */
+function closedUids(dirs: string[]): number[] {
+  const me = String(process.getuid?.() ?? 1000)
+  const r = run(['find', ...dirs, '!', '-user', me, '!', '-type', 'l', '(', '(', '-type', 'f', '!', '-perm', '-060', ')', '-o', '(', '-type', 'd', '!', '-perm', '-070', ')', ')', '-printf', '%U\\n'], { timeoutMs: 600_000 })
+  return [...new Set(r.out.split('\n').filter(Boolean).map(Number))].sort((x, y) => x - y)
 }
-export function reclaim(root: string): Step[] {
+/**
+ * Give the host's owner the files the box made (some are 0600, as their programs make them), without root (sy-58fo):
+ * a short container as each box uid that owns any of them (a box's or a Doop's, by number; its subnet may have changed)
+ * makes its own files group-readable and -writable for the owner's group. No network, no capabilities, its folders the
+ * only mounts. Then the host's owner can read, move and remove them (backup landing, mm archive); `take` makes them the
+ * owner's again (mm box off). mm is the only holder of Docker access.
+ */
+export function giveBack(dirs: string[], image = IMAGE()): { ok: boolean; out: string; err: string; uids: number[]; other: number[] } {
+  const gid = process.getgid?.() ?? 1000, done = new Set<number>(), other = new Set<number>(), errs: string[] = []
+  for (let pass = 0; pass < 3; pass++) { // a folder one uid closed may hide another's files: look again after each pass
+    const todo = closedUids(dirs).filter((u) => { if (!mmUid(u)) { other.add(u); return false } return true })
+    if (!todo.length || todo.every((u) => done.has(u)) && pass > 0) break
+    for (const u of todo) {
+      done.add(u)
+      const r = docker('run', '--rm', '--network', 'none', '--user', `${u}:${gid}`, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+        ...dirs.flatMap((d) => ['-v', `${d}:${d}`]), '--entrypoint', 'sh', image, '-c', REGROUP, 'sh', ...dirs)
+      if (!r.ok) errs.push(`uid ${u}: ${short(r)}`)
+    }
+  }
+  return { ok: !errs.length, out: '', err: errs.join('; '), uids: [...done], other: [...other] }
+}
+/**
+ * After the regroup, with the box stopped (no box process left to swap a path while it is copied): what mm's uids
+ * (mmUid) still own becomes the host owner's, without root and without chown. Each file is copied (a reflink where the
+ * file system has them) and the copy renamed over it, mode (no setuid/setgid) and times kept; hard links stay linked;
+ * each folder is made again and its entries moved into it; each symlink and named pipe is made again; a socket is
+ * removed (no box process listens on it now; its server makes it again). Returns how many it took and what it couldn't.
+ */
+export function take(dirs: string[]): { taken: number; left: string[] } {
+  const me = process.getuid?.() ?? 1000, links = new Map<string, string>(), left: string[] = []
+  let taken = 0
+  const tmpOf = (p: string) => join(dirname(p), `.mm-take-${randomBytes(6).toString('hex')}`)
+  const own = (p: string, st: Stats): boolean => {
+    const t = tmpOf(p)
+    if (st.isFile()) {
+      try {
+        const k = `${st.dev}:${st.ino}`, first = links.get(k) // (its other names: nlink falls as each is taken)
+        if (first) linkSync(first, t)
+        else { copyFileSync(p, t, fsc.COPYFILE_EXCL | fsc.COPYFILE_FICLONE); chmodSync(t, Number(st.mode) & 0o777); utimesSync(t, st.atime, st.mtime) }
+        renameSync(t, p); if (st.nlink > 1 && !first) links.set(k, p)
+        return true
+      } catch { rmSync(t, { force: true }); return false }
+    }
+    if (st.isSymbolicLink()) {
+      try { symlinkSync(readlinkSync(p), t); renameSync(t, p); return true } catch { rmSync(t, { force: true }); return false }
+    }
+    if (st.isSocket()) { try { rmSync(p); return true } catch { return false } }
+    if (st.isFIFO()) {
+      const r = run(['mkfifo', '-m', (Number(st.mode) & 0o777).toString(8), t])
+      try { if (!r.ok) throw new Error(r.err); renameSync(t, p); return true } catch { rmSync(t, { force: true }); return false }
+    }
+    if (!st.isDirectory()) return false
+    const moved: string[] = []
+    try {
+      mkdirSync(t, { mode: 0o700 })
+      for (const c of readdirSync(p)) { renameSync(join(p, c), join(t, c)); moved.push(c) }
+      rmdirSync(p); renameSync(t, p); chmodSync(p, Number(st.mode) & 0o3777); utimesSync(p, st.atime, st.mtime)
+      return true
+    } catch { // as it was: its entries back in it, never lost
+      try { lstatSync(p) } catch { try { renameSync(t, p) } catch {} ; return false }
+      for (const c of moved) try { renameSync(join(t, c), join(p, c)) } catch {}
+      try { rmdirSync(t) } catch {}
+      return false
+    }
+  }
+  const visit = (p: string) => {
+    let st: Stats
+    try { st = lstatSync(p) } catch { return }
+    if (st.uid !== me && mmUid(st.uid)) {
+      if (own(p, st)) taken++; else { left.push(p); if (!st.isDirectory()) return }
+    }
+    if (!st.isDirectory()) return
+    let names: string[] = []
+    try { names = readdirSync(p) } catch { left.push(p); return }
+    for (const n of names) visit(join(p, n))
+  }
+  for (const d of dirs) visit(d)
+  return { taken, left }
+}
+/** The box's files for the host's owner (mm archive, mm box off: the box is stopped). With `own` (box off), also the
+ *  owner's again (take), as the project runs on the host from then on. */
+export function reclaim(root: string, own = false): Step[] {
   const a = readAnswers(root)
   const dirs = [root, join(DIRS.mm, 'paseo', a.project), join(DIRS.mm, 'claude', a.project), hostDir(a.project)].filter(existsSync)
   const r = giveBack(dirs)
-  return [{ step: 'reclaim', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `the box's files back to the host's owner (${dirs.length} folder(s))` : short(r) }]
+  const steps: Step[] = [{ step: 'reclaim', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `the box's files group-writable for the host's owner (${dirs.length} folder(s), ${r.uids.length ? `as uid ${r.uids.join(', ')}` : 'nothing to change'}; no root)${r.other.length ? `; left alone: files of uid ${r.other.join(', ')} (not mm's)` : ''}` : short(r) }]
+  if (own) {
+    const t = take(dirs)
+    steps.push({ step: 'take', status: t.left.length ? 'fail' : 'ok', detail: t.left.length ? `${t.taken} taken; not taken: ${t.left.slice(0, 3).join(', ')}${t.left.length > 3 ? ` and ${t.left.length - 3} more` : ''}` : `${t.taken} file(s) and folder(s) the host owner's again` })
+  }
+  return steps
 }
 
 /**
@@ -425,7 +519,9 @@ export function landBackup(root: string): string {
   const stage = backupStage(root), dest = join(DIRS.backups, readAnswers(root).project)
   const got = existsSync(stage) ? readdirSync(stage).filter((d) => STAMP.test(d) && lstatSync(join(stage, d)).isDirectory()) : []
   if (!got.length) throw new Error(`the box left no backup in ${stage}`)
-  const r = giveBack([stage]) // the staging folder itself: the host's, so a symlink in it resolves only inside the helper
+  // the staging folder itself is the host's: what the box made in it, group-readable and -writable for the owner (its
+  // own uid's regroup, no root), so the owner moves it out and later removes it (no copy here: the box still runs)
+  const r = giveBack([stage])
   if (!r.ok) throw new Error(`could not take the backup from the box: ${short(r)}`)
   mkdirSync(dest, { recursive: true })
   for (const d of got) {
@@ -486,7 +582,7 @@ export function on(root: string): Step[] {
 export function off(root: string): Step[] {
   const a = readAnswers(root)
   if (!a.box) return [{ step: 'box off', status: 'skip', detail: `${a.project} is not a box` }]
-  const steps = [...down(root), ...reclaim(root), paseoJoin(a.project, null)] // on the host, its agents are the machine Paseo's own
+  const steps = [...down(root), ...reclaim(root, true), paseoJoin(a.project, null)] // on the host, its agents are the machine Paseo's own
   rmSync(join(BOXES, `${a.project}.yaml`), { force: true })
   steps.push(setBox(root, false), ...projectUp(root))
   return steps
