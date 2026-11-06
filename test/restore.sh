@@ -5,6 +5,9 @@
 # Needs age, age-keygen, git, ssh-keygen and jq.
 #   test/restore.sh [mm command]       default: bun <repo>/src/cli.ts
 set -uo pipefail
+# the test plays the owner in a throwaway HOME: vault init and run refuse in an agent's shell (sy-uvgq), so not one
+# here; the agent checks below set CLAUDECODE themselves
+unset CLAUDECODE PASEO_AGENT_ID
 SRC=$(cd "$(dirname "$0")/.." && pwd); MMC=${1:-"bun $SRC/src/cli.ts"}
 for c in age age-keygen ssh-keygen jq; do command -v $c >/dev/null || { echo "$c is not installed"; exit 2; }; done
 pass=0; fail=0
