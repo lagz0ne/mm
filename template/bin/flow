@@ -9,12 +9,13 @@
 // again from the oldest record kept.
 // Env (tests): FLOW_STATE, FLOW_NOW (ms), FLOW_REVIEWER (default review), FLOW_APPROVERS (actors whose `approved` counts;
 // default the bridge's actor `bridge` and the owner's name, owner_name in .run/endpoints.json when mm writes it: sy-44xa),
-// SVC_URL_BD_SERVE, MM_OBS_METRICS, MM_OBS_TRACES.
+// MM_APPROVE_CONF (only without /etc/mm-approve.conf: lib/ledger.mjs), SVC_URL_BD_SERVE, MM_OBS_METRICS, MM_OBS_TRACES.
 import fs from 'node:fs'
 import path from 'node:path'
 import { ROOT, endpoints, projectName, requireUrl } from './lib/svc.mjs'
 import { cli, info, pushSamples, pushSpans } from './lib/obs.mjs'
 import { createFlow, promLines } from './lib/flow.mjs'
+import { loadConf as approveConf, readLedger } from './lib/ledger.mjs'
 
 cli('flow')
 const E = process.env
@@ -42,6 +43,9 @@ let saved = null
 try { saved = JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch {}
 if (saved && saved.project !== PROJECT) saved = null // another board's place means nothing here
 const OPTS = { project: PROJECT, roles, reviewer: E.FLOW_REVIEWER || 'review', approvers: (E.FLOW_APPROVERS !== undefined ? E.FLOW_APPROVERS.split(',') : ['bridge', endpoints().owner_name]).filter(Boolean) }
+// /etc/mm-approve.conf `verifier = ledger` (sy-1jmi): an approval counts only with a signed ledger line of its item
+const APPROVE = approveConf()
+if (APPROVE.verifier === 'ledger') { const led = readLedger(APPROVE); OPTS.ledger = (id) => led.has(id); if (!led.ok) info(`flow: the approval ledger is refused (${led.problems.join('; ')}): no approval counts`) }
 let flow = createFlow(saved, OPTS)
 const samples = [], spans = []
 let restarted = false

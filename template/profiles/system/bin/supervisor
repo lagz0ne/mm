@@ -34,6 +34,9 @@
 // (comma list, tests) overrides both. Config `ignore` never silences a t2-unapproved finding. `approved` counts only
 // from the journal record that added it, with an approver as its actor. A migration is applied when the brain's state
 // has its name (BRAIN_STATE, else $XDG_STATE_HOME/brain, else ~/.local/state/brain: <state>/migrations/<name>).
+// With /etc/mm-approve.conf `verifier = ledger` (sy-1jmi, docs/approvals.md) none of that counts: only lines mm-approve
+// signed in its ledger, one of the item naming each applied migration's subject; an `approved` label with no line of
+// its item is a finding (t2-unapproved:<item>), and a ledger of the wrong owner or mode one more (t2-unapproved:ledger).
 // An item someone closes while its finding is still there mutes that finding until it clears (not t2-unapproved).
 // The board is the truth for which items are open (label `supervisor`, line "supervisor key: `<key>`"); .supervisor.json
 // keeps the journal position and a summary per item, notes, mutes, and when leads were seen running or idle.
@@ -49,6 +52,7 @@ import path from 'node:path'
 import { ROOT, dirs, endpoints, projectName, requireUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
 import * as paseo from './lib/paseo.mjs'
+import { loadConf as approveConf, migrationSubject, readLedger } from './lib/ledger.mjs'
 import { places, projectCap, total, workersOf } from './lib/places.mjs'
 
 cli('supervisor')
@@ -68,6 +72,8 @@ const NOW = Number(E.SUPERVISOR_NOW) || Date.now(), now = new Date(NOW).toISOStr
 const SELF = projectName()
 const APPROVERS = new Set((E.SUPERVISOR_APPROVERS !== undefined ? E.SUPERVISOR_APPROVERS.split(',') : ['bridge', endpoints().owner_name])
   .map((a) => String(a || '').trim()).filter(Boolean))
+// The switch (sy-1jmi): /etc/mm-approve.conf `verifier = ledger` makes the signed ledger the only approval (lib/ledger.mjs)
+const APPROVE = approveConf(), LEDGER = APPROVE.verifier === 'ledger'
 const BRAIN_STATE = E.BRAIN_STATE || path.join(E.XDG_STATE_HOME || path.join(HOME, '.local', 'state'), 'brain')
 
 const run = (cmd, args, t = 60000) => execFileSync(cmd, args, { encoding: 'utf8', timeout: t, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 << 20 })
@@ -320,13 +326,14 @@ const migrations = (() => { let out; return () => (out ||= read()) // once per r
     let names; try { names = fs.readdirSync(dir) } catch (e) { if (e.code === 'ENOENT') return out; throw e }
     for (const name of names.filter((n) => n.endsWith('.sh') && !n.endsWith('.rollback.sh')).sort()) {
       let mark; try { mark = fs.readFileSync(path.join(done, name), 'utf8') } catch (e) { if (e.code === 'ENOENT') continue; throw e } // not applied
-      const text = fs.readFileSync(path.join(dir, name), 'utf8')
-      let rollback = ''; try { rollback = fs.readFileSync(path.join(dir, name.replace(/\.sh$/, '.rollback.sh')), 'utf8') } catch {}
+      const bytes = fs.readFileSync(path.join(dir, name)), text = bytes.toString('utf8')
+      let rb = Buffer.alloc(0); try { rb = fs.readFileSync(path.join(dir, name.replace(/\.sh$/, '.rollback.sh'))) } catch {}
+      const rollback = rb.toString('utf8'), subject = migrationSubject(bytes, rb) // what an approval in the ledger names
       const tier = tierOf(mark.trim(), text, rollback)
       if (tier < 2) continue
       const summary = /^# brain:summary=(.*)$/m.exec(text)?.[1] || ''
       const at = Date.parse(mark.trim().split(/\s+/)[0]) || fs.statSync(path.join(done, name)).mtimeMs
-      for (const [id] of summary.matchAll(/\b[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*\b/g)) (out[id] ||= []).push({ name, at, tier })
+      for (const [id] of summary.matchAll(/\b[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*\b/g)) (out[id] ||= []).push({ name, at, tier, subject })
     }
     return out
   }
@@ -394,35 +401,49 @@ const liveSteps = once(async () => {
 // which item: each unapproved t2 item in progress then gets it). In progress for over 4 h with none of these: one P3
 // list (t2-waiting). Its finding clears only on an approver's approved, or when no applied migration names it any more
 // (rolled back: its state mark is gone) and it is not in progress with a live signal.
+// With the ledger on (sy-1jmi), the journal's actor counts for nothing: an item is approved only by well-signed ledger
+// lines, one naming each applied migration's subject (its script and rollback), and an `approved` label with no line of
+// the item is a finding of its own. A ledger that can't be trusted (owner, mode, key) is one finding, and nothing counts.
 async function t2() {
   const [all, sum, main, steps] = await Promise.all([issues(), journal(), mainCommits(), liveSteps()])
-  const mig = migrations(), problems = [], waiting = []
+  const mig = migrations(), problems = [], waiting = [], led = LEDGER ? readLedger(APPROVE) : null
+  if (led && !led.ok) problems.push({ key: 't2-unapproved:ledger', priority: 1, title: 'The approval ledger can\'t be trusted: no t2 approval counts', note: led.problems.join('; '),
+    body: `The Supervisor reads approvals from mm-approve's signed ledger (${APPROVE.path}: verifier = ledger), and it refuses it:\n\n${fence(led.problems.join('\n'))}\n\n` +
+      `Until that is right, no approval counts and every t2 item is unapproved. The owner and modes are in docs/approvals.md; \`mm doctor\` checks them.` })
   for (const i of all) {
-    const labelled = (i.labels || []).includes('t2')
-    if (mine(i) || (!labelled && !mig[i.id])) continue
+    const labelled = (i.labels || []).includes('t2'), tagged = (i.labels || []).includes('approved')
+    const stray = led && tagged && !led.has(i.id) // an approved label the ledger doesn't back
+    if (mine(i) || (!labelled && !mig[i.id] && !stray)) continue
     const ap = sum[i.id]?.ap
-    if (ap?.ok) continue
+    if (!led && ap?.ok) continue
     const applied = (mig[i.id] || []).filter((m) => i.status !== 'closed' || m.at >= state.t2since)
     const going = labelled && i.status === 'in_progress', since = Math.max(ms(i.started_at), sum[i.id]?.ip || 0)
+    const unsigned = led ? applied.filter((m) => !led.has(i.id, m.subject)) : applied
+    if (led && !stray && !unsigned.length && (!going || led.has(i.id))) continue // signed for all of it
     const landed = going ? main[i.id] || [] : [], ran = going && since ? steps.filter((s) => s.at >= since) : []
-    if (!applied.length && !landed.length && !ran.length) {
+    if (!unsigned.length && !landed.length && !ran.length && !stray) {
       if (going && since && NOW - since > WAIT) waiting.push({ i, since })
       continue
     }
     const off = !labelled && sum[i.id]?.t2off
-    const what = [...(going ? [`it is in progress (since ${at(since)})`] : []), ...applied.map((m) => `its tier-${m.tier} migration ${m.name} is applied (${at(m.at)})`),
+    const what = [...(going ? [`it is in progress (since ${at(since)})`] : []), ...unsigned.map((m) => `its tier-${m.tier} migration ${m.name} is applied (${at(m.at)})`),
       ...landed.slice(0, 5).map((c) => `commit ${c.hash} "${c.subject}" naming it is on ${c.repo}'s main (${at(c.at)})`),
       ...ran.slice(-5).map((s) => `mm recorded the live step "${s.what}" at ${at(s.at)}`),
+      ...(stray && !going && !unsigned.length ? ['it is labelled approved'] : []),
       ...(off ? [`its t2 label was removed by ${off.by || 'an unknown actor'} at ${at(off.at)}`] : [])]
-    const why = applied.length ? 'has an applied migration' : landed.length ? 'has a commit on main' : 'is in progress while a live step ran'
-    const label = ap ? `approved was added by ${ap.by || 'an unknown actor'} at ${at(ap.at)}, who is not an approver` : 'no approved from an approver'
-    problems.push({ key: `t2-unapproved:${i.id}`, priority: 1, title: `Unapproved t2: ${i.id} (${i.assignee || 'nobody'}) ${why} without the owner's approval${off ? `; ${off.by || 'someone'} removed its t2 label` : ''}`,
+    const why = unsigned.length ? 'has an applied migration' : landed.length ? 'has a commit on main' : ran.length ? 'is in progress while a live step ran' : 'is labelled approved'
+    const label = led
+      ? (unsigned.length ? `no signed ledger line of ${i.id} for ${unsigned.map((m) => `${m.name} (${m.subject})`).join(', ')}` : `no signed ledger line of ${i.id}`) +
+        (tagged ? `; its approved label${ap?.by ? ` (added by ${ap.by})` : ''} does not count without one` : '')
+      : ap ? `approved was added by ${ap.by || 'an unknown actor'} at ${at(ap.at)}, who is not an approver` : 'no approved from an approver'
+    problems.push({ key: `t2-unapproved:${i.id}`, priority: 1, title: `Unapproved t2: ${i.id} (${i.assignee || 'nobody'}) ${why} without the owner's ${led ? 'signed ' : ''}approval${off ? `; ${off.by || 'someone'} removed its t2 label` : ''}`,
       note: `${i.status}; ${what.join('; ')}; ${label}`,
-      body: `**${i.id}** "${i.title}" is ${labelled ? 'labelled t2' : 'not labelled t2, but a tier-2 migration names it'}, and ${what.join(', and ')}. The board's journal has ${label} on it ` +
-        `(approvers: ${[...APPROVERS].join(', ') || 'none'}; a label added by anyone else does not count).\n\n` +
+      body: `**${i.id}** "${i.title}" is ${labelled ? 'labelled t2' : mig[i.id] ? 'not labelled t2, but a tier-2 migration names it' : 'not labelled t2'}, and ${what.join(', and ')}. ` +
+        (led ? `The approval ledger (${APPROVE.ledger}) has ${label}: an approval counts only as a line mm-approve signed for the owner's tap.\n\n`
+          : `The board's journal has ${label} on it (approvers: ${[...APPROVERS].join(', ') || 'none'}; a label added by anyone else does not count).\n\n`) +
         `A t2 change runs only after the owner's approval. Find out what ran without it, and stop or roll it back, or get the owner's approval. ` +
-        `${ran.length && !applied.length && !landed.length ? 'mm does not record who ran a live step or for which item: it may belong to other work; say so here. ' : ''}` +
-        `This item closes itself when an approver sets approved on ${i.id}, or no migration naming it is applied any more (rolled back) and it is not in progress. ` +
+        `${ran.length && !unsigned.length && !landed.length ? 'mm does not record who ran a live step or for which item: it may belong to other work; say so here. ' : ''}` +
+        `This item closes itself when ${led ? `the ledger has the owner's signed approval of ${i.id}${unsigned.length ? ' for each applied migration' : ''}` : `an approver sets approved on ${i.id}`}, or no migration naming it is applied any more (rolled back) and it is not in progress. ` +
         `Closing it by hand does not silence it: it opens again on the next run.` })
   }
   const list = waiting.sort((a, b) => a.since - b.since).map(({ i, since }) => `${i.id} (${i.assignee || 'nobody'}, in progress since ${at(since)}): ${String(i.title).slice(0, 80)}`)

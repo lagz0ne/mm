@@ -7,7 +7,7 @@
 // run twice, from an empty state, and in two steps gives the same series; a pruned journal and a store that is down;
 // the table pairs each speed metric with its quality one and names the event range. Hermetic: a temp folder only.
 //   node test/flow.mjs            exit 0 = every check passed
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -308,6 +308,27 @@ let wait = await approvalWait('alex')
 ok('approved by the owner\'s name ends the approval wait (10 min)', wait === 'paused_seconds ops sy-o approval @640 = 600', wait)
 wait = await approvalWait('')
 ok('...no owner_name: the same label does not count (the wait runs to the close, 30 min)', wait === 'paused_seconds ops sy-o approval @640 = 1800', wait)
+
+step('the ledger switched on (sy-1jmi): the label counts only with a signed line of its item, whoever added it')
+if (fs.existsSync('/etc/mm-approve.conf')) console.log('  skip: this machine has /etc/mm-approve.conf (the verifiers never read a test config then)')
+else {
+  const AP = path.join(SRC, 'box/mm-approve'), AD = path.join(T, 'approve'), ACONF = path.join(T, 'mm-approve.conf')
+  fs.mkdirSync(AD, { mode: 0o755 }); fs.chmodSync(AD, 0o755)
+  fs.writeFileSync(path.join(T, 'plan'), '#!/bin/sh\necho "the plan of $1"\n', { mode: 0o755 })
+  fs.writeFileSync(ACONF, `verifier = ledger\nuser = ${os.userInfo().username}\ndir = ${AD}\npublic_key = ${AD}/key.pub\nplan_command = ${path.join(T, 'plan')}\nowner_telegram_id = 4242\n`)
+  const signer = (args) => execFileSync(AP, args, { env: { PATH: process.env.PATH, MM_APPROVE_CONF: ACONF }, encoding: 'utf8' })
+  signer(['keygen'])
+  ENV.MM_APPROVE_CONF = ACONF
+  wait = await approvalWait('alex')
+  ok('the owner\'s label with no ledger line does not count (the wait runs to the close)', wait === 'paused_seconds ops sy-o approval @640 = 1800', wait)
+  signer(['tap', JSON.parse(signer(['offer', 'sy-o', '--subject', `git:${'a'.repeat(40)}`])).offer, '4242'])
+  wait = await approvalWait('')
+  ok('...a signed line of sy-o: the label counts, even with no owner_name (10 min)', wait === 'paused_seconds ops sy-o approval @640 = 600', wait)
+  fs.chmodSync(path.join(AD, 'ledger.jsonl'), 0o666)
+  wait = await approvalWait('alex')
+  ok('...the ledger writable by others: nothing counts', wait === 'paused_seconds ops sy-o approval @640 = 1800', wait)
+  delete ENV.MM_APPROVE_CONF
+}
 
 if (process.env.FLOW_SHOW) console.log((await mm('obs', 'flow')).out + (await mm('obs', 'item', 'sy-d')).out) // to look at the tables
 srv.close()

@@ -457,6 +457,61 @@ clock = T0 + 472 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('approved by the bridge: cleared', openKeys() === DIRTY)
 
+step('run 9m (+481..491 min): the ledger switched on (sy-1jmi): only signed lines count, each for its migration\'s subject')
+if (fs.existsSync('/etc/mm-approve.conf')) console.log('  skip: this machine has /etc/mm-approve.conf (the verifiers never read a test config then)')
+else {
+  // the signer (box/mm-approve) in test mode: its home a throwaway folder, this test's user as its user, a stub plan command
+  const AP = path.join(SRC, 'box/mm-approve'), AD = path.join(T, 'approve'), APUB = path.join(T, 'approve-pub'), ACONF = path.join(T, 'mm-approve.conf')
+  fs.mkdirSync(AD, { mode: 0o755 }); fs.mkdirSync(APUB, { mode: 0o755 }); fs.chmodSync(AD, 0o755); fs.chmodSync(T, 0o755)
+  fs.writeFileSync(path.join(T, 'plan'), `#!/bin/sh\necho "the plan of $1"\n`, { mode: 0o755 })
+  fs.writeFileSync(ACONF, `verifier = ledger\nuser = ${os.userInfo().username}\ndir = ${AD}\npublic_key = ${APUB}/key.pub\nplan_command = ${path.join(T, 'plan')}\nowner_telegram_id = 4242\n`)
+  const signer = (args) => execFileSync(AP, args, { env: { PATH: process.env.PATH, MM_APPROVE_CONF: ACONF }, encoding: 'utf8' })
+  signer(['keygen']); fs.copyFileSync(path.join(AD, 'key.pub'), path.join(APUB, 'key.pub')); fs.chmodSync(path.join(APUB, 'key.pub'), 0o644)
+  const approve = (id, subjects) => signer(['tap', JSON.parse(signer(['offer', id, ...subjects.flatMap((s) => ['--subject', s])])).offer, '4242'])
+  const subjectOf = (name) => signer(['subject', 'migration', path.join(MIGS, `${name}.sh`), path.join(MIGS, `${name}.rollback.sh`)]).trim()
+  ENV.MM_APPROVE_CONF = ACONF
+  clock = T0 + 481 * MIN
+  item('sy-60', { title: 't2 in progress, approved by the bridge, no ledger line', priority: 2, assignee: 'ops', labels: ['t2'] })
+  update('sy-60', { labels: ['t2', 'approved'] }, 'bridge'); update('sy-60', { status: 'in_progress' }, 'ops')
+  item('sy-61', { title: 't2 in progress, a signed line', priority: 2, assignee: 'ops', labels: ['t2'] })
+  update('sy-61', { status: 'in_progress' }, 'ops'); approve('sy-61', ['git:' + 'a'.repeat(40)])
+  item('sy-62', { title: 't2, migration applied, a line for another subject', priority: 2, assignee: 'ops', labels: ['t2'] })
+  migration('1800000014-fw', 'a port (sy-62)', true); approve('sy-62', ['git:' + 'b'.repeat(40)])
+  item('sy-63', { title: 't2, migration applied, a line for its subject', priority: 2, assignee: 'ops', labels: ['t2'] })
+  migration('1800000015-fw', 'a port (sy-63)', true); approve('sy-63', [subjectOf('1800000015-fw')])
+  item('sy-64', { title: 't1, approved label by the bridge, no line', priority: 2, assignee: 'ops', labels: ['t1'] })
+  update('sy-64', { labels: ['t1', 'approved'] }, 'bridge')
+  item('sy-65', { title: 't2, a line for its subject, then a second migration naming it', priority: 2, assignee: 'ops', labels: ['t2'] })
+  migration('1800000016-a', 'step a (sy-65)', true); approve('sy-65', [subjectOf('1800000016-a')]); migration('1800000017-b', 'step b (sy-65)', true)
+  // a forged line: well formed, signed by another key, for sy-60 (the ledger's owner may append; it doesn't count)
+  const FD = path.join(T, 'forger'); fs.mkdirSync(FD, { mode: 0o755 }); fs.chmodSync(FD, 0o755)
+  const FCONF = path.join(T, 'forger.conf'); fs.writeFileSync(FCONF, fs.readFileSync(ACONF, 'utf8').replace(AD, FD).replace(`${APUB}/key.pub`, `${FD}/key.pub`))
+  const forger = (args) => execFileSync(AP, args, { env: { PATH: process.env.PATH, MM_APPROVE_CONF: FCONF }, encoding: 'utf8' })
+  forger(['keygen']); forger(['tap', JSON.parse(forger(['offer', 'sy-60', '--subject', 'git:' + 'c'.repeat(40)])).offer, '4242'])
+  fs.appendFileSync(path.join(AD, 'ledger.jsonl'), fs.readFileSync(path.join(FD, 'ledger.jsonl')))
+  ok('exit 0', (await supervise()) === 0)
+  const keys = openKeys().split(' ')
+  ok('open: sy-60 (the bridge\'s label, a forged line), sy-62 (a line for another subject), sy-64 (an approved label with no line), sy-65 (its second migration unsigned)',
+    ['sy-60', 'sy-62', 'sy-64', 'sy-65'].every((id) => keys.includes(T2(id))))
+  ok('...not sy-61 (in progress, signed), sy-63 (its migration\'s subject signed)', !keys.includes(T2('sy-61')) && !keys.includes(T2('sy-63')))
+  ok('...and the bridge-approved items of the actor era (sy-11, sy-13) open again: their labels have no line', keys.includes(T2('sy-11')) && keys.includes(T2('sy-13')))
+  ok('sy-62\'s finding names the migration with no signed line, sy-65\'s only its second one',
+    /no signed ledger line of sy-62 for 1800000014-fw\.sh/.test(openOf(T2('sy-62'))?.description || '') && /1800000017-b\.sh/.test(openOf(T2('sy-65'))?.description || '') && !/1800000016-a\.sh/.test(openOf(T2('sy-65'))?.description || ''))
+  ok('sy-60\'s finding says its approved label does not count', /approved label \(added by bridge\) does not count/.test(openOf(T2('sy-60'))?.description || ''))
+  fs.chmodSync(path.join(AD, 'ledger.jsonl'), 0o666)
+  clock = T0 + 486 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  // (sy-61 is only in progress, with nothing live: under sy-0cvx's rule that waits quietly, signed or not)
+  ok('a ledger anyone can write: t2-unapproved:ledger, and sy-63 (its applied migration) opens too: nothing counts', ['ledger', 'sy-63'].every((k) => openKeys().split(' ').includes(T2(k))) && !openKeys().split(' ').includes(T2('sy-61')))
+  fs.chmodSync(path.join(AD, 'ledger.jsonl'), 0o644)
+  approve('sy-65', [subjectOf('1800000017-b')])
+  clock = T0 + 491 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('mode right again: the ledger finding, sy-61 and sy-63 clear; sy-65 clears with its second migration signed',
+    !['ledger', 'sy-61', 'sy-63', 'sy-65'].some((k) => openKeys().split(' ').includes(T2(k))) && openKeys().split(' ').includes(T2('sy-60')))
+  delete ENV.MM_APPROVE_CONF
+}
+
 step('run 10: the board is down: exit non-zero, nothing written')
 fs.writeFileSync(path.join(T, 'bd.fail'), '')
 const n = sup().length

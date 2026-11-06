@@ -57,6 +57,8 @@ export function railsOf(it, reviewer = 'review') {
 
 /**
  * A folder of journal records. opts: { project, roles: [ids], reviewer = 'review', approvers = ['bridge'] }.
+ * opts.ledger (sy-1jmi, the ledger switched on): (item) => whether the signed ledger approves it; then that alone counts,
+ * never the actor who added the label.
  * fold(records) -> { samples, spans }: what those records completed (send them); state() is what to keep (JSON).
  */
 export function createFlow(saved, opts) {
@@ -173,7 +175,7 @@ export function createFlow(saved, opts) {
         if (it.verdict === null) { it.verdict = 1; if (it.from) sample('mm_flow_review_first_pass', { role: it.from, item: id }, 1, t) }
       }
       if (removed.includes('signed-off')) it.signed = false
-      if (added.includes('approved') && APPROVERS.has(String(e.actor || ''))) it.approved = true
+      if (added.includes('approved') && (opts.ledger ? opts.ledger(id) : APPROVERS.has(String(e.actor || '')))) it.approved = true
       if (removed.includes('approved')) it.approved = false
 
       const closedNow = it.st === 'closed', closedWas = was.st === 'closed'
