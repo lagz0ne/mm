@@ -121,6 +121,7 @@ bun run build                # packs template/ into the binary: dist/mm
 test/lifecycle.sh <old-template-dir>   # on a real machine: new -> update -> restart -> crash -> archive -> restore
 test/needs-fill.sh           # mm needs / mm fill, hermetic (throwaway HOME)
 test/sentinel.sh             # the system profile's sentinel, on a throwaway board
+node test/supervisor.mjs     # the system profile's supervisor (stall, handoff, idle, dirty), hermetic (fake board, stub paseo)
 node test/wake-stall.mjs     # bin/wake recovers from an event stream that hangs (fake board, stub paseo)
 test/machine-panel.sh        # the system board's machine panel (SITE_NODE_MODULES=<a site's node_modules>)
 ```

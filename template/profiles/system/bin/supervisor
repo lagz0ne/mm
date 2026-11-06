@@ -1,0 +1,273 @@
+#!/usr/bin/env node
+// supervisor — watches how the work flows on this board (profile system; every 5 min under mm cron). It reads; it never
+// builds, never signs off, never accepts, and starts no agent. One item per finding (a stable key, label `supervisor`,
+// for ops), commented when the finding changes, closed when it clears:
+//     stall:<item>       a P0/P1 in progress with no comment, commit or agent turn for 30 min                  P1
+//     handoff:<item>     a comment line `HANDOFF <role> ...` with no reply from that role after 10 min         P1
+//     idle:<role>        a lead not working (idle, closed, gone) for 10 min while ready P0 work waits for it   P1
+//     dirty:<worktree>   uncommitted files, none touched for 30 min (git worktrees of the mm repo and of each project) P2
+//     supervisor:<check> the supervisor could not read a source (that check's items are left as they are)     P2
+// Sources, all read-only: the board (bd serve: items, ready, the event journal), Paseo (leads by label project/role),
+// `mm ls` (project roots), git (log, status, worktree list). A reply, a comment or a change means one by a lead, its
+// workers (`<role>/...`) or a human; the system's own authors (wake, watchdog) do not count. A commit counts for an item
+// when its message names the item id (any branch). An agent turn is the assignee's lead running (now, or seen running
+// by an earlier check within the window). `HANDOFF owner` is left to needs-you (the human's), not watched here.
+// An item someone closes while its finding is still there mutes that finding until it clears.
+// The board is the truth for which items are open (label `supervisor`, line "supervisor key: `<key>`"); .supervisor.json
+// keeps the journal position and a summary per item, notes, mutes, and when leads were seen running or idle.
+// Optional config supervisor.json (this board's root):
+//   { "assignee": "ops", "ignore": ["<regex on a key>"], "minutes": { "stall": 30, "handoff": 10, "idle": 10, "dirty": 30 },
+//     "repos": ["<more git repos to watch; the mm repo is ~/mm, the template's place for it>"] }
+// Env (tests): SUPERVISOR_STATE, SUPERVISOR_CONFIG, SUPERVISOR_NOW (ms), MM_BIN, SVC_URL_BD_SERVE, PASEO_BIN, PASEO_NO_SDK.
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { ROOT, dirs, projectName, requireUrl } from './lib/svc.mjs'
+import { cli } from './lib/obs.mjs'
+import * as paseo from './lib/paseo.mjs'
+
+cli('supervisor')
+const E = process.env
+const STATE = E.SUPERVISOR_STATE || path.join(ROOT, '.supervisor.json')
+const CONF = (() => { try { return JSON.parse(fs.readFileSync(E.SUPERVISOR_CONFIG || path.join(ROOT, 'supervisor.json'), 'utf8')) } catch { return {} } })()
+const MM = E.MM_BIN || 'mm'
+const HOME = E.HOME || os.homedir()
+const ASSIGNEE = CONF.assignee || 'ops'
+const MIN = { stall: 30, handoff: 10, idle: 10, dirty: 30, ...(CONF.minutes || {}) }
+const IGNORE = (CONF.ignore || []).map((r) => new RegExp(r))
+const BD = requireUrl('bd-serve')
+const ACTOR = 'watchdog' // a system author for wake and the lead briefs (not a human, not a lead)
+const SYSTEM = new Set(['wake', 'watchdog', 'ui', 'smoke', 'beads'])
+const KEY_LINE = /^supervisor key: `([^`]+)`$/m
+const HANDOFF = /^HANDOFF ([a-z][\w-]*)(?:\s|$)/gm
+const NOW = Number(E.SUPERVISOR_NOW) || Date.now(), now = new Date(NOW).toISOString()
+const SELF = projectName()
+
+const run = (cmd, args, t = 60000) => execFileSync(cmd, args, { encoding: 'utf8', timeout: t, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 << 20 })
+const git = (dir, args) => run('git', ['--no-optional-locks', '-C', dir, ...args])
+const expand = (p) => p.replace(/^~(?=\/|$)/, HOME)
+const tilde = (p) => (p === HOME || p.startsWith(`${HOME}/`) ? `~${p.slice(HOME.length)}` : p)
+const ms = (t) => Date.parse(t) || 0
+const ago = (t) => `${Math.round((NOW - t) / 60000)} min`
+const at = (t) => (t ? new Date(t).toISOString().replace(/\.\d+Z$/, 'Z') : 'never')
+const fence = (s) => `\`\`\`\n${String(s).replaceAll('```', "'''")}\n\`\`\``
+async function bd(method, p, body) {
+  const r = await fetch(`${BD}${p}`, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(15000) })
+  if (!r.ok) throw new Error(`${method} ${p}: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`)
+  return r.json().catch(() => ({}))
+}
+
+const state = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } })()
+for (const k of ['muted', 'notes', 'items', 'running', 'idle']) state[k] ||= {}
+state.seq ||= 0
+
+const ROLES = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'leads', 'roles.json'), 'utf8')).roles.map((r) => r.id) } catch { return [] } })()
+if (!ROLES.includes('setup')) ROLES.push('setup')
+const roleOf = (actor) => ROLES.find((r) => actor === r || String(actor || '').startsWith(`${r}/`)) || null
+
+// ---------- shared reads (once per run; a check that needs one that failed fails with it) ----------
+const once = (fn) => { let p; return () => (p ||= fn()) }
+const issues = once(async () => { // every item, all pages
+  const all = new Map(); let cursor = ''
+  for (let page = 0; page < 40; page++) {
+    const r = await bd('GET', `/v0/beads/issues?limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)
+    for (const i of r.items || []) all.set(i.id, i)
+    cursor = r.has_more && r.next_cursor ? r.next_cursor : ''
+    if (!cursor) break
+  }
+  return [...all.values()]
+})
+// The event journal since the last run, folded into a summary per item: the last change by a person or lead (act),
+// the latest HANDOFF line per role (ho: {seq, at}) and the last thing each role did on it (re: seq).
+const journal = once(async () => {
+  for (let page = 0; page < 200; page++) {
+    const r = await bd('GET', `/v0/beads/events?since=${state.seq}&limit=500`)
+    const recs = (r.records || []).filter((e) => (e.seq || 0) > state.seq)
+    for (const e of recs) {
+      state.seq = Math.max(state.seq, e.seq)
+      const who = e.comment?.author || e.actor, t = ms(e.comment?.created_at) || ms(e.ts)
+      if (!e.issue_id || !who || SYSTEM.has(who)) continue
+      const s = (state.items[e.issue_id] ||= { act: 0, ho: {}, re: {} })
+      s.act = Math.max(s.act, t)
+      const role = roleOf(who)
+      if (role) s.re[role] = e.seq
+      if (e.op === 'comment' && e.comment?.text) {
+        for (const [, to] of String(e.comment.text).matchAll(HANDOFF)) if (ROLES.includes(to) && to !== role) s.ho[to] = { seq: e.seq, at: t }
+      }
+    }
+    if (recs.length < 500) break
+  }
+  return state.items
+})
+// Each role's lead (Paseo labels project=<this board> role=<role>): its status, and when it was last seen running.
+const leads = once(async () => {
+  const out = {}
+  for (const role of ROLES) {
+    const a = (await paseo.list({ project: SELF, role }))[0] || null
+    const status = a ? a.status : 'gone'
+    if (status === 'running') state.running[role] = NOW
+    out[role] = { status, id: a?.shortId || a?.id || null }
+  }
+  return out
+})
+let listedCache = null
+const listed = () => (listedCache ||= JSON.parse(run(MM, ['ls', '-o', 'json'])).filter((p) => !p.throwaway))
+// The git repos watched: the mm repo (~/mm: where the template puts it) and every project's own repo (mm ls), plus config.
+const repos = once(async () => [...new Set([path.join(HOME, 'mm'), ...(CONF.repos || []).map(expand), ...listed().map((p) => expand(p.root))])].filter((d) => fs.existsSync(d)))
+// Commits naming an item id, newest time per id, in the watched repos and the brain (any branch, recent only).
+const commits = once(async () => {
+  const last = {}, since = Math.floor((NOW - MIN.stall * 60000) / 1000)
+  for (const d of [...(await repos().catch(() => [path.join(HOME, 'mm')])), dirs().brain]) { // no project list: still the mm repo
+    let out; try { out = git(d, ['log', '--all', `--since=@${since}`, '--format=%x1e%ct%x1f%B']) } catch { continue } // not a git repo
+    for (const rec of out.split('\x1e').slice(1)) {
+      const [ct, msg = ''] = rec.split('\x1f'), t = Number(ct) * 1000
+      for (const [id] of msg.matchAll(/\b[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*\b/g)) last[id] = Math.max(last[id] || 0, t)
+    }
+  }
+  return last
+})
+const mine = (i) => (i.labels || []).includes('supervisor')
+
+// ---------- checks: each returns { prefix, problems: [{ key, title, priority, body, note }] } or throws ----------
+async function stall() {
+  const [all, sum, ls, cs] = await Promise.all([issues(), journal(), leads(), commits()])
+  const problems = [], window = MIN.stall * 60000
+  for (const i of all) {
+    if (i.status !== 'in_progress' || !(i.priority <= 1) || mine(i)) continue
+    const s = sum[i.id], lead = ls[i.assignee]
+    const lastAct = s?.act || ms(i.updated_at) // no journal record of it: the item's own time
+    const turn = lead?.status === 'running' ? NOW : state.running[i.assignee] || 0
+    const last = Math.max(lastAct, cs[i.id] || 0, turn)
+    if (NOW - last < window) continue
+    problems.push({ key: `stall:${i.id}`, priority: 1, title: `Stalled: ${i.id} (P${i.priority}, in progress, ${i.assignee || 'nobody'}) has no comment, commit or agent turn for ${MIN.stall} min`,
+      note: `assignee ${i.assignee || 'none'}, P${i.priority}, in progress`,
+      body: `**${i.id}** "${i.title}" is in progress at P${i.priority}, and nothing moved for ${MIN.stall} min or more:\n\n` +
+        `- last comment or change by a person or lead: ${at(lastAct)}\n- last commit naming it: ${cs[i.id] ? at(cs[i.id]) : `none in the last ${MIN.stall} min`}\n` +
+        `- the ${i.assignee || '(no assignee)'} lead: ${lead ? lead.status : 'not a lead'}${state.running[i.assignee] ? `, last seen working ${at(state.running[i.assignee])}` : ''}\n\n` +
+        `Find out why (ask on ${i.id}, look at the lead), and get it moving or set it back to open or blocked. This item closes itself when ${i.id} moves again or leaves in progress.` })
+  }
+  return { prefix: 'stall:', problems }
+}
+
+async function handoff() {
+  const [all, sum] = await Promise.all([issues(), journal()])
+  const problems = []
+  for (const i of all) {
+    if (i.status === 'closed' || mine(i) || !sum[i.id]) continue
+    const s = sum[i.id]
+    const waiting = Object.entries(s.ho).filter(([role, h]) => !((s.re[role] || 0) > h.seq) && NOW - h.at >= MIN.handoff * 60000).sort(([a], [b]) => a.localeCompare(b))
+    if (!waiting.length) continue
+    const roles = waiting.map(([r]) => r).join(', ')
+    problems.push({ key: `handoff:${i.id}`, priority: 1, title: `Handoff waits: ${i.id} was handed to ${roles}, no reply for ${MIN.handoff} min`,
+      note: waiting.map(([r, h]) => `HANDOFF ${r} at ${at(h.at)}`).join('\n'),
+      body: `**${i.id}** "${i.title}" has a \`HANDOFF\` line with no reply from that role since:\n\n${waiting.map(([r, h]) => `- ${r}: handed over ${at(h.at)} (${ago(h.at)} ago)`).join('\n')}\n\n` +
+        `Check that the role was woken and can work (its lead, wake). This item closes itself when the role comments on or changes ${i.id}, or ${i.id} is closed.` })
+  }
+  return { prefix: 'handoff:', problems }
+}
+
+async function idle() {
+  const [ready, ls] = await Promise.all([bd('GET', '/v0/beads/ready?limit=500'), leads()])
+  const problems = []
+  for (const role of ROLES) {
+    const p0 = (ready.items || []).filter((i) => i.assignee === role && i.priority === 0 && i.status === 'open' && !(i.labels || []).includes('needs-you') && !mine(i)).map((i) => i.id).sort()
+    const st = ls[role]?.status || 'gone'
+    if (!p0.length || st === 'running') { delete state.idle[role]; continue }
+    state.idle[role] ||= NOW
+    if (NOW - state.idle[role] < MIN.idle * 60000) continue
+    problems.push({ key: `idle:${role}`, priority: 1, title: `Idle: the ${role} lead is not working while ready P0 work waits for it`,
+      note: `lead ${st}; ready P0: ${p0.join(' ')}`,
+      body: `The **${role}** lead is ${st} (seen so since ${at(state.idle[role])}), and ready P0 work waits for it: ${p0.join(', ')}.\n\n` +
+        `Check wake (it should have woken the lead) and the lead itself (\`bin/lead\`, Paseo). This item closes itself when the lead works or no ready P0 waits for it.` })
+  }
+  for (const r of Object.keys(state.idle)) if (!ROLES.includes(r)) delete state.idle[r]
+  return { prefix: 'idle:', problems }
+}
+
+/** `git status -z` entries of a worktree: [{ xy, file }]. */
+function changes(wt) {
+  const parts = git(wt, ['status', '--porcelain=v1', '-z', '--untracked-files=all']).split('\0'), out = []
+  for (let k = 0; k < parts.length; k++) {
+    const e = parts[k]; if (!e) continue
+    out.push({ xy: e.slice(0, 2), file: e.slice(3) })
+    if (/[RC]/.test(e[0])) k++ // a rename's old name follows
+  }
+  return out
+}
+async function dirty() {
+  const problems = [], seen = new Set()
+  for (const repo of await repos()) {
+    let list; try { list = git(repo, ['worktree', 'list', '--porcelain']) } catch { continue } // not a git repo
+    for (const block of list.split('\n\n')) {
+      const wt = /^worktree (.+)$/m.exec(block)?.[1]
+      if (!wt || /^bare$/m.test(block) || seen.has(wt) || !fs.existsSync(wt)) continue
+      seen.add(wt)
+      let ch; try { ch = changes(wt) } catch { continue }
+      if (!ch.length) continue
+      const mtime = (f) => { try { return fs.lstatSync(f).mtimeMs } catch { return 0 } }
+      const newest = Math.max(0, ...ch.map((c) => mtime(path.join(wt, c.file)) || mtime(path.dirname(path.join(wt, c.file))))) // deleted: its folder's time
+      if (NOW - newest < MIN.dirty * 60000) continue
+      const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1] || 'detached'
+      const files = ch.map((c) => `${c.xy} ${c.file}`).sort()
+      problems.push({ key: `dirty:${tilde(wt)}`, priority: 2, title: `Uncommitted: ${tilde(wt)} (${branch}) has ${ch.length} file(s) nobody touched for ${MIN.dirty} min`,
+        note: files.slice(0, 40).join('\n') + (files.length > 40 ? `\n... ${files.length - 40} more` : ''),
+        body: `The worktree \`${tilde(wt)}\` (branch \`${branch}\`) has uncommitted files; the newest was last changed ${newest ? at(newest) : 'long ago'}:\n\n${fence(files.slice(0, 40).join('\n'))}\n\n` +
+          `Ask its writer to commit or drop them (work left half done). This item closes itself when the worktree is clean or someone works in it again.` })
+    }
+  }
+  return { prefix: 'dirty:', problems }
+}
+
+// ---------- reconcile with the board (as the sentinel does) ----------
+const open = {} // key -> item
+for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')).items || []) {
+  const k = KEY_LINE.exec(it.description || '')?.[1]
+  if (k && it.status !== 'closed') open[k] = it
+}
+const results = [], failed = []
+for (const [name, fn] of Object.entries({ stall, handoff, idle, dirty })) {
+  try { results.push(await fn()) } catch (e) { failed.push({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) }) }
+}
+await paseo.close()
+results.push({ prefix: 'supervisor:', problems: failed.map((f) => ({ key: `supervisor:${f.name}`, priority: 2, title: `Supervisor cannot run its ${f.name} check`, note: f.err.replace(/\d+/g, '#'),
+  body: `The supervisor could not read what its **${f.name}** check needs:\n\n${fence(f.err)}\n\nThat check's items are left as they are until it reads again; then this item closes itself.` })) })
+
+let opened = 0, updated = 0, closed = 0
+for (const src of results) {
+  const present = new Map(src.problems.filter((p) => !IGNORE.some((re) => re.test(p.key))).map((p) => [p.key, p]))
+  for (const p of present.values()) {
+    const it = open[p.key]
+    if (it) { // open: comment when the finding changed
+      if (state.notes[p.key] === undefined) { state.notes[p.key] = p.note; continue } // state lost: adopt, say nothing
+      if (state.notes[p.key] !== p.note) {
+        await bd('POST', `/v0/beads/issues/${it.id}/comments`, { author: ACTOR, text: `Changed at ${now}:\n\n${fence(String(p.note).slice(0, 1500))}` })
+        state.notes[p.key] = p.note; updated++
+      }
+      continue
+    }
+    if (state.muted[p.key]) continue
+    if (state.notes[p.key] !== undefined) { state.muted[p.key] = now; console.log(`${p.key}: closed by someone while still there; quiet until it clears`); continue }
+    const r = await bd('POST', '/v0/beads/issues', { title: p.title.slice(0, 200), issue_type: 'task', priority: p.priority, assignee: ASSIGNEE, labels: ['supervisor'],
+      actor: ACTOR, owner: ACTOR, description: `${p.body}\n\nsupervisor key: \`${p.key}\`` })
+    if (r.id) { state.notes[p.key] = p.note; opened++; console.log(`${p.key}: opened ${r.id}`) }
+  }
+  // gone, from a check that ran fine: close it
+  for (const k of new Set([...Object.keys(open), ...Object.keys(state.notes), ...Object.keys(state.muted)])) {
+    if (!k.startsWith(src.prefix) || present.has(k)) continue
+    if (open[k]) {
+      await bd('POST', `/v0/beads/issues/${open[k].id}/comments`, { author: ACTOR, text: `Cleared at ${now}: the supervisor no longer sees it.` })
+      await bd('POST', `/v0/beads/issues/${open[k].id}:close`, { actor: ACTOR, reason: 'cleared (supervisor)' })
+      closed++; console.log(`${k}: cleared; closed ${open[k].id}`)
+    }
+    delete state.notes[k]; delete state.muted[k]
+  }
+}
+
+// forget what can no longer matter: items closed on the board, lead sightings older than any window
+const known = new Map((await issues().catch(() => [])).map((i) => [i.id, i.status]))
+if (known.size) for (const id of Object.keys(state.items)) if (!known.has(id) || known.get(id) === 'closed') delete state.items[id]
+for (const [r, t] of Object.entries(state.running)) if (NOW - t > 24 * 3600e3) delete state.running[r]
+fs.writeFileSync(STATE, JSON.stringify(state, null, 1))
+// a failed check is on the board (supervisor:<check>); exit 0 so it is not reported twice
+console.log(`supervisor: ${Object.keys(open).length + opened - closed} open, ${opened} opened, ${updated} updated, ${closed} closed${failed.length ? `; could not run: ${failed.map((f) => `${f.name} (${f.err.slice(0, 120)})`).join(', ')}` : ''}`)
