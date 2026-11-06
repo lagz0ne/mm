@@ -16,6 +16,7 @@ import * as syncMod from './sync'
 import { release, restoreMachine } from './restore'
 import { AUTH_SOCK, callApi, serve as authServe } from './auth'
 import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
+import { exportFlow, flowRows, itemPath, tableRow } from './flow'
 import { findRoot, listProjects, namespaceOp, newProject, parseRef, processes, readAnswers, resolve, rootOf, setOptional, up } from './project'
 import * as boxMod from './box'
 import * as aiMod from './ai'
@@ -389,6 +390,24 @@ obs.command('slow').description('slowest operations (p95 by span name)').option(
     const o = fmt(), f = opts.project ? ` "resource_attr:service.namespace":${JSON.stringify(opts.project)}` : ''
     const rows = await tracesql(`_time:${opts.since}${f} name:* | stats by ("resource_attr:service.name", name) count() as n, quantile(0.95, duration) as p95_ns, max(duration) as max_ns | sort by (p95_ns desc) | limit 25`)
     print(rows.map((r) => ({ service: r['resource_attr:service.name'], op: r.name, n: r.n, p95_ms: Math.round(Number(r.p95_ns) / 1e6), max_ms: Math.round(Number(r.max_ns) / 1e6) })), o)
+  })
+obs.command('flow').description('how work flows on the boards: p50/p95 per role, last 24 h and 7 d, from the boards\' events (bin/flow)')
+  .argument('[project]', 'one project (client-name); default all').action(async (project: string | undefined) => {
+    // MM_FLOW_NOW: the time to read at (tests)
+    const o = fmt(), now = Number(process.env.MM_FLOW_NOW) || Date.now()
+    const { rows, ranges } = flowRows(await exportFlow(project, now), now)
+    if (o.format !== 'table') return console.log(o.format === 'json' ? JSON.stringify({ rows, events: ranges }, null, 2) : Bun.YAML.stringify({ rows, events: ranges }, null, 2))
+    if (!rows.length) console.log(`no flow samples${project ? ` for ${project}` : ''} in the last 7 days (each board's bin/flow sends them, every 5 min under mm cron)`)
+    print(rows.map(tableRow), o)
+    // the series are a cache of each board's event journal: say which events these numbers come from
+    for (const r of ranges) console.log(`events: ${r.project} seq ${r.first_seq ?? '?'}..${r.last_seq ?? '?'} (${r.first ?? '?'} to ${r.last ?? '?'})`)
+  })
+obs.command('item').description('one board item\'s path: its flow spans (queued, worked, handoff, review, blocked, rails, done) in time order')
+  .argument('<id>', 'the item id, e.g. sy-1a2').option('-p, --project <project>', 'the board (client-name), when two have the same id')
+  .action(async (id: string, opts) => {
+    const o = fmt(), spans = await itemPath(id, opts.project)
+    if (!spans.length) { console.error(`mm obs item: no flow spans for ${id} in the last 15 days (open segments are sent when they end)`); process.exit(1) }
+    print(spans.map(({ span_id: _s, ...x }) => x), o)
   })
 obs.command('logs').description('recent log lines (LogsQL filter optional)').argument('[query]', 'LogsQL, e.g. \'project:"acme-shop" service:board\'')
   .option('--since <dur>', 'window', '15m').option('-n, --lines <n>', 'lines', '50')
