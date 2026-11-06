@@ -191,8 +191,8 @@ export default function App() {
         </ToggleGroup>
         <Input ref={search} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search"
           className="h-7 w-56" />
-        <button type="button" className="ml-auto text-xs hover:underline" disabled={idSource === 'access'}
-          title={idSource === 'access' ? 'Signed in with Cloudflare Access' : 'Change who you are'}
+        <button type="button" className="ml-auto text-xs hover:underline" disabled={idSource === 'gateway'}
+          title={idSource === 'gateway' ? 'Your name comes from your sign-in' : 'Change who you are'}
           onClick={() => setIdentifying(true)}>
           <b>{actor || '…'}</b>{idSource === 'default' && <span className="text-swiss"> · who are you?</span>}
         </button>

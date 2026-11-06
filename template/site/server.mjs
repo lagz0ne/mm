@@ -1,5 +1,6 @@
 // Work site server: serves the built board and proxies an allowlist of Beads HTTP routes to `bd serve`.
-// It, not the browser, sets who made a change: BOARD_ACTOR now, the Cloudflare Access email later.
+// It, not the browser, sets who made a change: the gateway's signed assertion on the public side, else the visitor's
+// chosen name, else BOARD_ACTOR.
 // No dependencies: node server.mjs
 import http from 'node:http'
 import { execFile, fetch, httpSpan, log, routeOf, spawn, startMetrics, startSpan, withSpan } from '../bin/lib/obs.mjs'
@@ -51,37 +52,8 @@ const ALLOW = [
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css',
   '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' }
 
-// Cloudflare Access: when ACCESS_TEAM (e.g. <team>.cloudflareaccess.com) and ACCESS_AUD are set, every request must carry
-// a valid Access JWT (Cf-Access-Jwt-Assertion, RS256, signed by the team's keys, audience = the app's AUD tag);
-// the actor is the email in it. Without them the board relies on the proxy's basic auth (BOARD_ACTOR).
-const ACCESS_TEAM = process.env.ACCESS_TEAM || ''
-const ACCESS_AUD = process.env.ACCESS_AUD || ''
-let jwks = { at: 0, keys: new Map() }
-async function accessKeys() {
-  if (Date.now() - jwks.at < 3600e3 && jwks.keys.size) return jwks.keys
-  const r = await fetch(`https://${ACCESS_TEAM}/cdn-cgi/access/certs`).then((x) => x.json())
-  jwks = { at: Date.now(), keys: new Map((r.keys || []).map((k) => [k.kid, crypto.createPublicKey({ key: k, format: 'jwk' })])) }
-  return jwks.keys
-}
-async function accessEmail(req) {
-  const tok = req.headers['cf-access-jwt-assertion']
-  if (typeof tok !== 'string') return null
-  const [h, p, sig] = tok.split('.')
-  if (!sig) return null
-  try {
-    const head = JSON.parse(Buffer.from(h, 'base64url')); const body = JSON.parse(Buffer.from(p, 'base64url'))
-    const key = (await accessKeys()).get(head.kid)
-    if (!key || head.alg !== 'RS256') return null
-    if (!crypto.verify('RSA-SHA256', Buffer.from(`${h}.${p}`), key, Buffer.from(sig, 'base64url'))) return null
-    const aud = Array.isArray(body.aud) ? body.aud : [body.aud]
-    const now = Date.now() / 1000
-    if (!aud.includes(ACCESS_AUD) || body.exp < now || (body.nbf && body.nbf > now + 60) || body.iss !== `https://${ACCESS_TEAM}`) return null
-    return typeof body.email === 'string' ? body.email : null
-  } catch { return null }
-}
-
 // Self-identification: the visitor picks a name (cookie board_user). Lead and system names are reserved, so a human
-// can never post as a lead. A verified Access login, when configured, always wins.
+// can never post as a lead. On the public side the gateway's assertion always wins.
 const RESERVED = new Set([...ROLES, 'setup', 'wake', 'watchdog', 'smoke', 'ui', 'beads', 'system', 'admin', 'brain', 'mm-upstream', 'bridge'])
 function cookieUser(req) {
   const m = /(?:^|;\s*)board_user=([^;]*)/.exec(req.headers.cookie || '')
@@ -91,14 +63,12 @@ function cookieUser(req) {
 const validName = (n) => /^[a-z][a-z0-9._-]{1,31}$/.test(n) && !RESERVED.has(n) && !RESERVED.has(n.split('/')[0])
 function whoSource(req) {
   if (req.gateway) return 'gateway'
-  if (req.accessEmail) return 'access'
   if (cookieUser(req)) return 'self'
   return 'default'
 }
 
 function who(req) {
   if (req.gateway) return req.gateway.u // the public side: only the gateway's signed assertion says who
-  if (req.accessEmail) return req.accessEmail.split('@')[0]
   const self = cookieUser(req)
   if (self) return self
   const email = TRUST_ACCESS && req.headers[ACCESS_HEADER]
@@ -791,10 +761,6 @@ if (PUBLIC_PORT) http.createServer((req, res) => withSpan(httpSpan(req, res, req
 })).listen(PUBLIC_PORT, '127.0.0.1', () => log('info', `board public side on 127.0.0.1:${PUBLIC_PORT} (the gateway's assertion required)`))
 
 async function handle(req, res) {
-  if (ACCESS_TEAM && ACCESS_AUD) {
-    req.accessEmail = await accessEmail(req)
-    if (!req.accessEmail) return send(res, 403, { title: 'Cloudflare Access login required' })
-  }
   const url = new URL(req.url || '/', 'http://x')
   if (/^\/api\/(config|skills|leads)\//.test(url.pathname)) {
     cfg ||= configApi({ ROOT, ROLES, PROJECT, PASEO, BD, send, readBody, who })

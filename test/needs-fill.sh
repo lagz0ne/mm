@@ -76,6 +76,10 @@ mm fill acme-shop:TEAM my-team >/dev/null && ok "a non-secret project value as a
 check "an undeclared name is refused" sh -c "! \"$MM\" fill acme-shop:NOPE x"
 mm needs -p acme-shop >/dev/null; rc=$?
 [ $rc = 0 ] && ok "project complete: exit 0" || bad "project needs exit $rc"
+P2="$T/proj2"; mkdir -p "$P2"; echo "# from $P2/services.yaml" >"$MM_HOME/pc/projects/acme-tmpl.yaml"
+cp "$(dirname "$0")/../template/secrets.json" "$P2/secrets.json"
+check "a project with the template's secrets.json: no ACCESS_* row (Cloudflare Access is not used)" \
+  sh -c "\"$MM\" needs -p acme-tmpl -o json | jq -e 'type == \"array\" and all(.[]; .name | startswith(\"ACCESS_\") | not)'"
 
 echo '== no value anywhere'
 for v in "$V1" "$V2" "$V3" "$V4"; do check "no output contains ${v:0:14}…" sh -c "! grep -q '$v' '$LOG'"; done

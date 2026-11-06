@@ -83,7 +83,7 @@ export interface Meta {
 
 export const api = {
   meta: () => fetch('/api/meta').then((r) => (r.ok ? r.json() : Promise.reject(new Error(`meta ${r.status}`))) as Promise<Meta>),
-  whoami: () => fetch('/api/whoami').then((r) => r.json() as Promise<{ actor: string; source: 'access' | 'self' | 'default' }>),
+  whoami: () => fetch('/api/whoami').then((r) => r.json() as Promise<{ actor: string; source: 'gateway' | 'self' | 'default' }>),
   identify: async (name: string) => {
     const r = await fetch('/api/whoami', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) })
     const d = await r.json().catch(() => ({}))
