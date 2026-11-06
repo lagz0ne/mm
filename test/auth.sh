@@ -34,6 +34,9 @@ echo "# from $T/proj/services.yaml" >"$MM_HOME/pc/projects/acme-shop.yaml"; echo
 fakeproj() { mkdir -p "$1/.run"; printf 'client: acme\nname: %s\nproject: %s\nshort: x\nroot: %s\ntemplate_version: test\ncreated: test\n' "${2#acme-}" "$2" "$1" >"$1/.mm-answers.yaml"
   printf 'services:\n  board:\n    command: "true"\n    port: http\n    public: { name: %s, auth: required }\n' "$3" >"$1/services.yaml"; }
 fakeproj "$T/proj" acme-shop board-shop-acme; fakeproj "$T/proj2" acme-other board-other-acme
+# the projects' roles as the gateway knows them (leads/roles.json in each project's folder; the home card's role id)
+mkdir -p "$T/proj/leads" "$T/proj2/leads"; echo '{"roles":[{"id":"ops"},{"id":"code"}]}' >"$T/proj/leads/roles.json"
+echo '{"roles":[{"id":"review"},{"id":"platform"},{"id":"Bad Id"}]}' >"$T/proj2/leads/roles.json"
 # the system board, a project like the others; only the owner holds a role on it (the home page: sy-ukbz)
 fakeproj "$T/sys" system system; echo "# from $T/sys/services.yaml" >"$MM_HOME/pc/projects/system.yaml"; SYSB=system.example.org
 # each board's public port, from the host's own copy (as for a box): the board's gated side listens there, and the
@@ -190,11 +193,18 @@ const LIST = [
   { id: 'it-4', title: 'd', status: 'open', priority: 3, assignee: 'bob', labels: ['t2', 'signed-off', 'approved'], updated_at: '2026-11-03T10:00:00Z' },
   { id: 'it-5', title: 'e', status: 'closed', priority: 0, assignee: 'alex', labels: ['needs-you'], updated_at: '2026-11-06T10:00:00Z' },
 ]
+// bd ready (the queues, for the worst signal; sy-6h43): ops' head has waited 40 min, a person's item is no role's queue
+const READY = [
+  { id: 'it-6', title: '<b>queued</b>', status: 'open', priority: 1, assignee: 'ops', labels: [], updated_at: new Date(Date.now() - 40 * 60e3).toISOString() },
+  { id: 'it-7', title: 'g', status: 'open', priority: 2, assignee: 'ops', labels: [], updated_at: new Date(Date.now() - 5 * 60e3).toISOString() },
+  { id: 'it-8', title: 'h', status: 'open', priority: 1, assignee: 'alex', labels: [], updated_at: '2026-11-01T10:00:00Z' },
+]
 http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
   fs.appendFileSync(logf, JSON.stringify({ m: req.method, p: req.url, b: b ? JSON.parse(b) : null }) + '\n')
   res.writeHead(200, { 'content-type': 'application/json' })
   res.end(JSON.stringify(req.method === 'GET' && /\/issues\/it-1/.test(req.url) ? { id: 'it-1', labels: ['t2', 'bug'] }
-    : req.method === 'GET' && /^\/v0\/beads\/issues(\?|$)/.test(req.url) ? { items: LIST, has_more: false } : { ok: true, items: [] }))
+    : req.method === 'GET' && /^\/v0\/beads\/issues(\?|$)/.test(req.url) ? { items: LIST, has_more: false }
+    : req.method === 'GET' && /^\/v0\/beads\/ready(\?|$)/.test(req.url) ? { items: READY, has_more: false } : { ok: true, items: [] }))
 }) }).listen(Number(port), '127.0.0.1')
 EOF
 node "$T/fakebd.mjs" $BDP "$T/bd.jsonl" & FB=$!
@@ -238,11 +248,14 @@ check "a comment carries its author's role" bash -c "[ \$(w POST '$MA' /it-1/com
 check "...and its author is the signed-in person, whatever the body says" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"x\",\"author\":\"owner\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.author == \"alex\"'"
 
 echo "== the board's summary for the home page (/api/summary: counts only, read-only; sy-ukbz)"
-sm() { curl -s -o "$T/sm" -w '%{http_code}' -H "x-forwarded-host: ${2:-$BOARD}" ${1:+-H "x-mm-assertion: $1"} "http://127.0.0.1:$BP/api/summary"; }
+sm() { curl -s -o "$T/sm" -w '%{http_code}' -H "x-forwarded-host: ${2:-$BOARD}" ${1:+-H "x-mm-assertion: $1"} "http://127.0.0.1:$BP/api/summary${3-?signal=1}"; }
 export -f sm
-check "a member: open, P0, blocked, needs-you, assigned to them, last activity (closed items not counted)" bash -c "[ \$(sm '$MA') = 200 ] && jq -e '. == {open:4,p0:2,blocked:1,needs_you:1,mine:2,last:\"2026-11-05T10:00:00.000Z\"}' '$T/sm'"
-check "...whole numbers and one time only: no item text (a title holds a script)" bash -c "sm '$MA' >/dev/null && ! grep -qi -e script -e alert -e title '$T/sm' && jq -e '[.[] | select(type == \"number\" and . == floor)] | length == 5' '$T/sm'"
+check "a member: open, P0, blocked, needs-you, assigned to them, last activity (closed items not counted)" bash -c "[ \$(sm '$MA') = 200 ] && jq -e '{open,p0,blocked,needs_you,mine,last} == {open:4,p0:2,blocked:1,needs_you:1,mine:2,last:\"2026-11-05T10:00:00.000Z\"}' '$T/sm'"
+check "...the worst signal (sy-6h43): ops' queue, 2 items, its head waits 40 min; the oldest needs-you in minutes; no approvals (not the owner)" bash -c "sm '$MA' >/dev/null && jq -e '.queue_role == \"ops\" and .queue == 2 and .queue_min >= 40 and .queue_min < 45 and .approvals == 0 and .needs_you_min > 1000' '$T/sm'"
+check "...whole numbers and one time only: no item text (a title holds a script)" bash -c "sm '$MA' >/dev/null && ! grep -qi -e script -e alert -e title '$T/sm' && jq -e '([.[] | select(type == \"number\" and . == floor)] | length == 9) and ([to_entries[] | select(.value | type == \"string\") | .key] == [\"last\", \"queue_role\"])' '$T/sm'"
 check "the owner: needs-you also counts the signed-off t2 items that wait for approved" bash -c "[ \$(sm '$OA') = 200 ] && jq -e '.needs_you == 2 and .mine == 0 and .open == 4' '$T/sm'"
+check "...and says how many of them are approvals (1)" bash -c "sm '$OA' >/dev/null && jq -e '.approvals == 1' '$T/sm'"
+check "without ?signal=1 (a gateway on an older mm): only the five counts and the time, as before" bash -c "[ \$(sm '$OA' '' '') = 200 ] && jq -e 'keys == [\"blocked\",\"last\",\"mine\",\"needs_you\",\"open\",\"p0\"]' '$T/sm'"
 check "a viewer may read it (200)" test "$(sm "$(mk vic viewer "$BOARD" 60000)")" = 200
 check "no assertion: 401; another board's: 401; an expired one: 401" bash -c "[ \$(sm '') = 401 ] && [ \$(sm '$(mk alex member "$BOARD2" 60000)') = 401 ] && [ \$(sm '$(mk alex member "$BOARD" -1000)') = 401 ]"
 
@@ -268,6 +281,17 @@ http.createServer((req, res) => {
   if (mode === 'extra') return json({ ...GOOD, title: '<script>alert(2)</script>' })
   if (mode === 'badnum') return json({ ...GOOD, open: 1e7, p0: 1.5 })
   if (mode === 'sys') return json({ open: 7, p0: 0, blocked: 0, needs_you: 0, mine: 0 })
+  // the worst signal (sy-6h43): numbers and one role id
+  const SIG = { ...GOOD, needs_you: 0, needs_you_min: 0, approvals: 0, queue: 3, queue_min: 40, queue_role: 'review' }
+  if (mode === 'queue') return json(SIG)
+  if (mode === 'hot') return json({ ...SIG, needs_you: 2, approvals: 1, needs_you_min: 190 })
+  if (mode === 'approval') return json({ ...SIG, needs_you: 1, approvals: 1, needs_you_min: 20 })
+  if (mode === 'clear') return json({ ...SIG, blocked: 0, queue: 0, queue_min: 0, queue_role: undefined })
+  if (mode === 'badrole') return json({ ...SIG, queue_role: 'qa' })
+  if (mode === 'oddrole') return json({ ...SIG, queue_role: 'Review' })
+  if (mode === 'htmlrole') return json({ ...SIG, queue_role: '<b>review</b>' })
+  if (mode === 'longrole') return json({ ...SIG, queue_role: 'r'.repeat(40) })
+  if (mode === 'badsig') return json({ ...SIG, queue_min: 1.5 })
   json(GOOD)
 }).listen(Number(port), '127.0.0.1')
 EOF
@@ -294,7 +318,7 @@ check "/s/done (where a link lands) is the same home page" bash -c "gw -H 'cooki
 hp "$SB" >/dev/null
 check "the owner sees every project and the system board, as owner" bash -c "[ \$(cards) = 3 ] && for p in acme-other acme-shop system; do cardof \$p | grep -q 'You are <b>owner</b>' || exit 1; done"
 check "...each with its board's counts (the owner's needs-you counts the signed-off t2s)" bash -c "cardof acme-shop | grep -q '<dt>Needs you</dt><dd>2</dd>' && cardof acme-shop | grep -q '<dt>Mine</dt><dd>0</dd>' && cardof acme-other | grep -q '<dt>Open</dt><dd>3</dd>' && cardof system | grep -q '<dt>Open</dt><dd>7</dd>'"
-check "...each board asked once, with its own fresh assertion: this person, this role, that board's host, 60 s" bash -c "[ \$(wc -l <'$T/fb2.jsonl') = 1 ] && [ \$(wc -l <'$T/sys.jsonl') = 1 ] && node '$T/verify.mjs' \"\$(jq -r .a '$T/fb2.jsonl')\" '$MM_HOME/auth/signing.key' '$BOARD2' boss owner && node '$T/verify.mjs' \"\$(jq -r .a '$T/sys.jsonl')\" '$MM_HOME/auth/signing.key' '$SYSB' boss owner && jq -e '.p == \"/api/summary\" and .h == \"$BOARD2\"' '$T/fb2.jsonl'"
+check "...each board asked once, with its own fresh assertion: this person, this role, that board's host, 60 s" bash -c "[ \$(wc -l <'$T/fb2.jsonl') = 1 ] && [ \$(wc -l <'$T/sys.jsonl') = 1 ] && node '$T/verify.mjs' \"\$(jq -r .a '$T/fb2.jsonl')\" '$MM_HOME/auth/signing.key' '$BOARD2' boss owner && node '$T/verify.mjs' \"\$(jq -r .a '$T/sys.jsonl')\" '$MM_HOME/auth/signing.key' '$SYSB' boss owner && jq -e '.p == \"/api/summary?signal=1\" and .h == \"$BOARD2\"' '$T/fb2.jsonl'"
 check "an assertion for one board (acme-other's) replayed to another (acme-shop's): 401" bash -c "[ \$(sm \"\$(tail -1 '$T/fb2.jsonl' | jq -r .a)\") = 401 ]"
 check "the projects' .run/services.json (above: claiming each other's hosts and the gateway's) moved no card or link" bash -c "cardof acme-shop | grep -qF 'b=$BOARD&amp;' && cardof acme-other | grep -qF 'b=$BOARD2&amp;' && ! grep -q '$AUTH' '$T/hp'"
 mm grant alex acme-other >/dev/null; hp "$SA" >/dev/null
@@ -316,6 +340,33 @@ check "a board that sends 10 MB: only its own card fails, cut at 16 KB (took ${T
 echo redirect >"$T/fb2.mode"; hp "$SB" >/dev/null
 check "a board that redirects: not followed; only its card fails" bash -c "sleep 0.3; cardof acme-other | grep -q 'Summary unavailable' && cardof system | grep -q '<dt>Open</dt><dd>7</dd>' && ! grep -q followed '$T/fb2.jsonl'"
 check "the gateway logs each failed card, with no assertion in the log" bash -c "grep 'board summary unavailable' '$T/gw.log' | grep -q timeout && grep 'board summary unavailable' '$T/gw.log' | grep -q 'too big' && grep 'board summary unavailable' '$T/gw.log' | grep -q 'not a summary' && ! grep -qF \"\$(tail -1 '$T/fb2.jsonl' | jq -r .a | cut -d. -f2)\" '$T/gw.log'"
+echo "== the home card's worst signal (sy-6h43): the gateway's own words from a board's numbers and a checked role id"
+worst() { cardof "$1" | grep -o '<p class="worst[^"]*">[^<]*</p>'; }
+export -f worst
+echo queue >"$T/fb2.mode"; hp "$SB" >/dev/null
+check "a queue: \"review queue 3, oldest 40 min\", not red" bash -c "[ \"\$(worst acme-other)\" = '<p class=\"worst\">review queue 3, oldest 40 min</p>' ]"
+check "...the real board (acme-shop, the owner): needs you 2 (1 approval), oldest its age, red" bash -c "worst acme-shop | grep -qE '^<p class=\"worst hot\">needs you 2 \(1 approval\), oldest [0-9]+ (min|h|d)</p>\$'"
+check "...a board on an older template (no signal, nothing waiting on a human): no line" bash -c "cardof system | grep -q '<dt>Open</dt><dd>7</dd>' && ! cardof system | grep -q 'class=\"worst'"
+hp "$SA" >/dev/null
+check "...a member of acme-shop: needs you 1, red (a needs-you item), from the board's numbers only" bash -c "worst acme-shop | grep -qE '^<p class=\"worst hot\">needs you 1, oldest [0-9]+ (min|h|d)</p>\$' && ! grep -qi -e queued -e '<b>queued' '$T/hp'"
+echo hot >"$T/fb2.mode"; hp "$SB" >/dev/null
+check "needs-you with an approval among them: \"needs you 2 (1 approval), oldest 3 h\", red" bash -c "[ \"\$(worst acme-other)\" = '<p class=\"worst hot\">needs you 2 (1 approval), oldest 3 h</p>' ]"
+echo approval >"$T/fb2.mode"; hp "$SB" >/dev/null
+check "only an approval wait: \"1 approval waits for you, oldest 20 min\", red" bash -c "[ \"\$(worst acme-other)\" = '<p class=\"worst hot\">1 approval waits for you, oldest 20 min</p>' ]"
+echo clear >"$T/fb2.mode"; hp "$SB" >/dev/null
+check "nothing waiting: \"nothing waiting\", not red" bash -c "[ \"\$(worst acme-other)\" = '<p class=\"worst\">nothing waiting</p>' ]"
+check "red only when it needs the owner: no other card line is red" bash -c "! grep -q 'worst hot' <(cardof acme-other) && ! grep -q 'worst hot' <(cardof system)"
+for m in badrole oddrole htmlrole longrole badsig; do echo $m >"$T/fb2.mode"; hp "$SB" >/dev/null; cp "$T/hp" "$T/hp-$m"; done
+check "a role id that is not that project's (qa): the card fails (unavailable)" bash -c "tr '\n' ' ' <'$T/hp-badrole' | sed 's#</section>#\n#g' | grep -F '<h2>acme-other</h2>' | grep -q 'Summary unavailable'"
+check "...an odd role id (capitals, HTML, 40 letters): the card fails, nothing of it on the page" bash -c "for m in oddrole htmlrole longrole; do tr '\n' ' ' <\"$T/hp-\$m\" | sed 's#</section>#\n#g' | grep -F '<h2>acme-other</h2>' | grep -q 'Summary unavailable' || exit 1; done; ! grep -qi -e '<b>review' -e rrrrrrrrrr -e 'Review queue' $T/hp-oddrole $T/hp-htmlrole $T/hp-longrole"
+check "...a signal number that isn't whole: the card fails" bash -c "tr '\n' ' ' <'$T/hp-badsig' | sed 's#</section>#\n#g' | grep -F '<h2>acme-other</h2>' | grep -q 'Summary unavailable'"
+check "...the other cards stay (acme-shop's line is there)" bash -c "grep -q 'needs you 2 (1 approval)' '$T/hp-badrole'"
+# the project's roles file leads out of its folder (a link): the gateway reads none, so even a real role id fails
+mv "$T/proj2/leads/roles.json" "$T/outside-roles.json"; ln -s "$T/outside-roles.json" "$T/proj2/leads/roles.json"; sleep 0.3
+echo queue >"$T/fb2.mode"; hp "$SB" >/dev/null
+check "a roles.json that is a link out of the project: not read; the card with a role id fails" bash -c "cardof acme-other | grep -q 'Summary unavailable'"
+rm -f "$T/proj2/leads/roles.json"; mv "$T/outside-roles.json" "$T/proj2/leads/roles.json"; sleep 0.3; hp "$SB" >/dev/null
+check "...the file back in the folder: the line is back" bash -c "worst acme-other | grep -q 'review queue 3'"
 echo good >"$T/fb2.mode"
 # a box (in its own services.yaml) claims acme-other's board host: the host is refused for both
 fakeproj "$T/proj4" acme-fourth board-other-acme; echo "# from $T/proj4/services.yaml" >"$MM_HOME/pc/boxes/acme-fourth.yaml"; sleep 0.5

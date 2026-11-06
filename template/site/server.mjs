@@ -337,9 +337,10 @@ async function sendFlow(res) {
 // The worst signal (sy-6h43), whole numbers and one role id only (the gateway makes the text and checks the id against
 // this project's roles): "needs_you_min", the oldest of the needs_you items in minutes since its last update; the queue
 // whose head waits longest (bd ready, as wake hands it): "queue_role", its length "queue" and that wait "queue_min".
-async function sendSummary(req, res) {
+// Only when asked (?signal=1, the gateway that knows them), so a gateway that reads only the five counts keeps working.
+async function sendSummary(req, res, signal = false) {
   const me = who(req), owner = req.gateway?.r === 'owner'
-  const [items, ready] = await Promise.all([allItems(), readyItems()])
+  const [items, ready] = await Promise.all([allItems(), signal ? readyItems() : []])
   await Promise.race([refreshMeta().catch(() => {}), new Promise((ok) => setTimeout(ok, 1000))]) // the gateway waits 3 s in all
   const open = items.filter((i) => i.status !== 'closed'), labels = (i) => (Array.isArray(i.labels) ? i.labels : [])
   let last = meta.lastTs
@@ -360,11 +361,12 @@ async function sendSummary(req, res) {
     needs_you: waits.length,
     mine: open.filter((i) => i.assignee && i.assignee === me).length,
     ...(last > 0 ? { last: new Date(last).toISOString() } : {}),
+    ...(signal ? {
     needs_you_min: waits.length ? Math.max(...waits.map(min)) : 0,
     approvals: open.filter(approval).length,
     queue: worst ? worst.n : 0,
     queue_min: worst ? worst.min : 0,
-    ...(worst ? { queue_role: worst.role } : {}),
+    ...(worst ? { queue_role: worst.role } : {}) } : {}),
   })
 }
 
@@ -767,7 +769,7 @@ async function handle(req, res) {
     return send(res, 200, { actor: name, source: 'self' })
   }
   if (url.pathname === '/api/meta' && req.method === 'GET') return sendMeta(res)
-  if (url.pathname === '/api/summary' && req.method === 'GET') return sendSummary(req, res).catch(() => send(res, 502, { title: 'summary failed' }))
+  if (url.pathname === '/api/summary' && req.method === 'GET') return sendSummary(req, res, url.searchParams.get('signal') === '1').catch(() => send(res, 502, { title: 'summary failed' }))
   if (url.pathname === '/api/pull' && req.method === 'GET') return pull().then((d) => send(res, 200, d), (e) => send(res, 502, { title: `pull failed: ${e.message}` }))
   if (url.pathname === '/api/flow' && req.method === 'GET') return sendFlow(res)
   if (url.pathname === '/api/links' && req.method === 'GET') return sendLinks(res)
