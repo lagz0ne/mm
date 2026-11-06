@@ -395,9 +395,13 @@ const FILE_TYPES = { '.html': 'text/html; charset=utf-8', '.md': 'text/markdown;
 const git = (args) => new Promise((ok, no) =>
   execFile('git', ['-C', CODE, ...args], { maxBuffer: 8 << 20 }, (e, out) => (e ? no(e) : ok(out))))
 const ID_RE = /^[a-z]+-[a-z0-9]+(\.[0-9]+)*$/
+// A board with no code (the system board, or a project before its first commit) is normal: no git call, no error.
+const hasCode = () => fs.existsSync(path.join(CODE, '.git'))
 
 async function sendContent(res, id) {
   if (!ID_RE.test(id)) return send(res, 400, { title: 'bad id' })
+  // rev-list answers an empty line (exit 0) in a repo with no commits yet, where git log would fail
+  if (!hasCode() || !(await git(['rev-list', '-n1', '--all'])).trim()) return send(res, 200, { id, files: [] })
   const pat = id.replaceAll('.', '\\.') + '([^.0-9a-z]|$)'
   const out = await git(['log', '-E', `--grep=${pat}`, '--format=%x1e%H%x1f%h%x1f%s%x1f%cI%x1f%an', '--name-status', '--no-renames'])
   const files = new Map()
@@ -450,7 +454,8 @@ async function sendWorkers(res, id) {
   let list = []
   try { list = await P_.list({ project: PROJECT, item: id }, { archived: true }) } catch {}
   const branch = `w-${id}`
-  const has = (await run('git', ['-C', CODE, 'rev-parse', '--verify', '--quiet', branch])).trim()
+  // for-each-ref answers an empty line (exit 0) for a branch that isn't there, so a missing branch is not a failed call
+  const has = hasCode() ? (await run('git', ['-C', CODE, 'for-each-ref', '--format=%(refname)', `refs/heads/${branch}`])).trim() : ''
   const commits = has ? (await run('git', ['-C', CODE, 'log', '--format=%h%x1f%an%x1f%cI%x1f%s', `main..${branch}`])).trim().split('\n').filter(Boolean)
     .map((l) => { const [sha, author, date, subject] = l.split('\x1f'); return { sha, author, date, subject } }) : []
   const stat = has ? (await run('git', ['-C', CODE, 'diff', '--stat=100', `main...${branch}`])).trim() : ''

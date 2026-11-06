@@ -17,4 +17,13 @@ const child = spawn(cmd[0], cmd.slice(1), { stdio: ['inherit', 'inherit', 'pipe'
 child.stderr.on('data', (d) => { process.stderr.write(d); tail = (tail + d).slice(-1500) })
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => child.kill(sig))
 child.on('error', (e) => { span.set('error', e.message); process.exit(127) })
-child.on('close', (code, sig) => { if ((code || sig) && tail) span.set('stderr_tail', tail); if (sig) span.set('signal', sig); process.exit(code ?? 128) })
+// bd's answers to its caller, not failures of the board: a guarded update that lost (exit 13), an item that can't be
+// claimed or closed, an id that isn't there. Anything else (Dolt down, a crash) stays a failure.
+const BD_REFUSED = /issue not claimable|already claimed|cannot close blocked issue|no issues found matching|issue [a-z]+-[a-z0-9.]+ not found|precondition failed/i
+const refusedBy = (code) => name.startsWith('bd') && (code === 13 || (code === 1 && BD_REFUSED.test(tail)))
+child.on('close', (code, sig) => {
+  if ((code || sig) && tail) span.set('stderr_tail', tail)
+  if (sig) span.set('signal', sig)
+  if (!sig && code && refusedBy(code)) span.refused = true
+  process.exit(code ?? 128)
+})
