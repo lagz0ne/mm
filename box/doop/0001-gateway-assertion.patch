@@ -1,0 +1,583 @@
+From 2c467f4f9d89eccd2584b29fb3e516de0b44858e Mon Sep 17 00:00:00 2001
+From: platform <platform@system.local>
+Date: Fri, 6 Nov 2026 11:27:19 +0000
+Subject: [PATCH] mm: one sign-in with the boards (accept mm's gateway
+ assertion)
+
+Behind mm's sign-in gateway, Doop opens a second listener (MM_GATEWAY_PORT,
+4401) for its public host. Every request and WebSocket upgrade there needs
+the gateway's X-Mm-Assertion: base64url(JSON {u, r, h, exp, n}) "." an
+Ed25519 signature, checked with the gateway's public key
+(MM_GATEWAY_PUBLIC_KEY_FILE or MM_GATEWAY_PUBLIC_KEY), for MM_GATEWAY_HOST,
+not expired, a known role and name.
+
+- The person's Doop account is made on their first visit (linked by an
+  mm-gateway account row, never by email; the gateway's email domain is
+  refused to Doop's own sign-up). The request runs as a server-side session
+  of that account: the client's Cookie and Authorization are dropped and no
+  Set-Cookie leaves, so there is no second login and nothing outlives the
+  gateway's say-so.
+- Doop's own sign-in, sign-up and account routes are off there (only
+  GET /api/auth/get-session passes).
+- owner and designer edit every canvas of this Doop; member and viewer only
+  look (GET/HEAD, every canvas at 'view'); rooms of someone with no fresh
+  assertion close after 10 minutes.
+- Doop's own listener (PORT) is unchanged. Without a gateway key there is
+  no second listener and Doop behaves as before.
+---
+ server/access.ts        |   6 +
+ server/auth.ts          |  12 ++
+ server/index.ts         |  12 ++
+ server/mmGateway.ts     | 302 ++++++++++++++++++++++++++++++++++++++++
+ server/store.ts         |  10 ++
+ server/workspaces.ts    |   3 +
+ tests/mmGateway.test.ts |  78 +++++++++++
+ 7 files changed, 423 insertions(+)
+ create mode 100644 server/mmGateway.ts
+ create mode 100644 tests/mmGateway.test.ts
+
+diff --git a/server/access.ts b/server/access.ts
+index 1cee57b..3466972 100644
+--- a/server/access.ts
++++ b/server/access.ts
+@@ -1,6 +1,7 @@
+ import type { Canvas, ClientMessage } from '../shared/types.ts'
+ import { roleAllows, type CanvasRole } from '../shared/canvasRole.ts'
+ import { hasRole, isWorkspaceMember } from './workspaces.ts'
++import { gatewayCap } from './mmGateway.ts'
+ 
+ /**
+  * Canvas access, Figma-style: private by default. The owner always has
+@@ -31,6 +32,11 @@ export function isAdmin(user: { role?: string | null } | undefined): boolean {
+  *  owner, invited members and workspace members edit; anyone else gets the
+  *  share link's level. */
+ export function canvasRole(userId: string | undefined, canvas: Canvas): CanvasRole | null {
++  /* mm fork: a person the sign-in gateway let in has their project role's
++     level on every canvas of this (per-project) Doop, and nothing more:
++     not even a share link lifts a viewer (server/mmGateway.ts) */
++  const gateway = gatewayCap(userId)
++  if (gateway !== undefined) return gateway
+   if (!canvas.ownerId) return 'edit'
+   if (!userId) return null
+   if (hasDurableCanvasAccess(userId, canvas)) return 'edit'
+diff --git a/server/auth.ts b/server/auth.ts
+index 2aa23b7..860b2fb 100644
+--- a/server/auth.ts
++++ b/server/auth.ts
+@@ -13,6 +13,7 @@ import { acceptInvites } from './workspaces.ts'
+ import { purgeUserData } from './accountDeletion.ts'
+ import { createHash } from 'node:crypto'
+ import { createRemoteJWKSet, jwtVerify } from 'jose'
++import { isGatewayCreating, isGatewayEmail, mmGateway } from './mmGateway.ts'
+ 
+ /**
+  * better-auth on our own database: email/password + cookie sessions now;
+@@ -457,9 +458,18 @@ function buildAuth() {
+       user: {
+         create: {
+           before: async (user) => {
++            /* mm fork: the gateway's people (server/mmGateway.ts) are made
++               only by the gateway, and only it may use their domain */
++            if (isGatewayCreating()) return
++            if (isGatewayEmail(user.email)) {
++              throw new APIError('BAD_REQUEST', { message: 'Sign up is restricted: that address is for the sign-in gateway.' })
++            }
+             assertSignupDomainAllowed(user.email)
+           },
+           after: async (user) => {
++            /* mm fork: a person from the gateway works on the project's
++               canvases; no first canvas of their own, no demo */
++            if (isGatewayCreating()) return
+             const first = (user.name || 'Your').split(/\s+/)[0]
+             const canvas = store.createCanvas(`${first}'s first canvas`, user.id)
+             demo.markPending(canvas.id)
+@@ -508,6 +518,8 @@ function buildAuth() {
+          session's cookie. Single use, hashed at rest, two minutes to live —
+          it travels through a doop:// URL that lands in browser history. */
+       oneTimeToken({ storeToken: 'hashed', expiresIn: 2 }),
++      /* mm fork: sessions for the sign-in gateway's people (server-only) */
++      mmGateway(),
+       ...(oidc
+         ? [
+             genericOAuth({
+diff --git a/server/index.ts b/server/index.ts
+index 055f471..6e3b132 100644
+--- a/server/index.ts
++++ b/server/index.ts
+@@ -34,6 +34,7 @@ import {
+ } from './access.ts'
+ import { isLinkAccess, roleAllows, type CanvasRole } from '../shared/canvasRole.ts'
+ import { auth, initAuth, syncAdmins, getUserName, loginProvidersConfig } from './auth.ts'
++import { gatewayCap, loadGatewayConfig, startGatewaySide } from './mmGateway.ts'
+ import { adminRouter } from './admin.ts'
+ import { communityRouter, parseListing, publishableFrames } from './community.ts'
+ import { automationsRouter, startScheduler } from './automations.ts'
+@@ -285,6 +286,12 @@ setInterval(() => {
+   }
+ }, 5000)
+ 
++/* mm fork: a room of someone the sign-in gateway no longer vouches for (no
++   assertion for a while) closes; its reconnect asks the gateway again */
++setInterval(() => {
++  for (const c of conns.values()) if (gatewayCap(c.userId) === null) c.ws.close(4403, 'no access')
++}, 60_000).unref()
++
+ actions.wire(broadcast, agentTouch)
+ /* after the room has been told: email for the people who were not in it */
+ onCanvasEvent(commentNotifications.onCanvasEvent)
+@@ -2281,6 +2288,10 @@ if (env.isProduction) {
+ 
+ const server = http.createServer(app)
+ const wss = new WebSocketServer({ server, path: '/ws' })
++/* mm fork: behind mm's sign-in gateway, the public side is its own listener
++   (server/mmGateway.ts); none without a gateway key. Read at boot, so a
++   half-configured gateway stops the server here. */
++const gatewayConfig = loadGatewayConfig()
+ 
+ wss.on('connection', (ws, upgradeReq) => {
+   /* the session cookie rides the upgrade request; resolve it once */
+@@ -2417,6 +2428,7 @@ wss.on('connection', (ws, upgradeReq) => {
+   })
+ })
+ 
++if (gatewayConfig) startGatewaySide(gatewayConfig, auth, app, wss)
+ server.listen(PORT, () => {
+   console.log(`⟡ doop server     http://localhost:${PORT}`)
+   /* comments anchored before element ids: stamped now, while serving, so a
+diff --git a/server/mmGateway.ts b/server/mmGateway.ts
+new file mode 100644
+index 0000000..8b94b27
+--- /dev/null
++++ b/server/mmGateway.ts
+@@ -0,0 +1,302 @@
++/**
++ * One sign-in with mm's boards: this Doop behind mm's sign-in gateway (the
++ * mm fork's change; MM-GATEWAY.md says what and why).
++ *
++ * mm's gateway answers the web proxy's forward-auth for every request to
++ * this Doop's public host. When it lets a request through, it adds
++ * `X-Mm-Assertion`: base64url(JSON {u, r, h, exp, n}) "." an Ed25519
++ * signature over that first part, made with the gateway's private key. u is
++ * the person's name, r their role on the project (owner, designer, member or
++ * viewer), h the host it is for, exp a time 60 s ahead (ms), n a nonce.
++ *
++ * With the gateway's public key configured (MM_GATEWAY_PUBLIC_KEY_FILE or
++ * MM_GATEWAY_PUBLIC_KEY, plus MM_GATEWAY_HOST), Doop opens a second
++ * listener (MM_GATEWAY_PORT, 4401) for the public side:
++ *   - every request (and every WebSocket upgrade) needs a valid assertion
++ *     for MM_GATEWAY_HOST; anything else is 401;
++ *   - the person is the assertion's: their Doop account is made on their
++ *     first visit (linked by an `mm-gateway` account row, never by email),
++ *     and the request runs as a server-side session of that account. The
++ *     client's own Cookie and Authorization headers are dropped, and no
++ *     Set-Cookie leaves: the browser never holds a Doop session here, so no
++ *     second login, and nothing outlives the gateway's say-so;
++ *   - Doop's own sign-in, sign-up and account routes are refused (only
++ *     GET /api/auth/get-session passes);
++ *   - owner and designer edit; member and viewer only look (GET and HEAD,
++ *     and every canvas at 'view' at most).
++ * Doop's own listener (PORT) is unchanged: its own login, agent keys, MCP.
++ * Without a gateway key there is no second listener and Doop is as before.
++ */
++import { AsyncLocalStorage } from 'node:async_hooks'
++import { createPublicKey, verify, type KeyObject } from 'node:crypto'
++import { readFileSync } from 'node:fs'
++import http from 'node:http'
++import type { Duplex } from 'node:stream'
++import type { WebSocketServer } from 'ws'
++import { z } from 'zod'
++import { APIError, createAuthEndpoint } from 'better-auth/api'
++import { setSessionCookie } from 'better-auth/cookies'
++import type { CanvasRole } from '../shared/canvasRole.ts'
++
++export type GatewayRole = 'owner' | 'designer' | 'member' | 'viewer'
++const ROLES: readonly string[] = ['owner', 'designer', 'member', 'viewer']
++/** The gateway's names (the boards check the same pattern). */
++const NAME = /^[a-z][a-z0-9._-]{1,31}$/
++/** The account row that ties a Doop user to a gateway name. */
++export const GATEWAY_PROVIDER = 'mm-gateway'
++/** The email Doop's user row needs. No mail is ever sent there, and Doop's own sign-up refuses the domain. */
++export const GATEWAY_EMAIL_DOMAIN = 'gateway.mm.invalid'
++
++/* ------------------------------------------------------------ config */
++
++export interface GatewayConfig {
++  key: KeyObject
++  host: string
++  port: number
++}
++
++/** The gateway side's config, or null when no gateway is configured. A key without a host (or the other way round)
++ *  refuses to boot: half a gateway is a misconfiguration, never a mode. */
++export function loadGatewayConfig(e: NodeJS.ProcessEnv = process.env): GatewayConfig | null {
++  const file = e.MM_GATEWAY_PUBLIC_KEY_FILE?.trim(), inline = e.MM_GATEWAY_PUBLIC_KEY?.trim()
++  const host = (e.MM_GATEWAY_HOST || '').trim().toLowerCase()
++  if (!file && !inline) {
++    if (host || e.MM_GATEWAY_PORT) throw new Error('MM_GATEWAY_HOST/MM_GATEWAY_PORT are set but no gateway key (MM_GATEWAY_PUBLIC_KEY_FILE)')
++    return null
++  }
++  const key = createPublicKey(inline ? inline.replace(/\\n/g, '\n') : readFileSync(file!, 'utf8'))
++  if (key.asymmetricKeyType !== 'ed25519') throw new Error(`the gateway key is ${key.asymmetricKeyType}, not ed25519`)
++  if (!host) throw new Error('a gateway key needs MM_GATEWAY_HOST: the public host its assertions must name')
++  const port = Number(e.MM_GATEWAY_PORT || 4401)
++  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`MM_GATEWAY_PORT is not a port: "${e.MM_GATEWAY_PORT}"`)
++  return { key, host, port }
++}
++
++/* --------------------------------------------------------- assertion */
++
++/** The person and role of a valid assertion for `host`, or null: the signature, the host, a future exp, a known role
++ *  and a gateway name must all hold. */
++export function verifyAssertion(header: unknown, key: KeyObject, host: string, now = Date.now()): { u: string; r: GatewayRole } | null {
++  const parts = (typeof header === 'string' ? header : '').split('.')
++  if (parts.length !== 2 || !parts[0] || !parts[1]) return null
++  const [body, sig] = parts
++  try {
++    if (!verify(null, Buffer.from(body), key, Buffer.from(sig, 'base64url'))) return null
++    const c = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'))
++    if (!c || typeof c !== 'object') return null
++    if (c.h !== host || typeof c.exp !== 'number' || !(c.exp > now)) return null
++    if (!ROLES.includes(c.r) || typeof c.u !== 'string' || !NAME.test(c.u)) return null
++    return { u: c.u, r: c.r as GatewayRole }
++  } catch {
++    return null
++  }
++}
++
++/** What a gateway role may do on this Doop's canvases: owner and designer edit, member and viewer look. */
++export function capFor(role: GatewayRole): CanvasRole {
++  return role === 'owner' || role === 'designer' ? 'edit' : 'view'
++}
++
++/* ------------------------------------------------- who came through */
++
++/** How long the role of a person's last assertion holds for their open rooms (WebSockets get no new assertion; a
++ *  room past this closes, and its reconnect goes through the gateway again). */
++const ACCESS_MS = 10 * 60_000
++const seen = new Map<string, { cap: CanvasRole; at: number }>()
++
++/** For canvasRole: a gateway person's cap on every canvas here, null once their last assertion is too old, and
++ *  undefined for anyone else (Doop's own rules apply). */
++export function gatewayCap(userId: string | undefined, now = Date.now()): CanvasRole | null | undefined {
++  const s = userId ? seen.get(userId) : undefined
++  if (!s) return undefined
++  return now - s.at < ACCESS_MS ? s.cap : null
++}
++
++/* ---------------------------------------------- accounts and sessions */
++
++/** Set while the gateway makes an account: the user hooks (server/auth.ts) let the gateway's domain through only then,
++ *  and skip the sign-up extras (first canvas, demo). */
++export const gatewayCreating = new AsyncLocalStorage<true>()
++export const isGatewayCreating = () => gatewayCreating.getStore() === true
++export const isGatewayEmail = (email: string) => email.toLowerCase().endsWith(`@${GATEWAY_EMAIL_DOMAIN}`)
++
++/** better-auth plugin: one server-only endpoint (no path, so no HTTP route) that finds or makes the account for a
++ *  gateway name and opens a session for it. */
++export const mmGateway = () => ({
++  id: 'mm-gateway',
++  endpoints: {
++    mmGatewaySession: createAuthEndpoint({ method: 'POST', body: z.object({ name: z.string().regex(NAME) }) }, async (ctx) => {
++      const { name } = ctx.body
++      const ia = ctx.context.internalAdapter
++      const account = await ia.findAccountByProviderId(name, GATEWAY_PROVIDER)
++      let user = account ? await ia.findUserById(account.userId) : null
++      if (!account) {
++        const email = `${name}@${GATEWAY_EMAIL_DOMAIN}`
++        /* someone holds the address without the link: never take that account over */
++        if (await ia.findUserByEmail(email)) throw new APIError('CONFLICT', { message: `${email} exists without a gateway link` })
++        user = (await gatewayCreating.run(true, () =>
++          ia.createOAuthUser({ email, name, emailVerified: true }, { providerId: GATEWAY_PROVIDER, accountId: name }),
++        )).user
++        console.log(`⟡ mm gateway        new account for ${name}`)
++      }
++      if (!user || (user as { banned?: boolean | null }).banned) throw new APIError('FORBIDDEN', { message: 'no such account, or banned' })
++      const session = await ia.createSession(user.id)
++      await setSessionCookie(ctx, { session, user })
++      return ctx.json({ userId: user.id })
++    }),
++  },
++})
++
++interface GatewayAuth {
++  api: {
++    getSession(o: { headers: Headers }): Promise<{ user: { id: string; banned?: boolean | null } } | null>
++    mmGatewaySession(o: { body: { name: string }; returnHeaders: true }): Promise<{ headers: Headers; response: { userId: string } }>
++  }
++}
++
++/** A person's session is checked again after this long (a ban, a deleted session or user ends it then). */
++const RECHECK_MS = 10 * 60_000
++const sessions = new Map<string, { userId: string; cookie: string; until: number }>()
++/* a first visit is many requests at once (the page, its assets, its API calls): one account and one session for them */
++const inflight = new Map<string, Promise<{ userId: string; cookie: string; until: number }>>()
++
++function sessionFor(auth: GatewayAuth, name: string) {
++  const hit = sessions.get(name)
++  if (hit && hit.until > Date.now()) return Promise.resolve(hit)
++  let p = inflight.get(name)
++  if (!p) {
++    p = freshSession(auth, name).finally(() => inflight.delete(name))
++    inflight.set(name, p)
++  }
++  return p
++}
++
++async function freshSession(auth: GatewayAuth, name: string) {
++  const now = Date.now(), hit = sessions.get(name)
++  if (hit && hit.until > now) return hit
++  if (hit) {
++    const s = await auth.api.getSession({ headers: new Headers({ cookie: hit.cookie }) }).catch(() => null)
++    if (s && s.user.id === hit.userId && !s.user.banned) {
++      hit.until = now + RECHECK_MS
++      return hit
++    }
++    sessions.delete(name)
++  }
++  const { headers, response } = await auth.api.mmGatewaySession({ body: { name }, returnHeaders: true })
++  const cookie = headers.getSetCookie().map((c) => c.split(';')[0]).join('; ')
++  const fresh = { userId: response.userId, cookie, until: now + RECHECK_MS }
++  sessions.set(name, fresh)
++  return fresh
++}
++
++/* ---------------------------------------------------- the public side */
++
++const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
++/** Doop's own sign-in, sign-up and account routes: off on the public side (the gateway is the sign-in). */
++function ownLogin(method: string, path: string): boolean {
++  if (path === '/api/account-exists') return true
++  if (path === '/api/auth' || path.startsWith('/api/auth/')) return !(method === 'GET' && path === '/api/auth/get-session')
++  return false
++}
++/** The path as any router may read it: decoded, backslashes as slashes, repeated slashes collapsed, dot segments
++ *  resolved, lower case (express matches case-insensitively). Never parsed as a URL first: `//api/...` would be a host. */
++export function pathOf(url: string | undefined): string {
++  let p = String(url || '/').split(/[?#]/)[0]
++  try {
++    p = decodeURIComponent(p)
++  } catch {}
++  p = `/${p}`.replace(/\\/g, '/').replace(/\/{2,}/g, '/')
++  try {
++    p = new URL(`http://x${p}`).pathname
++  } catch {}
++  return p.toLowerCase()
++}
++
++type Admitted = { ok: true; userId: string } | { ok: false; status: number; message: string }
++
++/** Who this request is, from its assertion only; the request then carries that person's server-side session. */
++async function admit(cfg: GatewayConfig, auth: GatewayAuth, req: http.IncomingMessage): Promise<Admitted> {
++  const assertion = req.headers['x-mm-assertion']
++  delete req.headers.cookie
++  delete req.headers.authorization
++  delete req.headers['x-mm-assertion']
++  const c = verifyAssertion(assertion, cfg.key, cfg.host)
++  if (!c) return { ok: false, status: 401, message: 'Sign in through the gateway: open this address again.' }
++  const cap = capFor(c.r), method = (req.method || 'GET').toUpperCase(), path = pathOf(req.url)
++  if (cap !== 'edit' && !READ_METHODS.has(method)) return { ok: false, status: 403, message: `A ${c.r} can look, not change: ask the owner for designer access.` }
++  if (ownLogin(method, path)) return { ok: false, status: 403, message: "Doop's own sign-in is off here: the gateway signs you in." }
++  const s = await sessionFor(auth, c.u)
++  seen.set(s.userId, { cap, at: Date.now() })
++  req.headers.cookie = s.cookie
++  return { ok: true, userId: s.userId }
++}
++
++/** No Set-Cookie leaves the public side: the session is the server's, per request, from the assertion. */
++function dropSetCookie(res: http.ServerResponse) {
++  const setHeader = res.setHeader.bind(res)
++  res.setHeader = (name, value) => (String(name).toLowerCase() === 'set-cookie' ? res : setHeader(name, value))
++  const appendHeader = res.appendHeader?.bind(res)
++  if (appendHeader) res.appendHeader = (name, value) => (String(name).toLowerCase() === 'set-cookie' ? res : appendHeader(name, value))
++  const writeHead = res.writeHead.bind(res) as (...a: unknown[]) => http.ServerResponse
++  res.writeHead = ((...a: unknown[]) => {
++    res.removeHeader('set-cookie')
++    for (let i = 1; i < a.length; i++) {
++      const h = a[i]
++      if (Array.isArray(h)) {
++        /* the raw form: [name, value, name, value, ...] or [[name, value], ...] */
++        if (h.length && Array.isArray(h[0])) a[i] = h.filter((kv: unknown[]) => String(kv[0]).toLowerCase() !== 'set-cookie')
++        else {
++          const kept: unknown[] = []
++          for (let j = 0; j + 1 < h.length; j += 2) if (String(h[j]).toLowerCase() !== 'set-cookie') kept.push(h[j], h[j + 1])
++          a[i] = kept
++        }
++      } else if (h && typeof h === 'object') {
++        a[i] = Object.fromEntries(Object.entries(h).filter(([k]) => k.toLowerCase() !== 'set-cookie'))
++      }
++    }
++    return writeHead(...a)
++  }) as typeof res.writeHead
++}
++
++function refuse(res: http.ServerResponse, status: number, message: string) {
++  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
++  res.end(JSON.stringify({ error: message }))
++}
++
++/** The public side's listener: the gateway's assertion on every request and upgrade, then Doop's own app and rooms. */
++export function startGatewaySide(
++  cfg: GatewayConfig,
++  auth: GatewayAuth,
++  app: (req: http.IncomingMessage, res: http.ServerResponse) => void,
++  wss: WebSocketServer,
++): http.Server {
++  const server = http.createServer((req, res) => {
++    admit(cfg, auth, req)
++      .then((a) => {
++        if (!a.ok) return refuse(res, a.status, a.message)
++        dropSetCookie(res)
++        app(req, res)
++      })
++      .catch((err) => {
++        console.error('[mm-gateway] request failed', err instanceof Error ? err.message : err)
++        if (!res.headersSent) refuse(res, 500, 'sign-in failed')
++        else res.end()
++      })
++  })
++  server.on('upgrade', (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
++    const close = (status: number, text: string) => {
++      socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
++    }
++    if (pathOf(req.url) !== '/ws') return close(404, 'Not Found')
++    admit(cfg, auth, req)
++      .then((a) => {
++        if (!a.ok) return close(a.status, a.status === 401 ? 'Unauthorized' : 'Forbidden')
++        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
++      })
++      .catch(() => close(500, 'Internal Server Error'))
++  })
++  server.listen(cfg.port, () => {
++    console.log(`⟡ mm gateway side   http://localhost:${cfg.port} for ${cfg.host}: the gateway's assertion on every request; Doop's own sign-in off here`)
++  })
++  return server
++}
+diff --git a/server/store.ts b/server/store.ts
+index 83d8d66..d8b6cdb 100644
+--- a/server/store.ts
++++ b/server/store.ts
+@@ -103,6 +103,16 @@ class Store {
+       .map((c) => this.toMeta(c, userId))
+   }
+ 
++  /** mm fork: every owned canvas, as this user's dashboard shows it — for a
++   *  person the sign-in gateway let in, who works on all of this project's
++   *  canvases (server/mmGateway.ts gatewayCap; the caller checks that). */
++  listEveryCanvas(userId: string) {
++    return [...this.canvases.values()]
++      .filter((c) => !!c.ownerId)
++      .sort((a, b) => b.updatedAt - a.updatedAt)
++      .map((c) => this.toMeta(c, userId))
++  }
++
+   /** The canvas signup made for this user (server/auth.ts): the oldest one
+    *  they own. Undefined once they have deleted it, or for an account that
+    *  predates the signup hook. */
+diff --git a/server/workspaces.ts b/server/workspaces.ts
+index 3944b6a..fc03f0d 100644
+--- a/server/workspaces.ts
++++ b/server/workspaces.ts
+@@ -6,6 +6,7 @@ import { db } from './db/index.ts'
+ import * as t from './db/schema.ts'
+ import * as authSchema from './db/auth-schema.ts'
+ import { store } from './store.ts'
++import { gatewayCap } from './mmGateway.ts'
+ import * as billing from './billing.ts'
+ import { mailerConfigured, sendMail } from './mailer.ts'
+ import { isBillingInterval, isWorkspaceActive } from '../shared/billing.ts'
+@@ -134,6 +135,8 @@ export function workspaceIdsFor(userId: string): string[] {
+ /** Everything the dashboard lists for a user: personal, invited, and every
+  *  canvas of every workspace they belong to. */
+ export function canvasesFor(userId: string) {
++  /* mm fork: the gateway's people see every canvas of the project's Doop */
++  if (gatewayCap(userId)) return store.listEveryCanvas(userId)
+   return store.listCanvases(userId, workspaceIdsFor(userId))
+ }
+ 
+diff --git a/tests/mmGateway.test.ts b/tests/mmGateway.test.ts
+new file mode 100644
+index 0000000..79aa6a3
+--- /dev/null
++++ b/tests/mmGateway.test.ts
+@@ -0,0 +1,78 @@
++import { generateKeyPairSync, sign } from 'node:crypto'
++import { describe, expect, it } from 'vitest'
++import { capFor, gatewayCap, loadGatewayConfig, pathOf, verifyAssertion } from '../server/mmGateway.ts'
++
++/* mm fork: the sign-in gateway's assertion (server/mmGateway.ts), signed the
++   way mm's gateway signs it: base64url(JSON {u, r, h, exp, n}) "." Ed25519 */
++const gw = generateKeyPairSync('ed25519')
++const other = generateKeyPairSync('ed25519')
++const HOST = 'doop.acme.example.com'
++const now = 1_800_000_000_000
++const signWith = (key: typeof gw.privateKey, claims: Record<string, unknown>) => {
++  const body = Buffer.from(JSON.stringify(claims)).toString('base64url')
++  return `${body}.${sign(null, Buffer.from(body), key).toString('base64url')}`
++}
++const good = { u: 'alice', r: 'designer', h: HOST, exp: now + 60_000, n: 'abc123' }
++
++describe('verifyAssertion', () => {
++  it('accepts the gateway signature for this host', () => {
++    expect(verifyAssertion(signWith(gw.privateKey, good), gw.publicKey, HOST, now)).toEqual({ u: 'alice', r: 'designer' })
++  })
++  it('refuses another key, a changed body, no assertion', () => {
++    expect(verifyAssertion(signWith(other.privateKey, good), gw.publicKey, HOST, now)).toBeNull()
++    const [, sig] = signWith(gw.privateKey, good).split('.')
++    const forged = Buffer.from(JSON.stringify({ ...good, r: 'owner' })).toString('base64url')
++    expect(verifyAssertion(`${forged}.${sig}`, gw.publicKey, HOST, now)).toBeNull()
++    for (const v of [undefined, '', '-', 'a.b', 'a.b.c', ['x', 'y']]) expect(verifyAssertion(v, gw.publicKey, HOST, now)).toBeNull()
++  })
++  it('refuses another host, an old exp, an unknown role, a bad name', () => {
++    expect(verifyAssertion(signWith(gw.privateKey, { ...good, h: 'board.acme.example.com' }), gw.publicKey, HOST, now)).toBeNull()
++    expect(verifyAssertion(signWith(gw.privateKey, { ...good, exp: now }), gw.publicKey, HOST, now)).toBeNull()
++    expect(verifyAssertion(signWith(gw.privateKey, { ...good, exp: String(now + 60_000) }), gw.publicKey, HOST, now)).toBeNull()
++    expect(verifyAssertion(signWith(gw.privateKey, { ...good, r: 'admin' }), gw.publicKey, HOST, now)).toBeNull()
++    for (const u of ['Alice', 'a', '1bob', 'bob@x', 'x'.repeat(33), 7]) {
++      expect(verifyAssertion(signWith(gw.privateKey, { ...good, u }), gw.publicKey, HOST, now)).toBeNull()
++    }
++  })
++})
++
++describe('roles', () => {
++  it('owner and designer edit; member and viewer look', () => {
++    expect(capFor('owner')).toBe('edit')
++    expect(capFor('designer')).toBe('edit')
++    expect(capFor('member')).toBe('view')
++    expect(capFor('viewer')).toBe('view')
++  })
++  it('no gateway role for someone the gateway never let in', () => {
++    expect(gatewayCap('nobody')).toBeUndefined()
++    expect(gatewayCap(undefined)).toBeUndefined()
++  })
++})
++
++describe('pathOf', () => {
++  it('reads a path the way any router could: decoded, slashes collapsed, dots resolved, lower case', () => {
++    for (const u of ['/api/auth/sign-up/email', '/API/Auth/sign-up/email', '/api/auth/%73ign-up/email', '//api/auth/sign-up/email',
++      '/api/x/../auth/sign-up/email', '/api/x/%2e%2e/auth/sign-up/email', '\\api\\auth/sign-up/email', '/api/auth/sign-up/email?x=1']) {
++      expect(pathOf(u)).toBe('/api/auth/sign-up/email')
++    }
++    expect(pathOf(undefined)).toBe('/')
++  })
++})
++
++describe('loadGatewayConfig', () => {
++  const pem = gw.publicKey.export({ type: 'spki', format: 'pem' }) as string
++  it('is off without a key', () => {
++    expect(loadGatewayConfig({})).toBeNull()
++  })
++  it('needs the host with the key, and the key with a host', () => {
++    expect(() => loadGatewayConfig({ MM_GATEWAY_PUBLIC_KEY: pem })).toThrow(/MM_GATEWAY_HOST/)
++    expect(() => loadGatewayConfig({ MM_GATEWAY_HOST: HOST })).toThrow(/no gateway key/)
++  })
++  it('takes an inline PEM (newlines as \\n too), refuses a key that is not ed25519', () => {
++    const c = loadGatewayConfig({ MM_GATEWAY_PUBLIC_KEY: pem.replace(/\n/g, '\\n'), MM_GATEWAY_HOST: HOST.toUpperCase() })
++    expect(c?.host).toBe(HOST)
++    expect(c?.port).toBe(4401)
++    const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'pem' }) as string
++    expect(() => loadGatewayConfig({ MM_GATEWAY_PUBLIC_KEY: rsa, MM_GATEWAY_HOST: HOST })).toThrow(/ed25519/)
++  })
++})
+-- 
+2.52.0
+
