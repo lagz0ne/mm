@@ -184,6 +184,12 @@ check "...the member banned: that project's key works again" bash -c "[ \"\$(cod
 printf 'not a database' >"$MM_HOME/auth/accounts.db"; N0=$(upn)
 check "...grants it can't read: refused (fails closed), nothing sent" bash -c "call '$S1' '$K1' -d '$MSG' http://ai/v1/messages | grep -q 'grants could not be read' && [ \$(wc -l <'$T/up.jsonl') = $N0 ]"
 rm -f "$MM_HOME/auth/accounts.db"
+# the gateway on and its store missing (moved away?) is not "nobody holds a role": refused (review sy-rjwg 1)
+cfg '  upstream_key_input: claude-oauth-token\n  upstream_auth: oauth\nauth:\n  enabled: true\n'; N0=$(upn)
+check "...the gateway on (auth.enabled) and its accounts store missing: refused (fails closed), it says why, nothing sent" bash -c "call '$S1' '$K1' -d '$MSG' http://ai/v1/messages | grep -q 'accounts store is missing' && [ \$(wc -l <'$T/up.jsonl') = $N0 ]"
+check "...and the gateway's log says why" grep -q 'accounts store is missing' "$T/ai.log"
+cfg '  upstream_key_input: claude-oauth-token\n  upstream_auth: oauth\n'
+check "...the gateway off and no store: the owner's project still 200" bash -c "[ \"\$(code '$S1' '$K1' -d '$MSG' http://ai/v1/messages)\" = 200 ]"
 mv "$TOK" "$T/tok"
 check "no Claude token on the machine: 503, it names claude-oauth-token" bash -c "call '$S1' '$K1' -d '$MSG' http://ai/v1/messages | grep -q 'mm fill claude-oauth-token'"
 mv "$T/tok" "$TOK"

@@ -126,9 +126,14 @@ type KeyRow = { project: string; person: string; kind: string; expires: number; 
 /** Oauth mode carries the machine owner's own subscription, which its terms keep to the owner's own use (review
  *  sy-b15.10): only the owner's own run, or a project's background key, and only for a project where nobody but the
  *  owner holds a role (mm.auth's grants). The reason it is refused, or null. Fails closed: grants it can't read refuse. */
-export function ownerOnly(k: { project: string; person: string }, owner: string, accounts = join(DIRS.mm, 'auth', 'accounts.db')): string | null {
+export function ownerOnly(k: { project: string; person: string }, owner: string, accounts = join(DIRS.mm, 'auth', 'accounts.db'),
+  gateway = [true, 'true'].includes(getPath(loadConfig(), 'auth.enabled') as never)): string | null {
   if (k.person && k.person !== owner) return `a run for ${k.person}: in oauth mode only the owner's own runs may call`
-  if (!existsSync(accounts)) return null                          // no gateway on this machine: no grants to anyone
+  if (!existsSync(accounts)) {
+    // no gateway on this machine: no grants to anyone. With the gateway on (auth.enabled), a missing store is not
+    // "nobody": it may have been moved away (review sy-rjwg 1), so it refuses
+    return gateway ? 'the gateway is on (auth.enabled) but its accounts store is missing, so the grants are unknown and oauth mode refuses' : null
+  }
   let db: Database | undefined
   try {
     db = new Database(accounts, { readonly: true })
