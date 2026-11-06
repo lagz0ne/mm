@@ -63,6 +63,17 @@ check "mm update: refused, and it says why" sh -c "! mm update acme/shop >'$T/u.
 G update-ref refs/heads/main "$MAIN"
 check "main back: mm update works" sh -c "mm update acme/shop >'$T/u.out' 2>&1"
 
+echo "== ops/ and setup/ are sealed and checked like bin/ and site/ (review sy-atqr)"
+check "the engine seal names ops/ and setup/" sh -c "grep -q '\"ops/githooks/pre-commit\"' '$MM_HOME/box/acme-shop/engine.json' && grep -q '\"setup/.claude/settings.tmpl.json\"' '$MM_HOME/box/acme-shop/engine.json'"
+printf '#!/bin/sh\nexit 0\n' >"$ROOT/ops/githooks/pre-commit"; G commit -qam 'its own pre-commit'
+check "a pre-commit that is not mm's: mm update refuses, and says why" sh -c "! mm update acme/shop >'$T/u.out' 2>&1 && grep -q 'ops/githooks/pre-commit' '$T/u.out' && grep -q 'sy-atqr' '$T/u.out'"
+G reset -q --hard "$MAIN"
+echo x >"$ROOT/setup/extra.md"
+check "an extra file in setup/: refused too" sh -c "! mm update acme/shop >'$T/u.out' 2>&1 && grep -q 'setup/extra.md' '$T/u.out'"
+rm -f "$ROOT/setup/extra.md"; mkdir -p "$ROOT/setup/.claude"; echo '{}' >"$ROOT/setup/.claude/settings.json"
+check "...but not what config-check renders there (setup/.claude/settings.json)" sh -c "mm update acme/shop >'$T/u.out' 2>&1"
+rm -f "$ROOT/setup/.claude/settings.json"
+
 echo "== a box made before mm kept the record"
 rm -f "$REC"
 G update-ref refs/heads/mm-template "$MAIN" # in main's history, but not a render of the template

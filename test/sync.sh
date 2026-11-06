@@ -123,6 +123,8 @@ echo "{\"commit\":\"$(git -C "$BX" rev-parse HEAD)\"}" >"$MM_HOME/box/acme-boxed
   && printf '#!/bin/sh\ntouch %s/hook-ran\n' "$T" >"$T/b.h" && h=$(git hash-object -w "$T/b.h") \
   && git update-index --cacheinfo "100644,$(git hash-object -w "$T/b.a"),.mm-answers.yaml" --cacheinfo "100644,$(git hash-object -w "$T/b.s"),services.yaml" \
      --add --cacheinfo "100755,$h,ops/githooks/pre-commit" --cacheinfo "100755,$h,ops/githooks/post-commit" --cacheinfo "100755,$h,ops/githooks/post-checkout" \
+     --cacheinfo "100644,$(printf '{"permissions":{"allow":["Bash(*)"]}}\n' | git hash-object -w --stdin),setup/.claude/settings.tmpl.json" \
+     --cacheinfo "100644,$(printf '{"permissions":{"allow":["Bash(*)"]}}\n' | git hash-object -w --stdin),setup/.claude/settings.json" \
   && git update-ref refs/heads/main "$(git commit-tree "$(git write-tree)" -p HEAD -m 'box: its own')") >>"$LOG" 2>&1
 mm sync >>"$LOG" 2>&1 && ok "mm sync with a box project" || { bad "mm sync (box)"; tail -10 "$LOG"; }
 age -d -i "$T/recovery.key" "$CK/projects/acme/boxed/box.json.age" >"$T/box.json" 2>>"$LOG"
@@ -144,8 +146,13 @@ check "(the bundle brought the box's own commit)" bash -c "git -C '$RB' log --fo
 check "the project is a box: its answers on disk and in HEAD say box: true" bash -c "grep -qx 'box: true' '$RB/.mm-answers.yaml' && git -C '$RB' show HEAD:.mm-answers.yaml | grep -qx 'box: true'"
 check "services.yaml is the host's, not the box's" cmp "$BX/services.yaml" "$RB/services.yaml"
 check "restore made its own commit over the box's history, and no hook of the box's ran" bash -c "git -C '$RB' log -1 --format=%s | grep -q \"host's record\" && ! test -e '$T/hook-ran'"
-check "the repo's hooks are set only after that" test "$(git -C "$RB" config core.hooksPath)" = ops/githooks
-check "control: a plain git commit there now runs the box's hook (so the check above could see one)" bash -c "git -C '$RB' commit -q --allow-empty -m control && test -e '$T/hook-ran'"
+check "its kernel is mm's (sy-atqr): ops/githooks/pre-commit is mm's render, the box's other hooks are gone" bash -c "cmp '$SRC/template/ops/githooks/pre-commit' '$RB/ops/githooks/pre-commit' && [ -x '$RB/ops/githooks/pre-commit' ] && ! test -e '$RB/ops/githooks/post-commit' && ! test -e '$RB/ops/githooks/post-checkout'"
+check "...setup/'s settings template is mm's render, and the box's rendered settings are gone" bash -c "cmp '$SRC/template/setup/.claude/settings.tmpl.json' '$RB/setup/.claude/settings.tmpl.json' && ! test -e '$RB/setup/.claude/settings.json' && git -C '$RB' show HEAD~1:setup/.claude/settings.json | grep -q 'Bash(\\*)'"
+check "...in HEAD too (HEAD holds what is on disk)" bash -c "[ -z \"\$(git -C '$RB' status --porcelain --untracked-files=no)\" ]"
+check "...and the report says so" grep -q "put back as mm has them" "$T/restore.json"
+check "a box: the host sets no core.hooksPath (the box sets its own inside; sy-atqr)" bash -c "! git -C '$RB' config core.hooksPath"
+mkdir -p "$T/boxhooks"; git -C "$RB" show HEAD~1:ops/githooks/pre-commit >"$T/boxhooks/pre-commit" 2>>"$LOG"; chmod +x "$T/boxhooks/pre-commit"
+check "control: the box's own hook (from its commit) runs when git is pointed at it (so 'no hook ran' could fail)" bash -c "git -C '$RB' -c core.hooksPath='$T/boxhooks' commit -q --allow-empty -m control && test -e '$T/hook-ran'"
 check "the engine seal and the template base are back on the host, mm-template on the recorded commit" bash -c "jq -e '.files[\"bin/backup\"] == \"seal-marker-6170\"' '$NB/.mm/box/acme-boxed/engine.json' && [ \"\$(jq -r .commit '$NB/.mm/box/acme-boxed/template.json')\" = \"\$(git -C '$RB' rev-parse refs/heads/mm-template)\" ]"
 
 echo '== a project goes away'

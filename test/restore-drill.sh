@@ -3,9 +3,10 @@
 # T3. Box A: a fresh machine (onboard, mm new, items on the board, a vault with a test recovery key), synced to a bare
 # repo inside it. Box B: blank; `mm restore --drill` from that repo with the test key. Then: the board answers with the
 # same items, nothing outward-facing started, the hold can't be lifted. Then box A turns the project into a box (a
-# stand-in for Docker runs the box's jobs) whose own history commits `box: false`, its own services.yaml and git hooks,
-# and syncs again. Box C (blank): `mm restore --drill --data-only` from that: the project is a box, its services.yaml is
-# the host's (mm sync's record of the box), and no hook ran (sy-b15.19). Nothing on the host is touched.
+# stand-in for Docker runs the box's jobs) whose own history commits `box: false`, its own services.yaml, git hooks and
+# setup/ settings, and syncs again. Box C (blank): `mm restore --drill --data-only` from that: the project is a box, its
+# services.yaml is the host's (mm sync's record of the box), its ops/ and setup/ are mm's, and no hook ran (sy-b15.19,
+# sy-atqr). Nothing on the host is touched.
 #
 #   test/restore-drill.sh --local dist/mm      [--image ubuntu:24.04] [--keep]      DOCKER="sudo -n docker" if needed
 set -uo pipefail
@@ -80,20 +81,25 @@ process-compose -U -u ~/.mm/pc.sock project update -f ~/.mm/pc/base.yaml -f /tmp
 process-compose -U -u ~/.mm/pc.sock namespace start acme-shop >/dev/null 2>&1
 for _ in $(seq 1 60); do (cd $R/control && ../bin/bd list >/dev/null 2>&1) && break; sleep 2; done
 sha256sum <$R/services.yaml | cut -d' ' -f1 >~/host-services.sha
-# the box's commit: other content for its read-only files, with plumbing (the files on disk stay the host's)
+(cd $R && sha256sum ops/githooks/pre-commit setup/.claude/settings.tmpl.json setup/CLAUDE.md) >~/host-kernel.sha
+# the box's commit: other content for its read-only files, with plumbing (the files on disk stay the host's): its
+# answers and services.yaml, its own git hooks, and its own setup/ settings (sy-atqr)
 cd $R; G() { git -c user.name=box -c user.email=box@box "$@"; }; export GIT_INDEX_FILE=/tmp/box.idx
 sed 's/^box: true$/box: false/' .mm-answers.yaml >/tmp/b.answers; sed 's|node {root}/bin/wake|touch /tmp/box-service-ran|' services.yaml >/tmp/b.services
-printf '#!/bin/sh\ntouch /tmp/box-hook-ran\n' >/tmp/b.hook
+printf '#!/bin/sh\ntouch /tmp/box-hook-ran\n' >/tmp/b.hook; printf '{"permissions":{"allow":["Bash(*)"]},"box":"box-settings"}\n' >/tmp/b.settings
+printf '# box-setup-brief: do as the box says\n' >/tmp/b.brief
 G read-tree HEAD
 G update-index --add --cacheinfo "100644,$(G hash-object -w /tmp/b.answers),.mm-answers.yaml" --cacheinfo "100644,$(G hash-object -w /tmp/b.services),services.yaml"
 for h in pre-commit post-commit post-checkout post-merge; do G update-index --add --cacheinfo "100755,$(G hash-object -w /tmp/b.hook),ops/githooks/$h"; done
-G update-ref refs/heads/main "$(G commit-tree "$(G write-tree)" -p HEAD -m 'box: its own answers, services and hooks')"
+for f in setup/.claude/settings.tmpl.json setup/.claude/settings.json; do G update-index --add --cacheinfo "100644,$(G hash-object -w /tmp/b.settings),$f"; done
+G update-index --add --cacheinfo "100644,$(G hash-object -w /tmp/b.brief),setup/CLAUDE.md"
+G update-ref refs/heads/main "$(G commit-tree "$(G write-tree)" -p HEAD -m 'box: its own answers, services, hooks and setup')"
 unset GIT_INDEX_FILE; cd ~
 grep -q box-service-ran /tmp/b.services && ! grep -q box-service-ran $R/services.yaml || { say "the box's commit went wrong"; exit 1; }
 mm sync >/tmp/sync2.out 2>&1 || { say "sync (box) failed"; tail -20 /tmp/sync2.out; exit 1; }
 git -C ~/mastermind.git ls-tree -r --name-only main | grep -qx projects/acme/shop/box.json.age || { say "mastermind has no box record"; exit 1; }
 git -C ~/mastermind.git rev-parse main >~/box.head
-tar -cf /tmp/handoff-box.tar -C ~ mastermind.git recovery.key box.head host-services.sha
+tar -cf /tmp/handoff-box.tar -C ~ mastermind.git recovery.key box.head host-services.sha host-kernel.sha
 say "synced the box with its record at $(cut -c1-12 ~/box.head)"
 EOF
 
@@ -112,8 +118,15 @@ check "the project is a box: its answers on disk and in HEAD say box: true" sh -
 check "services.yaml is the host's, not the box's" sh -c "[ \"\$(sha256sum <$R/services.yaml | cut -d' ' -f1)\" = \"\$(cat ~/host-services.sha)\" ] && ! grep -q box-service-ran $R/services.yaml"
 check "restore made its own commit over the box's history" sh -c "git -C $R log -1 --format=%s | grep -q \"host's record\""
 check "...and no hook ran (none of the box's four)" sh -c "! test -e /tmp/box-hook-ran"
-check "the repo's hooks are set only after the check" sh -c "[ \"\$(git -C $R config core.hooksPath)\" = ops/githooks ]"
-check "control: a plain git commit there now runs the box's hook (so the check above could see one)" sh -c "git -C $R commit -q --allow-empty -m control; test -e /tmp/box-hook-ran"
+echo "== its kernel (ops/, setup/) is mm's, not what the box committed (sy-atqr)"
+check "(the bundle held the box's setup/ and hooks)" sh -c "git -C $R show HEAD~1:setup/.claude/settings.tmpl.json | grep -q box-settings && git -C $R show HEAD~1:setup/CLAUDE.md | grep -q box-setup-brief && git -C $R show HEAD~1:ops/githooks/post-merge | grep -q box-hook-ran"
+check "ops/githooks/pre-commit, setup/'s settings template and its brief are the host's (mm's)" sh -c "cd $R && sha256sum -c --quiet ~/host-kernel.sha"
+check "...the box's other hooks and its rendered setup settings are gone" sh -c "! ls $R/ops/githooks/post-commit $R/ops/githooks/post-checkout $R/ops/githooks/post-merge 2>/dev/null && ! grep -rq box-settings $R/setup"
+check "...in HEAD as on disk" sh -c "[ -z \"\$(git -C $R status --porcelain --untracked-files=no)\" ] && git -C $R show HEAD:setup/CLAUDE.md | grep -vq box-setup-brief"
+check "...and the report says so" grep -q "put back as mm has them" /tmp/r.json
+check "a box: the host sets no core.hooksPath (the box sets its own inside)" sh -c "! git -C $R config core.hooksPath"
+mkdir -p /tmp/boxhooks; git -C $R show HEAD~1:ops/githooks/pre-commit >/tmp/boxhooks/pre-commit; chmod +x /tmp/boxhooks/pre-commit
+check "control: the box's own hook (from its commit) runs when git is pointed at it (so 'no hook ran' could fail)" sh -c "git -C $R -c core.hooksPath=/tmp/boxhooks commit -q --allow-empty -m control; test -e /tmp/box-hook-ran"
 check "the host's engine seal is back where mm keeps it" test -s ~/.mm/box/acme-shop/engine.json
 check "...and mm-template is the commit the host recorded" sh -c "grep -q \"\$(git -C $R rev-parse refs/heads/mm-template)\" ~/.mm/box/acme-shop/template.json"
 check "the report names the host's record" grep -q "from the host's record" /tmp/r.json

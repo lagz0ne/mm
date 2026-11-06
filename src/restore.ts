@@ -12,7 +12,7 @@ import { install } from './install'
 import { type Install, manifest } from './manifest'
 import { onboard } from './onboard'
 import { pcRunning } from './pc'
-import { BOX_RECORD_FILES, type BoxRecord, engineRefusal, hostGitEnv, installTools, processes, readAnswers, sealFile, templateRecFile, up, writeInProject } from './project'
+import { BOX_RECORD_FILES, type BoxRecord, engineRefusal, hostGitEnv, installTools, processes, readAnswers, repairKernel, sealFile, templateRecFile, up, writeInProject } from './project'
 import { ALLOW } from './sync'
 import * as vault from './vault'
 
@@ -80,7 +80,8 @@ const open = (file: string, identity: string): Uint8Array => {
   return r.stdout
 }
 /** No repo hook runs in what restore does itself (its checkouts and commits, and the board tools it runs): a bundle can
- *  carry a box's own ops/githooks (sy-b15.19). core.hooksPath is set only after the box record is applied. */
+ *  carry a box's own ops/githooks (sy-b15.19). core.hooksPath is set only after the box record is applied, and never
+ *  for a box (sy-atqr). */
 const NO_HOOKS = { GIT_NO_REPLACE_OBJECTS: '1', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: '/dev/null' }
 /** restore's own git on a board: no hooks; for a box (as its answers now say), the host's hardened git (hostGitEnv). */
 const restoreGit = (root: string) => { const h = hostGitEnv(root); return h.GIT_CONFIG_COUNT ? h : { ...h, ...NO_HOOKS } }
@@ -211,14 +212,17 @@ async function restoreWith(src: string, o: RestoreOpts): Promise<{ steps: Step[]
       }
       if (commit.length) { // restore's own commit: no repo hook runs (a box's bundle can carry its own)
         const g = (args: string[]) => run(['git', '-C', root, ...args], { env: { SETUP_HUMAN: '1', ...restoreGit(root) } })
-        g(['add', '--', ...new Set(commit)])
+        // -A: what the kernel check removed goes too (a path neither on disk nor in git would fail the whole add)
+        const paths = [...new Set(commit)].filter((p) => existsSync(join(root, p)) || g(['ls-files', '--', p]).out.trim())
+        const ad = g(['add', '-A', '--', ...paths]); if (!ad.ok) throw new Error(`${d}: git add: ${short(ad)}`)
         if (!g(['diff', '--cached', '--quiet']).ok) {
           const c = g(['commit', '-q', '-m', rec ? `mm restore: the host's record of this box over its own history${a.root && a.root !== root ? '; root on this box' : ''}` : 'mm restore: root on this box'])
           if (!c.ok) throw new Error(`${d}: commit: ${short(c)}`)
         }
       }
-      // the repo's hooks only now, after the check (for a box, the host's git never runs them: hostGitEnv)
-      if (existsSync(join(root, 'ops', 'githooks'))) run(['git', '-C', root, 'config', 'core.hooksPath', 'ops/githooks'])
+      // the repo's hooks only now, after the check; for a box, never on the host (the box sets its own inside; any host
+      // git in its repo then runs no hook from it; review sy-atqr)
+      if (!a.box && existsSync(join(root, 'ops', 'githooks'))) run(['git', '-C', root, 'config', 'core.hooksPath', 'ops/githooks'])
       if (existsSync(join(M, d, 'code.bundle.age'))) fromBundle(unseal(`${d}/code.bundle.age`), join(root, 'code'), { name: 'mm', email: `mm@${a.project}.local` })
       const stage = join(root, '.restore'); mkdirSync(stage, { recursive: true, mode: 0o700 })
       const x = run(['tar', '-xf', unseal(`${d}/board.tar.age`), '-C', stage], { timeoutMs: 600_000 })
@@ -284,7 +288,12 @@ function applyBoxRecord(root: string, text: string): { files: string[]; detail: 
   const base = !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(c) ? ''
     : run(['git', '-C', root, 'cat-file', '-e', `${c}^{commit}`], { env }).ok && run(['git', '-C', root, 'update-ref', 'refs/heads/mm-template', c], { env }).ok
       ? `, mm-template at ${c.slice(0, 12)}` : `, mm-template: the recorded ${c.slice(0, 12)} is not in the bundle`
-  return { files: [...Object.keys(r.files), '.mm-answers.yaml'], detail: `${r.box ? 'a box' : 'once a box'}: ${Object.keys(r.files).length} privilege file(s)${r.engine ? ', the engine seal' : ''}${base} from the host's record (sy-b15.19)` }
+  // its kernel (ops/: the git hooks; setup/: the setup agent's brief and settings) as mm has it, before anything runs
+  // from it: a file that is neither mm's render nor what the host sealed is written over, or removed (review sy-atqr)
+  const seal = (r.engine as { files?: Record<string, string> } | null)?.files
+  const kernel = repairKernel(root, seal && typeof seal === 'object' ? seal : null)
+  const kd = kernel.length ? `; ops/ and setup/: ${kernel.length} file(s) put back as mm has them (${kernel.slice(0, 4).join('; ')}${kernel.length > 4 ? '; …' : ''})` : '; ops/ and setup/ as mm has them'
+  return { files: [...Object.keys(r.files), '.mm-answers.yaml', 'ops', 'setup'], detail: `${r.box ? 'a box' : 'once a box'}: ${Object.keys(r.files).length} privilege file(s)${r.engine ? ', the engine seal' : ''}${base} from the host's record (sy-b15.19)${kd} (sy-atqr)` }
 }
 
 /** The restored board's folder by its project id (system, or projects/<client>/<name>). */

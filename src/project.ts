@@ -1,7 +1,7 @@
 // Projects: stamp from the template (mm new), load into the machine's process-compose as a namespace (mm up),
 // namespace operations (down/restart), listing and inspection.
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { getPath, held, loadConfig } from './config'
@@ -329,21 +329,26 @@ export function templateVars(root: string): Record<string, string> {
   return { client: a.client, name: a.name, project: a.project, short: a.short, root, home: HOME, brain: DIRS.brain, projects: DIRS.projects, mm: DIRS.mm, claude_dir: join(DIRS.mm, 'claude', a.project), profile: a.profile || 'project' }
 }
 // the engine: what the host runs from a project (bin/: config-check, bd-quiet, init, wt, backup, bd; site/: npm ci and
-// the board's build), without the build's output
+// the board's build), without the build's output; and the kernel the host may run (ops/: the git hooks; setup/: the
+// setup agent's brief and settings, which runs on the host until it runs in the box; review sy-atqr)
+const ENGINE_DIRS = ['bin', 'site', 'ops', 'setup']
+/** What mm itself writes there: the build's output, and settings config-check renders from the checked templates. */
 const ENGINE_SKIP = ['site/node_modules', 'site/dist']
-const isEngine = (p: string) => /^(bin|site)\//.test(p) && !ENGINE_SKIP.some((s) => p === s || p.startsWith(`${s}/`))
+export const ENGINE_GENERATED = ['setup/.claude/settings.json']
+const skipped = (p: string) => [...ENGINE_SKIP, ...ENGINE_GENERATED].some((s) => p === s || p.startsWith(`${s}/`))
+const isEngine = (p: string) => /^(bin|site|ops|setup)\//.test(p) && !skipped(p)
 const sha256 = (b: Uint8Array) => createHash('sha256').update(b).digest('hex')
 export const sealFile = (project: string) => join(DIRS.mm, 'box', project, 'engine.json')
 /** The engine's files on disk and their sha256. A link or any other odd file is named so, never followed or read. */
 function engineOnDisk(root: string): Record<string, string> {
   const out: Record<string, string> = {}
   const walk = (rel: string) => {
-    if (ENGINE_SKIP.includes(rel)) return
+    if (skipped(rel)) return
     let st; try { st = lstatSync(join(root, rel)) } catch { return }
     if (st.isDirectory()) { for (const n of readdirSync(join(root, rel)).sort()) walk(`${rel}/${n}`); return }
     out[rel] = st.isFile() ? sha256(readFileSync(join(root, rel))) : 'not a plain file'
   }
-  for (const d of ['bin', 'site']) walk(d)
+  for (const d of ENGINE_DIRS) walk(d)
   return out
 }
 /** A box project now, or one that was (mm keeps its seal after mm box off: the history it wrote stays). */
@@ -365,7 +370,31 @@ export function engineRefusal(root: string): string | null {
   try { seal = JSON.parse(readFileSync(sealFile(readAnswers(root).project), 'utf8')).files || {} } catch {}
   const off = Object.keys(disk).filter((p) => disk[p] !== want[p] && disk[p] !== seal[p]).sort()
   if (!off.length) return null
-  return `${off.slice(0, 3).join(', ')}${off.length > 3 ? ` and ${off.length - 3} more` : ''}: not as mm's template (${template().version}) or its seal (${sealFile(readAnswers(root).project).replace(HOME, '~')}) has ${off.length === 1 ? 'it' : 'them'}, and mm won't run a box project's bin/ or site/ on the host (review sy-b15.6)`
+  return `${off.slice(0, 3).join(', ')}${off.length > 3 ? ` and ${off.length - 3} more` : ''}: not as mm's template (${template().version}) or its seal (${sealFile(readAnswers(root).project).replace(HOME, '~')}) has ${off.length === 1 ? 'it' : 'them'}, and mm won't run a box project's bin/, site/, ops/ or setup/ on the host (review sy-b15.6, sy-atqr)`
+}
+/**
+ * A box project's kernel (ops/, setup/) back as mm has it (whole-machine restore; review sy-atqr). The box can't write
+ * these, but it can commit other content for them, and a restore checks its history out. Each file must be as mm's
+ * template renders it, or as the seal (from the host's record) has it: any other file is written over with mm's render,
+ * or removed if mm has none; a file the seal names (or the render, with no seal) that is missing is written. A link is
+ * removed, never followed. What config-check renders (ENGINE_GENERATED) is removed: config-check writes it again.
+ * Returns what changed ("path: what"), for the restore's report.
+ */
+export function repairKernel(root: string, seal: Record<string, string> | null): string[] {
+  const want = new Map(rendered(templateVars(root)).filter((f) => /^(ops|setup)\//.test(f.p) && !skipped(f.p)).map((f) => [f.p, f]))
+  const changed: string[] = [], gone = (p: string) => { rmSync(join(root, p), { recursive: true, force: true }) }
+  for (const d of ['ops', 'setup']) { // the folder itself a link or a file: removed (writeInProject refuses to write through it)
+    let st; try { st = lstatSync(join(root, d)) } catch { continue }
+    if (!st.isDirectory()) { gone(d); changed.push(`${d}: not a folder, removed`) }
+  }
+  for (const p of ENGINE_GENERATED) { try { lstatSync(join(root, p)); gone(p); changed.push(`${p}: removed (config-check renders it)`) } catch {} }
+  const disk = Object.fromEntries(Object.entries(engineOnDisk(root)).filter(([p]) => /^(ops|setup)\//.test(p)))
+  const write = (p: string, why: string) => { const f = want.get(p)!; try { if (lstatSync(join(root, p)).isDirectory()) gone(p) } catch {}; writeInProject(root, p, f.data); chmodSync(join(root, p), f.m); changed.push(`${p}: ${why}`) }
+  const odd = Object.keys(disk).filter((p) => { const h = disk[p], w = want.get(p); return h === 'not a plain file' || (h !== (w && sha256(w.data)) && h !== seal?.[p]) }).sort()
+  for (const p of odd) if (!want.has(p)) { gone(p); changed.push(`${p}: removed (not mm's)`) } // removals first: a link may sit where a file goes
+  for (const p of odd) if (want.has(p)) write(p, "mm's render")
+  for (const p of [...want.keys()].sort()) if (!(p in disk) && (!seal || p in seal)) write(p, "mm's render (it was missing)")
+  return changed
 }
 /** After mm itself put the engine there (mm new --box, mm box on, a checked mm update): its files, sealed on the host
  *  (a folder the box never sees). */
