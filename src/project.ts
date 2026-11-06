@@ -20,6 +20,8 @@ export interface Answers { client: string; name: string; project: string; short:
   services_on?: string[] } // optional services this project runs (services.yaml optional: true), e.g. doop
 const ID = /^[a-z][a-z0-9-]{0,30}$/
 export const PROJECTS_PC = join(DIRS.pc, 'projects')
+/** The mm fork of Doop, v0.12.0-mm.1 (box/doop), by digest: the default when mm's config has no doop.image (sy-3yz). */
+export const DOOP_IMAGE = 'sha256:dd22179d19bd264ede9190cd4347fcedff5db59916a726d8ef280176eb6e9c72'
 /** Project boxes: one file each (`# from <root>/services.yaml`), so mm, the gateway and the sentinel find them; never
  *  loaded into the host's process manager (a box runs its own). */
 export const BOXES = join(DIRS.pc, 'boxes')
@@ -341,7 +343,9 @@ export function writeRunFiles(root: string, pcSocket: string) {
     // how this machine runs a container, and the pinned images of optional services (bin/doop-run; plans/doop.md): Doop's
     // by digest only (bin/doop-run refuses a tag: sy-7452)
     containers: { docker: String(process.env.MM_DOCKER || getPath(loadConfig(), 'box.docker') || 'docker'),
-      doop_image: String(process.env.MM_DOOP_IMAGE || getPath(loadConfig(), 'doop.image') || 'mm-doop:0.12.0') },
+      // the mm fork of Doop (box/doop: one sign-in with the boards), v0.12.0-mm.1, pinned by digest (sy-3yz); a machine
+      // that builds it again (box/doop/build.sh) gets the same id only from the same base, so it sets doop.image itself
+      doop_image: String(process.env.MM_DOOP_IMAGE || getPath(loadConfig(), 'doop.image') || DOOP_IMAGE) },
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
   writeInProject(root, '.run/endpoints.json', JSON.stringify(ep, null, 2))
   // where the machine's secrets are (paths only), for config-check to deny to every role (sy-5ag): in mm's folder, never
