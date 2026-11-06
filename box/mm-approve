@@ -1,0 +1,508 @@
+#!/usr/bin/python3 -I
+# mm-approve: the owner's approvals as signed lines that the machine's owner account can't make (docs/approvals.md).
+# Installed root-owned (root:root 0755, e.g. /usr/local/libexec/mm-approve) and run as its own system user (the config's
+# `user`, e.g. mm-approve: no login shell, no sudo). That user alone reads the signing key (ed25519, through openssl:
+# python's standard library has none) and alone writes the ledger; everyone reads the ledger and the public key.
+#
+#   keygen                                   the key pair and the ledger, in the config's `dir` (once)
+#   offer <item> [--subject S]... [--plan-stdin]
+#                                            before the bridge shows an Approve button: the signer runs the config's
+#                                            plan_command for <item> itself, keeps {offer id, item, plan hash, subjects,
+#                                            expires} in its own state, and prints what the message shows (JSON)
+#   tap <offer> <tapper> [--item <claimed>]  on the button's callback: <tapper> is the Telegram id the bridge verified.
+#                                            Only an offer this signer made, not used, not expired, by the owner's id;
+#                                            the item is read again and must hash as offered. Then one signed line.
+#   verify <item> <subject>                  yes (exit 0) only for a well-signed line of <item> naming <subject>, in a
+#                                            ledger of the right owner and mode; else no (exit 1)
+#   subject migration <script> [<rollback>]  the subject of a migration (its script and rollback), or of a head
+#   subject head <git sha>
+#   check                                    the ledger's, the key's and the config's owners and modes
+#
+# The item and the plan hash never come from callback data: an offer id is only a key into the signer's own record.
+# Config: /etc/mm-approve.conf (root's), `key = value` lines (docs/approvals.md). When that file is absent, and for the
+# signer's own commands (keygen, offer, tap) run by a user that is neither root nor /etc's `user`, MM_APPROVE_CONF may
+# name another one (tests): that gives no right the user doesn't have (the key is read by its file's mode). verify and
+# check read /etc's file whenever it exists.
+import base64
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+import pwd
+import re
+import secrets
+import stat
+import subprocess
+import sys
+import tempfile
+
+ETC = '/etc/mm-approve.conf'
+SAFE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+VERSION = 'mm-approve/1'
+
+ITEM = re.compile(r'[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*')
+HEX64 = re.compile(r'[0-9a-f]{64}')
+SUBJECT = re.compile(r'sha256:[0-9a-f]{64}|git:[0-9a-f]{40}(?:[0-9a-f]{24})?')
+APPROVER = re.compile(r'telegram:[0-9]{1,20}')
+OFFER = re.compile(r'[0-9a-f]{32}')
+TIME = re.compile(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ')
+TAPPER = re.compile(r'[0-9]{1,20}')
+
+
+class Refused(Exception):
+    def __init__(self, msg, code=2):
+        super().__init__(msg)
+        self.code = code
+
+
+def refuse(msg, code=2):
+    raise Refused(msg, code)
+
+
+def show(s):
+    s = ''.join(c if c.isprintable() else '?' for c in str(s))
+    return s if len(s) <= 120 else s[:117] + '...'
+
+
+def now():
+    t = os.environ.get('MM_APPROVE_NOW') if not STRICT else None  # tests only: a fixed clock (seconds)
+    return int(t) if t and t.isdigit() else int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+
+
+def iso(t):
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+# ---------- the config ----------
+
+STRICT = False  # the config is /etc's: everything it names must be root's (or the signer's), not the caller's
+
+
+def conf_path(signer_command):
+    """/etc/mm-approve.conf when it exists (root runs only that one); else, or for the signer's own commands run by a
+    user other than root, MM_APPROVE_CONF."""
+    env = os.environ.get('MM_APPROVE_CONF', '')
+    if os.geteuid() == 0:
+        return ETC, True
+    if os.path.lexists(ETC):
+        if not (signer_command and env):
+            return ETC, True
+        # the signer's own user always runs /etc's (its plan command, its owner, its clock): a test config is only
+        # for another user, who can't read the key anyway
+        try:
+            with open(ETC) as f:
+                names = [v.strip() for k, _, v in (l.split('#', 1)[0].partition('=') for l in f) if k.strip() == 'user']
+            if os.geteuid() == pwd.getpwnam((names or ['mm-approve'])[-1]).pw_uid:
+                return ETC, True
+        except (OSError, KeyError):
+            return ETC, True
+    if env:
+        return env, False
+    refuse(f'no {ETC} (and no MM_APPROVE_CONF)')
+
+
+def load_conf(signer_command):
+    global STRICT
+    path, strict = conf_path(signer_command)
+    STRICT = strict
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as e:
+        refuse(f'no config {path} ({e.strerror})')
+    with os.fdopen(fd) as f:
+        st = os.fstat(f.fileno())
+        if strict and (st.st_uid != 0 or st.st_mode & 0o022):
+            refuse(f'{path} must be root-owned and writable by root only')
+        kv = {}
+        for line in f:
+            line = line.split('#', 1)[0].strip()
+            if not line:
+                continue
+            k, sep, v = line.partition('=')
+            if not sep:
+                refuse(f'{path}: not "key = value": {show(line)}')
+            kv[k.strip()] = v.strip()
+    c = {
+        'path': path,
+        'verifier': kv.get('verifier', 'actor'),
+        'user': kv.get('user', 'mm-approve'),
+        'dir': kv.get('dir', '/var/lib/mm-approve'),
+        'public_key': kv.get('public_key', '/etc/mm-approve.pub'),
+        'plan_command': kv.get('plan_command', ''),
+        'owner_telegram_id': kv.get('owner_telegram_id', ''),
+        'expires_hours': kv.get('expires_hours', '24'),
+        'max_shown': kv.get('max_shown', '3500'),
+        'openssl': kv.get('openssl', '/usr/bin/openssl'),
+    }
+    if c['verifier'] not in ('actor', 'ledger'):
+        refuse(f'verifier = {show(c["verifier"])}: actor or ledger')
+    for k in ('expires_hours', 'max_shown'):
+        if not re.fullmatch(r'\d{1,6}', c[k]) or int(c[k]) == 0:
+            refuse(f'{k}: a number above 0')
+    for k in ('dir', 'public_key', 'openssl'):
+        if not os.path.isabs(c[k]):
+            refuse(f'{k} = {show(c[k])}: an absolute path')
+    try:
+        c['uid'] = pwd.getpwnam(c['user']).pw_uid
+    except KeyError:
+        refuse(f'user = {show(c["user"])} has no account')
+    c['ledger'] = os.path.join(c['dir'], 'ledger.jsonl')
+    c['private'] = os.path.join(c['dir'], 'private')
+    return c
+
+
+# ---------- owners and modes ----------
+
+def check_owned(path, uids, what, kind):
+    """`path` (not followed) is a `kind` ('file' or 'dir') owned by one of `uids`, not writable by group or others."""
+    try:
+        st = os.lstat(path)
+    except OSError as e:
+        return f'{what} {path}: {e.strerror}'
+    want = stat.S_ISREG if kind == 'file' else stat.S_ISDIR
+    if not want(st.st_mode):
+        return f'{what} {path} is not a {"plain file" if kind == "file" else "folder"}'
+    if st.st_uid not in uids:
+        return f'{what} {path} belongs to uid {st.st_uid}, not {"/".join(map(str, sorted(uids)))}'
+    if st.st_mode & 0o022:
+        return f'{what} {path} is writable by its group or others (mode {stat.S_IMODE(st.st_mode):04o})'
+    if kind == 'file' and st.st_nlink != 1:
+        return f'{what} {path} has {st.st_nlink} links'
+    return None
+
+
+def check_parents(path, uids):
+    """Every folder above `path` belongs to root or one of `uids` and is not writable by others, unless sticky and
+    root's (/tmp: no one renames another's entry)."""
+    d = os.path.dirname(os.path.abspath(path))
+    while True:
+        try:
+            st = os.lstat(d)
+        except OSError as e:
+            return f'{d}: {e.strerror}'
+        if stat.S_ISLNK(st.st_mode):
+            return f'{d} is a symlink'
+        sticky_root = st.st_mode & stat.S_ISVTX and st.st_uid == 0
+        if st.st_uid not in uids | {0} or (st.st_mode & 0o022 and not sticky_root):
+            return f'{d} (above {path}) can be changed by others (uid {st.st_uid}, mode {stat.S_IMODE(st.st_mode):04o})'
+        if d == '/':
+            return None
+        d = os.path.dirname(d)
+
+
+def ledger_problems(c):
+    """Why the ledger and the public key can't be trusted, or [] (condition 8)."""
+    signer = {c['uid']}
+    out = [check_owned(c['dir'], signer, 'the ledger folder', 'dir'), check_parents(c['dir'], signer),
+           check_owned(c['ledger'], signer, 'the ledger', 'file'),
+           check_owned(c['public_key'], {0} if STRICT else {0, c['uid']}, 'the public key', 'file'),
+           check_parents(c['public_key'], {0} if STRICT else {0, c['uid']})]
+    return [p for p in out if p]
+
+
+# ---------- the plan, subjects, the signed text ----------
+
+def sha256(b):
+    return hashlib.sha256(b).hexdigest()
+
+
+def migration_subject(script, rollback):
+    """A migration's subject: its script and its rollback, each by its sha256 (ledger.mjs migrationSubject)."""
+    return 'sha256:' + sha256(f'{VERSION} migration\n{sha256(script)}\n{sha256(rollback)}\n'.encode())
+
+
+def signed_text(line):
+    """The bytes a signature covers: one field per line, in this order (ledger.mjs signedText)."""
+    return (f'{VERSION}\nitem={line["item"]}\nplan={line["plan"]}\nsubjects={",".join(line["subjects"])}\n'
+            f'approver={line["approver"]}\ntime={line["time"]}\noffer={line["offer"]}\n').encode()
+
+
+def plan_text(c, item):
+    """The item's plan, as the board's command writes it (the code-written raw text the owner sees; never a model's)."""
+    cmd = c['plan_command']
+    if not cmd or not os.path.isabs(cmd):
+        refuse('plan_command: an absolute path (the board\'s command that prints an item\'s plan)')
+    if STRICT:
+        p = check_owned(cmd, {0}, 'plan_command', 'file') or check_parents(cmd, set())
+        if p:
+            refuse(p)
+    try:
+        r = subprocess.run([cmd, item], stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
+                           env={'PATH': SAFE_PATH, 'LANG': 'C.UTF-8', 'HOME': '/'})
+    except (OSError, subprocess.TimeoutExpired) as e:
+        refuse(f'plan_command: {show(e)}')
+    if r.returncode != 0:
+        refuse(f'plan_command {item}: exit {r.returncode}: {show(r.stderr.decode(errors="replace").strip())}')
+    if len(r.stdout) > 1 << 20:
+        refuse('plan_command: the plan is over 1 MiB')
+    try:
+        r.stdout.decode('utf-8')
+    except UnicodeDecodeError:
+        refuse('plan_command: not UTF-8')
+    if not r.stdout.strip():
+        refuse(f'{item} has no plan')
+    return r.stdout
+
+
+def sign(c, data):
+    key = os.path.join(c['private'], 'key.pem')
+    with tempfile.TemporaryDirectory(dir=c['private']) as t:
+        m = os.path.join(t, 'm')
+        with open(m, 'wb') as f:
+            f.write(data)
+        r = subprocess.run([c['openssl'], 'pkeyutl', '-sign', '-inkey', key, '-rawin', '-in', m],
+                           capture_output=True, env={'PATH': SAFE_PATH})
+        if r.returncode != 0 or len(r.stdout) != 64:
+            refuse(f'openssl sign: {show(r.stderr.decode(errors="replace").strip())}')
+        return base64.b64encode(r.stdout).decode()
+
+
+def good_sig(c, data, sig):
+    try:
+        raw = base64.b64decode(sig, validate=True)
+    except ValueError:
+        return False
+    if len(raw) != 64:
+        return False
+    with tempfile.TemporaryDirectory() as t:
+        m, s = os.path.join(t, 'm'), os.path.join(t, 's')
+        with open(m, 'wb') as f:
+            f.write(data)
+        with open(s, 'wb') as f:
+            f.write(raw)
+        r = subprocess.run([c['openssl'], 'pkeyutl', '-verify', '-pubin', '-inkey', c['public_key'], '-rawin',
+                            '-in', m, '-sigfile', s], capture_output=True, env={'PATH': SAFE_PATH})
+        return r.returncode == 0
+
+
+def parse_line(text):
+    """A ledger line's fields, each checked, or None."""
+    try:
+        o = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(o, dict) or set(o) != {'v', 'item', 'plan', 'subjects', 'approver', 'time', 'offer', 'sig'}:
+        return None
+    ok = (o['v'] == 1 and isinstance(o['item'], str) and ITEM.fullmatch(o['item'])
+          and isinstance(o['plan'], str) and HEX64.fullmatch(o['plan'])
+          and isinstance(o['subjects'], list) and o['subjects'] and all(isinstance(s, str) and SUBJECT.fullmatch(s) for s in o['subjects'])
+          and isinstance(o['approver'], str) and APPROVER.fullmatch(o['approver'])
+          and isinstance(o['time'], str) and TIME.fullmatch(o['time'])
+          and isinstance(o['offer'], str) and OFFER.fullmatch(o['offer']) and isinstance(o['sig'], str))
+    return o if ok else None
+
+
+# ---------- the signer's own state ----------
+
+def as_signer(c):
+    if os.geteuid() != c['uid']:
+        refuse(f'run as {c["user"]} (the signer), not uid {os.geteuid()}')
+    if os.geteuid() == 0:
+        refuse('the signer is not root')
+    for p in (check_owned(c['dir'], {c['uid']}, 'the folder', 'dir'), check_owned(c['private'], {c['uid']}, 'the private folder', 'dir')):
+        if p:
+            refuse(p)
+    if stat.S_IMODE(os.lstat(c['private']).st_mode) != 0o700:
+        refuse(f'{c["private"]} must be 0700')
+
+
+class State:
+    """offers.json in the private folder, under a lock (one tap at a time)."""
+
+    def __init__(self, c):
+        self.path = os.path.join(c['private'], 'offers.json')
+        self.lock = os.open(os.path.join(c['private'], 'lock'), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        fcntl.flock(self.lock, fcntl.LOCK_EX)
+        try:
+            with open(self.path) as f:
+                self.offers = json.load(f)
+        except FileNotFoundError:
+            self.offers = {}
+
+    def save(self):
+        t = self.path + '.new'
+        fd = os.open(t, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            json.dump(self.offers, f, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(t, self.path)
+
+
+def cmd_keygen(c, args):
+    if args:
+        refuse('keygen takes nothing')
+    if os.geteuid() != c['uid'] or os.geteuid() == 0:
+        refuse(f'run as {c["user"]} (the signer)')
+    p = check_owned(c['dir'], {c['uid']}, 'the folder', 'dir')
+    if p:
+        refuse(f'{p} (make it first: install -d -o {c["user"]} -m 0755 {c["dir"]})')
+    os.umask(0o077)
+    os.makedirs(c['private'], mode=0o700, exist_ok=True)
+    os.chmod(c['private'], 0o700)
+    key, pub = os.path.join(c['private'], 'key.pem'), os.path.join(c['dir'], 'key.pub')
+    if os.path.lexists(key):
+        refuse(f'{key} exists: one key (a new one makes every earlier line unverifiable; move it away by hand)')
+    r = subprocess.run([c['openssl'], 'genpkey', '-algorithm', 'ed25519', '-out', key], capture_output=True, env={'PATH': SAFE_PATH})
+    if r.returncode != 0:
+        refuse(f'openssl genpkey: {show(r.stderr.decode(errors="replace").strip())}')
+    os.chmod(key, 0o600)
+    r = subprocess.run([c['openssl'], 'pkey', '-in', key, '-pubout', '-out', pub], capture_output=True, env={'PATH': SAFE_PATH})
+    if r.returncode != 0:
+        refuse(f'openssl pkey: {show(r.stderr.decode(errors="replace").strip())}')
+    os.chmod(pub, 0o644)
+    fd = os.open(c['ledger'], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o644)
+    os.close(fd)
+    os.chmod(c['ledger'], 0o644)
+    print(f'key: {key} (0600); public key: {pub}: install it root-owned as {c["public_key"]} '
+          f'(install -o root -g root -m 0644 {pub} {c["public_key"]}); ledger: {c["ledger"]} (0644)')
+
+
+def cmd_offer(c, args):
+    as_signer(c)
+    if not args or not ITEM.fullmatch(args[0]):
+        refuse('offer <item> [--subject S]... [--plan-stdin]')
+    item, subjects, given = args[0], [], None
+    i = 1
+    while i < len(args):
+        if args[i] == '--subject' and i + 1 < len(args):
+            if not SUBJECT.fullmatch(args[i + 1]):
+                refuse(f'subject {show(args[i + 1])}: sha256:<64 hex> (a migration: `subject migration`) or git:<head>')
+            subjects.append(args[i + 1])
+            i += 2
+        elif args[i] == '--plan-stdin':
+            given = sys.stdin.buffer.read(1 << 20 | 1)
+            i += 1
+        else:
+            refuse(f'offer: {show(args[i])}?')
+    if not subjects:
+        refuse('offer: at least one --subject (what the approval lets run)')
+    text = plan_text(c, item)
+    if given is not None and given != text:
+        refuse('the plan given is not the board\'s plan for this item (the signer offers only what it read itself)')
+    h, t = sha256(text), now()
+    shown = text.decode()
+    full = len(shown) <= int(c['max_shown'])
+    if not full:
+        shown = shown[:int(c['max_shown'])]
+    shown = (f'{shown}\n\n' + ('' if full else f'[The plan is longer than this message: only its start is shown. '
+                                               f'The approval is for the whole plan.]\n')
+             + f'Plan sha256: {h}\nSubjects: {", ".join(subjects)}')
+    s = State(c)
+    for k, o in list(s.offers.items()):  # forget what can't be tapped any more (a week after it expired)
+        if o['expires'] + 7 * 86400 < t:
+            del s.offers[k]
+    oid = secrets.token_hex(16)
+    s.offers[oid] = {'item': item, 'plan': h, 'subjects': subjects, 'made': t, 'expires': t + int(c['expires_hours']) * 3600, 'used': None}
+    s.save()
+    print(json.dumps({'offer': oid, 'item': item, 'plan': h, 'subjects': subjects, 'expires': iso(s.offers[oid]['expires']),
+                      'complete': full, 'text': shown}))
+
+
+def cmd_tap(c, args):
+    as_signer(c)
+    if len(args) not in (2, 4) or not OFFER.fullmatch(args[0]) or not TAPPER.fullmatch(args[1]) or (len(args) == 4 and args[2] != '--item'):
+        refuse('tap <offer id> <tapper telegram id> [--item <the item the callback names>]')
+    oid, tapper = args[0], args[1]
+    owner = c['owner_telegram_id']
+    if not TAPPER.fullmatch(owner):
+        refuse('owner_telegram_id: the owner\'s Telegram id, in the config')
+    if tapper != owner:
+        refuse(f'{tapper} is not the owner')
+    s = State(c)
+    o = s.offers.get(oid)
+    if not o:
+        refuse('no such offer (only a message this signer offered can be approved)')
+    if len(args) == 4 and args[3] != o['item']:
+        refuse(f'the callback names {show(args[3])}, the offer is for {o["item"]}: refused (never the callback\'s item)')
+    if o['used']:
+        refuse(f'this offer was used at {iso(o["used"])}: one approval per message', 4)
+    t = now()
+    if t >= o['expires']:
+        refuse(f'this offer expired at {iso(o["expires"])}: make a new offer', 5)
+    if sha256(plan_text(c, o['item'])) != o['plan']:
+        o['used'] = t
+        o['void'] = 'plan changed'
+        s.save()
+        refuse(f'the plan of {o["item"]} changed since the offer: make a new offer (this one is void)', 3)
+    for p in ledger_problems(c):
+        refuse(p)
+    line = {'v': 1, 'item': o['item'], 'plan': o['plan'], 'subjects': o['subjects'], 'approver': f'telegram:{tapper}',
+            'time': iso(t), 'offer': oid}
+    line['sig'] = sign(c, signed_text(line))
+    if not good_sig(c, signed_text(line), line['sig']):
+        refuse(f'the signature does not verify with {c["public_key"]}: is it this key\'s public key?')
+    o['used'] = t
+    s.save()  # used first: a crash after this loses an approval, never makes two
+    fd = os.open(c['ledger'], os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'w') as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        f.write(json.dumps(line, sort_keys=True) + '\n')
+        f.flush()
+        os.fsync(f.fileno())
+    print(json.dumps(line, sort_keys=True))
+
+
+def cmd_verify(c, args):
+    if len(args) != 2 or not ITEM.fullmatch(args[0]) or not SUBJECT.fullmatch(args[1]):
+        refuse('verify <item> <subject>')
+    item, subject = args
+    if c['verifier'] != 'ledger':
+        print(f'no: verifier = {c["verifier"]} in {c["path"]} (the ledger is not on)')
+        return 1
+    for p in ledger_problems(c):
+        print(f'no: {p}')
+        return 1
+    with open(c['ledger'], 'rb') as f:
+        for raw in f:
+            try:
+                line = parse_line(raw.decode('utf-8'))
+            except UnicodeDecodeError:
+                continue
+            if line and line['item'] == item and subject in line['subjects'] and good_sig(c, signed_text(line), line['sig']):
+                print(f'yes: {item} {subject} approved by {line["approver"]} at {line["time"]}')
+                return 0
+    print(f'no: no signed line of {item} for {subject}')
+    return 1
+
+
+def cmd_subject(args):
+    if len(args) == 2 and args[0] == 'head' and re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', args[1]):
+        print(f'git:{args[1]}')
+        return
+    if args and args[0] == 'migration' and len(args) in (2, 3):
+        def read(p):
+            fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as f:
+                return f.read()
+        print(migration_subject(read(args[1]), read(args[2]) if len(args) == 3 else b''))
+        return
+    refuse('subject migration <script> [<rollback>] | subject head <full git sha>')
+
+
+def cmd_check(c, args):
+    p = ledger_problems(c)
+    print(json.dumps({'config': c['path'], 'verifier': c['verifier'], 'ledger': c['ledger'], 'public_key': c['public_key'], 'problems': p}))
+    return 1 if p else 0
+
+
+def main(argv):
+    if not argv:
+        refuse('keygen | offer | tap | verify | subject | check (see the top of this file)')
+    cmd, args = argv[0], argv[1:]
+    if cmd == 'subject':
+        return cmd_subject(args)
+    signer = cmd in ('keygen', 'offer', 'tap')
+    if cmd not in ('keygen', 'offer', 'tap', 'verify', 'check'):
+        refuse(f'{show(cmd)}?')
+    c = load_conf(signer)
+    return {'keygen': cmd_keygen, 'offer': cmd_offer, 'tap': cmd_tap, 'verify': cmd_verify, 'check': cmd_check}[cmd](c, args)
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]) or 0)
+    except Refused as e:
+        print(f'mm-approve: refused: {e}', file=sys.stderr)
+        sys.exit(e.code)

@@ -11,6 +11,7 @@ import { engineDrift } from './lifecycle'
 import { manifest, type Tool } from './manifest'
 import * as vault from './vault'
 import { outsideChecks } from './outside'
+import { loadConf as approveConf, problems as ledgerProblems } from '../template/bin/lib/ledger.mjs'
 
 export type Status = 'ok' | 'warn' | 'fail' | 'skip'
 export interface Check { layer: string; item: string; status: Status; detail: string; fix?: string }
@@ -137,6 +138,27 @@ export function secretsDirChecks(): Check[] {
   return out
 }
 
+/**
+ * sy-1jmi (docs/approvals.md): with /etc/mm-approve.conf `verifier = ledger`, the approval ledger, its folder and the
+ * public key belong to the signer (the key to root), and none is writable by a group or others; the signer's private
+ * folder is 0700. The verifiers refuse a ledger that fails this. With `actor` (or no file): one line, nothing checked.
+ * Its config: /etc's; MM_APPROVE_CONF only when that file is absent (tests).
+ */
+export function approvalChecks(): Check[] {
+  const c = approveConf(), item = 'approval ledger'
+  if (c.verifier !== 'ledger') return [{ layer: 'machine', item, status: 'skip', detail: c.path ? `verifier = actor (${c.path}): approvals are read from the board's journal` : 'no /etc/mm-approve.conf: approvals are read from the board\'s journal (verifier = actor)' }]
+  const bad: string[] = [...ledgerProblems(c)]
+  if (c.dir && c.uid !== null && c.uid !== undefined) {
+    const priv = join(c.dir, 'private')
+    try { const st = statSync(priv); if (st.uid !== c.uid || (st.mode & 0o777) !== 0o700) bad.push(`${priv}: not the signer's 0700 folder (uid ${st.uid}, mode ${(st.mode & 0o777).toString(8)})`) }
+    catch (e: any) { bad.push(`${priv}: ${e.code || e.message} (mm-approve keygen makes it)`) }
+  }
+  return [bad.length
+    ? { layer: 'machine', item, status: 'fail', detail: `${c.path}: verifier = ledger, and no approval counts: ${[...new Set(bad)].join('; ')}`,
+      fix: `as root: chown ${c.user || 'the signer'} and chmod go-w the ledger and its folder, chmod 700 the private folder, the public key root:root 0644 (docs/approvals.md; ops, t2)` }
+    : { layer: 'machine', item, status: 'ok', detail: `${c.path}: verifier = ledger; ${c.ledger} and ${c.public_key}: owners and modes right` }]
+}
+
 export function doctor(): Check[] {
   const c = loadConfig()
   const m = manifest.machine
@@ -256,6 +278,7 @@ export function doctor(): Check[] {
     if (w) out.push({ layer: 'vault', item: 'swap', status: 'fail', detail: `${w}; so mm refuses to open secrets there (sy-rjwg 6)`, fix: `name a noswap tmpfs: mm config set ${SECRETS_KEY} <folder> (a brain migration mounts it), or turn the swap off or encrypt it` })
   }
   out.push(...secretsDirChecks())
+  out.push(...approvalChecks())
 
   out.push(secretModes())
 
