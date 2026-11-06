@@ -271,11 +271,14 @@ export async function gateway() {
       const ip = clientIp(req, srv)
       if (limited(`ba:${ip}`, 60, 60e3)) return json({ error: 'too many requests' }, 429)
       // only the Continue page's own form (CSRF). Our pages are served with Referrer-Policy: no-referrer, so a browser
-      // sends `Origin: null` on that form's POST (sy-9tbm). So the browser's Sec-Fetch-Site decides when it is there (a
-      // page can't set it): same-origin only. Without it (an older browser), Origin must be this host.
-      const site = req.headers.get('sec-fetch-site')
-      let from = ''; try { from = new URL(req.headers.get('origin') || '').host } catch {}
-      if (site ? site !== 'same-origin' : from !== authHost) { log('warn', 'link post refused (not from the link page)', { ip, origin: req.headers.get('origin') || undefined, site: site || undefined }); return html(page('Open the sign-in link itself, then press Continue.'), 403) }
+      // sends `Origin: null` on that form's POST (sy-9tbm). A page can't set Sec-Fetch-Site. So: an Origin of another
+      // host is always refused; when the browser sends Sec-Fetch-Site, only same-origin passes (cross-site, same-site,
+      // none refused; a sandboxed frame elsewhere sends Origin null but cross-site); without it (an older browser),
+      // Origin must be this host. A non-browser client gains nothing here: it could post the token anyway.
+      const site = req.headers.get('sec-fetch-site'), origin = req.headers.get('origin') || ''
+      let from = ''; try { from = new URL(origin).host } catch {}
+      const foreign = origin !== '' && origin !== 'null' && from !== authHost
+      if (foreign || (site ? site !== 'same-origin' : from !== authHost)) { log('warn', 'link post refused (not from the link page)', { ip, origin: req.headers.get('origin') || undefined, site: site || undefined }); return html(page('Open the sign-in link itself, then press Continue.'), 403) }
       const f = await req.formData().catch(() => null), t = String(f?.get('t') || ''), c = String(f?.get('c') || '/s/done')
       const hdrs = new Headers(req.headers); hdrs.delete('cf-connecting-ip'); hdrs.delete('content-type'); hdrs.delete('content-length'); hdrs.set('x-mm-client-ip', ip)
       const r = await auth.handler(new Request(`https://${authHost}/api/auth/magic-link/verify?${new URLSearchParams({ token: t, callbackURL: c })}`, { method: 'GET', headers: hdrs }))
