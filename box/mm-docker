@@ -137,7 +137,9 @@ def env(c):
 P = r'[a-z][a-z0-9-]{0,62}'  # a project's name (src/lifecycle.ts)
 CONTAINER = re.compile(rf'mm-(box|egress|doop)-({P})')
 NETWORK = re.compile(rf'mm-(doop-net|net)-({P})')
-NET_ID = re.compile(r'[0-9a-f]{12}|[0-9a-f]{64}')
+# a network's id: docker's own (hex, 12 or 64) or a swarm network's (base 36, 12 or 25: Dokploy's overlay networks);
+# mm lists every network by id to learn the machine's docker subnets (box.ts dockerSubnets, the egress deny list)
+NET_ID = re.compile(r'[0-9a-f]{12}|[0-9a-f]{64}|[0-9a-z]{12}|[0-9a-z]{25}')
 IMAGE = re.compile(r'mm-(box|egress|doop)(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?')
 NAMED_DIGEST = re.compile(r'[a-z0-9][a-z0-9._/-]{0,200}(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?@sha256:[0-9a-f]{64}')
 DIGEST = re.compile(rf'sha256:[0-9a-f]{{64}}|{NAMED_DIGEST.pattern}')

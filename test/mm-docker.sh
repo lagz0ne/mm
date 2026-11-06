@@ -120,6 +120,8 @@ yes "network create (doop)" - network create --internal --subnet 10.232.40.0/24 
 yes "network connect egress" - network connect --ip 10.231.40.2 mm-net-acme-shop mm-egress-acme-shop
 yes "network inspect -f subnet" - network inspect -f '{{(index .IPAM.Config 0).Subnet}}' mm-net-acme-shop
 yes "network inspect ids" - network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 0123456789ab ba9876543210
+yes "network inspect ids, with a swarm network's (base 36, as Dokploy's overlay has)" - network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 0123456789ab bzbd0ec1mlnz q8r2k6w1x9t3m4n7p5s0v2y6z
+no "network inspect: a name that is not mm's (a swarm-looking name with a dash)" network inspect dokploy-network
 yes "network ls -q" - network ls -q
 yes "network rm" - network rm mm-net-acme-shop
 yes "container inspect (exists)" - container inspect mm-box-acme-shop
