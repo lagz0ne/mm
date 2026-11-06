@@ -6,8 +6,11 @@
 # one person can't touch another's; CSP and no-store; the owner the same from the terminal (refused in an agent's
 # shell); the stored form is sealed (the recovery key opens it); mm user ls shows set/none only; the token is in no
 # log, no page, no file outside the vault. mm run-as: a person's run gets their token only (as CLAUDE_CODE_OAUTH_TOKEN,
-# nothing else signs its calls); a person with none is refused, and the owner's token is never used for them; a viewer,
-# a stranger and an agent's shell are refused; the opened file is gone; a box without the model's host is refused.
+# nothing else signs its calls), labelled with the Paseo daemon's worker (no worker said: no run); a person with none is
+# refused, and the owner's token is never used for them; a viewer, a stranger and an agent's shell are refused; the
+# opened file is gone. In a box (a stand-in for docker): the run goes over docker exec -i; the box's egress gets the
+# model's host when the run starts, keeps it while the run is there, and loses it once none is left (the sweep), or at
+# once when the run does not start (sy-q8fv).
 #   test/person-run.sh [mm command]       default: bun <repo>/src/cli.ts
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd); MMC=${1:-"bun $SRC/src/cli.ts"}
@@ -18,7 +21,7 @@ pass=0; fail=0
 ok()   { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }
 bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
 check() { local d=$1; shift; if "$@" >"$T/check.out" 2>&1; then ok "$d"; else bad "$d"; tail -3 "$T/check.out" | sed 's/^/       /'; fi; }
-T=$(mktemp -d); SHM=$(mktemp -d /dev/shm/mmp.XXXX); GW=""; trap '[ -n "$GW" ] && kill $GW 2>/dev/null; rm -rf "$T" "$SHM"' EXIT
+T=$(mktemp -d); SHM=$(mktemp -d /dev/shm/mmp.XXXX); GW=""; WK=""; trap '[ -n "$GW" ] && kill $GW 2>/dev/null; [ -n "$WK" ] && kill $WK 2>/dev/null; rm -rf "$T" "$SHM"' EXIT
 export HOME="$T/home" MM_HOME="$T/home/.mm" MM_LAYOUT=one-root MM_OBS_TRACES="" XDG_RUNTIME_DIR="$SHM"
 mkdir -p "$MM_HOME/pc/projects" "$T/bin"
 printf '#!/bin/sh\nexec %s "$@"\n' "$MMC" >"$T/bin/mm"; chmod +x "$T/bin/mm"; export PATH="$T/bin:$PATH"
@@ -78,13 +81,25 @@ echo '== mm run-as: a run for one person, on their own token'
 P="$MM_HOME/projects/acme/shop"; ST="$T/st"; mkdir -p "$P/bin/lib" "$P/leads/qa" "$ST" "$T/pcli/bin" "$T/pcli/dist/utils" "$T/pcli/dist/commands/agent"
 printf 'client: acme\nname: shop\nproject: acme-shop\nshort: sh\nroot: %s\ntemplate_version: test\ncreated: test\n' "$P" >"$P/.mm-answers.yaml"
 printf 'services: {}\n' >"$P/services.yaml"
-cp "$SRC/template/bin/lead" "$P/bin/lead"; cp "$SRC/template/bin/lib/run-as.mjs" "$P/bin/lib/run-as.mjs"; chmod +x "$P/bin/lead"
+cp "$SRC/template/bin/lead" "$P/bin/lead"; for f in run-as paseo svc; do cp "$SRC/template/bin/lib/$f.mjs" "$P/bin/lib/$f.mjs"; done; chmod +x "$P/bin/lead"
 printf 'Hello, you are the {role} lead of {project}.\n' >"$P/leads/START.md"; printf '{"roles":[{"id":"qa"}]}\n' >"$P/leads/roles.json"
 for f in config-check wt; do printf '#!/bin/sh\nexit 0\n' >"$P/bin/$f"; chmod +x "$P/bin/$f"; done
 printf '#!/bin/sh\necho "[]"\n' >"$P/bin/bd"; chmod +x "$P/bin/bd"
 printf 'console.log("%s/claude")\n' "$T" >"$P/bin/lib/claude.mjs"; printf 'console.log("ws-1")\n' >"$P/bin/lib/lead-workspace.mjs"
 echo '{"name":"@getpaseo/cli","type":"module"}' >"$T/pcli/package.json"
-printf '#!/bin/sh\ncase "$1" in run) echo plain >>"%s/plain" ;; esac\nexit 0\n' "$ST" >"$T/pcli/bin/paseo"; chmod +x "$T/pcli/bin/paseo"
+# the daemon's worker: a real process (its start time is read from /proc); `ls`: the run is there while $ST/live is
+sleep 100000 & WK=$!; echo "$WK" >"$ST/worker.pid"; WID="$WK.$(cut -d' ' -f22 /proc/$WK/stat)"
+cat >"$T/pcli/bin/paseo" <<EOF
+#!/bin/sh
+case "\$1" in
+  run) echo plain >>"$ST/plain" ;;
+  daemon) [ -s "$ST/worker.pid" ] && printf '{"workerPid": %s}\n' "\$(cat "$ST/worker.pid")" || exit 1 ;;
+  ls) case "\$*" in *" -q"*) exit 0 ;; esac  # bin/lead's own look: no lead to archive
+      echo "\$*" >>"$ST/ls.log"; [ -e "$ST/live" ] && echo '[{"id":"agent-1"}]' || echo '[]' ;;
+esac
+exit 0
+EOF
+chmod +x "$T/pcli/bin/paseo"
 echo 'export function selectDaemonTarget() { return { kind: "instance", home: "stub" } }' >"$T/pcli/dist/utils/daemon-target.js"
 cat >"$T/pcli/dist/commands/agent/run.js" <<'EOF'
 // what the run would get: the environment's names, and the token only as its sha256 (never the value)
@@ -94,7 +109,8 @@ export async function runRunCommand(prompt, o) {
   const t = env.CLAUDE_CODE_OAUTH_TOKEN
   fs.appendFileSync(process.env.STUB_DIR + '/runs.jsonl', JSON.stringify({ title: o.title, labels: o.label, wait: o.wait, keys: Object.keys(env).sort(),
     token_sha: t ? createHash('sha256').update(t).digest('hex') : null, api_key: env.ANTHROPIC_API_KEY, auth_token: env.ANTHROPIC_AUTH_TOKEN, base_url: env.ANTHROPIC_BASE_URL,
-    scrub: env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB, person: env.MM_PERSON, prompt_has_role: prompt.includes('qa lead') }) + '\n')
+    scrub: env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB, person: env.MM_PERSON, prompt_has_role: prompt.includes('qa lead'),
+    prompt_for_alice: prompt.includes('This run is for alice'), prompt_has_s1: prompt.includes('s-1 (in_progress)'), prompt_has_s2: prompt.includes('s-2 (') }) + '\n')
   return { type: 'single', data: { agentId: 'agent-1' } }
 }
 EOF
@@ -107,6 +123,14 @@ check "alice (a member, her token set): the run starts" bash -c "mm run-as alice
 check "...with her own token only, as CLAUDE_CODE_OAUTH_TOKEN" bash -c "last | jq -e --arg s \"\$(sha '$TA')\" '.token_sha == \$s'"
 check "...nothing else signs its calls (no API key, auth token or other base URL), its shells get no credentials, and it is hers" bash -c "last | jq -e '.api_key == \"\" and .auth_token == \"\" and .base_url == \"\" and .scrub == \"1\" and .person == \"alice\" and (.labels | index(\"person=alice\")) and (.labels | index(\"role=qa\")) and (.title | test(\"for alice\")) and .wait == false and .prompt_has_role'"
 check "...the lead's own environment is kept (its Claude folder, its actor)" bash -c "last | jq -e '(.keys | index(\"CLAUDE_CONFIG_DIR\")) and (.keys | index(\"BEADS_ACTOR\"))'"
+check "...labelled with the Paseo daemon's worker (its pid and start), so a daemon restart archives it" bash -c "last | jq -e --arg w 'paseo-worker=$WID' '.labels | index(\$w)'"
+cp "$P/bin/bd" "$T/bd.empty"; printf '#!/bin/sh\ncat %s\n' "$T/handover.json" >"$P/bin/bd"
+echo '[{"id":"s-1","status":"in_progress","title":"hers"},{"id":"s-2","status":"blocked","title":"his"}]' >"$T/handover.json"
+check "...its first prompt says whose run it is, and its handover is only the items LEAD_ITEMS names" bash -c "LEAD_ITEMS=s-1 mm run-as alice acme-shop qa >/dev/null 2>&1 && last | jq -e '.prompt_for_alice and .prompt_has_s1 and (.prompt_has_s2 | not)'"
+cp "$T/bd.empty" "$P/bin/bd"
+mv "$ST/worker.pid" "$ST/worker.off"; n0=$(runs)
+check "the daemon does not say its worker: no run" bash -c "! mm run-as alice acme-shop qa 2>'$T/rw' && grep -q 'did not say which worker' '$T/rw' && [ \$(runs) = $n0 ]"
+mv "$ST/worker.off" "$ST/worker.pid"
 check "...the opened file is gone from the secrets tmpfs" bash -c "[ -d '$SHM/mm/secrets/_run' ] && [ -z \"\$(ls -A '$SHM/mm/secrets/_run')\" ] && [ \$(stat -c %a '$SHM/mm/secrets/_run') = 700 ]"
 check "the owner (token set): the owner's own token" bash -c "mm run-as boss acme-shop qa >/dev/null 2>&1 && last | jq -e --arg s \"\$(sha '$TO')\" '.token_sha == \$s and .person == \"boss\"'"
 n=$(runs)
@@ -120,14 +144,50 @@ rm -f "$V/claude_token.boss.age"
 check "the owner with no personal token: the machine's own (the owner's), with a note, never another's" bash -c "mm run-as boss acme-shop qa 2>'$T/rb' >/dev/null && grep -q \"machine's own token\" '$T/rb' && [ \$(runs) = $n ] && [ \$(grep -c plain '$ST/plain') = 2 ]"
 printf '%s\n' "$TO" | mm user claude-token >/dev/null
 printf 'client: acme\nname: shop\nproject: acme-shop\nshort: sh\nroot: %s\ntemplate_version: test\ncreated: test\nbox: true\n' "$P" >"$P/.mm-answers.yaml"
-check "a box whose egress has no model host: refused before anything opens, it says why" bash -c "! mm run-as alice acme-shop qa 2>'$T/rx' && grep -q 'api.anthropic.com' '$T/rx' && [ \$(runs) = $n ] && [ -z \"\$(ls -A '$SHM/mm/secrets/_run')\" ]"
-cat >"$T/plan.ts" <<EOF
-import { plan } from '$SRC/src/runas'
-const p = plan('alice', 'acme-shop', 'qa')
-console.log(JSON.stringify(p.cmd))
+# a stand-in for docker: the box and its proxy are "running" (while $T/box.up is); exec runs the command here (the
+# box's sh -c ...), so bin/lead --as and the box's `paseo ls` are the stand-ins above; a proxy restart is logged
+cat >"$T/dock" <<EOF
+#!/bin/sh
+echo "\$*" >>"$T/dock.log"
+case "\$1" in
+  inspect) [ -e "$T/box.up" ] && echo true || echo false ;;
+  container) exit 0 ;;
+  restart) echo "RESTART \$4" >>"$T/proxy.log" ;;
+  exec) while [ \$# -gt 0 ] && ! { [ "\$1" = sh ] && [ "\$2" = -c ]; }; do shift; done; exec "\$@" ;;
+esac
+exit 0
 EOF
-printf 'services: {}\negress: [api.anthropic.com]\n' >"$P/services.yaml"
-check "...with it: the run goes through docker exec -i (stdin, no TTY) to bin/lead --as in the box, never a file in the box" bash -c "MM_DOCKER=docker bun '$T/plan.ts' | jq -e --arg l '$P/bin/lead' '.[0] == \"docker\" and .[1] == \"exec\" and .[2] == \"-i\" and (index(\$l) != null) and .[-2] == \"--as\" and .[-1] == \"alice\" and (map(select(test(\"sk-ant\"))) | length == 0)'"
+chmod +x "$T/dock"; ln -sf "$T/pcli/bin/paseo" "$T/bin/paseo"; touch "$T/box.up"
+export MM_DOCKER="$T/dock"
+ALLOW="$MM_HOME/egress/acme-shop/allow"; REC="$MM_HOME/person-runs/acme-shop.json"
+cat >"$T/sweep.ts" <<EOF
+import { sweep } from '$SRC/src/runas'
+console.log(JSON.stringify(sweep('$P')))
+EOF
+cat >"$T/list.ts" <<EOF
+import { egressList } from '$SRC/src/box'
+console.log(egressList('$P').join(' '))
+EOF
+restarts() { [ -e "$T/proxy.log" ] && wc -l <"$T/proxy.log" || echo 0; }
+export -f restarts; export ALLOW REC
+n=$(runs)
+check "a box with no model host on its egress: the run starts (over docker exec -i, stdin, no TTY), with her token" bash -c "mm run-as alice acme-shop qa >'$T/rbox' 2>'$T/rbox.err' && grep -q agent-1 '$T/rbox' && [ \$(runs) = \$(( $n + 1 )) ] && last | jq -e --arg s \"\$(sha '$TA')\" '.token_sha == \$s' && grep -q '^exec -i -w $P ' '$T/dock.log' && ! grep -q -- '-it' '$T/dock.log'"
+check "...the box's egress now has api.anthropic.com (the proxy restarted once to read it), and mm said so" bash -c "grep -qF 'api\\.anthropic\\.com' '$ALLOW' && [ \$(restarts) = 1 ] && grep -q 'egress now has api.anthropic.com' '$T/rbox.err'"
+check "...the host's record has her run (its agent id), no token in it, 0600" bash -c "jq -e '.runs | length == 1 and .[0].person == \"alice\" and .[0].agent == \"agent-1\" and .[0].role == \"qa\"' '$REC' && ! grep -q 'sk-ant' '$REC' && [ \$(stat -c %a '$REC') = 600 ]"
+touch "$ST/live"
+check "a second run while the first is there: no second proxy restart" bash -c "mm run-as alice acme-shop qa >/dev/null 2>&1 && [ \$(restarts) = 1 ] && jq -e '.runs | length == 2' '$REC'"
+check "the sweep while the run is in the box (its Paseo lists it): the entries stay, no restart" bash -c "bun '$T/sweep.ts' | jq -e '.dropped == 0 and .left == 2' && grep -qF 'api\\.anthropic\\.com' '$ALLOW' && [ \$(restarts) = 1 ] && grep -q -- '--label project=acme-shop' '$ST/ls.log'"
+rm -f "$ST/live"
+check "the sweep once the runs are gone (archived): the record goes, and the model's host leaves the egress (one restart)" bash -c "bun '$T/sweep.ts' | jq -e '.dropped == 2 and .left == 0' && [ ! -e '$REC' ] && ! grep -qF 'anthropic' '$ALLOW' && [ \$(restarts) = 2 ]"
+check "...and the sweep again: nothing to do, no restart" bash -c "bun '$T/sweep.ts' | jq -e '.dropped == 0' && [ \$(restarts) = 2 ]"
+mv "$ST/worker.pid" "$ST/worker.off"
+check "a run in the box that does not start: the model's host comes and goes at once, nothing recorded" bash -c "! mm run-as alice acme-shop qa 2>'$T/rbad' && [ ! -e '$REC' ] && ! grep -qF 'anthropic' '$ALLOW' && [ \$(restarts) = 4 ] && grep -q 'is off acme-shop' '$T/rbad'"
+mv "$ST/worker.off" "$ST/worker.pid"
+mm run-as alice acme-shop qa >/dev/null 2>&1; rm -f "$T/box.up"
+check "the box is down: the sweep drops its runs and the model's host" bash -c "jq -e '.runs | length == 1' '$REC' && bun '$T/sweep.ts' | jq -e '.dropped == 1' && [ ! -e '$REC' ] && ! grep -qF 'anthropic' '$ALLOW'"
+printf 'services: {}\negress: [api.anthropic.com]\n' >"$P/services.yaml"; touch "$T/box.up"; r0=$(restarts)
+check "a box that lists api.anthropic.com itself: no restart for the run, and kept after the sweep (only mm's own entry goes)" bash -c "mm run-as alice acme-shop qa >/dev/null 2>&1 && rm -f '$T/box.up' && bun '$T/sweep.ts' >/dev/null && [ ! -e '$REC' ] && bun '$T/list.ts' | grep -qw 'api.anthropic.com' && [ \$(restarts) = $r0 ]"
+printf 'services: {}\n' >"$P/services.yaml"; unset MM_DOCKER
 printf 'client: acme\nname: shop\nproject: acme-shop\nshort: sh\nroot: %s\ntemplate_version: test\ncreated: test\n' "$P" >"$P/.mm-answers.yaml"
 check "mm user rm alice: her token goes with her account" bash -c "mm user rm alice >/dev/null && [ ! -e '$V/claude_token.alice.age' ]"
 

@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { DIRS, HOME, toolPath } from './env'
 import { hostDir, jobArgs, landBackup } from './box'
 import { engineRefusal, resolve } from './project'
+import { sweepAll } from './runas'
 
 const STATE = join(DIRS.mm, 'data', 'cron.json')
 type Job = { project: string; root: string; name: string; every: string; command: string; box: boolean }
@@ -49,8 +50,14 @@ export async function cron(tickMs = 10_000) {
   mkdirSync(join(DIRS.mm, 'data'), { recursive: true })
   const running = new Set<string>()
   const first = new Set<string>()
+  let swept = 0
   for (;;) {
     const now = Date.now()
+    // once a minute: a box whose person runs are all gone loses the model's host from its egress (src/runas.ts sweep)
+    if (now - swept >= 60_000) {
+      swept = now
+      try { for (const r of sweepAll()) if (r.dropped) console.log(JSON.stringify({ time: new Date().toISOString(), level: 'info', msg: `person runs: ${r.dropped} gone from ${r.project}, ${r.left} left${r.egress ? `; ${r.egress}` : ''}`, project: 'mm', service: 'cron' })) } catch {}
+    }
     for (const j of jobs()) {
       const key = `${j.project}/${j.name}`
       // a daily job never seen before waits for its next slot instead of running at once

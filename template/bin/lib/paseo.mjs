@@ -104,3 +104,24 @@ export async function onAgents(handler) {
   return c ? c.agents.subscribe(handler) : null
 }
 export async function close() { try { await client?.close() } catch {} client = null }
+
+/** A process's start (field 22 of /proc/<pid>/stat, clock ticks since boot), or '' when it can't be read. */
+export function procStart(pid) {
+  try { const s = fs.readFileSync(`/proc/${pid}/stat`, 'utf8'); return s.slice(s.lastIndexOf(')') + 2).split(' ')[19] || '' } catch { return '' }
+}
+/** The daemon's worker, the process that holds the live agents, as `<pid>.<start>`; null when the daemon can't say.
+ *  A person run carries the worker it was made on (its label `paseo-worker`, bin/lib/run-as.mjs): a daemon that
+ *  restarted has another worker, and a run made on the old one comes back only without its token (sy-q8fv). Paseo's
+ *  status call is the CLI's (`paseo daemon status`); kept for WORKER_TTL ms. */
+const WORKER_TTL = Number(E.PASEO_WORKER_TTL_MS || 5000)
+let workerSeen = { at: 0, v: null }
+export async function worker({ fresh = false } = {}) {
+  if (!fresh && Date.now() - workerSeen.at < WORKER_TTL) return workerSeen.v
+  let v = null
+  try {
+    const pid = Number(JSON.parse(await cli(['daemon', 'status', '--json'], 15000))?.workerPid)
+    if (Number.isInteger(pid) && pid > 0) v = `${pid}.${procStart(pid) || '0'}`
+  } catch {}
+  workerSeen = { at: Date.now(), v }
+  return v
+}

@@ -14,6 +14,7 @@ import { apiSocketDir, boxApi, noteBoxApi } from './apistate'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, HOME, run, which } from './env'
 import { MM_LOG_CONFIG } from './obs'
+import { hasRuns, MODEL_HOST } from './personruns'
 import { BOX_READONLY, BOXES, boxHook, dependsOn, gitRefusal, hostGitEnv, leaveHost, loadAll, processes as pcProcesses, PROJECT_LOG_CONFIG, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, serviceRoutes, startSkipped, up as projectUp, writePortlessClaim, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
@@ -127,15 +128,18 @@ export function dockerSubnets(): string[] {
 export const hostDir = (project: string) => join(DIRS.mm, 'box', project)
 
 const running = (name: string) => docker('inspect', '-f', '{{.State.Running}}', name).out.trim() === 'true'
+/** The project's box is running (its container, as docker says). */
+export const boxRunning = (project: string) => running(names(project).box)
 
 /** The box's egress list: the base list, plus what the project declares (`egress:` in services.yaml), plus the exact
- *  sites the owner granted through the project API (the host's record, src/apistate.ts). */
+ *  sites the owner granted through the project API (the host's record, src/apistate.ts), plus the model's host while a
+ *  person's run is in the box (the host's record, src/personruns.ts: mm run-as adds it, the sweep removes it). */
 export function egressList(root: string): string[] {
   let extra: string[] = []
   try { extra = ((Bun.YAML.parse(readFileSync(join(root, 'services.yaml'), 'utf8')) as { egress?: string[] }).egress || []) } catch {}
   const ok = (h: string) => /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h)
-  const api = boxApi(readAnswers(root).project).granted.egress.map((e) => e.site)
-  return [...new Set([...BASE_EGRESS, ...extra.map((x) => String(x).toLowerCase()).filter(ok), ...api])].sort()
+  const project = readAnswers(root).project, api = boxApi(project).granted.egress.map((e) => e.site)
+  return [...new Set([...BASE_EGRESS, ...extra.map((x) => String(x).toLowerCase()).filter(ok), ...api, ...(hasRuns(project) ? [MODEL_HOST] : [])])].sort()
 }
 const allowPatterns = (hosts: string[]) => hosts.map((h) => `^${h.startsWith('*.') ? '(.+\\.)?' + h.slice(2).replace(/\./g, '\\.') : h.replace(/\./g, '\\.')}(:443)?$`).join('\n') + '\n'
 const writeAllow = (root: string) => {

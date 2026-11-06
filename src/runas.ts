@@ -5,15 +5,21 @@
 // --as <person>` on its stdin (the file is removed as soon as the child holds it). bin/lead gives it to the run as
 // CLAUDE_CODE_OAUTH_TOKEN, in the unmodified Claude Code binary. In a box, the same goes over `docker exec -i`'s stdin:
 // the token never enters the box's files. A person with no token: no run, and never the owner's token instead.
+// A run in a box reaches the model directly (its own token, never through mm.ai): mm puts the model's host on the box's
+// egress list when the run starts there, and the sweep takes it off once no person run is left (sy-q8fv; the host's
+// record, src/personruns.ts). bin/wake starts its runs through here (item work as the item's requester, upkeep as the
+// project's sponsor), on the host.
 import { closeSync, openSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { egressList, execArgs } from './box'
+import { boxRunning, egressList, egressReload, execArgs } from './box'
 import { getPath, loadConfig } from './config'
+import { run } from './env'
 import { PERSON, hasToken, roleOf, tokenName } from './persontoken'
+import { MODEL_HOST, type PersonRun, recorded, runsOf, saveRuns } from './personruns'
 import { findRoot, readAnswers } from './project'
 import * as vault from './vault'
 
-export const MODEL_HOST = 'api.anthropic.com'
+export { MODEL_HOST }
 const ROLE = /^[a-z][a-z0-9-]{1,23}$/
 
 /** What the run would be, or why it can't start. Exported for the tests; never touches a token. */
@@ -30,24 +36,90 @@ export function plan(person: string, ref: string, role: string, o: { model?: str
   }
   const token = hasToken(person)
   if (!token && !owner) throw new Error(`${person} has no Claude token, so the run does not start: set your Claude token on the home page (https://${authHost}/s/token). mm never uses the owner's token for another person.`)
-  // in a box, the run reaches the model directly (its own token, never through mm.ai): only through the box's egress
-  if (token && a.box && !egressList(root).includes(MODEL_HOST))
-    throw new Error(`${a.project} is a box, and its egress list has no ${MODEL_HOST}: a run on a person's own token can't reach the model from it. The owner decides (services.yaml egress, or the project API); note that this way skips mm.ai's checks of server-side tools.`)
   const lead = [join(root, 'bin', 'lead'), 'start', role, ...(o.model ? ['--model', o.model] : []), ...(token ? ['--as', person] : [])]
   return { root, project: a.project, box: !!a.box, owner, token, cmd: a.box ? execArgs(root, lead, false) : lead }
 }
 
-/** Start the run; the child's exit code. */
+/** Start the run; the child's exit code. Its output goes on to ours; its last line is the run's agent id. */
 export async function runAs(person: string, ref: string, role: string, o: { model?: string } = {}): Promise<number> {
   const p = plan(person, ref, role, o)
   if (!p.token) console.error(`mm run-as: ${person} is the owner and has no personal token set: the run uses the machine's own token (the owner's), as every lead does`)
-  let fd: number | undefined, file = ''
+  // a box: the model's host on its egress list for this run (the record first, so the list has it), before any token opens
+  const entry: PersonRun | null = p.box && p.token ? { person, role, agent: null, at: Date.now() } : null
+  if (entry) boxRunStarts(p.root, p.project, entry)
+  let fd: number | undefined, file = '', code = 1, agent = ''
   try {
-    if (p.token) { file = vault.openForRun(tokenName(person)); fd = openSync(file, 'r') }
-  } finally { if (file) rmSync(file, { force: true }) } // the child gets the open file, never its name
-  try {
-    const child = Bun.spawn(p.cmd, { stdin: fd ?? 'ignore', stdout: 'inherit', stderr: 'inherit', env: { ...process.env, MM_RUN_AS: person } })
-    if (fd !== undefined) { closeSync(fd); fd = undefined }
-    return await child.exited
-  } finally { if (fd !== undefined) closeSync(fd) }
+    try {
+      if (p.token) { file = vault.openForRun(tokenName(person)); fd = openSync(file, 'r') }
+    } finally { if (file) rmSync(file, { force: true }) } // the child gets the open file, never its name
+    try {
+      const child = Bun.spawn(p.cmd, { stdin: fd ?? 'ignore', stdout: 'pipe', stderr: 'inherit', env: { ...process.env, MM_RUN_AS: person } })
+      if (fd !== undefined) { closeSync(fd); fd = undefined }
+      let out = ''
+      for await (const chunk of child.stdout as ReadableStream<Uint8Array>) { const t = new TextDecoder().decode(chunk); out += t; process.stdout.write(t) }
+      code = await child.exited
+      agent = out.trim().split('\n').pop()?.trim() || ''
+      return code
+    } finally { if (fd !== undefined) closeSync(fd) }
+  } finally { if (entry) boxRunEnded(p.root, p.project, entry, code === 0 && /^[\w-]{4,80}$/.test(agent) ? agent : null) }
+}
+
+const say = (m: string) => console.error(`mm run-as: ${m}`)
+/** A person's run starts in a box: the runs that are gone are dropped first, this one is recorded, and the box's egress
+ *  gets the model's host if it had none (its proxy restarts to read it). Throws (and records nothing) when it can't. */
+function boxRunStarts(root: string, project: string, entry: PersonRun) {
+  sweep(root)
+  const had = egressList(root).includes(MODEL_HOST)
+  saveRuns(project, [...runsOf(project), entry])
+  if (had) return
+  const r = egressReload(root)
+  if (r.status === 'fail') {
+    saveRuns(project, runsOf(project).filter((x) => x.at !== entry.at || x.person !== entry.person))
+    egressReload(root)
+    throw new Error(`${project}'s egress could not take ${MODEL_HOST}, so the run does not start: ${r.detail}`)
+  }
+  say(`${project}'s egress now has ${MODEL_HOST}, while a person's run is there (a person's run talks to the model directly, not through mm.ai)`)
+}
+/** The run started (its agent id) or did not (null: it is dropped, and the model's host with it when none is left). */
+function boxRunEnded(root: string, project: string, entry: PersonRun, agent: string | null) {
+  const same = (x: PersonRun) => x.at === entry.at && x.person === entry.person && x.role === entry.role
+  const runs = runsOf(project)
+  if (agent) { saveRuns(project, runs.map((x) => (same(x) ? { ...x, agent } : x))); return }
+  saveRuns(project, runs.filter((x) => !same(x)))
+  if (!egressList(root).includes(MODEL_HOST)) { egressReload(root); say(`the run did not start: ${MODEL_HOST} is off ${project}'s egress again`) }
+}
+
+const PENDING_MS = 10 * 60_000 // a run recorded with no agent id yet (mm run-as is still starting it)
+/** The ids of the box's agents (not archived), as its Paseo lists them; an empty set when the box is not running; null
+ *  when it can't be read (then nothing is dropped). The box answers this: a box that lies can only keep the model's
+ *  host longer, and only after a person's run was really there. */
+function boxAgents(root: string, project: string): Set<string> | null {
+  if (!boxRunning(project)) return new Set()
+  const r = run(execArgs(root, ['paseo', 'ls', '-g', '--label', `project=${project}`, '--json'], false), { timeoutMs: 30_000 })
+  if (!r.ok) return null
+  try { return new Set((JSON.parse(r.out) as { id?: string }[]).map((x) => String(x?.id || '')).filter(Boolean)) } catch { return null }
+}
+/** The box's person runs that are gone (archived, the box down) are dropped from the record; when none is left, the
+ *  model's host leaves its egress list (unless the project lists it itself, or the owner granted it). */
+export function sweep(root: string): { project: string; dropped: number; left: number; egress?: string } {
+  const project = readAnswers(root).project, runs = runsOf(project)
+  if (!runs.length) return { project, dropped: 0, left: 0 }
+  const live = boxAgents(root, project)
+  const keep = runs.filter((r) => (r.agent ? live === null || live.has(r.agent) : Date.now() - r.at < PENDING_MS))
+  if (keep.length === runs.length) return { project, dropped: 0, left: runs.length }
+  saveRuns(project, keep)
+  if (keep.length || egressList(root).includes(MODEL_HOST)) return { project, dropped: runs.length - keep.length, left: keep.length }
+  const r = egressReload(root)
+  return { project, dropped: runs.length - keep.length, left: 0, egress: `${MODEL_HOST} off: ${r.detail}` }
+}
+/** Every recorded box (mm cron, once a minute): a project that is gone, or no longer a box, loses its record. */
+export function sweepAll() {
+  const out: ReturnType<typeof sweep>[] = []
+  for (const project of recorded()) {
+    let root = ''
+    try { root = findRoot(project) } catch { saveRuns(project, []); continue }
+    if (!readAnswers(root).box) { saveRuns(project, []); continue }
+    try { out.push(sweep(root)) } catch {}
+  }
+  return out
 }

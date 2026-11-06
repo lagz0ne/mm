@@ -8,10 +8,14 @@
 //   ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL empty (a box's mm.ai key and URL, or any other, are not
 //   used: the person's token goes to the model's own API only), CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 (Claude Code strips
 //   its credentials from the shells and hooks it runs), MM_PERSON=<person>.
+// And the label paseo-worker=<the daemon's worker> (sy-q8fv): Paseo keeps no run's environment, so a run resumed after
+// the daemon restarted would run on the daemon's own token (the owner's). wake archives every person run whose worker
+// is not the daemon's current one. A daemon that can't say its worker: no run.
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
+import { worker } from './paseo.mjs'
 
 const die = (m, code = 1) => { console.error(`lead: ${m}`); process.exit(code) }
 if (process.env.CLAUDECODE) die("--as runs on a person's own Claude token: only mm run-as starts it, never an agent")
@@ -40,6 +44,9 @@ for (let i = 0; i < args.length; i++) {
   else die(`unknown option ${a}`, 2)
 }
 if (!prompt) die('no prompt', 2)
+const w = await worker({ fresh: true })
+if (!w) die(`the Paseo daemon did not say which worker holds its agents, so a run for ${person} could not be archived when it restarts: no run`)
+o.label = [...o.label.filter((l) => !/^paseo-worker=/.test(l)), `paseo-worker=${w}`]
 const SET_HERE = /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_BASE_URL|CLAUDE_CODE_SUBPROCESS_ENV_SCRUB|MM_PERSON)=/
 o.env = [...o.env.filter((e) => !SET_HERE.test(e)), `CLAUDE_CODE_OAUTH_TOKEN=${token}`, 'ANTHROPIC_API_KEY=', 'ANTHROPIC_AUTH_TOKEN=', 'ANTHROPIC_BASE_URL=',
   'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1', `MM_PERSON=${person}`]

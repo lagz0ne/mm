@@ -40,10 +40,11 @@ archive_role() {
   [ -z "$left" ] || { echo "lead: $1 lead(s) still there: $(echo $left)" >&2; return 1; }
 }
 # What the role has open on its board (in progress, blocked), for the new lead's first prompt: a restart must not
-# leave it idle (sy-8n1). Empty when the board can't be read; the lead still finds its items itself.
+# leave it idle (sy-8n1). Empty when the board can't be read; the lead still finds its items itself. LEAD_ITEMS (from
+# bin/wake, for a person's run: sy-q8fv): only those ids, the ones that person asked for (set and empty: none).
 open_items() {
   "$P/bin/bd" list --assignee "$1" --status in_progress,blocked --json 2>/dev/null \
-    | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{for(const i of JSON.parse(s))console.log('- '+i.id+' ('+i.status+'): '+String(i.title).slice(0,100))}catch{}})" 2>/dev/null || true
+    | node -e "const f=process.env.LEAD_ITEMS,only=f===undefined?null:f.split(/\s+/).filter(Boolean);let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{for(const i of JSON.parse(s))if(!only||only.includes(i.id))console.log('- '+i.id+' ('+i.status+'): '+String(i.title).slice(0,100))}catch{}})" 2>/dev/null || true
 }
 case "${1:-}" in
   ls) "$PASEO" ls -g --label "project=$PROJECT" ;;
@@ -81,7 +82,11 @@ case "${1:-}" in
     START=$P/leads/START.md; [ -f "$DIR/START.md" ] && START=$DIR/START.md
     name=$(node -e "try{process.stdout.write(require('$P/leads/personas.json').agents['$role'].name||'')}catch{}" 2>/dev/null)
     prompt=$(sed -e "s/{role}/$role/g" -e "s/{project}/$PROJECT/g" -e "s/{name}/${name:-the $role lead}/g" "$START")
-    items=$(open_items "$role")
+    items=$(open_items "$role"); unset LEAD_ITEMS
+    # a person's run (sy-q8fv): whose it is, so it works only on what that person asked for
+    [ -z "$as" ] || prompt="$prompt
+
+This run is for $as, on their own Claude token. Work here only on the items $as asked for (listed below, and the ones wake sends you), and on the project's upkeep if wake sends it. Other people's items wait for their own run: don't pull or work on them here."
     [ -z "$items" ] || prompt="$prompt
 
 Handover: a previous $role lead had these items open (in progress or blocked). Read each one's latest comments, then carry on with them; don't wait for a board update:
