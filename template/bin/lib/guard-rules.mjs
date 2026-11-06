@@ -99,7 +99,7 @@ export const RULES = // BEGIN RULES
       "id": "ps-env",
       "on": "bash",
       "pre": true,
-      "re": "(?:^|[\\s;&|(`$])ps\\s+(?:\\S+\\s+)*[a-df-zA-Z]*e[a-zA-Z]*(?![\\w-])",
+      "re": "(?:^|[\\s;&|(`$])ps\\s+[a-zA-Z]*e[a-zA-Z]*(?=$|[\\s|;&)`])",
       "why": "ps with its BSD-style e option prints every process's environment, where tokens live. Use ps -ef or ps -o."
     },
     {

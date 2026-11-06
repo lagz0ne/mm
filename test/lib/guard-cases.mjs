@@ -379,6 +379,11 @@ export const OWN = [
   ['Bash', 'ps -ef', 'allow'],
   ['Bash', 'ps -o pid,comm -u rocky', 'allow'],
   ['Bash', 'ps aux', 'allow'],
+  // the e option only as ps's own first word: words after a pipe are not ps's (a live false refusal, 11:2x)
+  ['Bash', 'ps -ef | grep test/lifecycle.sh | grep -v grep | wc -l', 'allow'],
+  ['Bash', 'ps aux | grep sleep', 'allow'],
+  ['Bash', 'ps -o user,pid,etime -u rocky', 'allow'],
+  ['Bash', 'ps auxe | head', 'deny'],
 ]
 
 export const NORMAL = [
