@@ -4,6 +4,7 @@
 // `mm needs` lists them with their status; `mm fill` fills one. No value is ever printed, logged or traced.
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import { granted } from './apistate'
 import { type Config, getPath, loadConfig, saveConfig, setPath, when } from './config'
 import { DIRS, HOME, run } from './env'
 import { manifest } from './manifest'
@@ -85,7 +86,10 @@ interface ProjectSecret { name: string; secret?: boolean; for?: string; about?: 
 /** A project's inputs: its secrets.json (names only); values in {root}/secrets/<NAME>. */
 export function projectNeeds(project: string, root: string): Need[] {
   let s: { required?: ProjectSecret[]; optional?: ProjectSecret[] } = {}
-  try { s = JSON.parse(readFileSync(join(root, 'secrets.json'), 'utf8')) } catch { return [] }
+  const asked = granted(project).secrets // new secrets the owner granted a box through the project API (src/api.ts)
+  try { s = JSON.parse(readFileSync(join(root, 'secrets.json'), 'utf8')) } catch { if (!asked.length) return [] }
+  const known = new Set([...(s.required || []), ...(s.optional || [])].map((x) => x.name.toLowerCase()))
+  s = { ...s, optional: [...(s.optional || []), ...asked.filter((x) => !known.has(x.name)).map((x) => ({ name: x.name, for: `the box asked for it (mm.api ${x.id}); it gets it at its next start` }))] }
   const out: Need[] = []
   for (const [list, required] of [[s.required || [], true], [s.optional || [], false]] as const)
     for (const x of list) {
@@ -172,6 +176,8 @@ export async function fill(name: string, value: string | undefined, o: FillOpts,
   const path = target.path!
   const vn = m ? vault.projectSecretName(m[1], m[2]) : target.input?.vault ? name : null
   const toVault = !!vn && vault.ready()
+  // a secret a box asked for (the project API) goes only into the vault: a file in the project is the box's to read
+  if (m && !toVault && granted(m[1]).secrets.some((x) => x.name === m[2].toLowerCase())) throw new Error(`${target.label} was asked for by the box: it goes only into the vault, and this machine has none yet (mm vault init)`)
   if (!toVault && existsSync(path) && !o.replace) throw new Error(`${target.label} is already filled (${tilde(path)}); pass --replace to overwrite it`)
   if (toVault && vault.sealed(vn!) && !o.replace) throw new Error(`${target.label} is already sealed; pass --replace to reseal it`)
   let v: string

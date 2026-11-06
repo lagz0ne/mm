@@ -1,6 +1,7 @@
 // Project lifecycle after `mm new`: update from the template (three-way merge), restart, archive (clean removal).
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative } from 'node:path'
+import { forgetGranted, granted } from './apistate'
 import { canon, DIRS, HOME, run, within } from './env'
 import { BOXES, boxHook, boxish, engineRefusal, gitRefusal, headDrift, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, resolve, routeRm, sealEngine, templateRecFile, templateVars, up, writeRunFiles } from './project'
 import { template, templateCommit } from './template'
@@ -238,6 +239,10 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
     if (!sv.public_port || !sv.public) continue
     steps.push(routeRm(a, sv.public.name))
   }
+  // ...and those the owner granted the box through the project API (src/api.ts); its grants go with it (its requests
+  // stay in mm.api's store, for the audit)
+  for (const g of granted(a.project).routes) steps.push(routeRm(a, `${g.name}.${a.project}`))
+  forgetGranted(a.project)
   // 3. agents (soft-delete in Paseo; their history stays recoverable there)
   let n = 0
   for (const id of agents) if (run(['paseo', 'archive', '--force', id], { timeoutMs: 30_000 }).ok) n++
