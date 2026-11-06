@@ -38,9 +38,10 @@ PCY="$MM_HOME/box/acme-shop/cfg/pc.yaml"
 # gives the app slot: its workdir, or "none"), egress (the box's list)
 cat >"$T/w.ts" <<EOF
 import { saveGranted } from '$SRC/src/apistate'
-import { appReload, carryHostApp, egressList, uncarryHostApp } from '$SRC/src/box'
+import { appReload, archiveHostAgents, carryHostApp, egressList, uncarryHostApp } from '$SRC/src/box'
 import { resolve } from '$SRC/src/project'
 const [what, x, y] = process.argv.slice(2), root = '$R'
+if (what === 'hostagents') console.log(JSON.stringify(archiveHostAgents(root)))
 if (what === 'carry' || what === 'uncarry') { const st = what === 'carry' ? carryHostApp(root) : uncarryHostApp(root); console.log(JSON.stringify(st)); if (st.some((s) => s.status === 'fail')) process.exit(1) }
 if (what === 'grant') saveGranted('acme-shop', { routes: [], egress: y ? [{ site: y, id: 'r-2' }] : [], release: x === '-' ? null : { build: x, id: 'r-1' }, secrets: [] })
 if (what === 'reload') { const st = appReload(root); if (st.some((s) => s.status === 'fail')) { console.error(JSON.stringify(st)); process.exit(1) } }
@@ -87,5 +88,16 @@ check "...a second box on carries nothing more (a build is granted already)" sh 
 check "box off: the app is back in release/, its record gone, and the host runs release/ again" sh -c "TESTAPI uncarry >/dev/null && [ -f '$R/release/server.js' ] && [ -f '$R/release/lib/x.js' ] && ! ls '$R/release' | grep -q '^host-' && jq -e '.release == null' '$T/store/granted/acme-shop.json'"
 check "...a build the owner approved through the API (not carried) stays where it is at box off" sh -c "TESTAPI grant v9 && mkdir -p '$R/release/v9' && TESTAPI uncarry | grep -qx '\\[\\]' && [ -d '$R/release/v9' ] && jq -e '.release.build == \"v9\"' '$T/store/granted/acme-shop.json'"
 check "with the API off: nothing is carried (the slot runs release/ as on the host)" sh -c "rm -rf '$T/store' && OTHER carry | grep -qx '\\[\\]' && [ -f '$R/release/server.js' ]"
+
+echo "== box on: the project's agents on the machine's Paseo are archived (sy-pcyq)"
+# a stand-in for the machine's Paseo: two agents in the project (a lead's folder, the root), one elsewhere
+cat >"$T/bin/paseo" <<EOF
+#!/bin/sh
+echo "\$*" >>"$T/paseo.log"
+case "\$1" in ls) printf '[{"id":"a1","cwd":"%s/leads/ops"},{"id":"a2","cwd":"%s"},{"id":"b1","cwd":"%s/elsewhere"}]\n' "$R" "$R" "$HOME" ;; esac
+exit 0
+EOF
+chmod +x "$T/bin/paseo"
+check "its two agents archived, the other one left alone" sh -c "OTHER hostagents | jq -e '.status == \"ok\" and (.detail | test(\"2/2\"))' && grep -qx 'archive --force a1' '$T/paseo.log' && grep -qx 'archive --force a2' '$T/paseo.log' && ! grep -q 'archive --force b1' '$T/paseo.log'"
 
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]

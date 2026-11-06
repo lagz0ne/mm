@@ -12,7 +12,7 @@ import { AI_PORT, aiEnabled, aiSocket, mintKey, revokeKeys, store as aiStore } f
 import { mkdtempSync, rmSync } from 'node:fs'
 import { apiEnabled, apiSocketDir, boxApi, granted, noteBoxApi, saveGranted } from './apistate'
 import { getPath, held, loadConfig } from './config'
-import { DIRS, HOME, run, which } from './env'
+import { DIRS, HOME, run, which, within } from './env'
 import { MM_LOG_CONFIG } from './obs'
 import { hasRuns, MODEL_HOST, personRunsOn } from './personruns'
 import { BOX_READONLY, BOXES, boxHook, dependsOn, gitRefusal, hostGitEnv, leaveHost, loadAll, processes as pcProcesses, PROJECT_LOG_CONFIG, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, serviceRoutes, startSkipped, up as projectUp, writePortlessClaim, writeRunFiles } from './project'
@@ -584,6 +584,10 @@ export function on(root: string): Step[] {
   // its processes stop and leave the host's process manager, also when the portless wrappers ignore TERM (sy-pfbr)
   const l = leaveHost(root, a.project); steps.push({ step: 'host', status: l.ok ? 'ok' : 'fail', detail: l.detail })
   if (!l.ok) return steps
+  // ...and its agents on the machine's Paseo (its leads as they ran on the host): archived, so none works on the
+  // project's files as the host's owner, past the box (sy-pcyq). Their history stays in Paseo. In the box, its own wake
+  // starts its leads on the box's own daemon.
+  steps.push(archiveHostAgents(root))
   // the engine as the host has it now (the host's own files): what the host may run of it later (review sy-b15.6)
   sealEngine(root); steps.push({ step: 'engine', status: 'ok', detail: 'bin/ and site/ sealed on the host' })
   // ...and the mm-template commit (the base of every later mm update), from the host's own repo (review sy-055t)
@@ -591,6 +595,16 @@ export function on(root: string): Step[] {
   // the app the host ran goes with it, as the box's build (sy-im89)
   steps.push(...carryHostApp(root), setBox(root, true), ...up(root))
   return steps
+}
+/** The machine Paseo's agents whose working folder is inside the project (as mm archive finds them), archived. */
+export function archiveHostAgents(root: string): Step {
+  const r = run(['paseo', 'ls', '-g', '--json'], { timeoutMs: 30_000 })
+  if (!r.ok) return { step: 'host agents', status: 'fail', detail: `could not list the machine's Paseo agents: ${short(r)}` }
+  let ids: string[] = []
+  try { ids = (JSON.parse(r.out) as { id: string; cwd?: string }[]).filter((x) => within(String(x.cwd || ''), root)).map((x) => x.id) } catch {}
+  let n = 0
+  for (const id of ids) if (run(['paseo', 'archive', '--force', id], { timeoutMs: 30_000 }).ok) n++
+  return { step: 'host agents', status: n === ids.length ? 'ok' : 'fail', detail: ids.length ? `${n}/${ids.length} of its agents on the machine's Paseo archived (their history stays)` : 'none on the machine\'s Paseo' }
 }
 /** `mm box off <project>`: back onto the host (the box stops, its files go back to the host's owner). */
 export function off(root: string): Step[] {
