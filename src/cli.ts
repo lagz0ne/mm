@@ -328,13 +328,20 @@ program.command('ship').description('(run by mm-pc) ship service log files to Vi
   .action(async (opts) => { await ship(2000, !!opts.dryRun) })
 
 const vaultCmd = program.command('vault').description('sealed secrets (age): two keys, opened only into memory-backed files at start (docs/vault.md)')
+// `vault run` opens secrets and runs any command; `vault init` would replace the machine's key. Never from an agent's shell
+// (review sy-uvgq), as mm auth approve: the process manager's own calls (mm up's services) don't carry these variables.
+// A second brake; the first is the denies every agent's settings carry (config-check OWNER_ONLY).
+const notInAgent = (what: string) => {
+  if (process.env.CLAUDECODE || process.env.PASEO_AGENT_ID) { console.error(`mm vault ${what}: refused in an agent's shell. It is the owner's, or the process manager's at a service's start.`); process.exit(1) }
+}
 vaultCmd.command('init').description("make this machine's vault key and record the human's recovery PUBLIC key (age1…)")
   .requiredOption('--recovery <age1…>', "the recovery key's public half (keep its secret half offline)")
-  .action((o) => { try { const r = vaultMod.init(o.recovery); console.log(`vault ready: sealed to this machine (${r.machine.slice(0, 16)}…) and the recovery key (${r.recovery.slice(0, 16)}…). Keep the recovery key's secret half offline.`) } catch (e) { console.error(`mm vault: ${(e as Error).message}`); process.exit(1) } })
+  .action((o) => { notInAgent('init'); try { const r = vaultMod.init(o.recovery); console.log(`vault ready: sealed to this machine (${r.machine.slice(0, 16)}…) and the recovery key (${r.recovery.slice(0, 16)}…). Keep the recovery key's secret half offline.`) } catch (e) { console.error(`mm vault: ${(e as Error).message}`); process.exit(1) } })
 vaultCmd.command('ls').description('what is sealed (names, sizes, digests; never a value)').action(() => { const o = fmt(); print(vaultMod.list() as unknown as Record<string, unknown>[], o) })
 vaultCmd.command('check').description('modes and digests (doctor runs it too)').action(() => { const r = vaultMod.check(); for (const x of r) console.log(`${x.ok ? 'ok  ' : 'FAIL'} ${x.detail}`); process.exit(r.every((x) => x.ok) ? 0 : 1) })
 vaultCmd.command('run <project> <names> [cmd...]').description('(used by mm up) open the named secrets for <project>, then run cmd with <NAME>_FILE set')
   .action(async (project: string, names: string, cmd: string[]) => {
+    notInAgent('run')
     try {
       const list = names.split(',').filter(Boolean)
       const files = vaultMod.openFor(project, list.map((n) => vaultMod.projectSecretName(project, n)))
