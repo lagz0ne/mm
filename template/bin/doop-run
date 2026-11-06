@@ -80,6 +80,12 @@ rnd() { node -e "process.stdout.write(require('crypto').randomBytes($1).toString
 } >"$S/doop.env"
 # a Doop left over (its wrapper was killed): stopped the clean way first, so its database closes and its files regroup
 $DOCKER stop -t 20 "$NAME" >/dev/null 2>&1 || true; $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
+# ...and gone: an --rm container docker is still removing keeps its name for a moment, and `docker run --name` would
+# fail with "already in use" (sy-ig1f: 34 restarts at create's first start). Wait up to 60 s for the name to be free.
+i=0; while $DOCKER container inspect "$NAME" >/dev/null 2>&1; do
+  i=$((i + 1)); [ "$i" -le 60 ] || { echo "doop-run: the old $NAME is still there after 60 s (docker rm -f $NAME)" >&2; exit 1; }
+  [ $((i % 10)) -eq 0 ] && { $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true; }; sleep 1
+done
 
 # its network: internal (no route out), a fixed /24 per project (the same one each start while it is free)
 subnet() { $DOCKER network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$NET" 2>/dev/null || true; }
