@@ -11,7 +11,14 @@ import { ROOT, dirs, projectName } from './svc.mjs'
 
 export function configDir(project = projectName()) {
   const d = path.join(dirs().mm, 'claude', project)
-  fs.mkdirSync(d, { recursive: true, mode: 0o700 }); fs.chmodSync(path.dirname(d), 0o700); fs.chmodSync(d, 0o700)
+  fs.mkdirSync(d, { recursive: true, mode: 0o700 })
+  // narrowed to 0700 only where this process owns the folder and it isn't one a box shares with the host (mm up makes a
+  // box's Claude folder 2770, setgid, the host owner's: its box user may not change its mode, and 0700 would shut the box
+  // out; sy-7870: a lead's start in a box failed with EPERM here)
+  for (const p of [path.dirname(d), d]) {
+    let st; try { st = fs.statSync(p) } catch { continue }
+    if (st.uid === process.getuid?.() && !(st.mode & 0o2000) && (st.mode & 0o777) !== 0o700) fs.chmodSync(p, 0o700)
+  }
   return d
 }
 /** Trust exactly these folders (absolute) for this project's agents. */

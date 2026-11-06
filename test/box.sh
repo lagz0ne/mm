@@ -301,6 +301,11 @@ check "Claude Code in the box answers through the gateway (claude -p, the box's 
 check "...the upstream saw only the machine's key, never the box's" sh -c "grep -q 'upstream-secret-qa' '$AIT/up.jsonl' && ! grep -q mmk_ '$AIT/up.jsonl'"
 check "...and mm usage counts it for this project" sh -c "mm ai usage -o json | jq -e --arg p '$PROJECT' '.[0].rows[] | select(.project == \$p) | .calls >= 2'"
 
+echo "== a lead starts in the box (sy-7870), as wake starts one: bin/lead start, on the box's own Paseo, through the gateway"
+check "bin/lead start qa in the box: exit 0 (config-check, its Claude folder, its Paseo workspace)" sh -c "mm shell '$REF' bin/lead start qa </dev/null >/tmp/box-lead.out 2>&1 || { tail -5 /tmp/box-lead.out; exit 1; }"
+check "...the qa lead is an agent of the box's own Paseo" sh -c "for i in \$(seq 1 20); do BP ls -g --label role=qa --json 2>/dev/null | jq -e 'length >= 1' >/dev/null && exit 0; sleep 2; done; exit 1"
+for id in $(BP ls -g --label role=qa --json 2>/dev/null | jq -r '.[].id'); do BP archive --force "$id" >/dev/null 2>&1; done
+
 echo "== the project API (sy-b15.8): the box asks on its own socket; only the owner decides, on the host"
 APS="$MM_HOME_DIR/box/$PROJECT/api/api.sock"
 for _ in $(seq 1 30); do [ -S "$APS" ] && IN 'test -S /run/mm/api/api.sock' && break; sleep 1; done
