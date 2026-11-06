@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
+import { apiEnabled, granted } from './apistate'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, engineDirs, HOME, run, servicePath, toolPath, which } from './env'
 import { obsEndpoints } from './obs'
@@ -190,8 +191,13 @@ export function resolve(root: string) {
   const c = loadConfig(), access = String(getPath(c, 'access') ?? ''), domain = String(getPath(c, 'domain') ?? '')
   const bindHost = String(getPath(c, 'bind_host') ?? '127.0.0.1')
   const services: Record<string, Svc & { url?: string; public_url?: string; public_port?: number; public_bind?: string }> = {}
-  for (const [n, s] of Object.entries(spec.services)) {
-    if (s.optional && n === 'app' && !existsSync(join(root, 'release'))) continue // app starts once something is deployed
+  // a box with the project API on (src/api.ts): its app slot runs only the build the owner approved (release/<build>),
+  // from the host's record of the grant, never from what the box put in release/ by itself
+  const boxRelease = a.box && apiEnabled() ? granted(a.project).release : undefined
+  for (const [n, s0] of Object.entries(spec.services)) {
+    let s = s0
+    if (n === 'app' && boxRelease !== undefined) { if (!boxRelease) continue; s = { ...s0, workdir: `{root}/release/${boxRelease.build}` } }
+    else if (s.optional && n === 'app' && !existsSync(join(root, 'release'))) continue // app starts once something is deployed
     // any other optional service (e.g. doop) runs only when the project's answers turn it on: `mm doop on <project>`
     if (s.optional && n !== 'app' && !(a.services_on || []).includes(n)) continue
     const env = Object.fromEntries(Object.entries(s.env || {}).map(([k, v]) => [k, fill(String(v))]))

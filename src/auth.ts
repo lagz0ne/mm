@@ -22,6 +22,7 @@ import { betterAuth } from 'better-auth'
 import { getMigrations } from 'better-auth/db/migration'
 import { admin, bearer, magicLink, organization } from 'better-auth/plugins'
 import { createAccessControl } from 'better-auth/plugins/access'
+import { granted, grantedProjects } from './apistate'
 import { getPath, loadConfig } from './config'
 import { expand, machineInputs } from './inputs'
 import { DIRS } from './env'
@@ -97,6 +98,41 @@ function makeAuth(db: Database, authHost: string, links: Map<string, string>) {
 }
 type Auth = ReturnType<typeof makeAuth>
 
+// ---------- the host map: which project each public host belongs to ----------
+const upstreamOf = (bind: string | undefined, port: number | undefined) => {
+  if (!port) return ''
+  const b = !bind || bind === '0.0.0.0' ? '127.0.0.1' : bind === '::' ? '::1' : bind
+  return `http://${b.includes(':') ? `[${b}]` : b}:${port}`
+}
+/**
+ * Every host a project claims: its boards (services with `public.auth: required`) with the address the router sends
+ * them to, and the routes the owner granted a box behind the sign-in (src/api.ts; an open route is not the gateway's).
+ * The host's projects and the project boxes (mm registers each box in pc/boxes). Never from <root>/.run/, which a box
+ * can write (review sy-b15.17): the project is the registry file's name (the host writes pc/), and its public names
+ * come from resolve() (services.yaml and .mm-answers.yaml, read-only in a box), as mm cron takes a box's jobs; a box's
+ * routes from the host's own record of what the owner granted (never the box's files).
+ */
+export function hostClaims(): { claims: Record<string, Map<string, string>>; routes: Record<string, Set<string>>; odd: string[] } {
+  const claims: Record<string, Map<string, string>> = {}, routes: Record<string, Set<string>> = {}, odd: string[] = []
+  const boxes = new Set<string>()
+  for (const pdir of [join(DIRS.pc, 'projects'), join(DIRS.pc, 'boxes')]) for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
+    const project = f.slice(0, -'.yaml'.length)
+    if (pdir.endsWith('boxes')) boxes.add(project)
+    const m = /from (.+)\/services\.yaml/.exec(readFileSync(join(pdir, f), 'utf8')); if (!m) continue
+    try {
+      const r = resolve(m[1].replace(/^~(?=\/)/, process.env.HOME || ''))
+      if (r.answers.project !== project) { odd.push(`${f}: the project's answers name ${r.answers.project}`); continue }
+      for (const sv of Object.values(r.services))
+        if (sv.public_url && sv.public?.auth === 'required') (claims[new URL(sv.public_url).host] ||= new Map()).set(project, upstreamOf(sv.public_bind, sv.public_port))
+    } catch {}
+  }
+  for (const p of grantedProjects()) {
+    if (!boxes.has(p)) continue // a project that is no box (any more) has no box routes
+    for (const r of granted(p).routes) if (!r.open) (routes[r.host] ||= new Set()).add(p)
+  }
+  return { claims, routes, odd }
+}
+
 // ---------- the gateway ----------
 export async function gateway() {
   ensureStore()
@@ -157,31 +193,21 @@ export async function gateway() {
   // ups: a board host -> where the router sends it (the board's gated public side at public_bind:public_port, from
   // resolve(), as routeUp gives the router), so the home page asks each board at the address the host gave it
   let hostMap: { at: number; map: Record<string, string>; hosts: Record<string, string>; ups: Record<string, string>; said: string } = { at: 0, map: {}, hosts: {}, ups: {}, said: '' }
-  const upstreamOf = (bind: string | undefined, port: number | undefined) => {
-    if (!port) return ''
-    const b = !bind || bind === '0.0.0.0' ? '127.0.0.1' : bind === '::' ? '::1' : bind
-    return `http://${b.includes(':') ? `[${b}]` : b}:${port}`
-  }
   const loadHosts = () => {
     if (now() - hostMap.at < HOST_CACHE_MS) return hostMap
-    const map: Record<string, string> = {}, hosts: Record<string, string> = {}, ups: Record<string, string> = {}, claims: Record<string, Map<string, string>> = {}, odd: string[] = []
-    // the host's projects and the project boxes (mm registers each box in pc/boxes). Never from <root>/.run/, which a
-    // box can write (review sy-b15.17): the project is the registry file's name (the host writes pc/), and its public
-    // names come from resolve() (services.yaml and .mm-answers.yaml, read-only in a box), as mm cron takes a box's jobs
-    for (const pdir of [join(DIRS.pc, 'projects'), join(DIRS.pc, 'boxes')]) for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
-      const project = f.slice(0, -'.yaml'.length)
-      const m = /from (.+)\/services\.yaml/.exec(readFileSync(join(pdir, f), 'utf8')); if (!m) continue
-      try {
-        const r = resolve(m[1].replace(/^~(?=\/)/, process.env.HOME || ''))
-        if (r.answers.project !== project) { odd.push(`${f}: the project's answers name ${r.answers.project}`); continue }
-        for (const sv of Object.values(r.services))
-          if (sv.public_url && sv.public?.auth === 'required') (claims[new URL(sv.public_url).host] ||= new Map()).set(project, upstreamOf(sv.public_bind, sv.public_port))
-      } catch {}
-    }
-    // a host two projects claim goes to neither (no "last one wins")
+    const map: Record<string, string> = {}, hosts: Record<string, string> = {}, ups: Record<string, string> = {}
+    const { claims, routes, odd } = hostClaims()
+    // a host two projects claim goes to neither (no "last one wins"); a board's host is never also a box's route
     for (const [host, ps] of Object.entries(claims)) {
-      if (ps.size > 1) { odd.push(`${host}: claimed by ${[...ps.keys()].sort().join(', ')}`); continue }
+      if (ps.size > 1 || routes[host]) { odd.push(`${host}: claimed by ${[...new Set([...ps.keys(), ...(routes[host] || [])])].sort().join(', ')}`); continue }
       const [[p, up]] = ps; map[host] = p; hosts[p] ||= host; if (up) ups[host] = up
+    }
+    // a box's route the owner granted behind the sign-in (src/api.ts): forward-auth knows its project; it is no board,
+    // so it gets no card on the home page
+    for (const [host, ps] of Object.entries(routes)) {
+      if (claims[host]) continue
+      if (ps.size > 1) { odd.push(`${host}: claimed by ${[...ps].sort().join(', ')}`); continue }
+      map[host] = [...ps][0]
     }
     const said = odd.sort().join('\n')
     if (said && said !== hostMap.said) log('warn', 'board hosts refused', { refused: odd })
