@@ -53,7 +53,8 @@ const freePort = async () => { const p = http.createServer(); await new Promise(
 const PORT = await freePort(), PUB = await freePort()
 const env = { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', BOARD_PUBLIC_PORT: String(PUB), BD_SERVE: `http://127.0.0.1:${bdSrv.address().port}`,
   BOARD_PANELS: 'machine', MM_BIN: path.join(T, 'mm'), BOARD_PROJECT: PROJECT, MM_PROJECT: PROJECT, MM_OBS_TRACES: '', MM_OBS_METRICS: '',
-  HOME: path.join(T, 'home'), MM_HOME: MMH, MM_AUTH_PUBLIC_KEY: publicKey.export({ type: 'spki', format: 'pem' }) }
+  HOME: path.join(T, 'home'), MM_HOME: MMH, MM_AUTH_PUBLIC_KEY: publicKey.export({ type: 'spki', format: 'pem' }),
+  BOARD_TRUST_ACCESS: '1' } // removed (sy-y7th): set here to show it no longer lets a header name anyone
 delete env.MM_SERVICE; delete env.MM_BIND; delete env.BOARD_ACTOR
 const s = spawn('node', [path.join(B, 'site', 'server.mjs')], { cwd: B, env, stdio: ['ignore', 'pipe', 'pipe'] })
 let out = ''; s.stdout.on('data', (d) => (out += d)); s.stderr.on('data', (d) => (out += d))
@@ -96,6 +97,15 @@ try {
   const l = await fileOn(undefined, { cookie: 'board_user=alex' })
   ok('a self-named person files (200), as themselves', l.status === 200 && filed().at(-1)?.actor === 'alex', JSON.stringify(l))
   ok('...two items in all: the owner\'s and the local one', filed().length === 2)
+
+  step('no header names anyone (sy-y7th: BOARD_TRUST_ACCESS and the Access email header are gone)')
+  const CF = { 'cf-access-authenticated-user-email': 'boss@example.test' }
+  const h = await fileOn(undefined, CF)
+  ok('the local side, an Access email header and BOARD_TRUST_ACCESS=1: still a guest (401), nothing filed', h.status === 401 && filed().length === 2, `${h.status} ${JSON.stringify(filed().at(-1))}`)
+  const wl = await call('GET', '/api/whoami', { headers: CF })
+  ok('...whoami there: the default actor', wl.data.actor === 'guest' && wl.data.source === 'default', JSON.stringify(wl.data))
+  const wp = await call('GET', '/api/whoami', { as: MEMBER, headers: CF })
+  ok('the public side with the same header: the gateway\'s person', wp.data.actor === 'alex' && wp.data.source === 'gateway', JSON.stringify(wp.data))
 } finally {
   s.kill(); bdSrv.close()
   if (fail) console.log(`--- board output\n${out.slice(-2000)}\n--- ops.log\n${opsLog().slice(-2000)}`)

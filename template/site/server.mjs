@@ -26,8 +26,6 @@ if (!PORT) { console.error('board: set PORT'); process.exit(2) }
 const HOST = process.env.MM_BIND || process.env.HOST || process.env.BOARD_HOST || '127.0.0.1'
 const BD = new URL(process.env.BD_SERVE || requireUrl('bd-serve'))
 const ACTOR = process.env.BOARD_ACTOR || 'guest' // until the visitor names themselves
-const ACCESS_HEADER = 'cf-access-authenticated-user-email' // trusted only behind Cloudflare Access
-const TRUST_ACCESS = process.env.BOARD_TRUST_ACCESS === '1'
 const PROJECT = process.env.BOARD_PROJECT || projectName()
 const PASEO = process.env.PASEO_BIN || 'paseo'
 // Roles: leads/roles.json, kept in place (same array) so every user of ROLES sees changes without a restart.
@@ -53,7 +51,8 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
   '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' }
 
 // Self-identification: the visitor picks a name (cookie board_user). Lead and system names are reserved, so a human
-// can never post as a lead. On the public side the gateway's assertion always wins.
+// can never post as a lead. On the public side the gateway's assertion always wins: it is the only identity there, and
+// no request header names anyone (sy-y7th).
 const RESERVED = new Set([...ROLES, 'setup', 'wake', 'watchdog', 'smoke', 'ui', 'beads', 'system', 'admin', 'brain', 'mm-upstream', 'bridge'])
 function cookieUser(req) {
   const m = /(?:^|;\s*)board_user=([^;]*)/.exec(req.headers.cookie || '')
@@ -69,10 +68,7 @@ function whoSource(req) {
 
 function who(req) {
   if (req.gateway) return req.gateway.u // the public side: only the gateway's signed assertion says who
-  const self = cookieUser(req)
-  if (self) return self
-  const email = TRUST_ACCESS && req.headers[ACCESS_HEADER]
-  return typeof email === 'string' && email ? email.split('@')[0] : ACTOR
+  return cookieUser(req) || ACTOR
 }
 
 // JSON responses; gzip when the client accepts it and it is worth it.
