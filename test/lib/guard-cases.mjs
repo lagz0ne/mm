@@ -416,3 +416,54 @@ export const SYSTEM = [
   ['Bash', 'git -C ~/.mm/brain log --oneline -3', 'allow'],
   ['Write', '/home/alice/.mm/brain/memory/svc-sshd.md', 'allow'],
 ]
+
+// approvals (sy-h2yt): no agent writes as an approver (the bridge, or the owner: owner_name `alex` in the board's
+// .run/endpoints.json) and no agent sets or removes `approved`; bd's other actors and labels stay free
+export const APPROVER = [
+  ['Bash', 'bd label add sy-1 approved', 'deny'],
+  ['Bash', 'bd label remove sy-1 approved', 'deny'],
+  ['Bash', 'bd label add sy-1 sy-2 "approved" --json', 'deny'],
+  ['Bash', '~/.mm/system/bin/bd label add sy-1 approved', 'deny'],
+  ['Bash', 'cd ~/.mm/system && bd --actor ops label add sy-1 approved >/dev/null', 'deny'],
+  ['Bash', 'bd update sy-1 --add-label approved', 'deny'],
+  ['Bash', 'bd update sy-1 --add-label=approved -s open', 'deny'],
+  ['Bash', 'bd update sy-1 --set-labels t2,approved', 'deny'],
+  ['Bash', 'bd update sy-1 --remove-label "approved"', 'deny'],
+  ['Bash', 'bd create "x" -l t2,approved --json', 'deny'],
+  ['Bash', 'bd create "x" -t task --labels=approved', 'deny'],
+  ['Bash', 'bd update x --actor bridge', 'deny'],
+  ['Bash', 'bd update sy-1 --actor=bridge -s open', 'deny'],
+  ['Bash', 'bd comments add sy-1 "ok" --actor "bridge"', 'deny'],
+  ['Bash', "BEADS_ACTOR=bridge bd comments add sy-1 'go'", 'deny'],
+  ['Bash', 'export BEADS_ACTOR=bridge; bd close sy-1 --reason x', 'deny'],
+  ['Bash', 'env BEADS_ACTOR=bridge bd list', 'deny'],
+  ['Bash', 'BEADS_ACTOR=alex bd comments add sy-1 x', 'deny', "the owner's name"],
+  ['Bash', 'BEADS_ACTOR=Alex bd comments add sy-1 x', 'deny', 'any case'],
+  ['Bash', 'bd comments add sy-1 x --actor ALEX', 'deny'],
+  ['Bash', 'BD_ACTOR=alex bd update sy-1 -s open', 'deny'],
+  ['Bash', 'env -u BEADS_ACTOR USER=bridge bd update sy-1 -s open', 'deny', 'bd falls back to $USER'],
+  ['Bash', 'git config user.name alex', 'deny', 'bd falls back to git user.name'],
+  ['Bash', 'SUPERVISOR_APPROVERS=ops node bin/supervisor', 'deny'],
+  ['Bash', 'FLOW_APPROVERS=ops bin/flow', 'deny'],
+  ['Bash', 'bd label add sy-1 needs-you', 'allow'],
+  ['Bash', 'bd label add sy-1 signed-off', 'allow'],
+  ['Bash', 'bd label add sy-1 not-approved', 'allow'],
+  ['Bash', 'bd list -l approved --json', 'allow', 'a read'],
+  ['Bash', 'bd list --label approved --status open', 'allow'],
+  ['Bash', "bd show sy-1 --json | jq '.[0].labels | index(\"approved\")'", 'allow'],
+  ['Bash', 'bd comments add sy-1 "the owner approved it on the board"', 'allow'],
+  ['Bash', 'bd label add sy-1 needs-you; bd comments add sy-1 "waits for approved"', 'allow'],
+  ['Bash', 'BEADS_ACTOR=ops bd comments add sy-1 x', 'allow'],
+  ['Bash', 'bd update sy-1 --actor ops -s open', 'allow'],
+  ['Bash', 'bd update sy-1 --actor platform/w1 --claim', 'allow'],
+  ['Bash', 'bd comments add sy-1 x --actor alexander', 'allow', 'not the owner'],
+  ['Bash', 'bd update sy-1 -a alex -s open --if-assignee ops --if-status in_progress', 'allow', 'handing an item to the owner'],
+  ['Bash', 'bd create "bridge the gap" -l t2 --json', 'allow'],
+]
+
+// the same board with no owner_name in its run files: the bridge stays denied; a person's name is free
+export const APPROVER_NO_OWNER = [
+  ['Bash', 'BEADS_ACTOR=alex bd comments add sy-1 x', 'allow'],
+  ['Bash', 'bd update x --actor bridge', 'deny'],
+  ['Bash', 'bd label add sy-1 approved', 'deny'],
+]
