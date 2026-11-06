@@ -38,6 +38,8 @@ child.on('close', (code, sig) => {
   if ((code || sig) && tail) span.set('stderr_tail', tail)
   if (sig) span.set('signal', sig)
   if (!sig && code && refusedBy(code)) span.refused = true
-  if (code === 141 && pipeOut) span.readerClosed = true
-  process.exit(code ?? 128)
+  // the child killed by SIGPIPE itself (code null): the same reader that stopped reading (sy-m8dv); exit 141, as the shell
+  // would, not 128
+  if ((code === 141 || sig === 'SIGPIPE') && pipeOut) span.readerClosed = true
+  process.exit(code ?? (sig === 'SIGPIPE' ? 141 : 128))
 })

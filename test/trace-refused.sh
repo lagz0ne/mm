@@ -81,5 +81,8 @@ echo "== exit 141 (SIGPIPE): the reader closed the pipe"
 check "piped (deploy status | head): info, outcome reader-closed, the span not failed" sh -c "jq -e '.level == \"info\" and .outcome == \"reader-closed\"' '$T/last' && ! grep -q '\"code\":2' '$T/spans'"
 run "deploy" 141 ""
 check "...not piped: exit 141 is still a failure" failed 141
+# the child killed by SIGPIPE itself (bd show x | head -1: node gets no exit code, only the signal; sy-m8dv)
+: > "$T/spans"; "$T/bin/trace" "deploy" -- sh -c 'kill -PIPE $$' 2>/dev/null | true; tail -1 "$T/.run/logs/ops.log" > "$T/last"
+check "killed by SIGPIPE itself, piped: info, outcome reader-closed, the span not failed (sy-m8dv)" sh -c "jq -e '.level == \"info\" and .outcome == \"reader-closed\"' '$T/last' && ! grep -q '\"code\":2' '$T/spans'"
 
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]

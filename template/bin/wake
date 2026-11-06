@@ -100,7 +100,9 @@ const leadOf = (actor) => ROLES.find((r) => actor === r || (actor || '').startsW
 // `brain`: the system board's ops wrote as brain before 2026-11-05; a name no person may take (config-check), so its
 // old comments are never a human's
 const SYSTEM = ['ui', 'wake', 'watchdog', 'smoke', 'beads', 'mm-upstream', 'brain']
-const isHuman = (actor) => !!actor && !leadOf(actor) && !SYSTEM.includes(actor)
+// `mm`: the actor bd records when a role writes without --actor (bd's default here), never a person (sy-s8su): its changes
+// still wake as before, but its comments are no human's to answer
+const isHuman = (actor) => !!actor && actor !== 'mm' && !leadOf(actor) && !SYSTEM.includes(actor)
 
 function stopLoop(id) {
   log(`hop limit: ${id} had ${MAX_HOPS} lead-to-lead wakes; labelling needs-you, not waking`)

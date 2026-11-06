@@ -36,7 +36,7 @@ esac
 const now = () => new Date().toISOString()
 const items = new Map()
 const add = (id, f) => items.set(id, { id, title: `title of ${id}`, status: 'in_progress', assignee: 'platform', labels: [], updated_at: now(), ...f })
-for (const id of ['a-1', 'a-2', 'a-3', 'b-1']) add(id)
+for (const id of ['a-1', 'a-2', 'a-3', 'b-1', 'b-2']) add(id)
 add('f-1', { assignee: '', status: 'open' })
 const records = []
 let n = 0
@@ -45,6 +45,7 @@ const comment = (id, author, text) => emit({ op: 'comment', issue_id: id, actor:
 comment('a-1', 'alex', 'please look at a-1')         // seq 1: a human asks...
 comment('a-2', 'alex', 'and a-2 too')                 // seq 2: unanswered to the end
 comment('b-1', 'brain', 'ops (as brain) noted this')  // seq 3: the last comment on b-1
+comment('b-2', 'mm', 'ops, without --actor')         // bd's default actor (sy-s8su): never a person
 const SAVED = records.length                          // wake stopped here (its saved place)
 for (let i = 0; i < 597; i++) emit({ op: 'update', issue_id: 'f-1', actor: 'ops' }) // more than a page of other events
 comment('a-1', 'platform', 'done, see the commit')    // ...the lead answered a-1 (past the first page)
@@ -86,6 +87,7 @@ try {
   const p = to('platform')
   ok('an item whose last comment is its lead\'s own (past the first page) gets no start note', !/a-1/.test(p))
   ok('a comment by brain is never "unanswered from a human"', !/from brain/.test(sent()) && !/b-1/.test(sent()))
+  ok('...nor one by mm, bd\'s default actor (a role without --actor; sy-s8su)', !/from mm\b/.test(sent()) && !/b-2/.test(sent()))
   ok(`the events missed while stopped are all replayed (${HEAD - SAVED}, more than a page): the late comment on a-3 is delivered`,
     /alex commented on a-3 \(quoted below\)[\s\S]*a-3: title of a-3\na-3 comment by alex: late question on a-3/.test(p) && new RegExp(`replayed ${HEAD - SAVED} event\\(s\\)`).test(opsLog()))
 } finally {
