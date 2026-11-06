@@ -34,6 +34,12 @@ echo "# from $T/proj/services.yaml" >"$MM_HOME/pc/projects/acme-shop.yaml"; echo
 fakeproj() { mkdir -p "$1/.run"; printf 'client: acme\nname: %s\nproject: %s\nshort: x\nroot: %s\ntemplate_version: test\ncreated: test\n' "${2#acme-}" "$2" "$1" >"$1/.mm-answers.yaml"
   printf 'services:\n  board:\n    command: "true"\n    port: http\n    public: { name: %s, auth: required }\n' "$3" >"$1/services.yaml"; }
 fakeproj "$T/proj" acme-shop board-shop-acme; fakeproj "$T/proj2" acme-other board-other-acme
+# the system board, a project like the others; only the owner holds a role on it (the home page: sy-ukbz)
+fakeproj "$T/sys" system system; echo "# from $T/sys/services.yaml" >"$MM_HOME/pc/projects/system.yaml"; SYSB=system.example.org
+# each board's public port, from the host's own copy (as for a box): the board's gated side listens there, and the
+# gateway's home page asks it there, the same address the router gets
+BP=$(( PORT + 1 )); FBP=$(( PORT + 4 )); SYP=$(( PORT + 5 ))
+for pp in "acme-shop $BP" "acme-other $FBP" "system $SYP"; do read -r pj pn <<<"$pp"; mkdir -p "$MM_HOME/box/$pj"; printf '{"services":{"board":{"public_port":%s}}}' "$pn" >"$MM_HOME/box/$pj/ports.json"; done
 mkdir -p "$T/bin"; printf '#!/bin/sh\nexec %s "$@"\n' "$MMC" >"$T/bin/mm"; chmod +x "$T/bin/mm"
 export PATH="$T/bin:$PATH"   # every check, including those in sh -c, runs this mm
 MM_AUTH_HOST_CACHE_MS=200 mm auth serve >"$T/gw.log" 2>&1 & GW=$!
@@ -80,7 +86,7 @@ echo '== a grant: one session opens the board'
 check "mm grant alex acme-shop (member)" bash -c "mm grant alex acme-shop -o json | jq -e '.role == \"member\"'"
 CB=$(gw -D - -o /dev/null -H "cookie: $S1" "$G/s?b=$BOARD&r=/items" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
 check "the same session, the board: straight to its one-time callback, no new link" bash -c "echo '$CB' | grep -q '^/_mm/auth/callback?c='"
-check "/s/done lists the board" bash -c "gw -H 'cookie: $S1' $G/s/done | grep -q 'https://$BOARD/'"
+check "/s/done lists the board (through the one-redirect flow)" bash -c "gw -H 'cookie: $S1' $G/s/done | grep -q '/s?b=$BOARD&amp;r=%2F'"
 curl -s -c "$T/bj" -H "x-forwarded-host: $BOARD" -D "$T/h3" -o /dev/null "$G$CB"
 check "the callback sets the board's own cookie (Strict, host-only) and goes back to /items" bash -c "grep -i 'set-cookie: mm_board=' '$T/h3' | grep -qi 'SameSite=Strict' && ! grep -i 'set-cookie: mm_board=' '$T/h3' | grep -qi 'domain=' && grep -qi '^location: /items' '$T/h3'"
 check "the callback code is single use" test "$(curl -s -o /dev/null -w '%{http_code}' -H "x-forwarded-host: $BOARD" "$G$CB")" = 403
@@ -176,10 +182,19 @@ cat >"$T/fakebd.mjs" <<'EOF'
 import http from 'node:http'
 import fs from 'node:fs'
 const [port, logf] = process.argv.slice(2)
+// the open list (what /api/summary counts): an item title with a script in it, that must never leave the board
+const LIST = [
+  { id: 'it-1', title: '<script>alert(1)</script>', status: 'open', priority: 0, assignee: 'alex', labels: ['needs-you'], updated_at: '2026-11-05T09:00:00Z' },
+  { id: 'it-2', title: 'b', status: 'blocked', priority: 2, assignee: 'ops', labels: [], updated_at: '2026-11-05T10:00:00Z' },
+  { id: 'it-3', title: 'c', status: 'in_progress', priority: 0, assignee: 'alex', labels: ['t2', 'signed-off'], updated_at: '2026-11-04T10:00:00Z' },
+  { id: 'it-4', title: 'd', status: 'open', priority: 3, assignee: 'bob', labels: ['t2', 'signed-off', 'approved'], updated_at: '2026-11-03T10:00:00Z' },
+  { id: 'it-5', title: 'e', status: 'closed', priority: 0, assignee: 'alex', labels: ['needs-you'], updated_at: '2026-11-06T10:00:00Z' },
+]
 http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
   fs.appendFileSync(logf, JSON.stringify({ m: req.method, p: req.url, b: b ? JSON.parse(b) : null }) + '\n')
   res.writeHead(200, { 'content-type': 'application/json' })
-  res.end(JSON.stringify(req.method === 'GET' && /\/issues\/it-1/.test(req.url) ? { id: 'it-1', labels: ['t2', 'bug'] } : { ok: true, items: [] }))
+  res.end(JSON.stringify(req.method === 'GET' && /\/issues\/it-1/.test(req.url) ? { id: 'it-1', labels: ['t2', 'bug'] }
+    : req.method === 'GET' && /^\/v0\/beads\/issues(\?|$)/.test(req.url) ? { items: LIST, has_more: false } : { ok: true, items: [] }))
 }) }).listen(Number(port), '127.0.0.1')
 EOF
 node "$T/fakebd.mjs" $BDP "$T/bd.jsonl" & FB=$!
@@ -221,7 +236,94 @@ check "the owner changes a tier" test "$(w PATCH "$OA" /it-1 '{"patch":{"labels"
 check "not even the owner signs off for review (403)" test "$(w PATCH "$OA" /it-1 '{"patch":{"add_labels":["signed-off"]}}')" = 403
 check "a comment carries its author's role" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"looks good\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.text == \"[member] looks good\" and .b.author == \"alex\"'"
 check "...and its author is the signed-in person, whatever the body says" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"x\",\"author\":\"owner\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.author == \"alex\"'"
-kill $BS $FB 2>/dev/null
+
+echo "== the board's summary for the home page (/api/summary: counts only, read-only; sy-ukbz)"
+sm() { curl -s -o "$T/sm" -w '%{http_code}' -H "x-forwarded-host: ${2:-$BOARD}" ${1:+-H "x-mm-assertion: $1"} "http://127.0.0.1:$BP/api/summary"; }
+export -f sm
+check "a member: open, P0, blocked, needs-you, assigned to them, last activity (closed items not counted)" bash -c "[ \$(sm '$MA') = 200 ] && jq -e '. == {open:4,p0:2,blocked:1,needs_you:1,mine:2,last:\"2026-11-05T10:00:00.000Z\"}' '$T/sm'"
+check "...whole numbers and one time only: no item text (a title holds a script)" bash -c "sm '$MA' >/dev/null && ! grep -qi -e script -e alert -e title '$T/sm' && jq -e '[.[] | select(type == \"number\" and . == floor)] | length == 5' '$T/sm'"
+check "the owner: needs-you also counts the signed-off t2 items that wait for approved" bash -c "[ \$(sm '$OA') = 200 ] && jq -e '.needs_you == 2 and .mine == 0 and .open == 4' '$T/sm'"
+check "a viewer may read it (200)" test "$(sm "$(mk vic viewer "$BOARD" 60000)")" = 200
+check "no assertion: 401; another board's: 401; an expired one: 401" bash -c "[ \$(sm '') = 401 ] && [ \$(sm '$(mk alex member "$BOARD2" 60000)') = 401 ] && [ \$(sm '$(mk alex member "$BOARD" -1000)') = 401 ]"
+
+echo "== the home page on the gateway (sy-ukbz): the boards a person holds a role on, with their counts"
+# fake boards for acme-other and the system board: they record what the gateway sends, and answer as the mode file says
+cat >"$T/fakeboard.mjs" <<'EOF'
+import http from 'node:http'; import fs from 'node:fs'
+const [port, modef, logf] = process.argv.slice(2)
+const GOOD = { open: 3, p0: 1, blocked: 0, needs_you: 2, mine: 1, last: '2026-11-05T10:00:00.000Z' }
+http.createServer((req, res) => {
+  res.on('error', () => {})
+  fs.appendFileSync(logf, JSON.stringify({ p: req.url, h: req.headers['x-forwarded-host'] || '', a: req.headers['x-mm-assertion'] || '' }) + '\n')
+  let mode = 'good'; try { mode = fs.readFileSync(modef, 'utf8').trim() } catch {}
+  const json = (o) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)) }
+  if (mode === 'hang') return
+  if (mode === 'redirect') { res.writeHead(302, { location: `http://127.0.0.1:${port}/followed` }); return res.end() }
+  if (mode === 'big') { // 10 MB, chunked (no length up front)
+    res.writeHead(200, { 'content-type': 'application/json' }); res.write('{"open":1,"pad":"'); let n = 0
+    const more = () => { while (n < 160) { n++; if (!res.write(' '.repeat(65536))) return res.once('drain', more) } res.end('"}') }
+    return more()
+  }
+  if (mode === 'script') return json({ ...GOOD, last: '<script>alert(1)</script>' })
+  if (mode === 'extra') return json({ ...GOOD, title: '<script>alert(2)</script>' })
+  if (mode === 'badnum') return json({ ...GOOD, open: 1e7, p0: 1.5 })
+  if (mode === 'sys') return json({ open: 7, p0: 0, blocked: 0, needs_you: 0, mine: 0 })
+  json(GOOD)
+}).listen(Number(port), '127.0.0.1')
+EOF
+echo good >"$T/fb2.mode"; echo sys >"$T/sys.mode"; : >"$T/fb2.jsonl"; : >"$T/sys.jsonl"
+node "$T/fakeboard.mjs" $FBP "$T/fb2.mode" "$T/fb2.jsonl" & FB2=$!
+node "$T/fakeboard.mjs" $SYP "$T/sys.mode" "$T/sys.jsonl" & FS=$!
+for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$FBP/" && curl -s -o /dev/null "http://127.0.0.1:$SYP/" && break; sleep 0.1; done
+: >"$T/fb2.jsonl"; : >"$T/sys.jsonl"
+LA=$(link_of alex); open_link "$LA" "$T/ha"; SA=$(sess "$T/ha")
+hp() { gw -D "$T/hh" -o "$T/hp" -w '%{time_total}' -H "cookie: $1" "$G/"; }
+cardof() { tr '\n' ' ' <"$T/hp" | sed 's#</section>#\n#g' | grep -F "<h2>$1</h2>"; }
+cards() { grep -c '<section class="card">' "$T/hp"; }
+nreq() { cat "$T/fb2.jsonl" "$T/sys.jsonl" | wc -l; }
+export -f hp cardof cards nreq; export SA SB SYSB BOARD2
+check "GET / with no session: the sign-in page (302 to /s)" bash -c "gw -D - -o /dev/null $G/ | grep -qiE '^location: /s[[:space:]]*\$'"
+check "/s signed in, no board asked: to the home page" bash -c "gw -D - -o /dev/null -H 'cookie: $SA' $G/s | grep -qiE '^location: /[[:space:]]*\$'"
+N0=$(nreq); hp "$SA" >/dev/null
+check "a member of acme-shop sees one card: acme-shop, member, its board's counts and last activity" bash -c "[ \$(cards) = 1 ] && cardof acme-shop | grep -q 'You are <b>member</b>' && cardof acme-shop | grep -q '<b>4</b> open' && cardof acme-shop | grep -q '<b>1</b> need a human' && cardof acme-shop | grep -q '<b>2</b> assigned to you' && cardof acme-shop | grep -q 'Last activity: 2026-11-05 10:00 UTC'"
+check "...not even the name of what alex isn't granted (acme-other, system), and those boards were never asked" bash -c "! grep -q -e acme-other -e '$BOARD2' -e system '$T/hp' && [ \$(nreq) = '$N0' ]"
+check "...no item text from the board (a title holds a script), no script on the page" bash -c "! grep -qi -e '<script' -e alert '$T/hp'"
+check "...the board link goes through the one-redirect flow (straight to the board's callback)" bash -c "cardof acme-shop | grep -qF 'href=\"/s?b=$BOARD&amp;r=%2F\"' && gw -D - -o /dev/null -H 'cookie: $SA' '$G/s?b=$BOARD&r=%2F' | grep -qi '^location: https://$BOARD/_mm/auth/callback?c='"
+check "the page's headers: CSP default-src 'self' + frame-ancestors 'none', no-store, no-referrer, nosniff" bash -c "grep -qi \"^content-security-policy: default-src 'self'; frame-ancestors 'none'\" '$T/hh' && grep -qi '^cache-control: no-store' '$T/hh' && grep -qi '^referrer-policy: no-referrer' '$T/hh' && grep -qi '^x-content-type-options: nosniff' '$T/hh'"
+check "/s/done (where a link lands) is the same home page" bash -c "gw -H 'cookie: $SA' $G/s/done | grep -q '<h2>acme-shop</h2>'"
+hp "$SB" >/dev/null
+check "the owner sees every project and the system board, as owner" bash -c "[ \$(cards) = 3 ] && for p in acme-other acme-shop system; do cardof \$p | grep -q 'You are <b>owner</b>' || exit 1; done"
+check "...each with its board's counts (the owner's needs-you counts the signed-off t2s)" bash -c "cardof acme-shop | grep -q '<b>2</b> need a human' && cardof acme-shop | grep -q '<b>0</b> assigned to you' && cardof acme-other | grep -q '<b>3</b> open' && cardof system | grep -q '<b>7</b> open'"
+check "...each board asked once, with its own fresh assertion: this person, this role, that board's host, 60 s" bash -c "[ \$(wc -l <'$T/fb2.jsonl') = 1 ] && [ \$(wc -l <'$T/sys.jsonl') = 1 ] && node '$T/verify.mjs' \"\$(jq -r .a '$T/fb2.jsonl')\" '$MM_HOME/auth/signing.key' '$BOARD2' boss owner && node '$T/verify.mjs' \"\$(jq -r .a '$T/sys.jsonl')\" '$MM_HOME/auth/signing.key' '$SYSB' boss owner && jq -e '.p == \"/api/summary\" and .h == \"$BOARD2\"' '$T/fb2.jsonl'"
+check "an assertion for one board (acme-other's) replayed to another (acme-shop's): 401" bash -c "[ \$(sm \"\$(tail -1 '$T/fb2.jsonl' | jq -r .a)\") = 401 ]"
+check "the projects' .run/services.json (above: claiming each other's hosts and the gateway's) moved no card or link" bash -c "cardof acme-shop | grep -qF 'b=$BOARD&amp;' && cardof acme-other | grep -qF 'b=$BOARD2&amp;' && ! grep -q '$AUTH' '$T/hp'"
+mm grant alex acme-other >/dev/null; hp "$SA" >/dev/null
+check "alex granted acme-other too: two cards; that board asked as alex, member" bash -c "[ \$(cards) = 2 ] && cardof acme-other | grep -q 'You are <b>member</b>' && node '$T/verify.mjs' \"\$(tail -1 '$T/fb2.jsonl' | jq -r .a)\" '$MM_HOME/auth/signing.key' '$BOARD2' alex member"
+mm revoke alex acme-other >/dev/null; N1=$(nreq); hp "$SA" >/dev/null
+check "a revoke removes the card on the next load (no cache), and that board is no longer asked" bash -c "[ \$(cards) = 1 ] && ! grep -q acme-other '$T/hp' && [ \$(nreq) = \$(( $N1 + 0 )) ]"
+mm user add vic >/dev/null; mm grant vic acme-shop --as viewer >/dev/null; LV=$(link_of vic); open_link "$LV" "$T/hv"; SV=$(sess "$T/hv"); hp "$SV" >/dev/null
+check "a viewer: the card says read-only, shows the counts, and has no write link (only the read-only view)" bash -c "cardof acme-shop | grep -q 'You are <b>viewer</b> (read-only)' && cardof acme-shop | grep -q '<b>4</b> open' && cardof acme-shop | grep -q 'View the board (read-only)' && ! grep -q -e 'class=\"open\"' -e 'Open the board' '$T/hp'"
+echo script >"$T/fb2.mode"; hp "$SB" >/dev/null
+check "a board's answer with <script> in it fails the schema: its card is unavailable, nothing of it on the page" bash -c "cardof acme-other | grep -q 'Summary unavailable' && ! grep -qi -e '<script' -e alert '$T/hp' && cardof acme-shop | grep -q '<b>4</b> open'"
+echo extra >"$T/fb2.mode"; hp "$SB" >/dev/null
+check "...a field the schema doesn't know (an item title): unavailable, nothing of it on the page" bash -c "cardof acme-other | grep -q 'Summary unavailable' && ! grep -qi -e '<script' -e alert '$T/hp'"
+echo badnum >"$T/fb2.mode"; hp "$SB" >/dev/null
+check "...a count that isn't a whole number 0..1e6: unavailable" bash -c "cardof acme-other | grep -q 'Summary unavailable' && ! grep -q 10000000 '$T/hp'"
+echo hang >"$T/fb2.mode"; TH=$(hp "$SB")
+check "a board that hangs: only its own card fails; the page comes in about 3 s (took ${TH}s)" bash -c "cardof acme-other | grep -q 'Summary unavailable' && cardof acme-shop | grep -q '<b>4</b> open' && cardof system | grep -q '<b>7</b> open' && awk 'BEGIN{exit !($TH < 5)}'"
+echo big >"$T/fb2.mode"; TB=$(hp "$SB")
+check "a board that sends 10 MB: only its own card fails, cut at 16 KB (took ${TB}s)" bash -c "cardof acme-other | grep -q 'Summary unavailable' && cardof acme-shop | grep -q '<b>4</b> open' && cardof system | grep -q '<b>7</b> open' && awk 'BEGIN{exit !($TB < 2.5)}'"
+echo redirect >"$T/fb2.mode"; hp "$SB" >/dev/null
+check "a board that redirects: not followed; only its card fails" bash -c "sleep 0.3; cardof acme-other | grep -q 'Summary unavailable' && cardof system | grep -q '<b>7</b> open' && ! grep -q followed '$T/fb2.jsonl'"
+check "the gateway logs each failed card, with no assertion in the log" bash -c "grep 'board summary unavailable' '$T/gw.log' | grep -q timeout && grep 'board summary unavailable' '$T/gw.log' | grep -q 'too big' && grep 'board summary unavailable' '$T/gw.log' | grep -q 'not a summary' && ! grep -qF \"\$(tail -1 '$T/fb2.jsonl' | jq -r .a | cut -d. -f2)\" '$T/gw.log'"
+echo good >"$T/fb2.mode"
+# a box (in its own services.yaml) claims acme-other's board host: the host is refused for both
+fakeproj "$T/proj4" acme-fourth board-other-acme; echo "# from $T/proj4/services.yaml" >"$MM_HOME/pc/boxes/acme-fourth.yaml"; sleep 0.5
+N2=$(nreq); hp "$SB" >/dev/null
+check "a box claiming another board's host: no card for either, and no assertion goes to that host" bash -c "! grep -q -e acme-other -e acme-fourth -e '$BOARD2' '$T/hp' && [ \$(nreq) = \$(( $N2 + 1 )) ] && [ \"\$(tail -1 '$T/sys.jsonl' | jq -r .h)\" = '$SYSB' ]"
+rm -f "$MM_HOME/pc/boxes/acme-fourth.yaml"; sleep 0.5; hp "$SB" >/dev/null
+check "...the claim gone: acme-other's card is back" bash -c "cardof acme-other | grep -q '<b>3</b> open'"
+kill $BS $FB $FB2 $FS 2>/dev/null
 
 LF=$(link_of alex); gw -o /dev/null -H 'cf-connecting-ip: 6.6.6.6' -H "origin: https://$AUTH" -d "t=$(qs "$LF" token)&c=$(qs "$LF" callbackURL)" "$G/s/l"
 check "a CF-Connecting-IP from an untrusted peer is ignored: the sign-in is logged from the real peer (review sy-b15.14 4)" bash -c "grep 'signed in by link' '$T/gw.log' | tail -1 | grep -q '\"ip\":\"127.0.0.1\"' && ! grep -q '6.6.6.6' '$T/gw.log'"
