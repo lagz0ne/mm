@@ -123,6 +123,7 @@ test/needs-fill.sh           # mm needs / mm fill, hermetic (throwaway HOME)
 test/sentinel.sh             # the system profile's sentinel, on a throwaway board
 node test/supervisor.mjs     # the system profile's supervisor (stall, handoff, idle, dirty), hermetic (fake board, stub paseo)
 node test/wake-stall.mjs     # bin/wake recovers from an event stream that hangs (fake board, stub paseo)
+node test/wake-signals.mjs   # bin/wake: HANDOFF / BLOCKED / DEPENDENCY / REOPEN / DONE wake the named role
 test/machine-panel.sh        # the system board's machine panel (SITE_NODE_MODULES=<a site's node_modules>)
 ```
 
