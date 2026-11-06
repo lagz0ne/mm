@@ -10,8 +10,8 @@ around it):
 - **platform**: your folder is a worktree of mm's repo, on your own branch `<name>`. Write only there. Build and test
   there; commit small, with the item id in the body. Only hermetic tests (a throwaway HOME / MM_HOME, stubs,
   `bun src/cli.ts` against them), and container tests with your own build in throwaway containers that are removed
-  after (`DOCKER="sudo -n docker" test/clean-box.sh --local dist/mm`). Never run the machine's `mm`, never
-  `mm update` or `mm up` on a live project, never a test that uses the live machine (lifecycle.sh, box.sh, doop.sh,
+  after, through mm's Docker wrapper (`test/lib/docker.sh`; e.g. `test/mm-docker-container.sh`). Never run the
+  machine's `mm`, never `mm update` or `mm up` on a live project, never a test that uses the live machine (lifecycle.sh, box.sh, doop.sh,
   sentinel.sh, machine-panel.sh), never `sudo` yourself, never a migration. The repo is public: no machine or client
   names, no paths of this machine, no tokens in code, tests or messages. Before you report: `git rebase main`, then
   run your tests again.

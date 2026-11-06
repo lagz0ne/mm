@@ -52,6 +52,8 @@
       "Bash(free *)",
       "Bash(rpm -q *)",
       "Bash(dnf check-update*)",
+      "Bash(sudo -n /usr/local/libexec/mm-docker ps*)", "Bash(sudo -n /usr/local/libexec/mm-docker images*)", "Bash(sudo -n /usr/local/libexec/mm-docker inspect *)", "Bash(sudo -n /usr/local/libexec/mm-docker container inspect *)",
+      "Bash(sudo -n /usr/local/libexec/mm-docker image inspect *)", "Bash(sudo -n /usr/local/libexec/mm-docker network ls*)", "Bash(sudo -n /usr/local/libexec/mm-docker network inspect *)", "Bash(sudo -n /usr/local/libexec/mm-docker logs *)", "Bash(sudo -n /usr/local/libexec/mm-docker port *)",
       "Bash(ls *)",
       "Bash(cat /proc/meminfo)", "Bash(cat /proc/loadavg)", "Bash(cat /proc/uptime)", "Bash(cat /proc/pressure/*)", "Bash(cat /proc/mounts)", "Bash(cat /proc/swaps)",
       "Bash(expose ls)",

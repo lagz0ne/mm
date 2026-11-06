@@ -1,12 +1,14 @@
 # mm-docker: mm's only way to Docker
 
 `box/mm-docker` is a small root-owned wrapper. mm calls it through sudo instead of `sudo docker`. It runs only the
-docker calls mm itself makes (`src/box.ts`, `template/bin/doop-run`, `src/doctor.ts`). So the owner of the machine
-does not need blanket sudo for Docker. Docker access is root on the host: a container with `--privileged` or `-v /:/host`
+docker calls mm itself makes (`src/box.ts`, `template/bin/doop-run`, `src/doctor.ts`), and those of mm's container tests
+and the system board's leads (sy-e6t3), each limited to mm's own containers, images and folders. So the owner of the
+machine does not need blanket sudo for Docker. Docker access is root on the host: a container with `--privileged` or `-v /:/host`
 is root. The wrapper refuses those.
 
 Tests: `test/mm-docker.sh` (hermetic: a stand-in docker that records what it would run) and
-`test/mm-docker-container.sh` (real Docker, throwaway containers: `DOCKER="sudo -n docker"`).
+`test/mm-docker-container.sh` (real Docker through the wrapper, throwaway containers in the tests' area; see "mm's
+tests" below).
 
 ## What it allows
 
@@ -17,9 +19,15 @@ writes itself (long options, `--opt=value`), never the caller's words. What was 
 |---|---|
 | `run` | mm's box, egress proxy, Doop, and its two one-shot helpers. `--cap-drop ALL` always. `--security-opt no-new-privileges` and `--pull=never` are always added. Names `mm-box-<p>`, `mm-egress-<p>`, `mm-doop-<p>` with the label `mm.project=<p>`. Networks: `none` or the project's own. Mounts: only the project's own folders, after realpath. |
 | `exec` | Only into `mm-box-<p>` or `mm-doop-<p>`, when docker says its `mm.project` label is `<p>`. Then exec by its full id. No `-u`, no `--privileged`. |
-| `build` | Only mm's build folder (`mm-box-build-*`, the owner's, not writable by others). It is copied first, as checked, into a private folder: only folders and plain files of the owner's. Tags `mm-box` and `mm-egress` only. Build args `UID` and `HOME_DIR` with the owner's values only. |
+| `build` | Only mm's build folder (`mm-box-build-*`, the owner's, not writable by others). It is copied first, as checked, into a private folder: only folders and plain files of the owner's. Tags `mm-box`, `mm-egress` and `mm-doop` only. Build args `UID` and `HOME_DIR` with the owner's values only, and `BASE` (one of mm's images, or by digest: `box/doop/build.sh`). |
 | `network` | `create` (internal, `10.231.<n>.0/24` or `10.232.<n>.0/24` for Doop, mm's labels), `connect` (a project's own container to its own network), `inspect`, `ls`, `rm` of mm's networks. |
-| `inspect`, `container inspect`, `image inspect`, `rm`, `stop`, `restart`, `ps`, `pull` | mm's containers, networks and images only. `pull` by digest only. |
+| `create` | The checks of `run`, and always a name and its label (`box/doop/build.sh`: a stopped container to copy the source out of). |
+| `cp` | Only between the host and one of mm's containers (its name and its `mm.project` label, by docker; then by its id) that has **no mounts**: docker cp mounts a container's host folders again, by their path, as root (CVE-2018-15664). The host side is `-` (a tar stream), or a folder of that container's own project (or test, below). It is written or read by a process of the owner's, never as root (extracting drops setuid/setgid bits). What goes into a container is copied again by the wrapper: folders, plain files and links only, no setuid/setgid/sticky bits, owned by the container's root; an absolute name, `..`, a device or a pipe refuses the whole copy. No `-a`, no `-L`. |
+| `logs` | One of mm's containers (by its label, then its id). `-f`, `-t`, `--tail`, `--since`, `--until`. |
+| `port`, `kill` | mm's containers. `kill -s` only TERM, KILL, INT, HUP, QUIT, USR1, USR2. |
+| `images` | Read. `-a`, `-q`, `--digests`, `--no-trunc`, `--format`, `--filter` (dangling, reference, label, before, since), at most one name. |
+| `rmi` | mm's images by name only (`mm-box`, `mm-egress`, `mm-doop`, any tag). Never by id: an id can be any image. |
+| `inspect`, `container inspect`, `image inspect`, `rm`, `stop`, `restart`, `ps`, `pull` | mm's containers, networks and images only (`network inspect` also the default `bridge`, for its gateway). `rm`, `stop`, `restart`, `kill`, `network rm`: several names, each checked. `ps --filter` (label, name, status, id, network, ancestor, health). `pull` by digest only. |
 
 **Who a container runs as:** always its own uid, given with `--user <uid>:<the owner's group>`: 100000 and up, never a
 real account. No capabilities: `--cap-add` is refused. Root is refused: `--user 0:0`, and a `run` with no `--user` (the
@@ -58,8 +66,9 @@ variable (docker gets a clean environment); `--privileged`; `--pid`, `--ipc`, `-
 `--sysctl`, `--runtime`, `--cgroup-parent`, `--log-driver`; `--env-file` that is not a plain file of the owner's in the
 project (it is opened by the wrapper and handed to docker as `/dev/fd/<n>`); images that are not mm's (or pinned by
 digest); build `-o`/`--output`, `--iidfile`, `--secret`, `--ssh`, `--build-context`, `--cache-from`/`--cache-to`,
-`--allow`, `--network`; and every other docker subcommand (`cp`, `create`, `commit`, `tag`, `load`, `volume`, `service`,
-`plugin`, `compose`, `buildx`, `update`, ...).
+`--allow`, `--network`; `cp` with a container that has mounts, or a host path outside its project; and every other docker
+subcommand (`commit`, `tag`, `load`, `save`, `volume`, `service`, `plugin`, `compose`, `buildx`, `update`, `start`,
+`attach`, `export`, `import`, `system`, ...).
 
 ## The config: `/etc/mm-docker.conf`
 
@@ -72,10 +81,38 @@ mm_home = /home/<owner>/.mm     # the default: <owner's home>/.mm
 projects = /home/<owner>/.mm/projects   # one-root layout; ~/projects in the legacy one
 secrets = /run/user/<uid>/mm/secrets    # the default; MM_SECRETS_DIR's value if mm runs with one
 root_containers = no            # the default: no root, no capabilities in any container (yes: an older mm only)
+test_root = /home/<owner>/.cache/mm-docker-test   # mm's tests' area (none: no test area); see "mm's tests"
+test_prefix = mmt-              # the default: a test's folder in test_root is <prefix><name>
+max_context_mb = 64             # the default: the most a build folder may hold
+max_cp_mb = 512                 # the default: the most a cp into a container may hold
 ```
+
+**The tests' area** (`test_root`): a folder `<test_root>/<test_prefix><name>/` and all in it belong to the throwaway
+project `<test_prefix><name>`, as a project's own folder does (mounts, `cp`, an `--env-file`). A folder there without
+the prefix belongs to none. `test_root` must be apart from mm's home, the projects and the secrets, and not a wide
+folder (`/`, `/tmp`, the home, ...). It gives no more than a project's folder: the owner's own files, mounted into a
+container that runs as its own uid.
 
 Run as a user other than root (no sudo), the wrapper is in **test mode**: `MM_DOCKER_CONF` names its config, and it
 gives no right that user doesn't have already.
+
+## mm's tests
+
+The container tests reach Docker through the wrapper only (`test/lib/docker.sh`), never plain `sudo docker`:
+
+- by default the installed one, `DOCKER="sudo -n /usr/local/libexec/mm-docker"`, whose config names the tests' area;
+- `MM_DOCKER_BIN=box/mm-docker`: this checkout's copy in test mode (as the owner, not root), with a config the test
+  writes, its docker `MM_DOCKER_RAW` (default `docker`). For a wrapper that is not installed yet: it needs a docker the
+  owner may run without the wrapper.
+- `DOCKER=<command>` as given.
+
+Each test makes its folders in the area (`mm_test_dir`): `~/.cache/mm-docker-test/mmt-<test>-<pid>/`, its name the
+throwaway project. Through the wrapper: `test/mm-docker-container.sh`, `test/box-egress.sh`, `test/doop-gateway.sh`
+(with `box/doop/build.sh`), `test/doop-container.sh`, `test/doop-designs.sh`. What still needs plain docker (the wrapper
+refuses it on purpose): `test/doop-container.sh`'s older Doop, as the owner's own uid (`MM_DOCKER_RAW`, else skipped);
+`test/mm-docker-container.sh`'s unlabelled containers (`MM_DOCKER_RAW`, else skipped); and the tests that run a stock
+OS image as root with `exec -u dev` (`clean-box.sh`, `auth-e2e.sh`, `in-box.sh`, `restore-drill.sh`,
+`box-gateway.sh`): a machine without blanket sudo runs them elsewhere, or with a rootless docker or podman.
 
 ## Install (ops; a t2 brain migration, the owner approves)
 
@@ -83,7 +120,8 @@ gives no right that user doesn't have already.
    `install -o root -g root -m 0755 box/mm-docker /usr/local/libexec/mm-docker`. Check that `/usr/bin/python3` is
    root-owned (the wrapper runs as `python3 -I`, isolated: no `PYTHON*` variables, no user site, not the script's
    folder).
-2. **The config**: write `/etc/mm-docker.conf` as above, `install -o root -g root -m 0644`.
+2. **The config**: write `/etc/mm-docker.conf` as above, `install -o root -g root -m 0644`. For mm's tests, with
+   `test_root = /home/<owner>/.cache/mm-docker-test` and `test_prefix = mmt-`.
 3. **The one sudoers line**, in its own file, e.g. `/etc/sudoers.d/50-mm`:
    ```
    <owner> ALL=(root) NOPASSWD: /usr/local/libexec/mm-docker
@@ -124,3 +162,7 @@ The wrapper adds no right while the owner still has `NOPASSWD: ALL`. It is the r
    digest. Doop's image is by digest already (`bin/doop-run`).
 4. **`--pull=never`**: a `run` never pulls. mm builds its images here, and `pull <name>@sha256:<digest>` is allowed.
 5. **Build steps run in BuildKit**, from the copied folder: no host mounts, no secrets, no entitlements.
+6. **`cp` reads and writes the host as the owner.** The wrapper checks the host path (realpath, the container's own
+   project), then a process of the owner's reads or writes it. A path swapped after the check reaches only what the
+   owner may reach anyway. Into a container, only one with no mounts: what lands there stays in that container (no
+   setuid bit, and mm's containers run with no new privileges and no capabilities).

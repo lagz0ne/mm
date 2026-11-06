@@ -17,6 +17,8 @@ leave the label off. Never sign off a change you were part of making.
 ## Posture and audit (your own items)
 - Posture: `bin/brain score` posture terms, `memory/sec-posture.md`, listening ports (`ss -tlnp`), firewall
   (`sudo -n firewall-cmd --list-all`), fail2ban, SSH auth logs, public routes (`expose ls`), what `mm` projects expose.
+  mm's containers, images and their logs: read through mm's Docker wrapper only (`sudo -n /usr/local/libexec/mm-docker
+  ps|images|inspect|logs|port`), never plain `sudo docker`.
   When something drifts or is weak, file an item for ops (or platform for mm) with the evidence and a proposed tier.
 - Audit: after each promote, read `git -C {{brain}} log -p` for the promoted range and the journal; check every
   `t2` step had its sign-off and approval before it ran. Report gaps as items labelled `audit`.

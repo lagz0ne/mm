@@ -3,7 +3,9 @@
 # Installed root-owned (root:root 0755, e.g. /usr/local/libexec/mm-docker), with one sudoers entry that names only it;
 # mm calls it through its config: box.docker = "sudo -n /usr/local/libexec/mm-docker" (docs/mm-docker.md).
 #
-# It runs only the docker calls mm itself makes (src/box.ts, template/bin/doop-run, src/doctor.ts). Each subcommand is
+# It runs only the docker calls mm itself makes (src/box.ts, template/bin/doop-run, src/doctor.ts), and those of mm's
+# container tests and the system board's leads (sy-e6t3: cp, create, logs, port, kill, images, rmi), each on mm's own
+# containers, images and folders (or a test's, in the config's test area). Each subcommand is
 # an allowlist of exact options, each option's value is checked, and docker gets a command line the wrapper writes
 # itself (long options, `--opt=value`), never the caller's words: what was checked is what docker runs.
 # It refuses, among the rest: --privileged; a mount of a host path outside the project's own folders (after realpath,
@@ -12,7 +14,8 @@
 # capabilities); --device, --mount, --volumes-from; --security-opt other than no-new-privileges (always added); global options
 # (-H, --context, --config) and DOCKER_HOST (docker gets a clean environment); exec into a container that is not mm's
 # (its name and its mm.project label, then exec by its id); a build whose context is not a folder of the caller's own
-# files (copied, as checked, into a private folder first), or whose tag is not mm's.
+# files (copied, as checked, into a private folder first), or whose tag is not mm's; a cp with a container that has
+# mounts, or with a host path outside its project (the host side read and written as the owner, never as root).
 #
 # Config (root's, not the caller's): /etc/mm-docker.conf, `key = value` lines (docs/mm-docker.md). Run as a user
 # other than root (no sudo), the wrapper is in test mode: MM_DOCKER_CONF names its config, and it gives no right
@@ -98,7 +101,11 @@ def load_conf():
         # a name that starts with test_prefix (none: no test area)
         'test_root': os.path.realpath(conf['test_root']) if conf.get('test_root') else None,
         'test_prefix': conf.get('test_prefix') or 'mmt-',
+        # an --env-file goes to docker as the open file (/dev/fd/<n>); `path` (test mode only): as its checked path
+        'env_file_by_path': conf.get('env_file', 'fd') == 'path',
     }
+    if conf.get('env_file', 'fd') not in ('fd', 'path') or (root and c['env_file_by_path']):
+        refuse('env_file: fd (path only in test mode)')
     if not re.fullmatch(r'[a-z][a-z0-9-]{1,20}-', c['test_prefix']):
         refuse(f'test_prefix = {show(c["test_prefix"])}: a short name that ends with -')
     for k in ('mm', 'projects', 'secrets', 'test_root'):
@@ -452,7 +459,8 @@ def check_run(args, c, sub='run'):
             refuse(f'--env-file {show(env_file)}: outside the project\'s own folders')
         os.set_inheritable(fd, True)
         keep_fds.append(fd)
-        env_file = f'/dev/fd/{fd}'
+        # test mode only (no right to gain): its docker may be `sudo -n docker`, and sudo closes every fd above 2
+        env_file = real if c['env_file_by_path'] else f'/dev/fd/{fd}'
     if as_root:
         if not c['root_containers']:
             refuse('run: this would run as root in the container (root_containers = no: every container runs as '
@@ -532,7 +540,7 @@ with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as t:
 '''
 OWNER_UNTAR = '''import sys, tarfile
 with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as t:
-    t.extractall(sys.argv[1], filter="data")
+    t.extractall(sys.argv[1], filter="tar")
 '''
 
 

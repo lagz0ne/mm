@@ -111,6 +111,8 @@ yes "box: no-new-privileges and never a pull, always" "run --pull=never --securi
 yes "egress proxy: run (its own uid, no capabilities)" "--user=190040:$G --cap-drop=ALL" "${EGRUN[@]}"
 yes "giveBack: the regroup as the box's uid (no root)" "--user=200040:$G" "${GIVEBACK[@]}"
 yes "doop: run (env file passed as an open file)" "--env-file=/dev/fd/" "${DOOP[@]}"
+cp "$T/conf" "$T/path.conf"; echo 'env_file = path' >>"$T/path.conf"
+MM_DOCKER_CONF="$T/path.conf" yes "env_file = path (test mode: sudo closes the open file): its checked, real path" "--env-file=$PR/secrets/doop.env" "${DOOP[@]}"
 yes "doop: run with the gateway's key (read-only, the project's own file)" "--volume=$PR/.run/doop-gateway.pem:/run/mm-gateway.pem:ro" "${DOOPGW[@]}"
 yes "doop: release regroup" "--user=210040:$G" "${REGROUP[@]}"
 yes "network create (box)" - network create --internal --subnet 10.231.40.0/24 --gateway 10.231.40.1 --label mm.project=acme-shop mm-net-acme-shop
@@ -436,7 +438,7 @@ no "a test's folder in another project's container" run -d --name mm-box-mmt-two
 no "a test folder without the prefix" run "${TONE[@]}" -v "$TR/nopfx:/x" "$IMG"
 no "the test root itself" run "${TONE[@]}" -v "$TR:/x" "$IMG"
 no "a symlink in the test's folder to outside" run "${TONE[@]}" -v "$TR/mmt-cp/evil:/x" "$IMG"
-for bad_conf in "test_root = /" "test_root = /tmp" "test_root = $H" "test_root = $MM/.." "test_root = $MM" "test_root = $MM/projects/acme" "test_prefix = x" "test_prefix = MM-" "test_prefix = a b-"; do
+for bad_conf in "test_root = /" "test_root = /tmp" "test_root = $H" "test_root = $MM/.." "test_root = $MM" "test_root = $MM/projects/acme" "test_prefix = x" "test_prefix = MM-" "test_prefix = a b-" "env_file = name"; do
   { grep -v '^test_' "$T/conf"; printf '%s\n' "$bad_conf"; [[ $bad_conf != test_prefix* ]] || echo "test_root = $TR"; } >"$T/bad.conf"
   : >"$T/calls"; out=$(MM_DOCKER_CONF="$T/bad.conf" "$W" ps 2>&1); rc=$?
   [ $rc = 125 ] && [ ! -s "$T/calls" ] && ok "config '$bad_conf' is refused ($(sed 's/^mm-docker: refused: //' <<<"$out" | head -c 70))" || bad "config '$bad_conf' (exit $rc: $out)"
