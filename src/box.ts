@@ -17,6 +17,9 @@ import { MM_LOG_CONFIG } from './obs'
 import { BOX_READONLY, BOXES, boxHook, gitRefusal, hostGitEnv, loadAll, PROJECT_LOG_CONFIG, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, up as projectUp, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
+import egressMain from '../box/egress/main.go' with { type: 'text' }
+import egressTest from '../box/egress/main_test.go' with { type: 'text' }
+import egressMod from '../box/egress/go.mod' with { type: 'text' }
 import paseoJoinScript from '../box/paseo-join.mjs' with { type: 'text' }
 import npmPackage from '../box/npm/package.json' with { type: 'text' }
 import npmLock from '../box/npm/package-lock.json' with { type: 'text' }
@@ -90,6 +93,7 @@ export function build(): Step[] {
   try {
     writeFileSync(join(dir, 'Dockerfile'), boxDockerfile); writeFileSync(join(dir, 'egress.Dockerfile'), egressDockerfile)
     mkdirSync(join(dir, 'npm')); writeFileSync(join(dir, 'npm', 'package.json'), String(npmPackage as unknown)); writeFileSync(join(dir, 'npm', 'package-lock.json'), String(npmLock as unknown))
+    mkdirSync(join(dir, 'egress')); for (const [f, t] of [['main.go', egressMain], ['main_test.go', egressTest], ['go.mod', egressMod]]) writeFileSync(join(dir, 'egress', f), t)
     const uid = String(process.getuid?.() ?? 1000)
     for (const [tag, file, args] of [[IMAGE(), 'Dockerfile', ['--build-arg', `UID=${uid}`, '--build-arg', `HOME_DIR=${HOME}`]], [EGRESS_IMAGE(), 'egress.Dockerfile', []]] as const) {
       const r = docker('build', '-q', '-t', tag, '-f', join(dir, file), ...args, dir)
@@ -100,6 +104,14 @@ export function build(): Step[] {
 }
 
 const exists = (kind: 'container' | 'network', name: string) => docker(kind, 'inspect', name).ok
+/** Every docker network's subnets on this machine: the egress proxy refuses them as destinations (sy-59m8), also
+ *  when docker was given address pools outside the private ranges. */
+export function dockerSubnets(): string[] {
+  const ids = docker('network', 'ls', '-q').out.split(/\s+/).filter(Boolean)
+  if (!ids.length) return []
+  const out = docker('network', 'inspect', '-f', '{{range .IPAM.Config}}{{.Subnet}} {{end}}', ...ids).out
+  return [...new Set(out.split(/\s+/).filter((s) => /^[0-9a-f.:]+\/\d{1,3}$/i.test(s)))].sort()
+}
 /**
  * What mm keeps for a box outside its project folder (review sy-b15.6 2): the box can rename and replace anything it
  * can write, even around a read-only mount, and Docker follows a symlink in a mount's source on the host. So what the
@@ -254,9 +266,12 @@ export function up(root: string): Step[] {
   // also after mm box off has given the box's files back to the owner
   const ef = join(elog, 'egress.log')
   try { if (!existsSync(ef)) writeFileSync(ef, '', { mode: 0o660 }); if (statSync(ef).uid === process.getuid?.()) chmodSync(ef, 0o660) } catch {}
-  const fwd = `while :; do socat TCP-LISTEN:${AI_PORT},bind=${pip},fork,reuseaddr UNIX-CONNECT:/run/mm/ai/ai.sock 2>/dev/null; sleep 1; done & exec tinyproxy -d -c /etc/tinyproxy/tinyproxy.conf >>/run/mm/log/egress.log 2>&1`
-  const px = docker('run', '-d', '--name', n.proxy, '--label', `mm.project=${a.project}`, '--restart', 'unless-stopped', '--init', '--read-only', '--tmpfs', '/run:size=8m', '--tmpfs', '/var/log/tinyproxy:size=8m',
+  // the proxy (mm-egress, box/egress/main.go) drops to its own user; it refuses any name that resolves to a non-public
+  // address or to a docker network of this machine (MM_EGRESS_DENY), and connects only to the address it checked
+  const fwd = `while :; do socat TCP-LISTEN:${AI_PORT},bind=${pip},fork,reuseaddr UNIX-CONNECT:/run/mm/ai/ai.sock 2>/dev/null; sleep 1; done & exec setpriv --reuid=egress --regid=egress --clear-groups /usr/local/bin/mm-egress >>/run/mm/log/egress.log 2>&1`
+  const px = docker('run', '-d', '--name', n.proxy, '--label', `mm.project=${a.project}`, '--restart', 'unless-stopped', '--init', '--read-only', '--tmpfs', '/run:size=8m',
     '--cap-drop', 'ALL', '--cap-add', 'SETUID', '--cap-add', 'SETGID', '--security-opt', 'no-new-privileges', '--pids-limit', '256', '--memory', '256m',
+    '-e', `MM_EGRESS_DENY=${dockerSubnets().join(',')}`,
     '--group-add', String(process.getgid?.() ?? 1000), '-v', `${join(edir, 'allow')}:/etc/mm/allow:ro`, '-v', `${aiDir}:/run/mm/ai`, '-v', `${elog}:/run/mm/log`, EGRESS_IMAGE(), 'sh', '-c', fwd)
   if (!px.ok) return fail('egress proxy', short(px))
   const cn = docker('network', 'connect', '--ip', pip, n.net, n.proxy); if (!cn.ok) return fail('egress proxy', short(cn))
