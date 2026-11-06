@@ -11,6 +11,8 @@ import { Markdown } from '@/Markdown'
 import { DiffView } from '@/Diff'
 import { AddRole, Raci, requestRemoveRole } from '@/Raci'
 import { Avatar, PersonaContext, personaOf } from '@/lib/persona'
+import { PullOverview, RolePullView, usePull, Wip } from '@/Pull'
+import { Flow } from '@/Flow'
 
 interface Layer { path: string; content: string | null }
 interface Skill { name: string; dir: string; description: string; path: string; raw: string | null; body: string; source: { id: string; hash: string; installedAt: string; by: string } | null }
@@ -54,29 +56,38 @@ export function Leads({ onOpen, items, raci }: { onOpen: (id: string) => void; i
   const [setup, setSetup] = useState<SetupInfo | null>(null)
   const [themes, setThemes] = useState<{ name: string; sample: string }[]>([])
   const personas = useContext(PersonaContext)
-  const [sel, setSel] = useState('')
+  const [sel, setSel] = useState('overview')
+  const { d: pull, err: pullErr } = usePull()
+  const pullOf = (role: string) => pull?.roles.find((x) => x.role === role)
   const [err, setErr] = useState('')
   const load = () => jsonFetch<{ roles: RoleSettings[]; setup: SetupInfo; themes: { name: string; sample: string }[] }>('/api/settings')
     .then((d) => { setRoles(d.roles); setSetup(d.setup); setThemes(d.themes || []); setErr('') }).catch((e) => setErr(String(e)))
   useEffect(() => { load(); const t = window.setInterval(load, 15000); return () => window.clearInterval(t) }, [])
 
-  useEffect(() => { if (!sel && roles[0]) setSel(roles[0].role) }, [roles, sel])
   const r = roles.find((x) => x.role === sel)
+  // phone width: the list is a strip that scrolls sideways above the page; from md on, a column on the left
+  const item = 'flex shrink-0 items-center gap-2 border-r px-4 py-3 text-left text-[13px] font-semibold hover:bg-muted md:w-full md:border-r-0 md:border-b'
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[12rem_1fr]">
-      <nav className="overflow-y-auto border-r">
+    <div className="grid min-h-0 flex-1 grid-rows-[auto_1fr] md:grid-cols-[12rem_1fr] md:grid-rows-1">
+      <nav className="flex overflow-x-auto border-b md:block md:overflow-x-visible md:overflow-y-auto md:border-r md:border-b-0">
+        <button onClick={() => setSel('overview')} className={cn(item, sel === 'overview' && 'bg-foreground text-background hover:bg-foreground')}>
+          Pull &amp; flow
+          <span className="ml-auto text-[11px] font-normal opacity-70 tabular-nums">{pull ? `${pull.roles.reduce((n, x) => n + x.queue.length, 0)} queued` : ''}</span>
+        </button>
         {roles.map((x) => (
           <button key={x.role} onClick={() => setSel(x.role)}
-            className={cn('flex w-full items-center gap-2 border-b px-4 py-3 text-left text-[13px] font-semibold hover:bg-muted',
-              sel === x.role && 'bg-foreground text-background hover:bg-foreground')}>
+            className={cn(item, sel === x.role && 'bg-foreground text-background hover:bg-foreground')}>
             <Avatar actor={x.role} size="sm" />
             <span className="min-w-0 leading-tight"><span className="block truncate">{personaOf(personas, x.role)?.name}</span>
               <span className="block text-[11px] font-normal opacity-70">{ROLE_LABEL[x.role]}</span></span>
-            <span className={cn('ml-auto size-2 shrink-0', LEAD_DOT[(x.state || LEAD_READY).state])} title={(x.state || LEAD_READY).label} />
+            <span className="ml-auto flex shrink-0 items-center gap-2">
+              {pullOf(x.role) && <span className="text-[11px] font-normal tabular-nums opacity-80" title="In progress / capacity">{pullOf(x.role)!.wip}/{pullOf(x.role)!.capacity ?? '-'}</span>}
+              <span className={cn('size-2 shrink-0', LEAD_DOT[(x.state || LEAD_READY).state])} title={(x.state || LEAD_READY).label} />
+            </span>
           </button>
         ))}
         <button onClick={() => setSel('setup')}
-          className={cn('flex w-full items-center gap-2 border-b border-t-4 border-t-foreground px-4 py-3 text-left text-[13px] font-semibold hover:bg-muted',
+          className={cn(item, 'md:border-t-4 md:border-t-foreground',
             sel === 'setup' && 'bg-foreground text-background hover:bg-foreground')}>
           <Avatar actor="setup" size="sm" />
           <span className="min-w-0 leading-tight"><span className="block truncate">{personaOf(personas, 'setup')?.name}</span>
@@ -84,25 +95,41 @@ export function Leads({ onOpen, items, raci }: { onOpen: (id: string) => void; i
           <span className={cn('ml-auto size-2 shrink-0', LEAD_DOT[(setup?.state || LEAD_READY).state])} title={(setup?.state || LEAD_READY).label} />
         </button>
         <button onClick={() => setSel('raci')}
-          className={cn('flex w-full items-center gap-2 border-b px-4 py-3 text-left text-[13px] font-semibold hover:bg-muted', sel === 'raci' && 'bg-foreground text-background hover:bg-foreground')}>
+          className={cn(item, sel === 'raci' && 'bg-foreground text-background hover:bg-foreground')}>
           RACI
           <span className="ml-auto text-[11px] font-normal opacity-70">{raci?.activities.length ?? 0} activities</span>
         </button>
         <button onClick={() => setSel('add-role')}
-          className={cn('flex w-full items-center gap-2 border-b px-4 py-3 text-left text-[13px] font-semibold hover:bg-muted', sel === 'add-role' && 'bg-foreground text-background hover:bg-foreground')}>
+          className={cn(item, sel === 'add-role' && 'bg-foreground text-background hover:bg-foreground')}>
           + Add role
         </button>
         <button onClick={() => setSel('look')}
-          className={cn('flex w-full items-center gap-2 border-b px-4 py-3 text-left text-[13px] font-semibold hover:bg-muted', sel === 'look' && 'bg-foreground text-background hover:bg-foreground')}>
+          className={cn(item, sel === 'look' && 'bg-foreground text-background hover:bg-foreground')}>
           Names &amp; look
           <span className="ml-auto text-[11px] font-normal opacity-70">{personas?.theme || 'default'}</span>
         </button>
         {err && <p className="p-4 text-xs text-swiss">{err}</p>}
       </nav>
 
+      {sel === 'overview' && (
+        <div className="min-h-0 overflow-y-auto">
+          <Block title="Pull" note="The board is the queue: each role pulls its ready items in order, up to its capacity. A claim's lease runs 30 min from its last update; then wake puts it back in the queue.">
+            <PullOverview pull={pull} err={pullErr} onOpen={onOpen} />
+          </Block>
+          <Block title="Flow" note="How work moved on this board, from its events (bin/flow, every 5 min).">
+            <Flow />
+          </Block>
+        </div>
+      )}
+
       {sel === 'setup' && setup && (
         <div className="min-h-0 overflow-y-auto">
           <Governance setup={setup} items={items} onOpen={onOpen} />
+          {pullOf('setup') && (
+            <Block title="Pull" note="Governance requests in its queue and in progress. Setup has no capacity: wake never holds it back.">
+              <div className="px-2 py-3 md:px-4"><RolePullView r={pullOf('setup')!} onOpen={onOpen} /></div>
+            </Block>
+          )}
           <Block title="Setup agent's own brief" note="Read-only here. Only a human changes setup/ (over SSH), so the agent can't widen its own powers.">
             {setup.layers.map((l) => (
               <details key={l.path} open={l.path === 'setup/CLAUDE.md'} className="border-b last:border-b-0">
@@ -141,6 +168,13 @@ export function Leads({ onOpen, items, raci }: { onOpen: (id: string) => void; i
               <Button size="sm" variant="ghost" onClick={() => requestRemoveRole(r.role)}><TrashIcon />Remove role</Button>
             </div>
           </section>
+
+          {pullOf(r.role) && (
+            <Block title="Pull" note="Its queue in the order wake hands it, what it holds in progress against its capacity, each claim's lease, and its workers.">
+              <div className="flex items-baseline gap-3 px-4 pt-3 md:px-6"><Wip r={pullOf(r.role)!} big /><span className="text-[11px] text-muted-foreground">in progress / capacity</span></div>
+              <div className="px-2 pb-3 md:px-4"><RolePullView r={pullOf(r.role)!} onOpen={onOpen} /></div>
+            </Block>
+          )}
 
           <Block title="System prompt" note="Every CLAUDE.md from the lead's folder up to the project root. Reloaded after compaction.">
             {r.layers.map((l) => (
@@ -417,7 +451,7 @@ function Fact({ label, value, mono }: { label: string; value: string; mono?: boo
 function Block({ title, note, children }: { title: string; note: string; children: React.ReactNode }) {
   return (
     <section className="border-b">
-      <header className="flex items-baseline gap-4 border-b border-foreground px-6 pt-4 pb-2">
+      <header className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-foreground px-4 pt-4 pb-2 md:px-6">
         <h2 className="text-[11px] font-bold tracking-[0.1em] uppercase">{title}</h2>
         <p className="text-[11px] text-muted-foreground">{note}</p>
       </header>
