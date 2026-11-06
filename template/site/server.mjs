@@ -10,6 +10,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configApi } from './config-api.mjs'
 import { leadState } from './lead-state.mjs'
+import { foldRequeues, pullState } from './pull-state.mjs'
+import { exportQuery, flowRows, parseExport, PAIRS } from './flow-rows.mjs'
 import * as P_ from '../bin/lib/paseo.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -197,22 +199,35 @@ function pollAgents() {
       if (!err) {
         const data = Object.fromEntries([...ROLES, 'setup'].map((r) => [r, null]))
         data._workers = []
-        const workerRole = ROLE_DEFS.find((r) => r.workers)?.id || 'code'
         for (const a of list) {
           const cwd = String(a.cwd || '').replace(/^~(?=\/|$)/, HOME_DIR)
-          if (cwd !== ROOT && !cwd.startsWith(ROOT + '/')) continue
-          const rel = cwd.slice(ROOT.length + 1)
+          const inside = cwd === ROOT || cwd.startsWith(ROOT + '/'), rel = inside ? cwd.slice(ROOT.length + 1) : null
           const info = { id: a.shortId || a.id, name: a.name, status: a.status, provider: a.provider, thinking: a.thinking, cwd: a.cwd, created: a.created }
-          let m
-          if ((m = /^leads\/([\w-]+)$/.exec(rel)) && m[1] in data && !data[m[1]]) data[m[1]] = info
-          else if (rel === 'setup' && !data.setup) data.setup = info
-          else if ((m = /^worktrees\/w-(.+)$/.exec(rel))) data._workers.push({ id: info.id, role: workerRole, status: a.status, item: m[1] })
+          let m, w
+          if (inside && (m = /^leads\/([\w-]+)$/.exec(rel)) && m[1] in data && !data[m[1]]) data[m[1]] = info
+          else if (inside && rel === 'setup' && !data.setup) data.setup = info
+          else if ((w = workerOf(a, rel))) data._workers.push(w)
         }
         agents = { at: Date.now(), data }
       }
     } catch {}
     setTimeout(pollAgents, 4000)
   })
+}
+// A worker (sy-6h43): an agent of this project that says it is one: a worker's worktree here (worktrees/w-<item>), or
+// the project's label (project=<this>; on the CLI path, which has no labels, a name that starts with the project) with
+// a `<role>-worker` role label or "worker" in its name (bin/lead and the briefs name them "<project> · <role> worker
+// <item>"). Its role: the role label without -worker, else the name, else the role that has workers; its item: the
+// `item` label, else the name, else the worktree.
+function workerOf(a, rel) {
+  const labels = a.labels || {}, name = String(a.name || ''), wt = rel !== null ? /^worktrees\/w-(.+)$/.exec(rel) : null
+  const ours = labels.project === PROJECT || (!labels.project && name.startsWith(`${PROJECT} `))
+  if (!wt && !(ours && (/-worker$/.test(labels.role || '') || /\bworker\b/i.test(name)))) return null
+  const known = (r) => (r && ROLES.includes(r) ? r : null)
+  const role = known(String(labels.role || '').replace(/-worker$/, '')) || known((/([a-z][a-z0-9-]*)[ -]worker\b/i.exec(name) || [])[1]?.toLowerCase())
+    || ROLE_DEFS.find((r) => r.workers)?.id || ''
+  const item = (ID_RE.test(labels.item || '') && labels.item) || (/\bworker\s+([a-z]+-[a-z0-9]+(?:\.[0-9]+)*)\b/i.exec(name) || [])[1] || wt?.[1] || null
+  return { id: a.shortId || a.id, name, role, status: a.status, item }
 }
 pollAgents()
 async function leads() {
@@ -221,7 +236,7 @@ async function leads() {
 }
 
 // From the Beads event journal: who created each item (bd serve leaves created_by empty) and the last comment.
-const meta = { seq: 0, creators: {}, last: {}, lastAct: {}, lastTs: 0 }
+const meta = { seq: 0, creators: {}, last: {}, lastAct: {}, lastTs: 0, requeues: {}, seen: {} }
 async function refreshMeta() {
   for (;;) {
     const r = await fetch(new URL(`/v0/beads/events?since=${meta.seq}&limit=500`, BD), { minMs: 1000 }).then((x) => x.json())
@@ -233,6 +248,7 @@ async function refreshMeta() {
       if (e.op === 'comment' && e.comment) meta.last[e.issue_id] = { author: e.comment.author, at: e.comment.created_at || e.ts }
       if (e.actor) meta.lastAct[e.actor] = { item: e.issue_id, at: e.ts }
     }
+    foldRequeues(meta.requeues, meta.seen, recs) // claims wake requeued (pull-state.mjs)
     if (recs.length < 500) break
   }
 }
@@ -260,13 +276,10 @@ async function sendMeta(res) {
   } catch (e) { send(res, 502, { title: 'meta failed', detail: e.message }) }
 }
 
-// The board's summary for the gateway's home page (sy-ukbz): counts and one time only, never item text. Read-only, so a
-// viewer may read it; on the public side it is checked like every other request (handlePublic). "mine" = the open items
-// assigned to the asking person; "needs_you" = items labelled needs-you, and for the owner also the t2 items review
-// signed off that wait for the owner's approved.
-async function sendSummary(req, res) {
-  const me = who(req), owner = req.gateway?.r === 'owner'
-  const items = new Map() // by id: a page seen twice never counts twice
+// Every item on the board (all pages), by id: a page seen twice never counts twice. Over 20 pages: an error, so a count
+// is never wrong (the summary's card then says unavailable).
+async function allItems() {
+  const items = new Map()
   let cursor = ''
   for (let page = 0; page < 20; page++) {
     const r = await fetch(new URL(`/v0/beads/issues?limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, BD)).then((x) => (x.ok ? x.json() : Promise.reject(new Error(`bd serve ${x.status}`))))
@@ -274,18 +287,84 @@ async function sendSummary(req, res) {
     cursor = r?.has_more && typeof r.next_cursor === 'string' ? r.next_cursor : ''
     if (!cursor) break
   }
-  if (cursor) throw new Error('too many items to count') // the card says unavailable rather than a wrong number
+  if (cursor) throw new Error('too many items to count')
+  return [...items.values()]
+}
+const readyItems = () => fetch(new URL('/v0/beads/ready?limit=500', BD)).then((x) => (x.ok ? x.json() : Promise.reject(new Error(`bd serve ${x.status}`)))).then((r) => (Array.isArray(r?.items) ? r.items : []))
+const CAPACITY = () => Object.fromEntries(ROLE_DEFS.filter((r) => Number.isInteger(r.capacity) && r.capacity > 0).map((r) => [r.id, r.capacity]))
+
+// The pull model on the Leads page (sy-6h43; pull-state.mjs): per role its queue, its claims against its capacity, each
+// claim's lease, the requeued items and its workers. Read-only, so a viewer may read it. Kept for 3 s.
+let pullCache = { at: 0, data: null }
+async function pull() {
+  if (pullCache.data && Date.now() - pullCache.at < 3000) return pullCache.data
+  const [items, ready] = await Promise.all([allItems(), readyItems(), refreshMeta().catch(() => {})])
+  const now = Date.now()
+  const data = { at: new Date(now).toISOString(), roles: pullState({ roles: [...ROLES, 'setup'], capacity: CAPACITY(), items, ready, requeues: meta.requeues,
+    workers: agents.data?._workers || [], now }) }
+  pullCache = { at: Date.now(), data }
+  return data
+}
+
+// The Flow panel (sy-6h43; flow-rows.mjs): the numbers of `mm obs flow` for this board, from the same series, read from
+// the machine's metrics store (.run/endpoints.json "observability"; the import address's own export) on the server only;
+// the browser never talks to the store. Only this project's series. Kept for 60 s; one read at a time.
+const METRICS_IMPORT = process.env.MM_OBS_METRICS ?? endpoints().observability?.metrics ?? ''
+let flowCache = { at: 0, data: null, pending: null }
+async function flow() {
+  if (!METRICS_IMPORT) return { available: false, why: 'no metrics store on this machine (mm onboard installs it)', pairs: PAIRS }
+  const now = Number(process.env.BOARD_FLOW_NOW) || Date.now()
+  const url = new URL('/api/v1/export', METRICS_IMPORT)
+  url.search = exportQuery(PROJECT, now).toString()
+  const r = await fetch(url, { signal: AbortSignal.timeout(15000) })
+  if (!r.ok) throw new Error(`metrics store: HTTP ${r.status}`)
+  const text = await r.text()
+  const { rows, ranges } = flowRows(parseExport(text), now)
+  return { available: true, at: new Date(now).toISOString(), project: PROJECT, rows: rows.filter((x) => x.project === PROJECT), events: ranges.filter((x) => x.project === PROJECT), pairs: PAIRS }
+}
+async function sendFlow(res) {
+  if (!flowCache.data || Date.now() - flowCache.at > 60000) {
+    flowCache.pending ||= flow().then((d) => { flowCache = { at: Date.now(), data: d, pending: null } }, (e) => { flowCache = { at: Date.now() - 50000, data: { available: false, why: e.message, pairs: PAIRS }, pending: null } })
+    await flowCache.pending
+  }
+  send(res, 200, flowCache.data)
+}
+
+// The board's summary for the gateway's home page (sy-ukbz): counts and one time only, never item text. Read-only, so a
+// viewer may read it; on the public side it is checked like every other request (handlePublic). "mine" = the open items
+// assigned to the asking person; "needs_you" = items labelled needs-you, and for the owner also the t2 items review
+// signed off that wait for the owner's approved ("approvals", the owner's only).
+// The worst signal (sy-6h43), whole numbers and one role id only (the gateway makes the text and checks the id against
+// this project's roles): "needs_you_min", the oldest of the needs_you items in minutes since its last update; the queue
+// whose head waits longest (bd ready, as wake hands it): "queue_role", its length "queue" and that wait "queue_min".
+async function sendSummary(req, res) {
+  const me = who(req), owner = req.gateway?.r === 'owner'
+  const [items, ready] = await Promise.all([allItems(), readyItems()])
   await Promise.race([refreshMeta().catch(() => {}), new Promise((ok) => setTimeout(ok, 1000))]) // the gateway waits 3 s in all
-  const open = [...items.values()].filter((i) => i.status !== 'closed'), labels = (i) => (Array.isArray(i.labels) ? i.labels : [])
+  const open = items.filter((i) => i.status !== 'closed'), labels = (i) => (Array.isArray(i.labels) ? i.labels : [])
   let last = meta.lastTs
   for (const i of open) { const t = Date.parse(i.updated_at); if (t > last) last = t }
+  const now = Date.now(), min = (i) => Math.max(0, Math.floor((now - (Date.parse(i.updated_at) || now)) / 60000))
+  const approval = (i) => owner && labels(i).includes('t2') && labels(i).includes('signed-off') && !labels(i).includes('approved')
+  const waits = open.filter((i) => labels(i).includes('needs-you') || approval(i))
+  let worst = null
+  for (const q of pullState({ roles: [...ROLES, 'setup'], items: [], ready, now })) {
+    if (!q.queue.length) continue
+    const m = Math.floor(Math.max(...q.queue.map((x) => x.wait_s)) / 60)
+    if (!worst || m > worst.min || (m === worst.min && q.queue.length > worst.n)) worst = { role: q.role, n: q.queue.length, min: m }
+  }
   send(res, 200, {
     open: open.length,
     p0: open.filter((i) => i.priority === 0).length,
     blocked: open.filter((i) => i.status === 'blocked').length,
-    needs_you: open.filter((i) => labels(i).includes('needs-you') || (owner && labels(i).includes('t2') && labels(i).includes('signed-off') && !labels(i).includes('approved'))).length,
+    needs_you: waits.length,
     mine: open.filter((i) => i.assignee && i.assignee === me).length,
     ...(last > 0 ? { last: new Date(last).toISOString() } : {}),
+    needs_you_min: waits.length ? Math.max(...waits.map(min)) : 0,
+    approvals: open.filter(approval).length,
+    queue: worst ? worst.n : 0,
+    queue_min: worst ? worst.min : 0,
+    ...(worst ? { queue_role: worst.role } : {}),
   })
 }
 
@@ -689,6 +768,8 @@ async function handle(req, res) {
   }
   if (url.pathname === '/api/meta' && req.method === 'GET') return sendMeta(res)
   if (url.pathname === '/api/summary' && req.method === 'GET') return sendSummary(req, res).catch(() => send(res, 502, { title: 'summary failed' }))
+  if (url.pathname === '/api/pull' && req.method === 'GET') return pull().then((d) => send(res, 200, d), (e) => send(res, 502, { title: `pull failed: ${e.message}` }))
+  if (url.pathname === '/api/flow' && req.method === 'GET') return sendFlow(res)
   if (url.pathname === '/api/links' && req.method === 'GET') return sendLinks(res)
   if (url.pathname === '/api/mermaid' && req.method === 'POST') return sendMermaid(req, res, url).catch((e) => send(res, 500, { error: e.message }))
   if (url.pathname === '/api/presence' && req.method === 'GET') return sendPresence(res)
