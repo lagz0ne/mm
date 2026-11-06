@@ -284,10 +284,15 @@ item('sy-19', { title: 't2, only a tier-1 migration names it', priority: 2, assi
 migration('1800000004-podman', 'install podman (for sy-19)', true, 1)
 item('sy-20', { title: 't2, its migration has no tier line', priority: 2, assignee: 'ops', labels: ['t2'] })
 migration('1800000005-fw', 'open a port (sy-20)', true, 0)
+// sy-1jmi: a supervisor.json an agent wrote, naming a lead as an approver and ignoring the t2 keys, changes nothing
+const CONFIG = path.join(SYS, 'supervisor.json')
+fs.writeFileSync(CONFIG, JSON.stringify({ approvers: ['platform'], ignore: ['^t2-unapproved:'] }))
 ok('exit 0', (await supervise()) === 0)
+fs.rmSync(CONFIG)
 const T2 = (id) => `t2-unapproved:${id}`
 ok('open: t2-unapproved for sy-11 (claimed), sy-12 and sy-18 (approved by a lead), sy-14 (migration applied), sy-17 (applied, then closed), sy-20 (no tier line: tier 2); not sy-13 (bridge), sy-15 (not applied), sy-16 (t1), sy-19 (tier-1 migration)',
   openKeys() === `${DIRTY} ${T2('sy-11')} ${T2('sy-12')} ${T2('sy-14')} ${T2('sy-17')} ${T2('sy-18')} ${T2('sy-20')}`)
+ok('...with a supervisor.json naming platform an approver and ignoring t2 keys: sy-12 (approved by platform) still open (sy-1jmi)', !!openOf(T2('sy-12')))
 const U = openOf(T2('sy-12'))
 ok('the item is for ops, P1, and says a lead\'s approved does not count', U?.assignee === 'ops' && U.priority === 1 && /added by platform/.test(U.description) && /not an approver/.test(U.description))
 ok('the migration finding names the migration', /1800000001-fw\.sh/.test(openOf(T2('sy-14'))?.description || ''))
