@@ -13,6 +13,7 @@ CLIENT=${REF%/*}; NAME=${REF#*/}; PROJECT="$CLIENT-$NAME"; ROOT="$PROJECTS_DIR/$
 PC="process-compose -U -u $HOME/.mm/pc.sock"
 export PATH="$HOME/.mm/bin:$HOME/.mm/npm/bin:$HOME/.local/bin:$PATH"
 . "$(dirname "$0")/lib/routes.sh"   # this run's routes in its own folder, never in the live web proxy (review sy-uzh)
+. "$(dirname "$0")/lib/paseo.sh"    # at the end: the Paseo workspaces and projects this run made are archived and removed
 unset PASEO_AGENT_ID PASEO_AGENT_CWD   # run from inside an agent: these would override `paseo run --cwd` (the probe must live in the project)
 pass=0; fail=0; T0=$(date +%s)
 ok()   { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }
@@ -213,6 +214,9 @@ for f in $(ls "$HOME/.local/share/mm/archive"); do grep -qxF "$f" <<<"$ARCH_BEFO
 rmdir "$PROJECTS_DIR/$CLIENT" 2>/dev/null || true
 check "nothing left" test ! -e "$ROOT"
 check "its Claude folder is gone too" test ! -e "$HOME/.mm/claude/$PROJECT"
+# Paseo keeps a workspace and a project for each folder an agent ran in (the probe's, through the symlink; the qa lead's)
+PL=$(paseo_left "$ROOT" "${ALIAS:-}"); paseo_forget "$ROOT" "${ALIAS:-}"
+check "its Paseo workspaces and projects are gone (were: $PL)" test "$(paseo_left "$ROOT" "${ALIAS:-}")" = "0 0"
 
 check "no route written into the live web proxy (review sy-uzh)" live_routes_same
 printf '\n%s passed, %s failed in %ss\n' "$pass" "$fail" $(( $(date +%s) - T0 ))
