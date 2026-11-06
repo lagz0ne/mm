@@ -6,11 +6,17 @@
 // next, even when the writer is the item's old assignee (see transition()).
 // Hop limit: after MAX_HOPS lead-to-lead wakes on one item without a human in between, the item gets `needs-you`
 // and leads stop being woken for it until a human acts on it.
+// The pull model (plans/slp shape 5): the board is the queue. A role's queue is `bd ready --assignee <role>`; its lead
+// pulls with `bd update <id> --claim`, up to the role's capacity (roles.json `capacity`, default 1, inside the project's
+// cap). wake is the dispatcher, as a reconcile loop (reconcile()): from the board alone it hands each role its queue
+// head, starts a lead that has work and no agent, requeues expired claims, and holds work past capacity.
 // Leads are on demand: a role with no agent (or a closed one) is started when work waits for it, and a lead idle for
 // WAKE_IDLE_CLOSE_MS with nothing of its own open is closed (see startLead() and closeIdle()).
 // Env: BD_SERVE (else the bd-serve URL from .run/endpoints.json), WAKE_EVERY_MS (default 5000), WAKE_RESUME_CHECK_MS (the
-// lead check, default 60000), WAKE_RESUME_MS (at most one start per role per this, default 600000), WAKE_IDLE_CLOSE_MS
-// (default 1800000 = 30 min; 0 = never close). Paseo: bin/lib/paseo.mjs (its SDK, else the CLI: PASEO_BIN, PASEO_URL,
+// reconcile pass, default 60000), WAKE_RESUME_MS (at most one start per role per this, default 600000), WAKE_IDLE_CLOSE_MS
+// (default 1800000 = 30 min; 0 = never close), WAKE_LEASE_MS (a claim with no update for this expires, default 1800000),
+// WAKE_CAP (the project's cap; else `wake.cap` in mm's config.yaml), WAKE_TRIES (3), WAKE_RETRY_MS (2000), WAKE_SOON_MS
+// (a pass this soon after an event, 1000). Paseo: bin/lib/paseo.mjs (its SDK, else the CLI: PASEO_BIN, PASEO_URL,
 // PASEO_NO_SDK=1).
 import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/obs.mjs'
 import * as P_ from './lib/paseo.mjs'
@@ -31,6 +37,7 @@ import fs from 'node:fs'
 // its agent id): wake never closes it and never starts one (a new start is a new id), it asks the human instead.
 const ROLES = []
 const KEEP = new Set()
+const CAPACITY = {} // role -> roles.json `capacity`: the most items it holds in progress at once (default 1)
 let BOARD_LEAD = null
 const pending = {} // role -> issue id -> latest reason
 function loadRoles() {
@@ -39,6 +46,8 @@ function loadRoles() {
   ROLES.splice(0, ROLES.length, ...ids, 'setup')
   BOARD_LEAD = ids.includes(d.lead) ? d.lead : null
   KEEP.clear(); for (const r of (Array.isArray(d.roles) ? d.roles : [])) if (r && r.keep === true) KEEP.add(r.id)
+  for (const k of Object.keys(CAPACITY)) delete CAPACITY[k]
+  for (const r of (Array.isArray(d.roles) ? d.roles : [])) if (r && Number.isInteger(r.capacity) && r.capacity > 0) CAPACITY[r.id] = r.capacity
   for (const r of ROLES) pending[r] ||= new Map()
 }
 loadRoles()
@@ -52,10 +61,12 @@ startMetrics()
 const clip = (s, n = 160) => (s || '').replace(/\s+/g, ' ').slice(0, n)
 const bd = (p) => fetch(new URL(p, BD)).then((r) => r.json())
 
-function note(role, id, reason, byLead = false) {
+// A reason is `talk` (a comment, a handoff, blocked, a dependency, a reopen, RACI) or `work` (an item to pull: new, or
+// changed while open): work past the role's free capacity waits (sendable()); talk never does.
+function note(role, id, reason, byLead = false, kind = 'talk') {
   if (!ROLES.includes(role)) return
   const prev = pending[role].get(id)
-  pending[role].set(id, { reason, byLead: byLead || !!prev?.byLead })
+  pending[role].set(id, { reason, byLead: byLead || !!prev?.byLead, kind: prev && prev.kind === 'talk' ? 'talk' : kind, at: Date.now() })
 }
 
 const leadOf = (actor) => ROLES.find((r) => actor === r || (actor || '').startsWith(`${r}/`)) || null
@@ -149,7 +160,7 @@ function transition(e, byLead) {
 
 function onEvent(e) {
   return span('wake event', { op: e.op, issue: e.issue_id, actor: e.actor }, () => {
-    try { onEvent1(e) } finally { if (e.issue) seen.set(e.issue_id, { assignee: e.issue.assignee || '', status: e.issue.status }) }
+    try { onEvent1(e) } finally { if (e.issue) seen.set(e.issue_id, { assignee: e.issue.assignee || '', status: e.issue.status }); soon() }
   }, { minMs: 1000 })
 }
 function onEvent1(e) {
@@ -174,11 +185,11 @@ function onEvent1(e) {
       .then((i) => { const n = (i.comments || []).findIndex((c) => c.id === e.comment.id) + 1; if (n && pending[role].has(e.issue_id)) note(role, e.issue_id, reason(n), byLead) })
       .catch(() => {})
   } else if (['create', 'update', 'reopen'].includes(e.op) && ['open', 'in_progress'].includes(e.issue?.status)) {
-    note(role, e.issue_id, `${who} ${e.op === 'create' ? 'created' : e.op === 'reopen' ? 'reopened' : 'changed'} ${e.issue_id} "${title}" (now ${e.issue.status})`, byLead)
+    note(role, e.issue_id, `${who} ${e.op === 'create' ? 'created' : e.op === 'reopen' ? 'reopened' : 'changed'} ${e.issue_id} "${title}" (now ${e.issue.status})`, byLead,
+      e.issue.status === 'open' ? 'work' : 'talk')
   }
 }
 
-// On start: anything already waiting on a lead (ready items, unanswered human comments) counts as a reason.
 // Every item on the board (all pages).
 async function allIssues() {
   const all = new Map(); let cursor = ''
@@ -190,14 +201,14 @@ async function allIssues() {
   }
   return [...all.values()]
 }
+// On start: an unanswered human comment counts as a reason (the queues are the reconcile's, right after).
 async function catchUp() {
-  const [open, ready, ev] = await Promise.all([allIssues(), bd('/v0/beads/ready?limit=500'), bd('/v0/beads/events?since=0&limit=500')])
+  const [open, ev] = await Promise.all([allIssues(), bd('/v0/beads/events?since=0&limit=500')])
   const last = {}
   for (const e of ev.records || []) if (e.op === 'comment' && e.comment) last[e.issue_id] = e.comment.author
   for (const i of open) seen.set(i.id, { assignee: i.assignee || '', status: i.status })
-  for (const i of ready.items || []) note(i.assignee, i.id, `${i.id} "${clip(i.title, 80)}" is ready and nobody has picked it up`)
   for (const i of open) {
-    if (last[i.id] && !ROLES.includes(last[i.id])) note(i.assignee, i.id, `${i.id} "${clip(i.title, 80)}" has an unanswered comment from ${last[i.id]}`)
+    if (last[i.id] && isHuman(last[i.id])) note(i.assignee, i.id, `${i.id} "${clip(i.title, 80)}" has an unanswered comment from ${last[i.id]}`)
   }
   return ev.head || 0
 }
@@ -206,11 +217,49 @@ async function lead(role) {
   return (await P_.list({ project: PROJECT, role }))[0] || null
 }
 
+// The board as wake last read it (the reconcile's view, also the capacity check at send time): every item, and the
+// ready list (bd ready: open, no open blocker, priority order). Read again when older than a second.
+let snap = null
+async function board(fresh = false) {
+  if (!fresh && snap && Date.now() - snap.at < 1000) return snap
+  const [all, ready] = await Promise.all([allIssues(), bd('/v0/beads/ready?limit=500')])
+  return (snap = { at: Date.now(), all, ready: ready.items || [] })
+}
+// A role's share of the board: its queue (ready items assigned to it; one waiting for the human, `needs-you`, is not
+// work it can do), what it holds in progress (claimed by it or a worker, `<role>/...`), and its free capacity within the
+// role's `capacity` and the project's cap.
+const mineOf = (role, i) => i.assignee === role || String(i.assignee || '').startsWith(`${role}/`)
+const inProgress = (b, role) => b.all.filter((i) => i.status === 'in_progress' && mineOf(role, i))
+// The setup agent (governance requests from humans) is not a lead: no capacity holds it back and no claim of its expires.
+function share(b, role) {
+  const queue = b.ready.filter((i) => i.assignee === role && i.status === 'open' && !(i.labels || []).includes('needs-you'))
+  const used = inProgress(b, role).length, cap = role === 'setup' ? Infinity : CAPACITY[role] || 1, pcap = role === 'setup' ? 0 : projectCap()
+  const total = b.all.filter((i) => i.status === 'in_progress' && leadOf(i.assignee)).length
+  const free = Math.max(0, Math.min(cap - used, pcap ? pcap - total : Infinity))
+  return { queue, used, cap, free, pcap, total }
+}
+// The pull model's capacity gate: a reason about an item in the role's queue that is not among its next `free` items
+// waits (stays pending, unsent) until capacity frees. Talk (a comment, a handoff, blocked, a dependency, a reopen) is
+// never held back: only new work is.
+// Work on an item this read of the board does not have, noted after the read (an event during it), waits for the next read.
+function sendable(role, b) {
+  const reasons = pending[role]
+  if (!b) return new Map(reasons)
+  const { queue, free } = share(b, role), next = new Set(queue.slice(0, free).map((i) => i.id)), inQueue = new Set(queue.map((i) => i.id))
+  const known = new Set(b.all.map((i) => i.id))
+  return new Map([...reasons].filter(([id, r]) => r.kind !== 'work' || (known.has(id) ? !inQueue.has(id) || next.has(id) : r.at <= b.at)))
+}
+const queueLine = (role, b) => {
+  if (!b) return null
+  const { queue, used, cap, free } = share(b, role), head = queue[0]
+  return `Your queue (bd ready --assignee ${role}): ${queue.length ? `${queue.length} item(s), next ${head.id} "${clip(head.title, 60)}"` : 'empty'}. ` +
+    `In progress: ${used}${Number.isFinite(cap) ? ` of your capacity ${cap}` : ''}${free ? '.' : ' (at capacity: finish, hand over or block one before you claim the next).'}`
+}
+
 async function tick() {
   loadRoles()
   for (const role of ROLES) {
-    const reasons = pending[role]
-    if (!reasons.size) continue
+    if (!pending[role].size) continue
     let a
     try { a = await lead(role) } catch (e) { log('paseo ls failed:', e.message); return }
     // Offline (the board shows it) or busy: keep the reasons. Idle must be seen on two ticks in a row, so a lead
@@ -219,60 +268,110 @@ async function tick() {
     const steady = idle && idleSeen[role] === a.id
     idleSeen[role] = idle ? a.id : null
     if (!steady) continue
-    const msg = [`Board update for the ${role} lead (${PROJECT}):`, ...[...reasons.values()].map((r) => `- ${r.reason}`),
-      '', 'Follow your role brief: pick up, answer every human comment on the item, then end your turn.'].join('\n')
-    const items = [...reasons.keys()], batch = new Map(reasons)
-    reasons.clear()
+    let b = null
+    try { b = await board() } catch (e) { log('board read failed (nothing held back for capacity):', e.message) }
+    const batch = sendable(role, b)
+    if (!batch.size) continue // only queue items past its capacity: they wait
+    const msg = [`Board update for the ${role} lead (${PROJECT}):`, ...[...batch.values()].map((r) => `- ${r.reason}`),
+      '', ...[queueLine(role, b)].filter(Boolean),
+      'Follow your role brief: answer every human comment on the item, pull new work only within your capacity (bd update <id> --claim), end each unit of work with a board change, then end your turn.'].join('\n')
+    const items = [...batch.keys()]
+    for (const id of items) pending[role].delete(id)
     try {
       await span('wake lead', { role, agent: a.id, items: items.join(' '), via: P_.via() }, () => P_.send(a.id, msg))
       count('mm_wake_sent_total', { role })
+      delete sendFails[role]
       for (const [id, r] of batch) if (r.byLead) hops.set(id, (hops.get(id) || 0) + 1) // a lead-to-lead wake, sent
+      for (const id of items) (handed[role] ||= new Map()).set(id, Date.now()) // told: the reconcile does not hand it again
       // For the board's "who is working on what": the items this lead was just woken for.
       editState((st) => { st[role] = { items, at: new Date().toISOString(), agent: a.id } })
       delete idleFrom[role] // it has a turn now
-      log(`woke ${role} (${a.shortId || a.id}) with ${msg.split('\n').length - 3} reason(s)`)
+      log(`woke ${role} (${a.shortId || a.id}) with ${batch.size} reason(s)`)
     } catch (e) {
-      for (const [id, r] of batch) if (!reasons.has(id)) reasons.set(id, r) // not sent: keep them for the next idle tick
-      log(`send to ${role} failed (reasons kept):`, e.message)
+      for (const [id, r] of batch) if (!pending[role].has(id)) pending[role].set(id, r) // not sent: keep them for the next idle tick
+      const n = (sendFails[role] = (sendFails[role] || 0) + 1)
+      log(`send to ${role} failed (reasons kept):`, `${e.message} (${n} in a row)`)
+      if (n === TRIES) askHuman(items, `wake could not reach the ${role} lead ${TRIES} times in a row (${clip(e.message, 200)}); it keeps trying`)
     }
   }
 }
 
 // Leads on demand (sy-6ym, sy-670, sy-809m). A role whose lead has no agent, or a closed one (after a machine or Paseo
 // restart a lead shows `closed` and is never idle, so tick() never reaches it), is started with bin/lead start when work
-// waits for it: reasons, or items of its own in progress or blocked. bin/lead start, not a Paseo resume: a resumed agent
-// has none of the env bin/lead gives (its board actor, its own Claude folder); it archives the old one (one agent per
-// role), and the new lead's first prompt lists its items in progress and blocked (the handover, sy-8n1). The reasons
-// stay pending, and tick() sends them once the new lead is idle.
+// waits for it: reasons it may be sent now (sendable()), or items of its own in progress or blocked. bin/lead start, not
+// a Paseo resume: a resumed agent has none of the env bin/lead gives (its board actor, its own Claude folder); it
+// archives the old one (one agent per role), and the new lead's first prompt lists its items in progress and blocked
+// (the handover, sy-8n1) and the head of its queue (LEAD_NEXT). The other reasons stay pending, and tick() sends them
+// once the new lead is idle.
 // A lead idle for WAKE_IDLE_CLOSE_MS (default 30 min; 0 = never) with nothing of its own open is closed (archived, as
 // bin/lead stop does, but never mid-turn), and the next request starts it again here. A kept role (roles.json `keep`)
 // is neither closed nor started: when its agent is closed or gone and work waits, the human is asked (needs-you).
+// Retries: a failed start is tried again after WAKE_RESUME_CHECK_MS, then twice that, and so on (at most 16 times);
+// after WAKE_TRIES (3) failures in a row the waiting items get needs-you. The same for a lead wake cannot reach, and for
+// a board change wake makes (bdStep()).
 const RESUME_CHECK = Number(process.env.WAKE_RESUME_CHECK_MS || 60000), RESUME_GAP = Number(process.env.WAKE_RESUME_MS || 600000)
 const IDLE_CLOSE = Number(process.env.WAKE_IDLE_CLOSE_MS ?? 1800000)
+const TRIES = Number(process.env.WAKE_TRIES || 3)
 const startedAt = {} // role -> when wake last started its lead (the rate limit)
-const startFailed = {} // role -> the failure already said on its items (once per run of failures)
+const startFailed = {} // role -> { n, next }: failed starts in a row, and when to try again (backoff)
+const sendFails = {} // role -> failed sends in a row
 const idleFrom = {} // role -> { id, at }: since when wake has seen that agent idle
 let heldSaid = false
 const keptSaid = {} // kept role -> the items already labelled needs-you for it (until its agent is up again)
+const askedHuman = new Set() // items wake labelled needs-you after failed tries (once each, until it works again)
 
 // The project's restore hold (mm restore, until `mm restore --release`): no lead starts. mm doesn't run wake while it
 // holds, so this is the second guard, for a hold set while wake runs.
+const machineConfig = () => { try { return fs.readFileSync(path.join(dirs().mm, 'config.yaml'), 'utf8') } catch { return '' } }
 function held() {
-  try { return /^restore:[ \t]*\n(?:[ \t]+.*\n)*?[ \t]+hold:[ \t]*true\b/m.test(fs.readFileSync(path.join(dirs().mm, 'config.yaml'), 'utf8')) } catch { return false }
+  return /^restore:[ \t]*\n(?:[ \t]+.*\n)*?[ \t]+hold:[ \t]*true\b/m.test(machineConfig())
+}
+// The project's cap: the most items in progress at once over all its roles (the machine's config, `mm config set
+// wake.cap <n>`, the same for every project; WAKE_CAP overrides; none = only the roles' own capacities).
+function projectCap() {
+  if (process.env.WAKE_CAP) return Number(process.env.WAKE_CAP) || 0
+  const m = /^wake:[ \t]*\n(?:[ \t]+.*\n)*?[ \t]+cap:[ \t]*["']?(\d+)/m.exec(machineConfig())
+  return m ? Number(m[1]) : 0
 }
 function editState(fn) {
   const f = path.join(P, '.wake-state.json')
   try { const st = (() => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return {} } })(); fn(st); fs.writeFileSync(f, JSON.stringify(st)) } catch {}
 }
-const leadStart = (role) => new Promise((ok, no) => execFile(path.join(P, 'bin', 'lead'), ['start', role], { cwd: P, timeout: 180000 },
+const readState = () => { try { return JSON.parse(fs.readFileSync(path.join(P, '.wake-state.json'), 'utf8')) } catch { return {} } }
+const leadStart = (role, next) => new Promise((ok, no) => execFile(path.join(P, 'bin', 'lead'), ['start', role],
+  { cwd: P, timeout: 180000, env: { ...process.env, LEAD_NEXT: next.map((i) => `- ${i.id} (P${i.priority ?? '?'}): ${clip(i.title, 100)}`).join('\n') } },
   (e, out, err) => (e ? no(new Error(String(err || e.message).trim().slice(0, 300))) : ok(out))))
 
-/** The one way wake starts a lead (a queue dispatcher can call it too): for `role`, because of `items` (ids) and `why`;
- *  `was` = the closed agent it replaces, if any. Checks the restore hold and the rate limit (once per WAKE_RESUME_MS per
- *  role); counts and logs; a failed start is kept for the board's Leads page and said once on the waiting items.
- *  A kept role (roles.json `keep`) is never started: its waiting items are labelled needs-you instead (once each).
- *  Resolves to { started: true } or { started: false, why: 'kept' | 'held' | 'rate' | 'failed', error? }. */
-async function startLead(role, { was = null, items = [], why = '' } = {}) {
+/** A board change wake makes (bin/bd ... --actor wake), tried up to TRIES times with backoff (WAKE_RETRY_MS, doubling).
+ *  Resolves to { ok: true } or { ok: false, code, error }; exit code 13 (a compare-and-set guard that no longer held:
+ *  someone else changed the item first) is final at once and not a failure. */
+const RETRY = Number(process.env.WAKE_RETRY_MS || 2000)
+async function bdStep(args, what) {
+  for (let n = 1; ; n++) {
+    const r = await new Promise((ok) => execFile(path.join(P, 'bin/bd'), [...args, '--actor', 'wake'], { cwd: path.join(P, 'control'), timeout: 20000 },
+      (err, out, errOut) => ok(err ? { ok: false, code: err.code, error: String(errOut || err.message).trim().slice(0, 300) } : { ok: true })))
+    if (r.ok || r.code === 13) return r
+    if (n >= TRIES) { log(`${what} failed ${n} times:`, r.error); count('mm_wake_step_failed_total', {}); return r }
+    await new Promise((s) => setTimeout(s, RETRY * 2 ** (n - 1)))
+  }
+}
+/** After failed tries: the human is asked on each item (needs-you and one comment), once until it works again. */
+function askHuman(items, why) {
+  for (const id of [...new Set(items)].filter((x) => !askedHuman.has(x)).slice(0, 5)) {
+    askedHuman.add(id)
+    log(`${id}: ${why}; labelling needs-you`)
+    bdRun(['label', 'add', id, 'needs-you'], `label ${id}`)
+    bdRun(['comments', 'add', id, `Error: ${why}. Labelled needs-you; remove the label once it is fixed.`], `comment ${id}`)
+  }
+}
+
+/** The one way wake starts a lead (the reconcile loop calls it): for `role`, because of `items` (ids) and `why`, with
+ *  `next` (the queue items it may pull now, for its first prompt); `was` = the closed agent it replaces, if any. Checks
+ *  the restore hold, the rate limit (once per WAKE_RESUME_MS per role) and the backoff after failures; counts and logs;
+ *  a failed start is kept for the board's Leads page and said once on the waiting items, and after TRIES failures in a
+ *  row they get needs-you. A kept role (roles.json `keep`) is never started: its waiting items get needs-you (once each).
+ *  Resolves to { started: true } or { started: false, why: 'kept' | 'held' | 'rate' | 'backoff' | 'failed', error? }. */
+async function startLead(role, { was = null, items = [], why = '', next = [] } = {}) {
   if (KEEP.has(role)) {
     const said = (keptSaid[role] ||= new Set()), fresh = [...new Set(items)].filter((id) => !said.has(id))
     if (fresh.length) {
@@ -288,23 +387,26 @@ async function startLead(role, { was = null, items = [], why = '' } = {}) {
   }
   heldSaid = false
   if (Date.now() - (startedAt[role] || 0) < RESUME_GAP) return { started: false, why: 'rate' }
+  if (Date.now() < (startFailed[role]?.next || 0)) return { started: false, why: 'backoff' }
   startedAt[role] = Date.now()
   try {
-    await span(was ? 'wake resume' : 'wake start', { role, agent: was?.id || 'none', items: items.join(' '), via: 'bin/lead start' }, () => leadStart(role))
+    await span(was ? 'wake resume' : 'wake start', { role, agent: was?.id || 'none', items: items.join(' '), via: 'bin/lead start' }, () => leadStart(role, next))
     count(was ? 'mm_wake_resumed_total' : 'mm_wake_started_total', { role })
     log(was ? `restarted ${role} (was ${was.shortId || was.id}, closed): ${why}` : `started ${role} (no agent): ${why}`)
+    for (const i of next) if (pending[role].get(i.id)?.kind === 'work') { pending[role].delete(i.id); (handed[role] ||= new Map()).set(i.id, Date.now()) } // in its first prompt
+    for (const id of items) askedHuman.delete(id)
     delete startFailed[role]; delete idleFrom[role]
     editState((st) => { st[role] = { ...(st[role] || {}), started: new Date().toISOString() }; delete st[role].startError; delete st[role].closed })
     return { started: true }
   } catch (e) {
-    delete startedAt[role] // not started: try again at the next check
+    delete startedAt[role] // not started: try again after the backoff
+    const n = (startFailed[role]?.n || 0) + 1, wait = RESUME_CHECK * 2 ** Math.min(n - 1, 4)
+    startFailed[role] = { n, next: Date.now() + wait }
     count('mm_wake_start_failed_total', { role })
-    log(`${was ? 'restart' : 'start'} of ${role} failed (reasons kept):`, e.message)
+    log(`${was ? 'restart' : 'start'} of ${role} failed (reasons kept):`, `${e.message} (try ${n}; the next in ${Math.round(wait / 1000)} s)`)
     editState((st) => { st[role] = { ...(st[role] || {}), startError: { error: e.message, items, at: new Date().toISOString() } } })
-    if (!startFailed[role]) {
-      startFailed[role] = true
-      for (const id of [...new Set(items)].slice(0, 5)) bdRun(['comments', 'add', id, `Error: wake could not start the ${role} lead for this item: ${clip(e.message, 300)}. It tries again every ${Math.round(RESUME_CHECK / 1000)} s; nothing waiting is lost.`], `comment ${id}`)
-    }
+    if (n === 1) for (const id of [...new Set(items)].slice(0, 5)) bdRun(['comments', 'add', id, `Error: wake could not start the ${role} lead for this item: ${clip(e.message, 300)}. It tries again (after ${Math.round(RESUME_CHECK / 1000)} s, then longer each time); nothing waiting is lost.`], `comment ${id}`)
+    if (n === TRIES) askHuman(items, `wake could not start the ${role} lead ${TRIES} times in a row (${clip(e.message, 200)}); it keeps trying`)
     return { started: false, why: 'failed', error: e.message }
   }
 }
@@ -331,27 +433,78 @@ async function closeIdle(role, a, own) {
   } catch (e) { log(`idle close of ${role} failed (left running):`, e.message) }
 }
 
-let checking = false // one check at a time: two overlapping checks would both see "not started yet" and start twice
-async function ensureLeads() {
-  if (checking) return
+// The reconcile loop (plans/slp shape 6): every WAKE_RESUME_CHECK_MS (60 s), and soon after any board event (events only
+// make it faster), wake rebuilds what should happen from the board alone, so a restart or a missed event loses nothing:
+//   - an expired claim (in progress, no update for WAKE_LEASE_MS, 30 min; any comment or change renews it) goes back to
+//     its role's queue: status open, assignee the role, through bd's compare-and-set guard. Not while the role's lead is
+//     in a turn (it may be working on it), nor an item waiting for the human (needs-you). The Supervisor reports it
+//     (stall:). The 3rd expiry of one item labels it needs-you (counted in .wake-state.json `_expiries`).
+//   - each role's queue head(s), as many as it has free capacity (share()), are handed to it (a reason; again after
+//     WAKE_LEASE_MS while still unclaimed); the items after them wait.
+//   - a role with work it may be sent now, or items of its own in progress or blocked, and no running lead: started.
+//   - a lead idle long enough with nothing of its own open: closed (closeIdle()).
+const LEASE = Number(process.env.WAKE_LEASE_MS || 1800000)
+const handed = {} // role -> Map(item id -> when wake handed it as the queue head)
+const atCapSaid = {} // role -> the queue items last said to wait (logged once per change)
+let checking = false, again = false, soonT = null // one pass at a time: two overlapping passes would both start a lead
+const soon = (ms = Number(process.env.WAKE_SOON_MS || 1000)) => { soonT ||= setTimeout(() => { soonT = null; reconcile().catch((e) => log('reconcile:', e.message)) }, ms) }
+async function reconcile() {
+  if (checking) { again = true; return }
   checking = true
-  try { await ensureLeads1() } finally { checking = false }
+  try { do { again = false; await span('wake reconcile', {}, () => reconcile1(), { minMs: 2000 }) } while (again) } finally { checking = false }
 }
-async function ensureLeads1() {
+async function expire(b, running) {
+  const st = readState(), counts = st._expiries || {}
+  let changed = false
+  for (const i of b.all) {
+    const role = leadOf(i.assignee), holder = i.assignee, t = Date.parse(i.updated_at || '')
+    if (i.status !== 'in_progress' || !role || role === 'setup' || !t || Date.now() - t < LEASE || running.has(role) || (i.labels || []).includes('needs-you')) continue
+    const r = await bdStep(['update', i.id, '-s', 'open', '-a', role, '--if-assignee', i.assignee, '--if-status', 'in_progress'], `requeue ${i.id}`)
+    if (r.code === 13) { log(`lease of ${i.id} expired, but it changed first (the guard): left as it is`); continue }
+    if (!r.ok) continue // tried again on the next pass
+    const n = (counts[i.id] = (counts[i.id] || 0) + 1); changed = true
+    i.status = 'open'; i.assignee = role // the rest of this pass sees it requeued
+    count('mm_wake_lease_expired_total', { role })
+    log(`lease of ${i.id} expired (${holder}, no update for ${Math.round((Date.now() - t) / 60000)} min): back in ${role}'s queue (expiry ${n})`)
+    bdRun(['comments', 'add', i.id, `Requeued: in progress with no update for ${Math.round(LEASE / 60000)} min, so wake put it back in the ${role} queue (status open; expiry ${n} of ${TRIES}). Claim it again with bd update ${i.id} --claim.`], `comment ${i.id}`)
+    if (n >= TRIES) askHuman([i.id], `the claim on ${i.id} expired ${n} times`)
+  }
+  if (changed) editState((s) => { s._expiries = { ...(s._expiries || {}), ...counts } })
+}
+async function reconcile1() {
   loadRoles()
-  let open = null
-  const items = async () => (open ||= await bd('/v0/beads/issues?limit=500')).items || []
+  const b = await board(true)
+  const agents = {}
   for (const role of ROLES) {
-    let a
-    try { a = await lead(role) } catch (e) { log('paseo ls failed:', e.message); return }
-    const own = async () => (await items()).filter((i) => i.assignee === role && i.status !== 'closed')
+    try { agents[role] = await lead(role) } catch (e) { log('paseo ls failed:', e.message); return }
+  }
+  await expire(b, new Set(ROLES.filter((r) => agents[r]?.status === 'running')))
+  // forget expiry counts of items that are closed
+  const closed = new Set(b.all.filter((i) => i.status === 'closed').map((i) => i.id))
+  if (Object.keys(readState()._expiries || {}).some((id) => closed.has(id))) editState((s) => { for (const id of Object.keys(s._expiries || {})) if (closed.has(id)) delete s._expiries[id] })
+  for (const role of ROLES) {
+    // the queue: hand the next item(s), as many as its free capacity; the rest wait
+    const { queue, used, cap, free, pcap, total } = share(b, role), h = (handed[role] ||= new Map())
+    for (const id of h.keys()) if (!queue.some((i) => i.id === id)) h.delete(id) // claimed, moved or closed
+    for (const i of queue.slice(0, free)) {
+      if (pending[role].has(i.id) || (h.has(i.id) && Date.now() - h.get(i.id) < LEASE)) continue
+      h.set(i.id, Date.now())
+      note(role, i.id, `${i.id} "${clip(i.title, 80)}" (P${i.priority ?? '?'}) is next in your queue: claim it with bd update ${i.id} --claim, then do it or give it to a worker.`, false, 'work')
+    }
+    const waiting = queue.slice(free).map((i) => i.id).join(' ')
+    const said = waiting ? `${role} has ${used} of ${cap} in progress${pcap ? ` (the project ${total} of its cap ${pcap})` : ''}: waiting in its queue ${waiting}` : ''
+    if (said !== (atCapSaid[role] || '')) { if (said) log(said); atCapSaid[role] = said }
+    // its lead
+    const a = agents[role]
+    const own = async () => b.all.filter((i) => i.assignee === role && i.status !== 'closed')
     if (a && a.status !== 'closed') { delete keptSaid[role]; await closeIdle(role, a, own); continue }
     if (Date.now() - (startedAt[role] || 0) < RESUME_GAP) continue
-    const reasons = pending[role]
+    const now = sendable(role, b)
     const mine = (await own()).filter((i) => i.status === 'in_progress' || i.status === 'blocked')
-    if (!reasons.size && !mine.length) continue
-    await startLead(role, { was: a, items: [...reasons.keys(), ...mine.map((i) => i.id)],
-      why: `${reasons.size} reason(s) wait for it, ${mine.length} item(s) in its handover` })
+    if (!now.size && !mine.length) continue
+    const next = queue.slice(0, free).filter((i) => now.get(i.id)?.kind === 'work')
+    await startLead(role, { was: a, items: [...now.keys(), ...mine.map((i) => i.id)], next,
+      why: `${now.size} reason(s) wait for it, ${mine.length} item(s) in its handover` })
   }
 }
 
@@ -423,7 +576,7 @@ saveSeq()
 log(`wake for ${PROJECT}: watching ${BD.href} from seq ${since} (stall check every ${CHECK_MS / 1000}s, after ${STALL_MS / 1000}s)`)
 setInterval(() => tick().catch((e) => log('tick:', e.message)), EVERY)
 setInterval(() => check().catch((e) => log('stream check failed:', e.message)), CHECK_MS)
-// the first look soon after start (wake itself restarts with the machine), then every RESUME_CHECK
-setTimeout(() => ensureLeads().catch((e) => log('lead check:', e.message)), Math.min(10000, RESUME_CHECK))
-setInterval(() => ensureLeads().catch((e) => log('lead check:', e.message)), RESUME_CHECK)
+// the reconcile loop: a first pass right after start (wake itself restarts with the machine), then every RESUME_CHECK
+soon(0)
+setInterval(() => reconcile().catch((e) => log('reconcile:', e.message)), RESUME_CHECK)
 watch()

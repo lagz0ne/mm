@@ -1,7 +1,8 @@
 #!/bin/sh
 # Leads = Paseo agents, one per role, started in leads/<role>/ so Claude Code loads that role's CLAUDE.md chain,
 # skills and permissions.
-#   bin/lead start <role> [--model provider/model]   start (archives a previous lead of that role first)
+#   bin/lead start <role> [--model provider/model]   start (archives a previous lead of that role first); LEAD_NEXT (from
+#                                                   bin/wake): the queue items it may pull now, added to its first prompt
 #   bin/lead stop <role>                            archive the lead
 #   bin/lead ls                                     list leads
 #   bin/lead tidy                                   archive this project's old Paseo workspaces and empty projects
@@ -64,6 +65,12 @@ case "${1:-}" in
 
 Handover: a previous $role lead had these items open (in progress or blocked). Read each one's latest comments, then carry on with them; don't wait for a board update:
 $items"
+    # the head of its queue, from the dispatcher (bin/wake, within the role's capacity): what to pull first
+    [ -z "${LEAD_NEXT:-}" ] || prompt="$prompt
+
+Next in your queue (wake hands it to you, within your capacity): claim it with \`bd update <id> --claim\`, then do it or give it to a worker:
+$LEAD_NEXT"
+    unset LEAD_NEXT
     # its own Claude folder for this project (no global CLAUDE.md, settings or memory), with its folder trusted
     # (and the project root: Claude Code runs an MCP headersHelper, e.g. the design lead's Doop key, only when the
     # workspace root, the git root, is trusted; plans/doop.md)

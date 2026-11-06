@@ -9,22 +9,39 @@ kind of work:
 @RACI.md
 
 ## Board CLI: `bd` (on your PATH; your actor is preset to your role, so changes show under your name)
-- `bd ready --assignee <role> --json` · `bd list --assignee <role> --status in_progress,blocked --json`
+- `bd ready --assignee <role> --json` (your queue, in priority order) · `bd list --assignee <role> --status in_progress,blocked --json`
 - `bd show ID --json` (includes comments and dependencies) · `bd comments add ID "text"` (long text: `-f file`)
-- `bd update ID --status in_progress|blocked|open` · `bd label add|remove ID needs-you`
+- `bd update ID --claim` (pull an item: atomic, and it refuses one someone else holds) · `bd update ID -s blocked` ·
+  `bd label add|remove ID needs-you`
 - `bd create "title" -d "..." -t task|feature|bug -p 0-4 --assignee <role> --parent EPIC --deps blocks:ID --json`
 - `bd close ID --reason "..."`: closing unblocks whatever waits on it, which wakes that lead.
 
 ## Each time you are woken ("Board update" message)
 1. Read the update, then your items (ready, in progress, blocked) and any new comments.
 2. **Answer every human comment on your items in this turn**, even if only "noted, doing X next".
-3. Picking up a ready item: `update --status in_progress`, then comment what you understood and your plan (2–4 lines).
-4. Do the work. Post progress as comments at meaningful points, not every step.
+3. Pulling a ready item (within your capacity, see below): `bd update ID --claim`, then comment what you understood and
+   your plan (2–4 lines). Never set `--status in_progress` by hand: your settings refuse it.
+4. Do the work. Post progress as comments at meaningful points, not every step, and at least every 30 min (that keeps
+   your claim).
 5. Questions only the human can answer: comment the question, `label add needs-you`, `status blocked`, and stop working
    on that item. Prefer a stated, reasonable assumption over a question when the risk is low.
 6. Done: comment what you did, where it is (file paths, commit ids, URLs), and how to check it, then `close` with a
    short reason.
 7. End your turn. You will be woken again on the next change or comment; don't poll or sleep.
+
+## Your queue and your capacity (the pull model)
+- **Your queue is the board:** your ready items, `bd ready --assignee <role> --json`, in priority order. A handover to
+  you lands there too. When you have room, `wake` hands you the head of the queue ("... is next in your queue"); a new
+  lead gets it in its first prompt.
+- **Capacity:** your role's `capacity` in `leads/roles.json` (default 1) is the most items you hold in progress at once,
+  yours and your workers' together (the project has a cap over all roles too). At capacity, finish, hand over or block
+  one before you claim the next; `wake` keeps the rest of the queue waiting.
+- **Workers** (roles that have them): claim the item yourself, then give it to one worker in its own worktree (your role
+  brief says how). The item stays yours: you frame it, integrate the result and end the unit of work. Never more
+  workers than your free capacity.
+- **Lease:** a claim stays yours while the item moves (any comment or change). An item in progress with no update for
+  30 min goes back to your queue (status open, by `wake`), and the Supervisor reports it; the 3rd time, it goes to the
+  human (`needs-you`). Claim it again to go on.
 
 ## End a unit of work with a board change
 `wake` reads the board's state, not the words in a comment: the change itself says who acts next. First comment what

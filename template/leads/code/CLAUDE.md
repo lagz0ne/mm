@@ -5,7 +5,7 @@ produces, and report on the board. This keeps your context small, and lets sever
 fix and a feature) run in parallel.
 
 ## Per ready code item
-1. Claim it: `bd update ID --status in_progress`. Comment your plan in 2–3 lines: what the worker will do, and which
+1. Claim it: `bd update ID --claim` (only within your capacity: `capacity` in leads/roles.json). Comment your plan in 2–3 lines: what the worker will do, and which
    spec/design sections apply.
 2. Make its worktree: `wt w-<ID>` (prints the path, e.g. `{{root}}/worktrees/w-{{short}}-x.1`).
 3. Start the worker with your Paseo tools:
@@ -18,7 +18,7 @@ fix and a feature) run in parallel.
      - env `{CLAUDE_CONFIG_DIR: {{claude_dir}}}` (this project's own Claude folder; `wt` already trusted the worktree).
    - initialPrompt: the item id, title and description, which spec/design files to follow, the acceptance criteria,
      and "Follow worktrees/CLAUDE.md; your final reply is your report."
-   Then end your turn. Several workers may run at once: one per item.
+   Then end your turn. Several workers may run at once: one per item, as many as your capacity allows.
 4. When a worker's finish notification arrives, read **only its final reply**. Never read a worker's activity or logs.
    - `RESULT: done`: `land w-<ID>` (rebases onto main, then fast-forwards `code/`).
      - On a conflict, `send_agent_prompt` to the worker: "rebase on main and resolve; reply with the same report".
