@@ -5,9 +5,13 @@
 // the host's, outside every project and box: $MM_HOME/person-runs/<project>.json (0600 in a 0700 folder). Never a token.
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { getPath, loadConfig } from './config'
 import { DIRS } from './env'
 
 export const MODEL_HOST = 'api.anthropic.com'
+/** Person runs on for this machine (`mm config set wake.person_runs true`): the host's wake starts its leads per person,
+ *  and a box's wake may ask the host for them (src/boxruns.ts, over the box's mm.api socket). Off as shipped. */
+export const personRunsOn = () => { const v = getPath(loadConfig(), 'wake.person_runs'); return v === true || ['true', 'on', 'yes'].includes(String(v)) }
 /** A run mm started: whose, for which role, its agent (null until Paseo gave its id), and when. */
 export type PersonRun = { person: string; role: string; agent: string | null; at: number }
 const PROJECT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/

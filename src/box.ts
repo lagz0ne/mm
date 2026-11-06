@@ -14,7 +14,7 @@ import { apiSocketDir, boxApi, noteBoxApi } from './apistate'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, HOME, run, which } from './env'
 import { MM_LOG_CONFIG } from './obs'
-import { hasRuns, MODEL_HOST } from './personruns'
+import { hasRuns, MODEL_HOST, personRunsOn } from './personruns'
 import { BOX_READONLY, BOXES, boxHook, dependsOn, gitRefusal, hostGitEnv, leaveHost, loadAll, processes as pcProcesses, PROJECT_LOG_CONFIG, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, serviceRoutes, startSkipped, up as projectUp, writePortlessClaim, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
@@ -332,8 +332,9 @@ export function up(root: string): Step[] {
     finally { d.close() }
   } else rmSync(join(sec, 'ai.key'), { force: true })
   steps.push({ step: 'secrets', status: 'ok', detail: `${declared.length + filled.length} value(s) + the Paseo password${aiKey}, read-only in the box (tmpfs)` })
-  // its project API socket (src/api.ts): mm.api makes it in this folder; only this box mounts it, read-only
-  const apiDir = apiSocketDir(a.project), apiOn = api.on
+  // its project API socket (src/api.ts): mm.api makes it in this folder; only this box mounts it, read-only. Person runs
+  // need it too (the box's wake asks for them there, src/boxruns.ts)
+  const apiDir = apiSocketDir(a.project), apiOn = api.on || personRunsOn()
   if (apiOn) { mkdirSync(apiDir, { recursive: true, mode: 0o750 }); chmodSync(apiDir, 0o750) }
   const paseoHome = join(DIRS.mm, 'paseo', a.project), claude = join(DIRS.mm, 'claude', a.project)
   // what the box writes: group-writable (setgid folders keep the group), so the box's uid and the host's owner share it
@@ -564,11 +565,12 @@ export function status(root: string) {
   return { box: n.box, running: running(n.box), proxy: running(n.proxy), ip, image: docker('inspect', '-f', '{{.Config.Image}}', n.box).out.trim(),
     paseo: ip ? `tcp://${ip}:${PASEO_PORT}` : '', password_file: paseoPasswordFile(readAnswers(root).project) }
 }
-/** A command in the box, as the box user (mm shell). */
-export function execArgs(root: string, cmd: string[], tty = !!process.stdin.isTTY) {
+/** A command in the box, as the box user (mm shell). `env`: more of the command's environment (never a secret: it is on
+ *  docker's command line). */
+export function execArgs(root: string, cmd: string[], tty = !!process.stdin.isTTY, env: Record<string, string> = {}) {
   // umask 002, as for the box's services: what a shell writes stays reachable by the host's owner (the group); and the
   // services' environment (their PATH, names, Paseo, proxy), so a shell sees the box as its services do
-  return [...dockerCmd(), 'exec', ...(tty ? ['-it'] : ['-i']), '-w', root, ...Object.entries(boxEnv(root)).flatMap(([k, v]) => ['-e', `${k}=${v}`]), names(readAnswers(root).project).box,
+  return [...dockerCmd(), 'exec', ...(tty ? ['-it'] : ['-i']), '-w', root, ...Object.entries({ ...env, ...boxEnv(root) }).flatMap(([k, v]) => ['-e', `${k}=${v}`]), names(readAnswers(root).project).box,
     'sh', '-c', 'umask 002 && exec "$@"', 'sh', ...(cmd.length ? cmd : ['bash'])]
 }
 export const HOME_DIR = HOME

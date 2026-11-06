@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { apiConfigured } from './apistate'
+import { personRunsOn } from './personruns'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, hasSystemdUser, portlessDir, run, servicePath, toolEnv, which } from './env'
 import { MM_LOG_CONFIG, obsProcesses } from './obs'
@@ -37,8 +38,9 @@ export function writeBase() {
   if (ai === true || ai === 'true') processes['mm.ai'] = { namespace: 'mm', command: `${mm} ai serve`, environment: [`PATH=${servicePath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
     log_location: join(DIRS.pc, 'ai.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 } }
   // the project API for every box (src/api.ts, sy-b15.8): one socket per box, the owner's approve socket, no TCP port.
-  // Off until the machine turns it on (`mm config set api.enabled true`; t2: it changes the approval path).
-  if (apiConfigured()) processes['mm.api'] = { namespace: 'mm', command: `${mm} api serve`, environment: [`PATH=${servicePath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
+  // Off until the machine turns it on (`mm config set api.enabled true`; t2: it changes the approval path). Person runs
+  // (wake.person_runs) need it too: a box asks for one there (src/boxruns.ts, sy-9618); the four calls stay off then.
+  if (apiConfigured() || personRunsOn()) processes['mm.api'] = { namespace: 'mm', command: `${mm} api serve`, environment: [`PATH=${servicePath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
     log_location: join(DIRS.pc, 'api.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
     readiness_probe: { exec: { command: `test -S ${join(DIRS.mm, 'api', 'approve.sock')}` }, period_seconds: 3, failure_threshold: 20 } } // never a test's MM_API_DIR
   Object.assign(processes, obsProcesses())

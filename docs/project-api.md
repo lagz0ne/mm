@@ -104,8 +104,15 @@ On a `callback_query` whose `data` starts with `mmapi:`, the bridge does exactly
 The bridge no longer builds an Allow from the board item: the item has no code. It may still show the item; for an
 egress item it shows "review signed off" only with a link to review's sign-off comment.
 
+## Person runs (not a request)
+`/person-run` on the same socket asks for a lead's run for one person of the box's project, on that person's own
+token. No item and no owner tap: the host decides by rules (the grants, the token; docs/auth-gateway.md, "A box's wake
+asks the host"). It is on only while `wake.person_runs` is; mm.api also runs for it alone, and the four calls are
+then refused (`api-off`), as with no mm.api.
+
 ## Limits and logs
-- 10 calls an hour for each box (refused ones count), at most 5 open requests; then calls are refused.
+- 10 calls an hour for each box (refused ones count), at most 5 open requests; then calls are refused. Person runs
+  have their own: 20 asks an hour per box, one start at a time.
 - Every call is logged (`pc/api.log`, shipped like every mm service log) with the project from the socket (`box`); a
   value that fails its format is logged by its length only.
 

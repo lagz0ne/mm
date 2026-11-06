@@ -10,6 +10,9 @@
 //     POST /release {"build": "<folder>"}    the build in release/<build>/ on the box's app slot
 //     POST /secret  {"name": "<a-z0-9->"}   a NEW secret <project>.<name> in the vault; never a value
 //   The box gets back only a status (pending, done, refused) and the request's and its item's ids.
+//   And one more, decided by rules, not by the owner: /person-run (src/boxruns.ts, sy-9618), a lead's run for one person
+//   of the box's project on their own token, while wake.person_runs is on (mm.api runs for it alone too; then the four
+//   calls are refused).
 //   Each new request files an item on the system board, the box's value shown as data in a frame mm writes.
 //
 //   The decision: only through the owner's approve socket, $MM_HOME/api/approve.sock (0600 in a 0700 folder; the
@@ -28,7 +31,8 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypt
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Server } from 'bun'
-import { API_DIR, APPROVE_SOCK, apiSocket, apiSocketDir, type Call, CALLS, FIELD, formatOk, granted, grantedProjects, PROJECT_ID, saveGranted } from './apistate'
+import { API_DIR, APPROVE_SOCK, apiEnabled, apiSocket, apiSocketDir, type Call, CALLS, FIELD, formatOk, granted, grantedProjects, PROJECT_ID, saveGranted } from './apistate'
+import * as boxRuns from './boxruns'
 import { gatewayHost, hostClaims } from './auth'
 import { boxRoute } from './names'
 import { appReload, egressList, egressReload } from './box'
@@ -292,10 +296,14 @@ export async function serve() {
     return true
   }
 
-  async function boxCall(req: Request, project: string): Promise<Response> {
+  async function boxCall(req: Request, project: string, server?: Server<undefined>): Promise<Response> {
     const call = new URL(req.url).pathname.replace(/^\/+/, '')
     const hour = now() - 3600e3
+    // a run for one person of the box's project, on their own token (sy-9618, src/boxruns.ts): its own rules and limits
+    if (call === boxRuns.CALL) return boxRuns.handle(req, project, boxRoot(project), server, log)
     const known = (CALLS as readonly string[]).includes(call)
+    // mm.api also runs for person runs alone (wake.person_runs): then the four calls are off, as with no mm.api
+    if (known && !apiEnabled()) { log('warn', 'call refused: the project API is off', { box: project, call }); return answer('refused', 403, { why: 'api-off' }) }
     if (req.method !== 'POST' || !known) {
       record(project, 'unknown', 'refused'); log('warn', 'call refused: not one of the four', { box: project, method: req.method, call: call.slice(0, 40) })
       return answer('refused', 404, { why: 'unknown-call' })
@@ -453,7 +461,7 @@ export async function serve() {
       if (servers.has(p)) continue
       const sock = apiSocket(p), sd = apiSocketDir(p); mkdirSync(sd, { recursive: true, mode: 0o750 }); chmodSync(sd, 0o750); rmSync(sock, { force: true })
       try {
-        servers.set(p, Bun.serve({ unix: sock, maxRequestBodySize: 4096, fetch: (req) => boxCall(req, p) }))
+        servers.set(p, Bun.serve({ unix: sock, maxRequestBodySize: 16384, fetch: (req, srv) => boxCall(req, p, srv) }))
         chmodSync(sock, 0o660) // the box's user has the owner's group (src/box.ts); only this box mounts the folder
         log('info', 'socket open', { box: p })
       } catch (e) { log('error', 'socket failed', { box: p, error: (e as Error).message }) }
