@@ -3,6 +3,8 @@
 # test recovery key standing in for the human's offline one. Needs age + age-keygen installed.
 #   test/vault.sh [mm command]       default: bun <repo>/src/cli.ts
 set -uo pipefail
+# the test plays the owner in a throwaway HOME: vault init and run refuse in an agent's shell (sy-uvgq), so not one here
+unset CLAUDECODE PASEO_AGENT_ID
 SRC=$(cd "$(dirname "$0")/.." && pwd); MMC=${1:-"bun $SRC/src/cli.ts"}
 command -v age >/dev/null && command -v age-keygen >/dev/null || { echo "age is not installed"; exit 2; }
 pass=0; fail=0
