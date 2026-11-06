@@ -2,6 +2,7 @@
 // Projects are added as namespaces later (`mm new` / `mm up`); it starts empty and stays up (--keep-project).
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { apiConfigured } from './apistate'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, hasSystemdUser, run, servicePath, toolPath, which } from './env'
 import { obsProcesses } from './obs'
@@ -35,6 +36,11 @@ export function writeBase() {
   const ai = getPath(loadConfig(), 'ai.enabled')
   if (ai === true || ai === 'true') processes['mm.ai'] = { namespace: 'mm', command: `${mm} ai serve`, environment: [`PATH=${servicePath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
     log_location: join(DIRS.pc, 'ai.log'), availability: { restart: 'always', backoff_seconds: 3 } }
+  // the project API for every box (src/api.ts, sy-b15.8): one socket per box, the owner's approve socket, no TCP port.
+  // Off until the machine turns it on (`mm config set api.enabled true`; t2: it changes the approval path).
+  if (apiConfigured()) processes['mm.api'] = { namespace: 'mm', command: `${mm} api serve`, environment: [`PATH=${servicePath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
+    log_location: join(DIRS.pc, 'api.log'), availability: { restart: 'always', backoff_seconds: 3 },
+    readiness_probe: { exec: { command: `test -S ${join(DIRS.mm, 'api', 'approve.sock')}` }, period_seconds: 3, failure_threshold: 20 } } // never a test's MM_API_DIR
   Object.assign(processes, obsProcesses())
   writeFileSync(BASE, `# mm: the machine process manager. Projects join as namespaces (~/.mm/pc/projects/*.yaml).\nversion: "0.5"\n${Bun.YAML.stringify({ processes }, null, 2)}\n`)
 }
