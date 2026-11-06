@@ -124,8 +124,9 @@ check "settings that lost one of these denies: config-check says so" bash -c "cd
 render "$A" >/dev/null
 
 echo "== bin/doop-run runs Doop's image by digest only (review sy-7452 1)"
-# docker: a stub that records what it is asked, and starts nothing
-printf '#!/bin/sh\necho "$*" >>"%s/docker.log"\n' "$T" >"$T/docker"; chmod +x "$T/docker"
+# docker: a stub that records what it is asked, and starts nothing (it names a Doop network and an image command, so
+# doop-run gets as far as its run)
+printf '#!/bin/sh\necho "$*" >>"%s/docker.log"\ncase "$1 $2" in "network inspect") echo 10.232.50.0/24 ;; "image inspect") echo "docker-entrypoint.sh node server.js" ;; esac\n' "$T" >"$T/docker"; chmod +x "$T/docker"
 DIG=sha256:$(printf '%064d' 0 | tr 0 a)
 doop() { jq --arg i "$1" --arg d "$T/docker" '.containers = {docker: $d, doop_image: $i}' "$A/.run/endpoints.json" >"$T/ep" && cp "$T/ep" "$A/.run/endpoints.json"
   rm -f "$T/docker.log"; PORT=1 DOOP_URL=http://doop.invalid timeout 20 "$A/bin/doop-run" >"$T/doop.out" 2>&1; }
@@ -135,7 +136,7 @@ $DIG"; do
   check "a tag or anything not a digest ('$img'): refused, it says why, and docker is never run" bash -c "! doop '$img' && grep -q 'not a digest' '$T/doop.out' && grep -q 'docker tag' '$T/doop.out' && ! test -e '$T/docker.log'"
 done
 for img in "$DIG" "mm-doop@$DIG" "registry.local:5000/mm/doop:0.12.0@$DIG"; do
-  check "a digest ('${img:0:40}...'): docker runs exactly that image" bash -c "doop '$img'; grep -q -- ' $img\$' '$T/docker.log'"
+  check "a digest ('${img:0:40}...'): docker runs exactly that image" bash -c "doop '$img'; grep -q -- '^run .* $img -c ' '$T/docker.log'"
 done
 
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]

@@ -28,6 +28,7 @@ export DOLT_ROOT_PATH="$P/.dolt-root" XDG_CONFIG_HOME="$P/.config" DOLT_CLI_PASS
 git -C "$P" bundle create -q "$D/config.bundle" --all
 [ -f "$P/.releases" ] && cp "$P/.releases" "$D/releases"
 # the project's Doop (plans/doop.md): its canvases and assets. Its secrets stay out (they are re-made at the next start).
-[ ! -d "$P/data/doop" ] || tar -czf "$D/doop.tar.gz" -C "$P/data" doop
+# (bin/doop-run backup: Doop runs as its own uid, and its database files are 0600, so while it runs its own tar reads them)
+[ ! -d "$P/data/doop" ] || "$P/bin/doop-run" backup "$D/doop.tar.gz"
 ls -1d "$ROOT"/20*/ 2>/dev/null | head -n -14 | xargs -r rm -rf
 echo "backup $D: $(du -sh "$D" | cut -f1), $(wc -l < "$D/board.jsonl") items"
