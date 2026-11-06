@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # The rendered denies of every role, hermetic: a throwaway HOME / MM_HOME and projects laid out as mm new lays them out
 # (the template rendered, the run files written), nothing started. Proves: the machine's secret paths come from mm's own
-# folder, never from a run file the project (or a box) can write, with the fixed list as the floor (review sy-v92 2).
+# folder, never from a run file the project (or a box) can write, with the fixed list as the floor (review sy-v92 2);
+# the design lead, a worker and another project's lead can't run the Doop headers helper or read a project's Doop
+# secrets in any spelling (cat, cp to /tmp, Read; review sy-7452 2); bin/doop-run takes an image by digest only (sy-7452 1).
 #   test/denies.sh
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -50,5 +52,77 @@ mv "$SP" "$T/sp.gone"
 check "no list at all (mm not run yet): the fixed list still renders" bash -c "render '$A' && has '$A' 'Read(/$HOME/.mm/brain/.keys/**)' && has '$A' 'Read(/$HOME/brain/.keys/**)' && has '$A' 'Read(/$HOME/.config/secrets/**)' && has '$A' 'Read(/$HOME/.paseo/**)' && has '$A' 'Read(/$HOME/.claude/.credentials.json)' && ! has '$A' 'Read(/$HOME/.vault-x/key)'"
 check "...the vault and the opened-secrets tmpfs among them, in mm's real folder, whatever the run file says (sy-uvgq)" bash -c "has '$A' 'Read(/$MM_HOME/vault/**)' && has '$A' 'Edit(/$MM_HOME/vault/**)' && has '$A' \"Read(//run/user/\$(id -u)/mm/secrets/**)\" && has '$A' 'Bash(*vault/key*)'"
 mv "$T/sp.gone" "$SP"
+
+# Claude Code's deny rules, as a real session applies them (sy-v92 3 checked it in one): a Bash rule is text, `*` any
+# run of characters, matched against the whole command and each part of a compound one; a Read/Edit rule is a path
+# glob on the resolved path (`**` any depth, `*` one name). Exit 0: the call is denied.
+cat >"$T/denied.mjs" <<'EOF'
+import fs from 'node:fs'; import path from 'node:path'
+const [settings, cwd, tool, arg] = process.argv.slice(2)
+const deny = JSON.parse(fs.readFileSync(settings, 'utf8')).permissions.deny
+const re = (g, any) => new RegExp('^' + g.split(/(\*\*|\*)/).map((x) => x === '**' ? '.*' : x === '*' ? any : x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('') + '$', 's')
+let hit
+if (tool === 'Bash') {
+  const parts = [arg, ...arg.split(/&&|\|\||;|\||\n/).map((x) => x.trim()).filter(Boolean)]
+  hit = deny.filter((r) => r.startsWith('Bash(')).map((r) => r.slice(5, -1)).find((p) => parts.some((c) => p.endsWith(':*') ? c.startsWith(p.slice(0, -2)) : re(p, '.*').test(c)))
+} else {
+  const f = path.resolve(cwd, arg)
+  hit = deny.filter((r) => r.startsWith(`${tool}(//`)).map((r) => r.slice(tool.length + 2, -1)).find((g) => re(g, '[^/]*').test(f) || (g.endsWith('/**') && re(g.slice(0, -3), '[^/]*').test(f)))
+}
+if (hit) { console.log(`denied by ${hit}`); process.exit(0) }
+console.log('NOT denied'); process.exit(1)
+EOF
+# denied <project> <role> <cwd> <tool> <command or path>
+denied() { local s="$1/leads/$2/.claude/settings.json"; node "$T/denied.mjs" "$s" "$3" "$4" "$5"; }
+export -f denied; export T
+
+echo "== the Doop agent key stays with its helper: the design lead, and a lead of another project (review sy-7452 2)"
+B="$MM_HOME/projects/acme/other"; AR=${A#$HOME/}
+check "a second project renders" bash -c "bun '$T/stamp.ts' '$B' acme other && render '$B' && render '$A'"
+mkdir -p "$A/worktrees/w1"
+D="$A/leads/design"; Q="$B/leads/qa"; W="$A/worktrees/w1"
+n=0; miss=()
+try() { n=$((n+1)); denied "$@" >"$T/d.out" 2>&1 || miss+=("$2 in ${3#$MM_HOME/projects/}: $4 $5"); }
+for who in "$A design $D" "$A code $W" "$B qa $Q"; do
+  set -- $who; P=$1 role=$2 cwd=$3
+  # the headers helper, however it is called
+  for c in "$A/bin/doop-mcp-headers" "sh $A/bin/doop-mcp-headers" "~/$AR/bin/doop-mcp-headers" "cd $A/bin && ./doop-mcp-headers"; do try "$P" $role "$cwd" Bash "$c"; done
+  # each of Doop's secret files, and the folder: cat, cp to /tmp, the Read tool; absolute, ~ and $HOME
+  for f in doop-agent-key doop-password doop-auth-secret doop.env doop-signup-domain '*'; do
+    for p in "$A/secrets/$f" "~/$AR/secrets/$f" "\$HOME/$AR/secrets/$f"; do
+      try "$P" $role "$cwd" Bash "cat $p"; try "$P" $role "$cwd" Bash "cp $p /tmp/k"
+    done
+    [ "$f" = '*' ] || try "$P" $role "$cwd" Read "$A/secrets/$f"
+  done
+  for c in "cp -r $A/secrets /tmp/s" "cp -r ~/$AR/secrets /tmp/s" "tar czf /tmp/s.tgz $A/secrets"; do try "$P" $role "$cwd" Bash "$c"; done
+done
+# ...and relative to where the project's own leads and workers are (their folder, a worktree, the project root)
+for who in "design $D" "code $W"; do
+  set -- $who; role=$1 cwd=$2
+  for f in doop-agent-key doop-password doop.env '*'; do
+    for p in "../../secrets/$f" "./../../secrets/$f"; do try "$A" $role "$cwd" Bash "cat $p"; try "$A" $role "$cwd" Bash "cp $p /tmp/k"; done
+    [ "$f" = '*' ] || try "$A" $role "$cwd" Read "../../secrets/$f"
+    try "$A" $role "$cwd" Bash "cd ../.. && cat secrets/$f"; try "$A" $role "$cwd" Bash "cd $A && cp secrets/$f /tmp/k"
+  done
+  for c in "../../bin/doop-mcp-headers" "cp -r ../../secrets /tmp/s" "cd ../.. && cp -r ./secrets /tmp/s"; do try "$A" $role "$cwd" Bash "$c"; done
+done
+check "each of $n spellings is denied by the rendered denies (cat, cp to /tmp, Read, the helper)" test ${#miss[@]} = 0
+[ ${#miss[@]} = 0 ] || { echo "       ${#miss[@]} not denied:"; printf '       %s\n' "${miss[@]}"; }
+check "...while the project's own files stay readable (the denies name secrets/, not the project)" bash -c "! denied '$A' design '$D' Bash 'cat ../../services.yaml' && ! denied '$A' design '$D' Read '$A/leads/design/CLAUDE.md' && ! denied '$A' code '$W' Bash 'cat src/config/secrets.ts'"
+
+echo "== bin/doop-run runs Doop's image by digest only (review sy-7452 1)"
+# docker: a stub that records what it is asked, and starts nothing
+printf '#!/bin/sh\necho "$*" >>"%s/docker.log"\n' "$T" >"$T/docker"; chmod +x "$T/docker"
+DIG=sha256:$(printf '%064d' 0 | tr 0 a)
+doop() { jq --arg i "$1" --arg d "$T/docker" '.containers = {docker: $d, doop_image: $i}' "$A/.run/endpoints.json" >"$T/ep" && cp "$T/ep" "$A/.run/endpoints.json"
+  rm -f "$T/docker.log"; PORT=1 DOOP_URL=http://doop.invalid timeout 20 "$A/bin/doop-run" >"$T/doop.out" 2>&1; }
+export -f doop; export A DIG
+for img in mm-doop:0.12.0 mm-doop sha256:abc "${DIG^^}" "mm-doop:0.12.0 @$DIG" "$DIG;x" "mm-doop:0.12.0
+$DIG"; do
+  check "a tag or anything not a digest ('$img'): refused, it says why, and docker is never run" bash -c "! doop '$img' && grep -q 'not a digest' '$T/doop.out' && grep -q 'docker tag' '$T/doop.out' && ! test -e '$T/docker.log'"
+done
+for img in "$DIG" "mm-doop@$DIG" "registry.local:5000/mm/doop:0.12.0@$DIG"; do
+  check "a digest ('${img:0:40}...'): docker runs exactly that image" bash -c "doop '$img'; grep -q -- ' $img\$' '$T/docker.log'"
+done
 
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]

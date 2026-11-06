@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A project's own Doop (plans/doop.md, sy-d2t), on this machine: a throwaway project, `mm doop on`, and the design
-# lead's MCP the way bin/lead starts it. Needs the pinned Doop image (MM_DOOP_IMAGE or `mm config set doop.image`) and
+# lead's MCP the way bin/lead starts it. Needs the Doop image pinned by digest, sha256:<64 hex> (MM_DOOP_IMAGE or doop.image in the config; sy-7452) and
 # docker (MM_DOCKER or box.docker). Nothing outside the throwaway project, its container and its Claude folder changes.
 #   MM_DOCKER="sudo -n docker" MM_DOOP_IMAGE=<image> test/doop.sh [client/name]
 set -uo pipefail
