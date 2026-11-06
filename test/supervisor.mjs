@@ -284,6 +284,8 @@ item('sy-19', { title: 't2, only a tier-1 migration names it', priority: 2, assi
 migration('1800000004-podman', 'install podman (for sy-19)', true, 1)
 item('sy-20', { title: 't2, its migration has no tier line', priority: 2, assignee: 'ops', labels: ['t2'] })
 migration('1800000005-fw', 'open a port (sy-20)', true, 0)
+// sy-0cvx: in progress alone is not live; a commit naming them on mm's main is (sy-11, sy-12, sy-18)
+git(MMR, ['commit', '-q', '--allow-empty', '-m', 'landed t2 work', '-m', 'sy-11 sy-12 sy-18'])
 // sy-1jmi: a supervisor.json an agent wrote, naming a lead as an approver and ignoring the t2 keys, changes nothing
 const CONFIG = path.join(SYS, 'supervisor.json')
 fs.writeFileSync(CONFIG, JSON.stringify({ approvers: ['platform'], ignore: ['^t2-unapproved:'] }))
@@ -366,18 +368,73 @@ clock = T0 + 126 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('rollback clears sy-27, the owner\'s approved clears sy-26', openKeys() === DIRTY && /Cleared/.test(items.get(G.id).comments.at(-1).text))
 
-step('run 9h: a summary from an older Supervisor is read again from the start (sy-m5qr)')
-item('sy-30', { title: 't2, approved by the bridge before an upgrade', priority: 2, assignee: 'ops', labels: ['t2'] })
-update('sy-30', { labels: ['t2', 'approved'] }, 'bridge')
-clock = T0 + 131 * MIN
+step('run 9h (+136 min): branch work is not live; a commit on a live main is; mm\'s records before it went in progress are not (sy-0cvx)')
+// mm's own line per command (<mm>/pc/mm.log, as cli.ts writes it), and a service line inside process-compose's (api.log)
+const PCD = path.join(HOME, '.mm', 'pc'); fs.mkdirSync(PCD, { recursive: true })
+const mmLine = (op, args, t, extra = {}) => fs.appendFileSync(path.join(PCD, 'mm.log'), JSON.stringify({ time: iso(t), level: 'info', msg: `${op} ok`, project: 'mm', service: 'mm', op, duration_ms: 5, trace_id: 'x', args, exit_code: 0, ok: true, ...extra }) + '\n')
+const svcLine = (file, proc, rec, t) => fs.appendFileSync(path.join(PCD, file), JSON.stringify({ level: 'info', process: proc, replica: 0, time: iso(t), message: JSON.stringify({ time: iso(t), level: 'info', project: 'mm', ...rec }) }) + '\n')
+const BRAIN_REPO = ENV.MM_BRAIN; repo(BRAIN_REPO) // the brain as a git repo: its main is live too
+clock = T0 + 130 * MIN
+mmLine('mm config set', 'ai.budget 5', clock) // a t2 key, but before sy-30 went in progress
+clock = T0 + 136 * MIN
+item('sy-30', { title: 't2, built on a branch only', priority: 2, assignee: 'platform', labels: ['t2'] }); update('sy-30', { status: 'in_progress' }, 'platform')
+item('sy-31', { title: 't2, a commit naming it on the brain\'s main', priority: 2, assignee: 'ops', labels: ['t2'] }); update('sy-31', { status: 'in_progress' }, 'ops')
+git(WT, ['commit', '-q', '--allow-empty', '-m', 'build it', '-m', 'sy-30']) // on branch feat, in a worktree
+git(BRAIN_REPO, ['commit', '-q', '--allow-empty', '-m', 'promote', '-m', 'sy-31'])
+mmLine('mm config set', 'wake.cap 9', clock) // not a t2 key
+mmLine('mm config set', 'api.enabled 1', clock, { ok: false, level: 'error', exit_code: 1 }) // failed: nothing changed
+mmLine('mm box on', 'tp', clock, { mm_throwaway: 'tp' }) // a throwaway project's
+ok('exit 0', (await supervise()) === 0)
+ok('open: sy-31 only (commit on the brain\'s main); not sy-30 (branch commit; earlier, failed, throwaway or non-t2 records of mm)', openKeys() === `${DIRTY} ${T2('sy-31')}`)
+ok('sy-31\'s finding names the commit and the main it is on', /on ~?\S*brain's main/.test(openOf(T2('sy-31'))?.description || '') && /has a commit on main/.test(openOf(T2('sy-31'))?.title || ''))
+item('sy-32', { title: 't2, a commit naming it on mm\'s main', priority: 2, assignee: 'platform', labels: ['t2'] }); update('sy-32', { status: 'in_progress' }, 'platform')
+git(MMR, ['commit', '-q', '--allow-empty', '-m', 'land', '-m', 'sy-32'])
+clock = T0 + 141 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('a commit naming it on mm\'s main opens one (sy-32)', openKeys() === `${DIRTY} ${T2('sy-31')} ${T2('sy-32')}` && openOf(T2('sy-32'))?.priority === 1)
+update('sy-31', { labels: ['t2', 'approved'] }, 'bridge'); update('sy-32', { labels: ['t2', 'approved'] }, 'bridge')
+
+step('run 9i (+377..441 min): unapproved t2 items in progress over 4 h with nothing live: one P3 list, refreshed')
+clock = T0 + 200 * MIN
+item('sy-33', { title: 't2, also on a branch', priority: 2, assignee: 'ops', labels: ['t2'] }); update('sy-33', { status: 'in_progress' }, 'ops')
+ok('exit 0', (await supervise()) === 0)
+ok('under 4 h: no list, no P1', openKeys() === DIRTY)
+clock = T0 + 377 * MIN
+ok('exit 0', (await supervise()) === 0)
+const W = openOf('t2-waiting')
+ok('sy-30 (over 4 h) is on one P3 item; sy-33 (under 4 h) is not; no P1', openKeys() === `${DIRTY} t2-waiting` && W?.priority === 3 && /sy-30/.test(W.description) && !/sy-33/.test(W.description))
+clock = T0 + 441 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('both now: the same item, one comment naming both', openOf('t2-waiting')?.id === W.id && byKey('t2-waiting').length === 1 && W.comments.length === 1 && /sy-30/.test(W.comments[0].text) && /sy-33/.test(W.comments[0].text))
+
+step('run 9j (+446..451 min): a live step mm recorded while they are in progress opens a P1 (sy-0cvx c)')
+clock = T0 + 445 * MIN
+mmLine('mm config set', 'api.enabled s3cr3tvalue', clock)
+svcLine('api.log', 'mm.api', { msg: 'request applied', service: 'api', box: 'p9', call: 'route', value: 'p9.example', id: 'r1', by: 'bridge' }, clock)
+svcLine('api.log', 'mm.api', { msg: 'request applied', service: 'api', box: 'p9', call: 'route', value: 'p9.example', id: 'r2', by: 'cli' }, clock) // its mm.log line counts instead
+clock = T0 + 446 * MIN
+ok('exit 0', (await supervise()) === 0)
+const L = openOf(T2('sy-30'))
+ok('sy-30 and sy-33 get a P1; the list clears', openKeys() === `${DIRTY} ${T2('sy-30')} ${T2('sy-33')}` && L?.priority === 1 && byKey('t2-waiting').every((i) => i.status === 'closed'))
+ok('it names the action and its time, never the value', /mm config set api\.enabled" at /.test(L?.description || '') && L.description.includes(iso(T0 + 445 * MIN).replace(/\.\d+Z$/, 'Z')) && !L.description.includes('s3cr3t'))
+ok('and the bridge\'s applied request from mm.api\'s log, not the CLI\'s twice', /mm\.api applied route for p9 \(r1, by bridge\)/.test(L?.description || '') && !/r2/.test(L.description))
+for (const id of ['sy-30', 'sy-33']) update(id, { labels: ['t2', 'approved'] }, 'bridge')
+clock = T0 + 451 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('approved by the bridge: cleared', openKeys() === DIRTY)
+
+step('run 9k (+456..461 min): a summary from an older Supervisor is read again from the start (sy-m5qr)')
+item('sy-40', { title: 't2, approved by the bridge before an upgrade', priority: 2, assignee: 'ops', labels: ['t2'] })
+update('sy-40', { labels: ['t2', 'approved'] }, 'bridge')
+clock = T0 + 456 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('the state carries its version', JSON.parse(fs.readFileSync(STATE, 'utf8')).v === 2)
-// as an older Supervisor left it: no version, its position at the head, and no summary of sy-30's approval
-{ const s = JSON.parse(fs.readFileSync(STATE, 'utf8')); delete s.v; delete s.items['sy-30']; fs.writeFileSync(STATE, JSON.stringify(s)) }
-migration('1800000014-fw', 'open a port (sy-30)', true)
-clock = T0 + 136 * MIN
+// as an older Supervisor left it: no version, its position at the head, and no summary of sy-40's approval
+{ const s = JSON.parse(fs.readFileSync(STATE, 'utf8')); delete s.v; delete s.items['sy-40']; fs.writeFileSync(STATE, JSON.stringify(s)) }
+migration('1800000024-fw', 'open a port (sy-40)', true)
+clock = T0 + 461 * MIN
 ok('exit 0', (await supervise()) === 0)
-ok('the bridge\'s approval from before the upgrade still counts: no finding for sy-30', !openOf(T2('sy-30')) && openKeys() === DIRTY)
+ok('the bridge\'s approval from before the upgrade still counts: no finding for sy-40', !openOf(T2('sy-40')) && openKeys() === DIRTY)
 
 step('run 10: the board is down: exit non-zero, nothing written')
 fs.writeFileSync(path.join(T, 'bd.fail'), '')

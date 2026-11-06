@@ -7,13 +7,18 @@
 //     handoff:<item>     an item reassigned to a role (`bd update -a <role>`) with no act from that role after 10 min P1
 //     idle:<role>        a lead not working (idle, closed, gone) for 10 min while ready P0 work waits for it   P1
 //     dirty:<worktree>   uncommitted files, none touched for 30 min (git worktrees of the mm repo and of each project) P2
-//     t2-unapproved:<item> an item labelled t2 in progress, or one (labelled or not) an applied tier-2 brain migration
-//                        names in its summary (since this check first ran, when the item is closed), with no
-//                        `approved` from an approver: read from the event journal with its actor, never from the label
-//                        alone. The tier is the one bin/brain applied (its state mark), else the header, read as 2
+//     t2-unapproved:<item> a live step for a t2 item with no `approved` from an approver (read from the event journal
+//                        with its actor, never from the label alone): an applied tier-2 brain migration names it in its
+//                        summary (labelled or not; since this check first ran, when the item is closed), or, while it
+//                        is labelled t2 and in progress, a commit naming it is on mm's or the brain's main, or mm
+//                        recorded a live step since it went in progress (mm.log: config set/unset of api.*, ai.*,
+//                        wake.person_runs, names, box.docker; grant; box on|off; api approve; mm.api's applied
+//                        requests, mm.auth's grants). Branch or worktree work alone is not live (sy-0cvx).
+//                        The tier is the one bin/brain applied (its state mark), else the header, read as 2
 //                        when the migration writes under /etc/ or /usr/local/. It says who took `t2` off such an item.
 //                        Clears when an approver sets approved, or no applied migration names it and it is not in
-//                        progress (with the label). Never muted: closed by hand, it opens again       P1
+//                        progress with a live signal. Never muted: closed by hand, it opens again      P1
+//     t2-waiting         one list: unapproved t2 items in progress for over 4 h with no live step yet          P3
 //     overcap:<role>     a role with workers holds more places than its capacity (each live worker one, each item in
 //                        progress no worker works on one; +1 while it holds a P0), or, while any role has workers, the
 //                        board more than its cap (overcap:board)                                                    P2
@@ -130,6 +135,7 @@ const journal = once(async () => {
       const s = (state.items[e.issue_id] ||= { act: 0, ho: {}, re: {} }), was = { as: s.as, st: s.st }
       if (e.issue) {
         s.as = e.issue.assignee || ''; s.st = e.issue.status
+        if (s.st === 'in_progress' && was.st !== 'in_progress') s.ip = t // went in progress (t2: since when, sy-0cvx)
         // `approved` through the record that added it, with its actor (a label first seen mid-life, not at its
         // creation, has no known setter: it counts as not approved)
         const labels = e.issue.labels || [], had = s.lb ? s.lb.includes('approved') : e.op !== 'create' && labels.includes('approved')
@@ -325,33 +331,104 @@ const migrations = (() => { let out; return () => (out ||= read()) // once per r
     return out
   }
 })()
+// The live signals for a t2 item in progress (sy-0cvx: building on a branch or in a worker's folder is not applying;
+// the go is still needed before landing or applying). Each read once per run, over the last LOOKBACK only.
+const LOOKBACK = 14 * 24 * 3600e3, WAIT = 4 * 3600e3
+const ID = /\b[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*\b/g
+/** (b) commits on a live main whose message names an item: mm's main (the machine runs main's build) and the brain's
+ * main (moved only by bin/brain promote). A branch, a worktree or a brain run branch is not read here.
+ * { id: [{ repo, hash, subject, at }] } */
+const mainCommits = once(async () => {
+  const out = {}, since = Math.floor((NOW - LOOKBACK) / 1000)
+  for (const d of [path.join(HOME, 'mm'), dirs().brain]) {
+    let log; try { log = git(d, ['log', 'refs/heads/main', `--since=@${since}`, '--format=%x1e%ct%x1f%h%x1f%s%x1f%B']) } catch { continue } // no repo, no main
+    for (const rec of log.split('\x1e').slice(1)) {
+      const [ct, hash, subject, msg = ''] = rec.split('\x1f')
+      for (const id of new Set([...msg.matchAll(ID)].map((m) => m[0]))) (out[id] ||= []).push({ repo: tilde(d), hash, subject: subject.slice(0, 80), at: Number(ct) * 1000 })
+    }
+  }
+  return out
+})
+// (c) live steps that leave no commit, as mm records them with their time: its own line per command in <mm>/pc/mm.log
+// (op, args, ok; cli.ts), and what the owner's sockets do without the CLI: mm.api's "request applied" (the bridge's
+// Allow) and mm.auth's "granted" (the web), in their process logs <mm>/pc/api.log and auth.log. Only what succeeded, not
+// on a throwaway project. A config value is never read into a finding: only its key.
+const T2_KEY = /^(?:(?:api|ai|box\.docker)(?:\.|$)|wake\.person_runs$|names$)/
+const TAIL = 8 << 20 // the last 8 MB of each log
+function lines(file) {
+  let fd; try { fd = fs.openSync(file, 'r') } catch (e) { if (e.code === 'ENOENT') return []; throw e }
+  try {
+    const size = fs.fstatSync(fd).size, from = Math.max(0, size - TAIL), buf = Buffer.alloc(size - from)
+    fs.readSync(fd, buf, 0, buf.length, from)
+    const all = buf.toString('utf8').split('\n')
+    return from ? all.slice(1) : all // a tail's first line is cut
+  } finally { fs.closeSync(fd) }
+}
+function liveStep(r) {
+  if (r.ok === false || r.mm_throwaway) return null
+  const args = String(r.args || '').split(/\s+/).filter(Boolean)
+  switch (r.service === 'mm' ? r.op : `${r.service}:${r.msg}`) {
+    case 'mm config set': case 'mm config unset': return r.ok && T2_KEY.test(args[0] || '') ? `${r.op} ${args[0]}` : null
+    case 'mm grant': case 'mm box on': case 'mm box off': case 'mm api approve': return r.ok ? `${r.op} ${args.join(' ').slice(0, 80)}` : null
+    case 'api:request applied': return r.by !== 'cli' ? `mm.api applied ${r.call} for ${r.box} (${r.id}, by ${r.by})` : null // the CLI's: its mm.log line
+    case 'auth:granted': return r.by !== 'cli' ? `mm.auth granted ${r.user} ${r.project} as ${r.role} (by ${r.by})` : null
+    default: return null
+  }
+}
+const liveSteps = once(async () => {
+  const out = []
+  for (const f of ['mm.log', 'api.log', 'auth.log']) for (const l of lines(path.join(dirs().mm, 'pc', f))) {
+    let r; try { r = JSON.parse(l) } catch { continue }
+    if (r && typeof r.message === 'string' && r.process) { try { r = JSON.parse(r.message) } catch { continue } } // process-compose's line around the service's own
+    const t = ms(r?.time), what = t > NOW - LOOKBACK && t <= NOW && liveStep(r)
+    if (what) out.push({ what, at: t })
+  }
+  return out.sort((a, b) => a.at - b.at)
+})
+
 // An item is t2 for this check when it has the `t2` label, or an applied tier-2 migration names it (sy-7xq0: the label
-// is any lead's to set or remove; the migration is what ran). Its finding clears only on an approver's approved, or
-// when no applied migration names it any more (rolled back: its state mark is gone) and it is not in progress.
+// is any lead's to set or remove; the migration is what ran). Unapproved, it raises a P1 on a live step only (sy-0cvx):
+// (a) an applied tier-2 migration names it; or, while it is in progress with the label, (b) a commit naming it is on mm's
+// or the brain's main, or (c) mm recorded a live step since it went in progress (mm does not record who ran it or for
+// which item: each unapproved t2 item in progress then gets it). In progress for over 4 h with none of these: one P3
+// list (t2-waiting). Its finding clears only on an approver's approved, or when no applied migration names it any more
+// (rolled back: its state mark is gone) and it is not in progress with a live signal.
 async function t2() {
-  const [all, sum] = await Promise.all([issues(), journal()])
-  const mig = migrations(), problems = []
+  const [all, sum, main, steps] = await Promise.all([issues(), journal(), mainCommits(), liveSteps()])
+  const mig = migrations(), problems = [], waiting = []
   for (const i of all) {
     const labelled = (i.labels || []).includes('t2')
     if (mine(i) || (!labelled && !mig[i.id])) continue
     const ap = sum[i.id]?.ap
     if (ap?.ok) continue
     const applied = (mig[i.id] || []).filter((m) => i.status !== 'closed' || m.at >= state.t2since)
-    const going = labelled && i.status === 'in_progress'
-    if (!going && !applied.length) continue
+    const going = labelled && i.status === 'in_progress', since = Math.max(ms(i.started_at), sum[i.id]?.ip || 0)
+    const landed = going ? main[i.id] || [] : [], ran = going && since ? steps.filter((s) => s.at >= since) : []
+    if (!applied.length && !landed.length && !ran.length) {
+      if (going && since && NOW - since > WAIT) waiting.push({ i, since })
+      continue
+    }
     const off = !labelled && sum[i.id]?.t2off
-    const what = [...(going ? ['it is in progress'] : []), ...applied.map((m) => `its tier-${m.tier} migration ${m.name} is applied (${at(m.at)})`),
+    const what = [...(going ? [`it is in progress (since ${at(since)})`] : []), ...applied.map((m) => `its tier-${m.tier} migration ${m.name} is applied (${at(m.at)})`),
+      ...landed.slice(0, 5).map((c) => `commit ${c.hash} "${c.subject}" naming it is on ${c.repo}'s main (${at(c.at)})`),
+      ...ran.slice(-5).map((s) => `mm recorded the live step "${s.what}" at ${at(s.at)}`),
       ...(off ? [`its t2 label was removed by ${off.by || 'an unknown actor'} at ${at(off.at)}`] : [])]
+    const why = applied.length ? 'has an applied migration' : landed.length ? 'has a commit on main' : 'is in progress while a live step ran'
     const label = ap ? `approved was added by ${ap.by || 'an unknown actor'} at ${at(ap.at)}, who is not an approver` : 'no approved from an approver'
-    problems.push({ key: `t2-unapproved:${i.id}`, priority: 1, title: `Unapproved t2: ${i.id} (${i.assignee || 'nobody'}) ${applied.length ? 'has an applied migration' : 'is in progress'} without the owner's approval${off ? `; ${off.by || 'someone'} removed its t2 label` : ''}`,
+    problems.push({ key: `t2-unapproved:${i.id}`, priority: 1, title: `Unapproved t2: ${i.id} (${i.assignee || 'nobody'}) ${why} without the owner's approval${off ? `; ${off.by || 'someone'} removed its t2 label` : ''}`,
       note: `${i.status}; ${what.join('; ')}; ${label}`,
       body: `**${i.id}** "${i.title}" is ${labelled ? 'labelled t2' : 'not labelled t2, but a tier-2 migration names it'}, and ${what.join(', and ')}. The board's journal has ${label} on it ` +
         `(approvers: ${[...APPROVERS].join(', ') || 'none'}; a label added by anyone else does not count).\n\n` +
         `A t2 change runs only after the owner's approval. Find out what ran without it, and stop or roll it back, or get the owner's approval. ` +
+        `${ran.length && !applied.length && !landed.length ? 'mm does not record who ran a live step or for which item: it may belong to other work; say so here. ' : ''}` +
         `This item closes itself when an approver sets approved on ${i.id}, or no migration naming it is applied any more (rolled back) and it is not in progress. ` +
         `Closing it by hand does not silence it: it opens again on the next run.` })
   }
-  return { prefix: 't2-unapproved:', problems }
+  const list = waiting.sort((a, b) => a.since - b.since).map(({ i, since }) => `${i.id} (${i.assignee || 'nobody'}, in progress since ${at(since)}): ${String(i.title).slice(0, 80)}`)
+  const wait = list.length ? [{ key: 't2-waiting', priority: 3, title: 't2 items waiting for the go (in progress over 4 h, nothing live yet)', note: list.join('\n'),
+    body: `These t2 items are in progress for over 4 hours without the owner's approval. Nothing live has run for them (no applied migration, no commit naming them on mm's or the brain's main, no live step mm recorded): they are being built, and wait for the go before landing or applying.\n\n` +
+      `${list.map((l) => `- ${l}`).join('\n')}\n\nOne item for all of them, refreshed each pass (a comment when the list changes). It closes itself when none is left.` }] : []
+  return [{ prefix: 't2-unapproved:', problems }, { prefix: 't2-waiting', problems: wait }]
 }
 
 async function overcap() {
@@ -383,7 +460,7 @@ for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')
 }
 const results = [], failed = []
 for (const [name, fn] of Object.entries({ stall, handoff, idle, dirty, t2, overcap })) {
-  try { results.push(await fn()) } catch (e) { failed.push({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) }) }
+  try { results.push(...[await fn()].flat()) } catch (e) { failed.push({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) }) }
 }
 await paseo.close()
 results.push({ prefix: 'supervisor:', problems: failed.map((f) => ({ key: `supervisor:${f.name}`, priority: 2, title: `Supervisor cannot run its ${f.name} check`, note: f.err.replace(/\d+/g, '#'),
