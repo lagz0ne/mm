@@ -31,7 +31,7 @@ board() {  # <client> <name> [throwaway]
   local P="$MM_HOME/projects/$1/$2"; mkdir -p "$P/bin" "$P/control"
   printf 'client: %s\nname: %s\nproject: %s-%s\nshort: qa\nroot: %s\ntemplate_version: 0.0.0\ncreated: 2026-01-01T00:00:00Z\n' "$1" "$2" "$1" "$2" "$P" >"$P/.mm-answers.yaml"
   [ -n "${3:-}" ] && echo 'throwaway: true' >>"$P/.mm-answers.yaml"
-  printf '#!/bin/sh\n[ "$3" = dolt.auto-start ] && echo false || echo true\n' >"$P/bin/bd"; chmod +x "$P/bin/bd"
+  printf '#!/bin/sh\n[ "$1" = metrics ] && { echo "Anonymous usage metrics: OFF"; exit 0; }\n[ "$3" = dolt.auto-start ] && echo false || echo true\n' >"$P/bin/bd"; chmod +x "$P/bin/bd"
   git -C "$P" init -q && git -C "$P/control" init -q
   echo "# from $P/services.yaml" >"$MM_HOME/pc/projects/$1-$2.yaml"
 }

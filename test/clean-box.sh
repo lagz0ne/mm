@@ -62,11 +62,13 @@ check "board answers by name" curl -sf -o /dev/null http://board.acme-shop.local
 check "the names proxy keeps its state in ~/.mm/portless (no ~/.portless)" sh -c 'test -d ~/.mm/portless && ! test -e ~/.portless'
 check "with the board running: no ~/.npm (board build), ~/.portless, ~/.config/process-compose, ~/.local" \
   sh -c '! test -e ~/.npm && ! test -e ~/.portless && ! test -e ~/.config/process-compose && ! test -e ~/.local'
-# what is still outside (bd's ~/.beads and ~/.config/bd are a known one, sy-8w1's follow-up; the filled secret is an input's path)
-echo "     outside ~/.mm with the board running: $(cd ~ && find . -path ./.mm -prune -o ! -type d -print | sed 's|^\./||' | sed 's|^\(\.beads\)/.*|\1/...|' | sort -u | tr '\n' ' ')"
+# bd keeps its metrics and user config per HOME (~/.beads, ~/.config/bd): bin/bd turns metrics off, so none (sy-nsnp)
+check "with the board running: nothing of bd's outside ~/.mm (no ~/.beads, ~/.config/bd)" sh -c '! test -e ~/.beads && ! test -e ~/.config/bd'
+# what is still outside (the filled secret is an input's path)
+echo "     outside ~/.mm with the board running: $(cd ~ && find . -path ./.mm -prune -o ! -type d -print | sed 's|^\./||' | sort -u | tr '\n' ' ')"
 check "item on the board" sh -c 'cd ~/.mm/projects/acme/shop && bin/bd create "hello from a clean box" --json | grep -q "\"id\""'
 check "item through the board API" sh -c 'curl -sf http://board.acme-shop.localhost:1355/api/v0/beads/issues?limit=10 | grep -q "hello from a clean box"'
-check "bd stays quiet on a fresh board: no-hooks, metrics off, no Dolt auto-start, no hook (sy-8s1, sy-a0ac)" sh -c 'cd ~/.mm/projects/acme/shop/control && [ "$(../bin/bd config get no-hooks | tail -1)" = true ] && [ "$(../bin/bd config get metrics.disabled | tail -1)" = true ] && [ "$(../bin/bd config get dolt.auto-start | tail -1)" = false ] && mm doctor -o json | jq -e ".[] | select(.item == \"bd quiet acme/shop\") | .status == \"ok\""'
+check "bd stays quiet on a fresh board: no-hooks, metrics off, no Dolt auto-start, no hook (sy-8s1, sy-a0ac, sy-nsnp)" sh -c 'cd ~/.mm/projects/acme/shop/control && [ "$(../bin/bd config get no-hooks | tail -1)" = true ] && ../bin/bd metrics | grep -qx "Anonymous usage metrics: OFF" && [ "$(../bin/bd config get dolt.auto-start | tail -1)" = false ] && mm doctor -o json | jq -e ".[] | select(.item == \"bd quiet acme/shop\") | .status == \"ok\""'
 check "update is a no-op" sh -c 'mm update acme/shop | grep -q "already at"'
 check "backup lands in ~/.mm/backups" sh -c 'cd ~/.mm/projects/acme/shop && timeout 300 bin/backup >/dev/null 2>&1; ls -d ~/.mm/backups/acme-shop/*/ >/dev/null'
 check "logs reach VictoriaLogs" sh -c 'mm obs status | grep -q acme-shop'

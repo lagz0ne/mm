@@ -155,7 +155,7 @@ rm -f "$HST"
 check "memory/ is tracked by the project's config repo" sh -c "cd '$ROOT' && git add memory/qa-probe.md && git -c user.name=qa -c user.email=qa@qa commit -qm 'qa: memory probe' && git ls-files memory | grep -q qa-probe.md"
 
 step "bd stays quiet (sy-8s1): made by an old template, then updated"
-check "after mm update: no-hooks, metrics off, no-git-ops, no Dolt auto-start (sy-a0ac)" sh -c "cd '$ROOT/control' && [ \"\$(../bin/bd config get no-hooks | tail -1)\" = true ] && [ \"\$(../bin/bd config get metrics.disabled | tail -1)\" = true ] && [ \"\$(../bin/bd config get no-git-ops | tail -1)\" = true ] && [ \"\$(../bin/bd config get dolt.auto-start | tail -1)\" = false ]"
+check "after mm update: no-hooks, metrics off, no-git-ops, no Dolt auto-start (sy-a0ac, sy-nsnp)" sh -c "cd '$ROOT/control' && [ \"\$(../bin/bd config get no-hooks | tail -1)\" = true ] && ../bin/bd metrics | grep -qx 'Anonymous usage metrics: OFF' && grep -q '^export BD_DISABLE_METRICS=1 ' ../bin/bd && [ \"\$(../bin/bd config get no-git-ops | tail -1)\" = true ] && [ \"\$(../bin/bd config get dolt.auto-start | tail -1)\" = false ]"
 check "mm doctor: bd quiet ok for this project" sh -c "mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item == \"bd quiet $REF\") | .status == \"ok\"'"
 printf '#!/bin/sh\nexec bd hooks run pre-commit "$@"\n' >"$ROOT/control/.git/hooks/pre-commit"; chmod +x "$ROOT/control/.git/hooks/pre-commit"
 check "...a bd hook planted in control/: doctor fails, naming it" sh -c "mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item == \"bd quiet $REF\") | .status == \"fail\" and (.detail | test(\"control/.git/hooks/pre-commit\"))'"
