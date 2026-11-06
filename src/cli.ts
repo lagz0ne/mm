@@ -72,12 +72,8 @@ config.command('get [path]').action((p?: string) => {
   if (v === undefined) process.exit(1)
   console.log(typeof v === 'object' ? Bun.YAML.stringify(v, null, 2) : String(v))
 })
-// keys only the owner sets: who may ride the owner's subscription in oauth mode (sy-b15.10). Refused in an agent's
-// shell (a brake, as mm user and mm grant are; the template denies the key's text and the Edit tool on config.yaml too)
-const OWNER_KEYS = /^ai\.owner_personas(\.|$)/
-const ownerKey = (p: string) => { if (OWNER_KEYS.test(p) && (process.env.CLAUDECODE || process.env.PASEO_AGENT_ID)) { console.error(`mm: ${p} is the owner's to set: run it yourself, in your own terminal`); process.exit(1) } }
-config.command('set <path> <value>').action((p: string, v: string) => { ownerKey(p); const c = loadConfig(); setPath(c, p, v); saveConfig(c) })
-config.command('unset <path>').action((p: string) => { ownerKey(p); const c = loadConfig(); unsetPath(c, p); saveConfig(c) })
+config.command('set <path> <value>').action((p: string, v: string) => { const c = loadConfig(); setPath(c, p, v); saveConfig(c) })
+config.command('unset <path>').action((p: string) => { const c = loadConfig(); unsetPath(c, p); saveConfig(c) })
 
 const projectRoots = () => listProjects().map((p) => ({ project: p.project, root: expandHome(p.root) }))
 program.command('needs').description('every input this machine and its projects need (vars, secrets, accounts): status and how to fill it; exit 1 while a required one is missing')

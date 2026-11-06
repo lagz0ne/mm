@@ -87,12 +87,9 @@ Anthropic's terms for Claude Code (code.claude.com/docs/en/legal-and-compliance)
 through Free, Pro, Max, or Ultra plan credentials on behalf of their users", nor "collect, store, or intermediate
 Claude.ai credentials or session tokens". What they allow is "an end user signing in to the unmodified Claude Code
 binary with their own Claude subscription, including where a platform hosts Claude Code". So mm keeps this mode to
-the owner: in oauth mode mm.ai takes only the owner's own run key (`owner_name`), a run key of one of the owner's own
-personas (`ai.owner_personas`: accounts the owner made to emulate users; `mm user ls` marks them), or a project's
-background key for a project where nobody but the owner and those personas holds a role (mm.auth's grants, read at
-each call; if they can't be read, it refuses). Anyone else's run gets `403`. Only the owner sets the list: `mm config
-set ai.owner_personas "<name> <name>"` refuses in an agent's shell, and the template denies the key in any agent
-command and the Edit tool on mm's `config.yaml`. A real other person never goes on that list. The default stays `ai-upstream-key`, a separate API key; use that as soon as you
+the owner: in oauth mode mm.ai takes only the owner's own run key (`owner_name`), or a project's background key for a
+project where nobody but the owner holds a role (mm.auth's grants, read at each call; if they can't be read, it
+refuses). Anyone else's run gets `403`. The default stays `ai-upstream-key`, a separate API key; use that as soon as you
 can. Read the terms yourself: this note is not legal advice.
 
 The owner can let mm.ai call Anthropic with the machine's long-term Claude token (the machine input

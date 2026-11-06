@@ -66,9 +66,6 @@ check "mm user add alex" bash -c "mm user add alex -o json | jq -e '.name == \"a
 check "the same name again: refused" bash -c "! mm user add alex"
 check "reserved names are refused (the owner's name, steward, bridge, mm, root, ops)" bash -c "for n in boss steward bridge mm root ops sentinel assistant; do ! mm user add \$n || exit 1; done"
 check "mm user ls: alex, no grants yet; boss the owner" bash -c "mm user ls -o json | jq -e '(.[] | select(.name==\"alex\") | .grants == \"\") and (.[] | select(.name==\"boss\") | .owner)'"
-check "...nobody is marked a persona until the owner lists them (ai.owner_personas)" bash -c "mm user ls -o json | jq -e 'all(.[]; .persona == false)'"
-printf 'ai:\n  owner_personas: [alex]\n' >>"$MM_HOME/config.yaml"
-check "...alex listed: mm user ls marks alex as the owner's persona, and not the owner" bash -c "mm user ls -o json | jq -e '(.[] | select(.name==\"alex\") | .persona) and (.[] | select(.name==\"boss\") | .persona == false)'"
 
 echo '== a link that works once'
 check "a link lives 1 h by default (review sy-b15.14)" bash -c "E=\$(mm user link alex -o json | jq -r .expires); d=\$(( \$(date -d \"\$E\" +%s) - \$(date +%s) )); [ \$d -gt 3500 ] && [ \$d -le 3600 ]"

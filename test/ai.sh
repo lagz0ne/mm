@@ -184,20 +184,6 @@ check "...the member banned: that project's key works again" bash -c "[ \"\$(cod
 printf 'not a database' >"$MM_HOME/auth/accounts.db"; N0=$(upn)
 check "...grants it can't read: refused (fails closed), nothing sent" bash -c "call '$S1' '$K1' -d '$MSG' http://ai/v1/messages | grep -q 'grants could not be read' && [ \$(wc -l <'$T/up.jsonl') = $N0 ]"
 rm -f "$MM_HOME/auth/accounts.db"
-# the owner's own personas (ai.owner_personas: accounts the owner uses to emulate users) may call too; nobody else
-cfg '  upstream_key_input: claude-oauth-token\n  upstream_auth: oauth\n  owner_personas: [dana, bob]\n'
-KD=$(key acme-shop dana)   # not alex: his budget is used up above
-check "the owner's personas (dana, bob): dana's run key is 200" bash -c "[ \"\$(code '$S1' '$KD' -d '$MSG' http://ai/v1/messages)\" = 200 ]"
-grants 0
-check "...a project whose only member is a persona (bob on acme-other): its background key 200" bash -c "[ \"\$(code '$S2' '$K2' -d '$MSG' http://ai/v1/messages)\" = 200 ]"
-KC=$(key acme-shop carol); N0=$(upn)
-check "...a run for someone not on the list (carol): 403, nothing sent" bash -c "call '$S1' '$KC' -d '$MSG' http://ai/v1/messages | grep -q \"only the owner's own runs\" && [ \$(wc -l <'$T/up.jsonl') = $N0 ]"
-cfg '  upstream_key_input: claude-oauth-token\n  upstream_auth: oauth\n  owner_personas: dana\n'
-check "...bob off the list: acme-other (bob a member) is refused again" bash -c "call '$S2' '$K2' -d '$MSG' http://ai/v1/messages | grep -q 'acme-other has 1 other person'"
-rm -f "$MM_HOME/auth/accounts.db"
-check "mm config set ai.owner_personas: refused in an agent's shell" bash -c "CLAUDECODE=1 mm config set ai.owner_personas carol 2>&1 | grep -q \"the owner's to set\""
-check "...and nothing changed" bash -c "! grep -q carol '$MM_HOME/config.yaml'"
-cfg '  upstream_key_input: claude-oauth-token\n  upstream_auth: oauth\n'
 mv "$TOK" "$T/tok"
 check "no Claude token on the machine: 503, it names claude-oauth-token" bash -c "call '$S1' '$K1' -d '$MSG' http://ai/v1/messages | grep -q 'mm fill claude-oauth-token'"
 mv "$T/tok" "$TOK"
