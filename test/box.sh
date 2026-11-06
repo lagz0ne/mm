@@ -3,12 +3,17 @@
 # `mm new --box`. Its services run in the box; the box is a normal user with no sudo and no capabilities; its root is
 # read-only and so is everything that decides what it may do; its only way out is its own egress proxy, which lets
 # through only its list. `mm archive` removes it all. Nothing outside the throwaway project and its containers changes.
-#   MM_DOCKER="sudo -n docker" test/box.sh [client/name]
+# Its docker calls and mm's go through mm's Docker wrapper (sy-pmgf; test/lib/docker.sh: the installed one), and each is
+# one the wrapper allows: no exec into the egress proxy (its processes are read on the host, from its cgroup), and the
+# other box it makes is shaped as mm makes one (mm's names, label, an internal 10.231.<n> network).
+#   test/box.sh [client/name]                       MM_DOCKER=<command>: another docker, for the test and mm both
 set -uo pipefail
 REF=${1:-qa/boxt}; PROJECT=${REF/\//-}
 export PATH="$HOME/.mm/bin:$HOME/.mm/npm/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
 . "$(dirname "$0")/lib/routes.sh"   # this run's routes in its own folder, never in the live web proxy (review sy-uzh)
-export MM_DOCKER=${MM_DOCKER:-docker}
+[ -n "${MM_DOCKER:-}" ] && DOCKER=$MM_DOCKER
+. "$(dirname "$0")/lib/docker.sh"
+export MM_DOCKER=$DOCKER
 unset PASEO_AGENT_ID PASEO_AGENT_CWD CLAUDECODE
 pass=0; fail=0
 ok() { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }; bad() { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
@@ -19,7 +24,7 @@ IN() { D exec "$BOX" sh -c "umask 002; $*"; }   # as mm shell does
 cleanup() { [ -n "${AIGW:-}" ] && kill $AIGW 2>/dev/null; [ -n "${APIGW:-}" ] && kill $APIGW 2>/dev/null; [ -n "${TGPID:-}" ] && kill $TGPID 2>/dev/null; [ -n "${SYSPID:-}" ] && kill $SYSPID 2>/dev/null; [ -n "${AIUP:-}" ] && kill $AIUP 2>/dev/null; [ -n "${AIT:-}" ] && rm -rf "$AIT"
   [ -n "${KEEP:-}" ] && return
   # archive only a project still there: after the archive step it is gone, and a second archive is a false failure (sy-ha9x)
-  { [ -n "${ROOT:-}" ] && [ ! -e "$ROOT" ]; } || mm archive "$REF" >/dev/null 2>&1; [ -n "${BKP:-}" ] && rm -rf "$BKP"; [ -n "${CAN:-}" ] && rm -rf "$CAN"; D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1; }
+  { [ -n "${ROOT:-}" ] && [ ! -e "$ROOT" ]; } || mm archive "$REF" >/dev/null 2>&1; [ -n "${BKP:-}" ] && rm -rf "$BKP"; [ -n "${CAN:-}" ] && rm -rf "$CAN"; D rm -f "$BOX" "$PX" ${OBOX:+"$OBOX"} >/dev/null 2>&1; D network rm "$NET" ${ONET:+"$ONET"} >/dev/null 2>&1; }
 trap cleanup EXIT
 export -f D IN; export BOX PX NET MM_DOCKER
 # mm's AI gateway for this test only (sy-b15.10): its own store, a fake upstream that answers like the Messages API,
@@ -208,11 +213,18 @@ ELOG="$MM_HOME_DIR/box/$PROJECT/egress/egress.log"
 check "every connection is logged on the host, for this project (the site on the list, and the one refused)" sh -c "grep -q 'github.com' '$ELOG' && grep -qi 'example.com' '$ELOG' && ! IN 'test -e $MM_HOME_DIR/box/$PROJECT/egress'"
 check "...and the shipper takes that log, stamped with the box's project" sh -c "mm ship --dry-run 2>/dev/null | grep 'example.com' | jq -e 'select(.project == \"$PROJECT\")' >/dev/null"
 # the proxy checks the address after DNS (sy-59m8): mm-egress, as its own user, with the machine's docker subnets
-check "the egress proxy runs as its own user, with no capabilities" sh -c "s=\$(D exec '$PX' sh -c 'for p in /proc/[0-9]*; do case \"\$(tr \"\\0\" \" \" <\$p/cmdline 2>/dev/null)\" in /usr/local/bin/mm-egress*) cat \$p/status;; esac; done'); echo \"\$s\" | grep -qE '^Uid:[[:space:]]+[1-9][0-9]*[[:space:]]' && echo \"\$s\" | grep -qE '^CapEff:[[:space:]]+0+\$'"
+# its processes, read on the host from its container's cgroup: mm-docker never execs into an egress proxy (sy-pmgf, as
+# test/box-egress.sh). The cgroup holds every process the container runs, whatever its own /proc shows.
+pxpids() { local pid cg; pid=$(D inspect -f '{{.State.Pid}}' "$PX") && [ -n "$pid" ] && [ "$pid" != 0 ] || return 1
+  cg=$(sed -n 's/^0:://p' "/proc/$pid/cgroup") && [ -n "$cg" ] && cat "/sys/fs/cgroup$cg/cgroup.procs"; }
+pxstatus() { for p in $(pxpids); do case "$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null)" in /usr/local/bin/mm-egress*) cat "/proc/$p/status";; esac; done; }
+allstatus() { for p in $(pxpids); do [ -r "/proc/$p/status" ] && grep -E '^(Uid|CapPrm|CapEff|CapBnd):' "/proc/$p/status" | tr -s '\t\n' '  ' && echo; done; }
+export -f pxpids pxstatus allstatus
+check "the egress proxy runs as its own user, with no capabilities (its status on the host)" sh -c "s=\$(pxstatus); echo \"\$s\" | grep -qE '^Uid:[[:space:]]+[1-9][0-9]*[[:space:]]' && echo \"\$s\" | grep -qE '^CapEff:[[:space:]]+0+\$'"
 # ...started as that uid, never root (sy-58fo): 190000 + its subnet's n, the owner's group, no capability added
 PXU=$(( 190000 + $(D network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$NET" 2>/dev/null | cut -d. -f3) ))
 check "the egress proxy's container: --user $PXU:$(id -g), no --cap-add, cap-drop ALL" sh -c "[ \"\$(D inspect -f '{{.Config.User}} {{.HostConfig.CapAdd}} {{.HostConfig.CapDrop}}' '$PX')\" = '$PXU:$(id -g) [] [ALL]' ]"
-check "...every process in it (init, shell, AI forwarder, proxy) is uid $PXU, all capabilities 0" sh -c "a=\$(D exec '$PX' sh -c 'for p in /proc/[0-9]*; do [ -r \$p/status ] && grep -E \"^(Uid|CapPrm|CapEff|CapBnd):\" \$p/status | tr -s \"\\t\\n\" \"  \" && echo; done' | grep .); echo \"\$a\"; [ \$(echo \"\$a\" | grep -c .) -ge 4 ] && ! echo \"\$a\" | grep -vE '^Uid: $PXU $PXU $PXU $PXU CapPrm: 0+ CapEff: 0+ CapBnd: 0+ \$'"
+check "...every process in it (init, shell, AI forwarder, proxy) is uid $PXU, all capabilities 0" sh -c "a=\$(allstatus | grep .); echo \"\$a\"; [ \$(echo \"\$a\" | grep -c .) -ge 4 ] && ! echo \"\$a\" | grep -vE '^Uid: $PXU $PXU $PXU $PXU CapPrm: 0+ CapEff: 0+ CapBnd: 0+ \$'"
 check "...and refuses every docker network of this machine (MM_EGRESS_DENY: the default bridge, the box's network)" sh -c "e=\$(D inspect -f '{{range .Config.Env}}{{println .}}{{end}}' '$PX' | grep '^MM_EGRESS_DENY='); echo \"\$e\" | grep -q '172.17.0.0/16' && echo \"\$e\" | grep -qF \"\$(D network inspect -f '{{(index .IPAM.Config 0).Subnet}}' '$NET')\""
 check "through its proxy: plain http is refused (403), and logged" sh -c "[ \"\$(IN \"curl -s -o /dev/null -w '%{http_code}' --max-time 20 -x http://$PX:8888 http://github.com/\")\" = 403 ] && grep -F 'name=github.com' '$ELOG' | grep -q 'not GET'"
 check "...and a tunnel to port 80 (403), logged" sh -c "[ \"\$(IN \"curl -s -o /dev/null -w '%{http_connect}' -p --max-time 20 -x http://$PX:8888 http://github.com:80/\")\" = 403 ] && grep -F 'name=github.com port=80' '$ELOG' | grep -q 'only port 443'"
@@ -245,9 +257,11 @@ check "a terminal the box's Paseo starts: the box user, no sudo, read-only root,
 [ -n "$TID" ] && BP terminal kill "$TID" >/dev/null 2>&1
 GW=$(echo "$BIP" | sed 's/\.10$/.1/')
 check "the box can't reach the system Paseo (6767 on its network's gateway, the host)" sh -c "! IN 'curl -s -o /dev/null --max-time 5 --noproxy \"*\" http://$GW:6767/'"
-# another box: a stand-in on its own internal network (as mm makes them), listening on Paseo's port (review sy-b15.8 4)
-ONET=mm-net-qa-other-$$; OBOX=mm-qa-other-$$
-D network create --internal --subnet 10.231.250.0/24 "$ONET" >/dev/null 2>&1 && D run -d --name "$OBOX" --network "$ONET" --ip 10.231.250.10 --user 200250 --cap-drop ALL "$(D inspect -f '{{.Config.Image}}' "$BOX")" socat TCP-LISTEN:6767,fork,reuseaddr SYSTEM:'echo other-box' >/dev/null 2>&1
+# another box: a stand-in on its own internal network, listening on Paseo's port (review sy-b15.8 4). Shaped as mm makes
+# one (sy-pmgf: the wrapper runs only that): mm's names for a throwaway project of the tests' prefix, its label, the
+# network's .1, the owner's group. n = 250 (uid 200250): outside what mm gives a project (10..249), so no box's own.
+OPROJ=${MM_DOCKER_TEST_PREFIX}other-$$; ONET=mm-net-$OPROJ; OBOX=mm-box-$OPROJ
+D network create --internal --subnet 10.231.250.0/24 --gateway 10.231.250.1 --label "mm.project=$OPROJ" "$ONET" >/dev/null 2>&1 && D run -d --name "$OBOX" --label "mm.project=$OPROJ" --network "$ONET" --ip 10.231.250.10 --user "200250:$(id -g)" --cap-drop ALL "$(D inspect -f '{{.Config.Image}}' "$BOX")" socat TCP-LISTEN:6767,fork,reuseaddr SYSTEM:'echo other-box' >/dev/null 2>&1
 check "...nor another box's daemon (6767 on its network), directly or through its own egress proxy" sh -c "D exec '$OBOX' curl --http0.9 -s --max-time 5 http://10.231.250.10:6767/ | grep -q other-box && ! IN 'curl --http0.9 -s --max-time 5 --noproxy \"*\" http://10.231.250.10:6767/ | grep -q other-box' && ! IN 'curl --http0.9 -s --max-time 10 -x http://$PX:8888 http://10.231.250.10:6767/ | grep -q other-box'"
 D rm -f "$OBOX" >/dev/null 2>&1; D network rm "$ONET" >/dev/null 2>&1
 # the machine's Paseo has the box as a host (sy-9q1): mm up joined it, through Paseo's client library
