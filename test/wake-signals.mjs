@@ -100,6 +100,16 @@ try {
   await sleep(1500)
   ok('DONE: nobody is woken (the writer is the assignee)', sent() === before)
 
+  console.log('== only real signals count')
+  const quiet = sent()
+  comment('s-12', 'platform', 'The brief says to end like this:\n```\nHANDOFF review fence1\n```\nThat is all.')
+  comment('s-13', 'platform', 'You wrote:\n> HANDOFF review quote1\nNoted.')
+  comment('s-14', 'watchdog', 'handoff:s-1 has no reply\nHANDOFF review dog1')
+  await sleep(1800)
+  ok('a HANDOFF inside a fenced code block wakes nobody', !/fence1/.test(sent().slice(quiet.length)))
+  ok('a quoted HANDOFF (> ...) wakes nobody', !/quote1/.test(sent().slice(quiet.length)))
+  ok('a HANDOFF by watchdog (the Supervisor, the sentinel) wakes nobody', !/dog1/.test(to('review')))
+
   console.log('== a working lead is not interrupted')
   st('review', 'running')
   comment('s-10', 'platform', 'HANDOFF review def5678')

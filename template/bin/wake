@@ -56,7 +56,8 @@ function note(role, id, reason, byLead = false) {
 }
 
 const leadOf = (actor) => ROLES.find((r) => actor === r || (actor || '').startsWith(`${r}/`)) || null
-const isHuman = (actor) => !!actor && !leadOf(actor) && !['ui', 'wake', 'watchdog', 'smoke', 'beads'].includes(actor)
+const SYSTEM = ['ui', 'wake', 'watchdog', 'smoke', 'beads'] // the board's own actors (the Supervisor and sentinel post as watchdog)
+const isHuman = (actor) => !!actor && !leadOf(actor) && !SYSTEM.includes(actor)
 
 function stopLoop(id) {
   log(`hop limit: ${id} had ${MAX_HOPS} lead-to-lead wakes; labelling needs-you, not waking`)
@@ -99,6 +100,7 @@ function signal(e, byLead) {
   const s = parseSignal(e.comment?.text), woke = new Set()
   if (!s) return woke
   const id = e.issue_id, author = e.comment.author || e.actor || 'beads', self = leadOf(e.actor) || leadOf(author)
+  if (SYSTEM.includes(author) || SYSTEM.includes(e.actor)) return woke // only a lead's or a human's line is a signal
   const title = clip(e.issue?.title, 80), rest = clip(s.rest, 300)
   count('mm_wake_signals_total', { kind: s.kind })
   const to = (role, reason) => {

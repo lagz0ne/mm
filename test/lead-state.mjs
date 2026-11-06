@@ -33,6 +33,7 @@ ok('a BLOCKED line as its last comment: "blocked"', leadState({ role: 'qa', agen
 const e = leadState({ role: 'qa', agent: null, wake: { startError: { error: 'paseo refused', items: ['a-7'] } } })
 ok('a failed start: "start failed", with the item and the error', e.state === 'error' && e.label === 'start failed' && e.item === 'a-7' && e.error === 'paseo refused')
 ok('...but not once an agent runs again', leadState({ role: 'qa', agent: { status: 'idle' }, wake: { startError: { error: 'x', items: [] } } }).state === 'ready')
+ok('signalOf: not inside a code fence, not quoted', signalOf('```\nBLOCKED x\n```') === null && signalOf('> BLOCKED x') === null)
 ok('signalOf: the last typed line', signalOf('text\nBLOCKED no key') === 'BLOCKED' && signalOf('blocked, lower case') === null && signalOf('HANDOFF review a\nDONE ok') === 'DONE')
 
 console.log('== the board serves them')
