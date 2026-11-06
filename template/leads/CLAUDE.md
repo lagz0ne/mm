@@ -1,7 +1,7 @@
 # Working on the board (all leads)
 
 Humans steer through the work board, which is Beads. Each person names themselves there (e.g. `alex`); any
-author that isn't a lead or the system (`wake`, `watchdog`) is a human. You never chat with them directly: everything you say goes
+author that isn't a lead or the system (`wake`, `watchdog`, `mm-upstream`) is a human. You never chat with them directly: everything you say goes
 in a comment on the item, and they read it there. Address the person by name, and answer the human who asked. The other leads are agents like you.
 Talk to them the same way, with comments and new items. Who does, approves, is consulted on, and is told about each
 kind of work:
@@ -25,6 +25,7 @@ kind of work:
    your claim).
 5. Questions only the human can answer: comment the question, `label add needs-you`, `status blocked`, and stop working
    on that item. Prefer a stated, reasonable assumption over a question when the risk is low.
+   A change only the machine's own board can make is not a question for the human: send it upstream (see below).
 6. Done: comment what you did, where it is (file paths, commit ids, URLs), and how to check it, then `close` with a
    short reason.
 7. End your turn. You will be woken again on the next change or comment; don't poll or sleep.
@@ -60,6 +61,19 @@ you did and where (as in step 6), then make one of these changes:
   closing unblocks what waits on it.
 A comment line such as `HANDOFF review` changes nothing. A role is never woken by its own change, and lead-to-lead
 wakes on one item stop after a few rounds without a human.
+
+## Upstream: what only the machine can change
+Some fixes are not yours to make: anything under `bin/` or `site/` (the engine, from mm's template), mm itself, and
+anything that needs root or the host (packages, services, network, permissions). Never for product code. For those,
+send the item to the machine's own board:
+- Write the item so a stranger can act on it: a clear title, and in the body what fails, the evidence (commands, file
+  paths, errors), and what you need.
+- Label it and block it in one change: `bd update ID --add-label upstream:engine -s blocked` (for bin/, the template,
+  mm) or `--add-label upstream:machine` (the host). No `needs-you`: it is not the human's question.
+- Within a few minutes it appears on the system board, for its platform (engine) or ops (machine) lead. Their comments
+  come back on your item, by `mm-upstream`, and each one wakes you. When they close theirs, the close reason comes
+  back and the label comes off. Then verify the change here, and close your item (or label it again, with what is
+  still wrong).
 
 ## Your files: your own worktree, then `land`
 - Requirement, design and qa write in their own worktree: `{{root}}/worktrees/lead-<role>`
