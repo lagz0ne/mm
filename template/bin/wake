@@ -10,6 +10,7 @@
 // the CLI: PASEO_BIN, PASEO_URL, PASEO_NO_SDK=1).
 import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/obs.mjs'
 import * as P_ from './lib/paseo.mjs'
+import { parseSignal } from './lib/signals.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -87,15 +88,7 @@ function raciRoute(e, byLead = false) {
 //   DONE <evidence>                  wakes nobody (a record: closing the item tells the RACI's Informed roles)
 // This wakes the named role even when the writer is the item's assignee. The last such line in a comment counts.
 // A signal from a lead is a lead-to-lead wake: the hop limit counts it. A role is never woken by its own signal.
-const SIGNALS = ['HANDOFF', 'BLOCKED', 'DEPENDENCY', 'REOPEN', 'DONE']
-function parseSignal(text) {
-  let s = null
-  for (const line of String(text || '').split('\n')) {
-    const m = /^\s*([A-Z]+)(?:\s+(.*))?$/.exec(line)
-    if (m && SIGNALS.includes(m[1])) s = { kind: m[1], rest: (m[2] || '').trim() }
-  }
-  return s
-}
+// The parser: bin/lib/signals.mjs.
 const bdRun = (args, what) => execFile(path.join(P, 'bin/bd'), [...args, '--actor', 'wake'], { cwd: path.join(P, 'control'), timeout: 20000 },
   (err) => err && log(`${what} failed:`, clip(err.message, 200)))
 function signal(e, byLead) {
@@ -112,9 +105,9 @@ function signal(e, byLead) {
   const ofItem = (ref, then) => bd(`/v0/beads/issues/${encodeURIComponent(ref)}`)
     .then((i) => then(i && i.id ? i : null)).catch(() => then(null))
   if (s.kind === 'HANDOFF') {
-    const [role, ...what] = s.rest.split(/\s+/)
+    const { role, what } = s
     if (role === 'owner') needsYou('handed to the owner')
-    else if (role !== self && !to(role, `HANDOFF to you from ${author} on ${id} "${title}": ${clip(what.join(' '), 300) || '(no head or artifact given)'}. It is ready for the ${role} lead: pick it up and answer on the item.`)) {
+    else if (role !== self && !to(role, `HANDOFF to you from ${author} on ${id} "${title}": ${clip(what, 300) || '(no head or artifact given)'}. It is ready for the ${role} lead: pick it up and answer on the item.`)) {
       log(`HANDOFF on ${id} by ${author} names no known role (${role || 'none'}); nobody woken`)
       bdRun(['comments', 'add', id, `HANDOFF names "${role || ''}", which is not a role of this board (${ROLES.filter((r) => r !== 'setup').join(', ')}, or owner). Nobody was woken: write the line again with a role.`], `comment ${id}`)
     }
@@ -124,13 +117,13 @@ function signal(e, byLead) {
     const target = acc || (BOARD_LEAD !== self ? BOARD_LEAD : null)
     if (!target || !to(target, `BLOCKED: ${author} is blocked on ${id} "${title}": ${rest || '(no reason given)'}. Help unblock it, or route it to who can.`)) needsYou('no lead to route it to')
   } else if (s.kind === 'DEPENDENCY' || s.kind === 'REOPEN') {
-    const [ref, ...why] = s.rest.split(/\s+/)
+    const { ref, why } = s
     if (ref) ofItem(ref, (i) => {
       let role = i?.assignee
       if (s.kind === 'REOPEN' && (!role || role === self)) role = BOARD_LEAD
       const reason = s.kind === 'DEPENDENCY'
-        ? `DEPENDENCY: ${author}'s ${id} "${title}" waits on your ${ref}${i ? ` "${clip(i.title, 80)}" (${i.status})` : ''}${why.length ? `: ${clip(why.join(' '), 300)}` : ''}.`
-        : `REOPEN ${ref}${i ? ` "${clip(i.title, 80)}"` : ''}: ${author} says on ${id} "${title}" that it does not hold: ${clip(why.join(' '), 300) || '(no reason given)'}.`
+        ? `DEPENDENCY: ${author}'s ${id} "${title}" waits on your ${ref}${i ? ` "${clip(i.title, 80)}" (${i.status})` : ''}${why ? `: ${clip(why, 300)}` : ''}.`
+        : `REOPEN ${ref}${i ? ` "${clip(i.title, 80)}"` : ''}: ${author} says on ${id} "${title}" that it does not hold: ${clip(why, 300) || '(no reason given)'}.`
       if (!i) log(`${s.kind} on ${id} by ${author}: no item ${ref} on this board; nobody woken`)
       else if (!to(role, reason)) log(`${s.kind} on ${id} by ${author}: ${ref} has no other lead to wake (${role || 'unassigned'})`)
     })
