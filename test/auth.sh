@@ -232,6 +232,7 @@ http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); r
 EOF
 node "$T/fakebd.mjs" $BDP "$T/bd.jsonl" & FB=$!
 mkdir -p "$T/board" && (cd "$SRC/template" && tar -cf - --exclude=node_modules --exclude=dist site bin leads) | tar -xf - -C "$T/board"   # a copy: the board writes .run/ where it runs
+mkdir -p "$T/board/.run" && printf '{"owner_name": "dana"}\n' >"$T/board/.run/endpoints.json"   # mm writes it (the owner's name: reserved on the local side)
 (cd "$T/board" && PORT=$BL BOARD_PUBLIC_PORT=$BP BD_SERVE=http://127.0.0.1:$BDP MM_AUTH_PUBLIC_KEY="$PUB" PASEO_NO_SDK=1 PASEO_BIN=false MM_PROJECT=acme-shop \
   exec node site/server.mjs >"$T/board.log" 2>&1) & BS=$!
 for _ in $(seq 1 150); do curl -s -o /dev/null "http://127.0.0.1:$BL/api/whoami" && curl -s -o /dev/null "http://127.0.0.1:$BP/" && break; sleep 0.2; done
@@ -286,6 +287,8 @@ check "...each refusal is logged" bash -c "grep -c 'refused on the local side' '
 check "local side: other labels as before (200, no author role label)" bash -c "[ \$(lw PATCH /it-1 '{\"patch\":{\"add_labels\":[\"urgent\"]}}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.patch.add_labels == [\"urgent\"] and .b.actor == \"boss\"'"
 check "...a new item with a tier, a full label set without approved (200)" bash -c "[ \$(lw POST '' '{\"title\":\"x\",\"labels\":[\"t2\"]}') = 200 ] && [ \$(lw PATCH /it-1 '{\"patch\":{\"labels\":[\"t2\",\"bug\",\"urgent\"]}}') = 200 ]"
 check "a self-chosen name can't be the bridge's (400)" test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{"name":"bridge"}' "http://127.0.0.1:$BL/api/whoami")" = 400
+check "...nor the owner's, whose approved counts (400; sy-1jmi)" test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{"name":"dana"}' "http://127.0.0.1:$BL/api/whoami")" = 400
+check "...and a board_user cookie with the owner's name is nobody (source default)" bash -c "curl -s -H 'cookie: board_user=dana' http://127.0.0.1:$BL/api/whoami | jq -e '.source == \"default\"'"
 
 echo "== the board's summary for the home page (/api/summary: counts only, read-only; sy-ukbz)"
 sm() { curl -s -o "$T/sm" -w '%{http_code}' -H "x-forwarded-host: ${2:-$BOARD}" ${1:+-H "x-mm-assertion: $1"} "http://127.0.0.1:$BP/api/summary${3-?signal=1}"; }

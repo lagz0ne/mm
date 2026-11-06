@@ -22,7 +22,8 @@
 // by an earlier check within the window), or a worker of its role on that item running now. A reassign to a person (the owner, a human) is left to needs-you, not watched
 // here. A requeue is wake's own change (in progress -> open, by `wake`): the one system change read here.
 // The approvers (sy-44xa): the bridge's actor (`bridge`) and the owner's name (`owner_name` in .run/endpoints.json, when
-// mm writes it), else config `approvers`; env SUPERVISOR_APPROVERS (comma list) overrides both. `approved` counts only
+// mm writes it), never a list from this board's files (sy-1jmi 3: an agent could write one); env SUPERVISOR_APPROVERS
+// (comma list, tests) overrides both. Config `ignore` never silences a t2-unapproved finding. `approved` counts only
 // from the journal record that added it, with an approver as its actor. A migration is applied when the brain's state
 // has its name (BRAIN_STATE, else $XDG_STATE_HOME/brain, else ~/.local/state/brain: <state>/migrations/<name>).
 // An item someone closes while its finding is still there mutes that finding until it clears.
@@ -30,7 +31,7 @@
 // keeps the journal position and a summary per item, notes, mutes, and when leads were seen running or idle.
 // Optional config supervisor.json (this board's root):
 //   { "assignee": "ops", "ignore": ["<regex on a key>"], "minutes": { "stall": 30, "handoff": 10, "idle": 10, "dirty": 30 },
-//     "repos": ["<more git repos to watch; the mm repo is ~/mm, the template's place for it>"], "approvers": ["bridge"] }
+//     "repos": ["<more git repos to watch; the mm repo is ~/mm, the template's place for it>"] }
 // Env (tests): SUPERVISOR_STATE, SUPERVISOR_CONFIG, SUPERVISOR_NOW (ms), SUPERVISOR_APPROVERS, BRAIN_STATE, MM_BIN,
 // SVC_URL_BD_SERVE, PASEO_BIN, PASEO_NO_SDK.
 import { execFileSync } from 'node:child_process'
@@ -50,14 +51,14 @@ const MM = E.MM_BIN || 'mm'
 const HOME = E.HOME || os.homedir()
 const ASSIGNEE = CONF.assignee || 'ops'
 const MIN = { stall: 30, handoff: 10, idle: 10, dirty: 30, ...(CONF.minutes || {}) }
-const IGNORE = (CONF.ignore || []).map((r) => new RegExp(r))
+const IGNORE = (CONF.ignore || []).map((r) => new RegExp(r)) // never applied to t2-unapproved keys (sy-1jmi)
 const BD = requireUrl('bd-serve')
 const ACTOR = 'watchdog' // a system author for wake and the lead briefs (not a human, not a lead)
 const SYSTEM = new Set(['wake', 'watchdog', 'ui', 'smoke', 'beads'])
 const KEY_LINE = /^supervisor key: `([^`]+)`$/m
 const NOW = Number(E.SUPERVISOR_NOW) || Date.now(), now = new Date(NOW).toISOString()
 const SELF = projectName()
-const APPROVERS = new Set((E.SUPERVISOR_APPROVERS !== undefined ? E.SUPERVISOR_APPROVERS.split(',') : [...(CONF.approvers || ['bridge']), endpoints().owner_name])
+const APPROVERS = new Set((E.SUPERVISOR_APPROVERS !== undefined ? E.SUPERVISOR_APPROVERS.split(',') : ['bridge', endpoints().owner_name])
   .map((a) => String(a || '').trim()).filter(Boolean))
 const BRAIN_STATE = E.BRAIN_STATE || path.join(E.XDG_STATE_HOME || path.join(HOME, '.local', 'state'), 'brain')
 
@@ -348,7 +349,7 @@ results.push({ prefix: 'supervisor:', problems: failed.map((f) => ({ key: `super
 
 let opened = 0, updated = 0, closed = 0, keyFailed = 0
 for (const src of results) {
-  const present = new Map(src.problems.filter((p) => !IGNORE.some((re) => re.test(p.key))).map((p) => [p.key, p]))
+  const present = new Map(src.problems.filter((p) => p.key.startsWith('t2-unapproved:') || !IGNORE.some((re) => re.test(p.key))).map((p) => [p.key, p]))
   for (const p of present.values()) try { // one key's failed call never ends the run (sy-pp2a)
     const it = open[p.key]
     if (it) { // open: comment when the finding changed

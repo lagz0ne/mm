@@ -58,9 +58,12 @@ const RESERVED = new Set([...ROLES, 'setup', 'wake', 'watchdog', 'smoke', 'ui', 
 function cookieUser(req) {
   const m = /(?:^|;\s*)board_user=([^;]*)/.exec(req.headers.cookie || '')
   const name = m ? decodeURIComponent(m[1]).trim().toLowerCase() : ''
-  return validName(name) ? name : null
+  return selfName(name) ? name : null
 }
 const validName = (n) => /^[a-z][a-z0-9._-]{1,31}$/.test(n) && !RESERVED.has(n) && !RESERVED.has(n.split('/')[0])
+// a name someone picks on the local side: never the owner's (sy-1jmi), whose approved counts; the owner is the owner
+// only through the gateway's assertion on the public side
+const selfName = (n) => validName(n) && n !== String(endpoints().owner_name || '').trim().toLowerCase()
 function whoSource(req) {
   if (req.gateway) return 'gateway'
   if (cookieUser(req)) return 'self'
@@ -773,7 +776,7 @@ async function handle(req, res) {
   if (url.pathname === '/api/whoami' && req.method === 'POST') {
     let name = ''
     try { name = String(JSON.parse(await readBody(req)).name || '').trim().toLowerCase() } catch {}
-    if (!validName(name)) return send(res, 400, { title: 'Pick 2–32 characters: a-z, 0-9, . _ -, starting with a letter. Lead and system names are taken.' })
+    if (!selfName(name)) return send(res, 400, { title: 'Pick 2–32 characters: a-z, 0-9, . _ -, starting with a letter. Lead and system names, and the owner\'s, are taken.' })
     const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : ''
     res.setHeader('set-cookie', `board_user=${encodeURIComponent(name)}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly${secure}`)
     return send(res, 200, { actor: name, source: 'self' })
