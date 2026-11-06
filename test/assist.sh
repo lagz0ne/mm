@@ -2,9 +2,10 @@
 # Assistants (profile system): bin/assist and config-check's assistant rules, hermetic (a scratch board folder, a stub
 # claude that speaks stream-json). Proves: new + render; no tools (config-check refuses every allow but Skill/mm_read,
 # asking modes, extra dirs, hooks, role names; rendered settings deny every built-in tool); a session that offers any
-# other tool or an MCP server is killed (exit 5); facts copied from the input; fail-closed (schema, timeout, error:
-# non-zero, nothing on stdout); the data block can't be closed from inside; only the owner or setup commit an
-# assistant's permissions.
+# other tool or an MCP server is killed (exit 5); the chat audit (--chat) decides from the folder's files and runs
+# nothing (no claude, no MCP server, no hook: mark files prove it), an unverified MCP server fails; facts copied from
+# the input; fail-closed (schema, timeout, error: non-zero, nothing on stdout); the data block can't be closed from
+# inside; only the owner or setup commit an assistant's permissions.
 #   test/assist.sh            ASSIST_LIVE=1 also: the real session's tools (Skill only) and four cheap real calls with
 #                             injections (approval card, item body, lead reply, member comment)
 set -uo pipefail
@@ -15,7 +16,7 @@ bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
 check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 expect() { local d=$1 want=$2; if [ "$rc" = "$want" ] && { [ "$want" != 0 ] && [ -z "$out" ] || [ "$want" = 0 ]; }; then ok "$d"; else bad "$d (exit $rc, out: ${out:0:80})"; fi; }
 is() { jq -e "$1" <<<"$out" >/dev/null 2>&1; }   # the last output, through jq (no shell quoting of model text)
-export MM_OBS_TRACES="" MM_OBS_METRICS="" MM_PROJECT=sysqa
+export MM_OBS_TRACES="" MM_OBS_METRICS="" MM_PROJECT=sysqa MM_HOME="$T/mm" CLAUDE_MANAGED_DIR="$T/no-managed"
 B="$T/sys"; mkdir -p "$B"
 # a system-like board: the base template's bin + the system profile's bin, leads, setup, assistants, governance
 (cd "$SRC/template" && tar -cf - bin leads/START.md) | tar -xf - -C "$B"
@@ -101,21 +102,47 @@ expect "claude fails: exit 4" 4
 out=$(STUB_TOOLS='["Skill"]' FIXTURE='{}' run tools alex); rc=$?
 [ $rc = 0 ] && is '.tools == ["Skill"]' && ok "tools audit: Skill only" || bad "tools audit: exit $rc ${out:0:80}"
 
-echo '== the chat session (sy-6dk: paseo run has no per-run kill)'
-s=$(date +%s); out=$(STUB_TOOLS='["Skill"]' STUB_MODE=sleep FIXTURE='{}' run tools alex --chat); rc=$?
-[ $rc = 0 ] && is '.chat and .tools == ["Skill"]' && ok "tools --chat: Skill only, exit 0" || bad "tools --chat: exit $rc ${out:0:80}"
-[ $(( $(date +%s) - s )) -lt 4 ] && ok "...stopped at its first line (no model turn)" || bad "tools --chat waited for the model"
-check "...as paseo run starts it: dontAsk, its folder, no deny flags, no strict MCP" sh -c "grep -qx dontAsk '$T/stub.log' && ! grep -qx -- '--disallowedTools' '$T/stub.log' && ! grep -qx -- '--strict-mcp-config' '$T/stub.log' && grep -qx '$B/assistants/alex' '$T/stub.log.cwd'"
-out=$(STUB_TOOLS='["Skill","Bash"]' FIXTURE='{}' run tools alex --chat); rc=$?
-[ $rc = 5 ] && is '.ok == false and (.error | test("Bash"))' && ok "tools --chat: a session with Bash: exit 5, named" || bad "tools --chat Bash: exit $rc ${out:0:80}"
-out=$(STUB_MCP='[{"name":"gmail","status":"connected"}]' FIXTURE='{}' run tools alex --chat); rc=$?
-[ $rc = 5 ] && is '.mcp == ["gmail"]' && ok "tools --chat: an MCP server it would load: exit 5" || bad "tools --chat MCP: exit $rc ${out:0:80}"
+echo '== the chat session (sy-6dk: paseo run has no per-run kill; sy-la6o: audited from its files, nothing runs)'
+A="$B/assistants/alex"; S="$A/.claude/settings.json"; CD="$MM_HOME/claude/sysqa"; cp "$S" "$T/s.bak"
+reset() { cp "$T/s.bak" "$S"; rm -f "$A/.mcp.json" "$A/.mcp.tmpl.json" "$A/.claude/settings.local.json" "$CD/settings.json" "$CD/.claude.json" "$T"/mark-* "$STUB_LOG"; rm -rf "$T/managed"; }
+chat() { out=$(STUB_MODE=sleep FIXTURE='{}' run tools alex --chat); rc=$?; }
+ran() { ls "$T"/mark-* "$STUB_LOG" >/dev/null 2>&1; }   # a mark file, or claude's own log: something was started
+reset; s=$(date +%s); chat
+[ $rc = 0 ] && is '.chat and .ok and .tools == ["Skill"] and .mcp == [] and .unverified == []' && ok "tools --chat: the rendered folder gives Skill only, exit 0" || bad "tools --chat: exit $rc ${out:0:160}"
+! ran && [ $(( $(date +%s) - s )) -lt 3 ] && ok "...without starting claude" || bad "tools --chat started claude"
+reset; jq '.permissions.deny -= ["Bash"]' "$T/s.bak" >"$S"; chat
+[ $rc = 5 ] && is '.ok == false and (.error | test("Bash")) and (.tools | index("Bash"))' && ok "a built-in tool no source denies (Bash): exit 5, named" || bad "undenied Bash: exit $rc ${out:0:160}"
+reset; rm -f "$S"; chat
+[ $rc = 5 ] && is '(.tools | length) > 30' && ok "no settings.json at all: every built-in tool, exit 5" || bad "no settings: exit $rc ${out:0:120}"
+reset; printf '{"mcpServers":{"gmail":{"command":"sh","args":["-c","touch %s/mark-mcp"]}}}\n' "$T" >"$A/.mcp.json"
+printf '{"enabledMcpjsonServers":["gmail"]}\n' >"$A/.claude/settings.local.json"
+jq --arg c "touch $T/mark-hook" '.hooks.SessionStart = [{"hooks":[{"type":"command","command":$c}]}] | .statusLine = {"type":"command","command":$c}' "$T/s.bak" >"$S"; chat
+[ $rc = 5 ] && is '.mcp == ["gmail"] and .unverified == ["gmail"] and (.error | test("mcp:gmail \\(unverified tools\\)")) and (.error | test("hook:SessionStart")) and (.error | test("command:statusLine"))' \
+  && ok "an MCP server (unverified tools), a start hook and a status line: exit 5, each named" || bad "mcp+hook: exit $rc ${out:0:200}"
+! ran && ok "...and none of them ran: no mark file, no claude" || bad "something ran: $(ls "$T"/mark-* "$STUB_LOG" 2>&1 | tr '\n' ' ')"
+reset; printf '{"mcpServers":{"mm_read":{"command":"sh","args":["-c","touch %s/mark-mcp"]}}}\n' "$T" >"$A/.mcp.tmpl.json"
+jq '.permissions.allow += ["mcp__mm_read__item"]' "$T/s.bak" >"$S"; chat
+[ $rc = 0 ] && is '.mcp == ["mm_read"] and .unverified == [] and (.tools | index("mcp__mm_read__item"))' && ! ran && ok "an MCP server whose tools the allow list names one by one: passes, not run" || bad "named mm_read: exit $rc ${out:0:200}"
+jq '.permissions.allow += ["mcp__mm_read"]' "$T/s.bak" >"$S"; chat
+[ $rc = 5 ] && is '.unverified == ["mm_read"]' && ok "...allowed whole (mcp__mm_read): unverified, exit 5" || bad "whole mm_read: exit $rc ${out:0:160}"
+reset; printf '{"mcpServers":{"paseo":{"command":"sh","args":["-c","touch %s/mark-mcp"]}}}\n' "$T" >"$A/.mcp.json"; chat
+[ $rc = 0 ] && is '.mcp == []' && ok "an MCP server its settings deny whole (mcp__paseo): no tools from it, passes" || bad "denied paseo: exit $rc ${out:0:160}"
+reset; mkdir -p "$CD"; printf '{"projects":{"%s":{"mcpServers":{"notes":{"command":"true"}}}}}\n' "$A" >"$CD/.claude.json"; chat
+[ $rc = 5 ] && is '.unverified == ["notes"]' && ok "an MCP server in its Claude folder (local scope): exit 5" || bad "local-scope mcp: exit $rc ${out:0:160}"
+reset; printf '{"enabledPlugins":{"tools@market":true}}\n' >"$CD/settings.json"; chat
+[ $rc = 5 ] && is '.error | test("plugin:tools@market")' && ok "a plugin enabled in its Claude folder's settings: exit 5" || bad "plugin: exit $rc ${out:0:160}"
+reset; mkdir -p "$T/managed"; printf '{"mcpServers":{"corp":{"command":"true"}}}\n' >"$T/managed/managed-mcp.json"; out=$(CLAUDE_MANAGED_DIR="$T/managed" STUB_MODE=sleep FIXTURE='{}' run tools alex --chat); rc=$?
+[ $rc = 5 ] && is '.unverified == ["corp"]' && ok "a managed MCP server: exit 5" || bad "managed mcp: exit $rc ${out:0:160}"
+reset; printf '{not json' >"$A/.claude/settings.local.json"; chat
+[ $rc = 5 ] && is '.error | test("unreadable")' && ok "a settings file it can't parse: exit 5" || bad "bad json: exit $rc ${out:0:160}"
+reset
 check "tools: an unknown flag is refused" sh -c "cd '$B' && ! node bin/assist tools alex --all"
 PSTUB="$T/paseo"; printf '#!/bin/sh\necho "$1" >>"%s"\nexit 0\n' "$T/paseo.log" >"$PSTUB"; chmod +x "$PSTUB"
-rm -f "$T/paseo.log"; out=$(STUB_TOOLS='["Skill","WebFetch"]' PASEO_BIN="$PSTUB" FIXTURE='{}' run chat alex 2>&1); rc=$?
-[ $rc = 5 ] && ! grep -qx run "$T/paseo.log" && ok "chat: a session with WebFetch is not started (exit 5, no paseo run)" || bad "chat with WebFetch: exit $rc, paseo: $(tr '\n' ' ' <"$T/paseo.log" 2>/dev/null)"
-rm -f "$T/paseo.log"; out=$(STUB_TOOLS='["Skill"]' STUB_MODE=sleep PASEO_BIN="$PSTUB" FIXTURE='{}' run chat alex 2>&1); rc=$?
-[ $rc = 0 ] && grep -qx run "$T/paseo.log" && ok "chat: Skill only: started (paseo run)" || bad "chat Skill only: exit $rc ${out:0:120}"
+printf '{"mcpServers":{"gmail":{"command":"sh","args":["-c","touch %s/mark-mcp"]}}}\n' "$T" >"$A/.mcp.json"
+rm -f "$T/paseo.log"; out=$(PASEO_BIN="$PSTUB" FIXTURE='{}' run chat alex 2>&1); rc=$?
+[ $rc = 5 ] && ! grep -qx run "$T/paseo.log" && ! ran && ok "chat: a folder with an MCP server is not started (exit 5, no paseo run, the server not run)" || bad "chat with gmail: exit $rc, paseo: $(tr '\n' ' ' <"$T/paseo.log" 2>/dev/null)"
+reset; rm -f "$T/paseo.log"; out=$(PASEO_BIN="$PSTUB" FIXTURE='{}' run chat alex 2>&1); rc=$?
+[ $rc = 0 ] && grep -qx run "$T/paseo.log" && ! ran && ok "chat: Skill only: started (paseo run), claude not run for the audit" || bad "chat Skill only: exit $rc ${out:0:120}"
 check "no assistant: refused" sh -c "printf '{}' | (cd '$B' && ! node bin/assist in nobody)"
 check "_template is not a person" sh -c "printf '{}' | (cd '$B' && ! node bin/assist in _template)"
 

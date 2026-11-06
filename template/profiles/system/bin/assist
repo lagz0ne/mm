@@ -14,15 +14,16 @@
 //   assist mode <user> [always|demand|off]
 //   assist stop <user>     archive their conversation agent (on a revoke)
 //   assist tools <user>    audit: the tools a session of theirs has (must be Skill only)
-// Env: CLAUDE_BIN (claude), ASSIST_MODEL, ASSIST_TIMEOUT_MS (20000), PASEO_BIN (paseo).
+//   assist tools <user> --chat   the same for their chat (Paseo) session, from its configuration only: runs nothing
+// Env: CLAUDE_BIN (claude), ASSIST_MODEL, ASSIST_TIMEOUT_MS (20000), PASEO_BIN (paseo), CLAUDE_MANAGED_DIR (/etc/claude-code).
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { projectName } from './lib/svc.mjs'
 import { cli, log } from './lib/obs.mjs'
-import { TOOLS_DENIED, toolAllowed } from './lib/assist.mjs'
-import { trust as claudeTrust } from './lib/claude.mjs'
+import { TOOLS_DENIED, toolAllowed, chatAudit } from './lib/assist.mjs'
+import { configDir as claudeDir, trust as claudeTrust } from './lib/claude.mjs'
 
 cli('assist')
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -84,15 +85,14 @@ async function analyse(kind) {
 /**
  * One locked-down run: prompt on stdin, stream-json out. The first line (init) lists the session's tools: anything
  * outside ALLOWED (a new built-in tool, an MCP server) kills the run before the model's first turn can use it.
- * chat (sy-6dk): a session as the conversation agent gets it instead (chat() below: its folder's settings only, no deny
- * flags, MCP as configured, PATH with this board's bin), stopped as soon as the init line is read: no model turn.
+ * The chat session (Paseo's) is not audited by a run: chatTools() below.
  */
-function runClaude(extra, prompt, { chat = false } = {}) {
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', ...(chat ? [] : ['--strict-mcp-config']), '--permission-mode', 'dontAsk',
-    ...(E.ASSIST_MODEL ? ['--model', E.ASSIST_MODEL] : []), ...extra, ...(chat ? [] : ['--disallowedTools', TOOLS_DENIED.join(',')])]
+function runClaude(extra, prompt) {
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--strict-mcp-config', '--permission-mode', 'dontAsk',
+    ...(E.ASSIST_MODEL ? ['--model', E.ASSIST_MODEL] : []), ...extra, '--disallowedTools', TOOLS_DENIED.join(',')]
   const t0 = Date.now()
   return new Promise((ok) => {
-    const env = { ...E, ...(chat ? { PATH: `${path.join(P, 'bin')}:${E.PATH}` } : {}), BEADS_ACTOR: `assistant-${user}`, CLAUDE_CONFIG_DIR: claudeTrust([DIR]) }
+    const env = { ...E, BEADS_ACTOR: `assistant-${user}`, CLAUDE_CONFIG_DIR: claudeTrust([DIR]) }
     const p = spawn(CLAUDE, args, { cwd: DIR, env, stdio: ['pipe', 'pipe', 'pipe'] })
     p.stdin.on('error', () => {}) // a run killed at its first line may not have read its prompt
     let buf = '', done = false, tools = null, mcp = null, result = null
@@ -107,14 +107,13 @@ function runClaude(extra, prompt, { chat = false } = {}) {
         if (m.type === 'system' && m.subtype === 'init') {
           tools = m.tools || []; mcp = (m.mcp_servers || []).map((x) => x.name || x)
           const extraTools = [...tools.filter((t) => !toolAllowed(t)), ...mcp.map((x) => `mcp:${x}`)]
-          if (extraTools.length) { p.kill('SIGKILL'); log('error', `assist for ${user}: ${chat ? 'chat ' : ''}session offered tools outside the allowlist, killed: ${extraTools.join(', ')}`, { op: 'assist tools', user }); return finish({ err: `session offered tools outside the allowlist: ${extraTools.join(', ')}`, code: 5 }) }
-          if (chat) { p.kill('SIGKILL'); return finish({}) }
+          if (extraTools.length) { p.kill('SIGKILL'); log('error', `assist for ${user}: session offered tools outside the allowlist, killed: ${extraTools.join(', ')}`, { op: 'assist tools', user }); return finish({ err: `session offered tools outside the allowlist: ${extraTools.join(', ')}`, code: 5 }) }
         }
         if (m.type === 'result') result = m
       }
     })
     p.on('error', (e) => finish({ err: e.message }))
-    p.on('close', (code) => finish(code ? { err: `exit ${code}` } : chat && !tools ? { err: 'no init line: its tools are unknown' } : {}))
+    p.on('close', (code) => finish(code ? { err: `exit ${code}` } : {}))
     p.stdin.end(prompt)
   })
 }
@@ -122,10 +121,27 @@ function runClaude(extra, prompt, { chat = false } = {}) {
 async function tools() {
   if (!fs.existsSync(path.join(DIR, 'CLAUDE.md'))) die(`no assistant for ${user}`, 3)
   if (arg && arg !== '--chat') die('usage: assist tools <user> [--chat]')
-  const chat = arg === '--chat'
-  const out = await runClaude([], 'Reply with the word: ok', { chat })
-  console.log(JSON.stringify({ user, ...(chat ? { chat } : {}), tools: out.tools, mcp: out.mcp, ok: !out.err, ...(out.err ? { error: out.err } : {}) }))
+  if (arg === '--chat') {
+    const out = chatTools()
+    console.log(JSON.stringify({ user, chat: true, tools: out.tools, mcp: out.mcp, unverified: out.unverified, hooks: out.hooks, ok: !out.err, ...(out.err ? { error: out.err } : {}) }))
+    process.exit(out.err ? 5 : 0)
+  }
+  const out = await runClaude([], 'Reply with the word: ok')
+  console.log(JSON.stringify({ user, tools: out.tools, mcp: out.mcp, ok: !out.err, ...(out.err ? { error: out.err } : {}) }))
   process.exit(out.err ? (out.code || 4) : 0)
+}
+
+/**
+ * The chat session's tools (sy-6dk, sy-la6o): Paseo starts it with its folder's settings only (no deny flags, MCP as
+ * configured) and can't kill a run by its tools, so it is checked before every start and on every sentinel pass. From
+ * its configuration files only (bin/lib/assist.mjs chatAudit): no Claude Code, MCP server or hook runs. An MCP server
+ * is "unverified" (its tools are known only when it runs) and fails, unless the allow list names its tools one by one.
+ * Step 2, not built: audit what Paseo actually starts, once Paseo exposes its start arguments.
+ */
+function chatTools() {
+  const r = chatAudit(DIR, { configDir: claudeDir(), managedDir: E.CLAUDE_MANAGED_DIR || '/etc/claude-code' })
+  if (r.extra.length) log('error', `assist for ${user}: chat config gives tools outside the allowlist: ${r.extra.join(', ')}`, { op: 'assist tools', user })
+  return { ...r, ...(r.extra.length ? { err: `chat config gives tools outside the allowlist: ${r.extra.join(', ')}` } : {}) }
 }
 
 function stop() {
@@ -161,9 +177,9 @@ async function chat() {
   execFileSync(path.join(P, 'bin', 'config-check'), ['--render'], { cwd: P, stdio: 'ignore' })
   const labels = ['--label', `project=${project}`, '--label', 'kind=assistant', '--label', `user=${user}`]
   for (const id of execFileSync(PASEO, ['ls', '-g', ...labels, '-q'], { env, encoding: 'utf8' }).split('\n').filter(Boolean)) execFileSync(PASEO, ['archive', id], { env, stdio: 'ignore' })
-  // paseo run has no per-run kill (sy-6dk): the same session is checked first, and not started unless it has Skill only
-  const audit = await runClaude([], 'Reply with the word: ok', { chat: true })
-  if (audit.err) { log('error', `assist chat for ${user}: not started: ${audit.err}`, { op: 'assist chat', user }); die(`not started: ${audit.err}`, audit.code || 4) }
+  // paseo run has no per-run kill (sy-6dk): its configuration is checked first, and nothing starts unless it gives Skill only
+  const audit = chatTools()
+  if (audit.err) { log('error', `assist chat for ${user}: not started: ${audit.err}`, { op: 'assist chat', user }); die(`not started: ${audit.err}`, 5) }
   const model = E.ASSIST_CHAT_MODEL || 'claude/claude-opus-5-5'
   execFileSync(PASEO, ['run', '--no-wait', '-q', '--title', `${project} · assistant for ${user}`, '--provider', model, '--mode', 'dontAsk', '--cwd', DIR, ...labels,
     '--env', `PATH=${path.join(P, 'bin')}:${E.PATH}`, '--env', `BEADS_ACTOR=assistant-${user}`, '--env', `CLAUDE_CONFIG_DIR=${claudeTrust([DIR])}`,

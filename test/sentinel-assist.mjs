@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// bin/sentinel's assist:<user> source (sy-6dk), hermetic: a scratch system board (the template's bin and the system
-// profile's), a fake bd-serve in this process, a stub mm (no projects, no errors), no brain, and a stub claude that
-// speaks stream-json with the tools of $STUB_TOOLS. The sentinel runs the board's own `bin/assist tools <user> --chat`.
-// Proves: Skill only -> no item; a tool beyond Skill -> one P1 incident for ops (key assist:<user>, the extra tool in
-// it), not opened twice; an assistant whose mode is off is not audited; back to Skill -> closed; claude failing ->
-// sentinel:assistants, and the open assist: item is left as it is.
+// bin/sentinel's assist:<user> source (sy-6dk, sy-la6o), hermetic: a scratch system board (the template's bin and the
+// system profile's), a fake bd-serve in this process, a stub mm (no projects, no errors), no brain, and a stub claude
+// that only records that it was called. The sentinel runs the board's own `bin/assist tools <user> --chat`, which reads
+// the assistant's files and runs nothing. Proves: Skill only -> no item, claude never started; a tool its settings
+// don't deny -> one P1 incident for ops (key assist:<user>, the extra tool in it), not opened twice; an unknown MCP
+// server and a start hook -> an incident naming them, and neither ran (no mark file); an assistant whose mode is off
+// is not audited; back to Skill -> closed; the audit failing -> sentinel:assistants, the open assist: item left as is.
 //   node test/sentinel-assist.mjs          exit 0 = every check passed
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -31,12 +32,14 @@ for (const [u, mode] of [['alex', 'always'], ['bo', 'off']]) {
 fs.mkdirSync(path.join(B, 'assistants', '_template'), { recursive: true }); fs.writeFileSync(path.join(B, 'assistants', '_template', 'CLAUDE.md'), '# {user}\n')
 // stubs: claude (its args per folder, for "who was audited"), mm, an empty brain
 const CALLS = path.join(T, 'claude-calls')
-fs.writeFileSync(path.join(T, 'claude'), `#!/bin/sh
-echo "$(basename "$PWD") $*" >>"${CALLS}"; cat >/dev/null
-[ "\${STUB_MODE:-}" = fail ] && { echo 'claude: broken' >&2; exit 1; }
-printf '{"type":"system","subtype":"init","tools":%s,"mcp_servers":[]}\\n' "\${STUB_TOOLS:-[\\"Skill\\"]}"
-sleep 5
-`, { mode: 0o755 })
+fs.writeFileSync(path.join(T, 'claude'), `#!/bin/sh\necho "$(basename "$PWD") $*" >>"${CALLS}"\nexit 1\n`, { mode: 0o755 })
+// alex's settings as config-check renders them (every built-in tool and mcp__paseo denied, Skill allowed)
+const { DENY } = await import(path.join(B, 'bin', 'lib', 'assist.mjs'))
+const A = path.join(B, 'assistants', 'alex'), SET = path.join(A, '.claude', 'settings.json')
+fs.mkdirSync(path.dirname(SET), { recursive: true })
+const settings = (deny = DENY, extra = {}) => fs.writeFileSync(SET, JSON.stringify({ permissions: { defaultMode: 'dontAsk', allow: ['Skill'], deny }, ...extra }))
+settings()
+const MARK = path.join(T, 'mark'), marked = () => fs.readdirSync(T).filter((f) => f.startsWith('mark'))
 fs.writeFileSync(path.join(T, 'mm'), `#!/bin/sh\ncase "$1" in ls|obs) [ "$2" = status ] || echo '[]' ;; esac\nexit 0\n`, { mode: 0o755 })
 fs.mkdirSync(path.join(T, 'brain'))
 
@@ -54,7 +57,7 @@ const srv = http.createServer(async (req, res) => {
 })
 await new Promise((r) => srv.listen(0, '127.0.0.1', r))
 
-const ENV = { PATH: `${T}:${process.env.PATH}`, HOME, MM_HOME: path.join(HOME, '.mm'), MM_PROJECT: 'sysqa', MM_OBS_TRACES: '', MM_OBS_METRICS: '',
+const ENV = { PATH: `${T}:${process.env.PATH}`, HOME, MM_HOME: path.join(HOME, '.mm'), CLAUDE_MANAGED_DIR: path.join(T, 'no-managed'), MM_PROJECT: 'sysqa', MM_OBS_TRACES: '', MM_OBS_METRICS: '',
   MM_BIN: path.join(T, 'mm'), SENTINEL_BRAIN: path.join(T, 'brain'), SENTINEL_STATE: path.join(T, 'sentinel.json'), SENTINEL_CONFIG: path.join(T, 'none.json'),
   SVC_URL_BD_SERVE: `http://127.0.0.1:${srv.address().port}`, CLAUDE_BIN: path.join(T, 'claude'), ASSIST_TIMEOUT_MS: '10000' }
 const sentinel = (env = {}) => new Promise((resolve) => {
@@ -68,26 +71,36 @@ const openK = (k) => key(k).filter((i) => i.status !== 'closed')
 
 let r = await sentinel()
 ok('Skill only: the sentinel runs, no assist item', r.code === 0 && key('assist:alex').length === 0, r.out.slice(-300))
-ok('...alex was audited as a chat session (no deny flags, no strict MCP)', /^alex .*stream-json/m.test(r.calls) && !/disallowedTools|strict-mcp-config/.test(r.calls), r.calls)
-ok('...bo (mode off) and _template were not', !/^(bo|_template) /m.test(r.calls), r.calls)
+ok('...and the pass started no claude (the audit reads files)', r.calls === '', r.calls)
 
-const t0 = Date.now()
-r = await sentinel({ STUB_TOOLS: '["Skill","Bash"]' })
+settings(DENY.filter((t) => t !== 'Bash'))
+r = await sentinel()
 const it = openK('assist:alex')
 ok('a tool beyond Skill: one item opened', it.length === 1, r.out.slice(-300))
 ok('...P1, an incident for ops, labelled sentinel', it[0]?.priority === 1 && it[0]?.assignee === 'ops' && it[0]?.labels.includes('incident') && it[0]?.labels.includes('sentinel'))
 ok('...it names the extra tool and the fix', /Bash/.test(it[0]?.description || '') && /assist stop alex/.test(it[0]?.description || ''), it[0]?.description)
-ok('...the audit stops at the first line (no model turn: the stub would sleep 5 s)', Date.now() - t0 < 4500, `${Date.now() - t0} ms`)
-r = await sentinel({ STUB_TOOLS: '["Skill","Bash"]' })
+r = await sentinel()
 ok('still there: not opened twice', key('assist:alex').length === 1)
 
-r = await sentinel({ STUB_MODE: 'fail' })
-ok('claude fails: sentinel:assistants opened', openK('sentinel:assistants').length === 1, r.out.slice(-300))
+r = await sentinel({ MM_HOME: path.join(T, 'claude') }) // a file, not a folder: the audit itself fails (exit 1, not 5)
+ok('the audit fails: sentinel:assistants opened', openK('sentinel:assistants').length === 1, r.out.slice(-300))
 ok('...and the assist:alex item is left open', openK('assist:alex').length === 1)
 
+settings()
 r = await sentinel()
 ok('back to Skill only: assist:alex closed', key('assist:alex').length === 1 && openK('assist:alex').length === 0, r.out.slice(-300))
 ok('...and sentinel:assistants closed', openK('sentinel:assistants').length === 0)
+
+// an MCP server and a start hook that would each leave a mark file if anything started them
+settings(DENY, { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `touch ${MARK}-hook` }] }] } })
+fs.writeFileSync(path.join(A, '.mcp.json'), JSON.stringify({ mcpServers: { gmail: { command: 'sh', args: ['-c', `touch ${MARK}-mcp`] } } }))
+r = await sentinel()
+const d = openK('assist:alex')[0]?.description || ''
+ok('an unknown MCP server and a start hook: the incident names them (unverified tools, hook)', /mcp:gmail \(unverified tools\)/.test(d) && /hook:SessionStart/.test(d), d || r.out.slice(-300))
+ok('...and neither ran: no mark file, no claude', marked().length === 0 && r.calls === '', `${marked()} ${r.calls}`)
+fs.rmSync(path.join(A, '.mcp.json')); settings()
+r = await sentinel()
+ok('...cleared: closed again', openK('assist:alex').length === 0, r.out.slice(-300))
 
 srv.close()
 console.log(`\n${pass} passed, ${fail} failed`)
