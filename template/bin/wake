@@ -20,6 +20,7 @@
 // PASEO_NO_SDK=1).
 import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/obs.mjs'
 import * as P_ from './lib/paseo.mjs'
+import { places, total as placesTotal, workersOf } from './lib/places.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -39,6 +40,8 @@ import fs from 'node:fs'
 const ROLES = []
 const KEEP = new Set()
 const CAPACITY = {} // role -> roles.json `capacity`: the most items it holds in progress at once (default 1)
+const WORKER_ROLES = [] // roles with `"workers": true`: their workers take places too (bin/lib/places.mjs)
+const TOLD = new Set() // roles with a `worker` spec (bin/wt, bin/lead worker): a worker that finishes its turn wakes its lead
 let BOARD_LEAD = null
 const pending = {} // role -> issue id -> latest reason
 function loadRoles() {
@@ -49,6 +52,8 @@ function loadRoles() {
   KEEP.clear(); for (const r of (Array.isArray(d.roles) ? d.roles : [])) if (r && r.keep === true) KEEP.add(r.id)
   for (const k of Object.keys(CAPACITY)) delete CAPACITY[k]
   for (const r of (Array.isArray(d.roles) ? d.roles : [])) if (r && Number.isInteger(r.capacity) && r.capacity > 0) CAPACITY[r.id] = r.capacity
+  WORKER_ROLES.splice(0, WORKER_ROLES.length, ...(Array.isArray(d.roles) ? d.roles : []).filter((r) => r && r.workers === true && ids.includes(r.id)).map((r) => r.id))
+  TOLD.clear(); for (const r of (Array.isArray(d.roles) ? d.roles : [])) if (r && r.workers === true && r.worker && typeof r.worker === 'object') TOLD.add(r.id)
   for (const r of ROLES) pending[r] ||= new Map()
 }
 loadRoles()
@@ -223,25 +228,26 @@ async function lead(role) {
   return (await P_.list({ project: PROJECT, role }))[0] || null
 }
 
-// The board as wake last read it (the reconcile's view, also the capacity check at send time): every item, and the
-// ready list (bd ready: open, no open blocker, priority order). Read again when older than a second.
+// The board as wake last read it (the reconcile's view, also the capacity check at send time): every item, the
+// ready list (bd ready: open, no open blocker, priority order), and the live workers of the roles that have workers
+// (Paseo; none read when no role has them). Read again when older than a second. Workers that can't be read count as
+// none (logged): the items in progress still count.
 let snap = null
 async function board(fresh = false) {
   if (!fresh && snap && Date.now() - snap.at < 1000) return snap
   const from = Date.now() // `from`: the read began (what was written before it shows in it)
-  const [all, ready] = await Promise.all([allIssues(), bd('/v0/beads/ready?limit=500')])
-  return (snap = { from, at: Date.now(), all, ready: ready.items || [] })
+  const [all, ready, workers] = await Promise.all([allIssues(), bd('/v0/beads/ready?limit=500'),
+    WORKER_ROLES.length ? workersOf(P_, PROJECT, WORKER_ROLES).catch((e) => { log('paseo ls of workers failed (counted as none):', e.message); return [] }) : []])
+  return (snap = { from, at: Date.now(), all, ready: ready.items || [], workers })
 }
 // A role's share of the board: its queue (ready items assigned to it; one waiting for the human, `needs-you`, is not
-// work it can do), what it holds in progress (claimed by it or a worker, `<role>/...`), and its free capacity within the
-// role's `capacity` and the project's cap.
-const mineOf = (role, i) => i.assignee === role || String(i.assignee || '').startsWith(`${role}/`)
-const inProgress = (b, role) => b.all.filter((i) => i.status === 'in_progress' && mineOf(role, i))
+// work it can do), the places it holds (its items in progress, claimed by it or a worker `<role>/...`, and its live
+// workers, each once: bin/lib/places.mjs), and its free capacity within the role's `capacity` and the project's cap.
 // The setup agent (governance requests from humans) is not a lead: no capacity holds it back and no claim of its expires.
 function share(b, role) {
   const queue = b.ready.filter((i) => i.assignee === role && i.status === 'open' && !(i.labels || []).includes('needs-you'))
-  const used = inProgress(b, role).length, cap = role === 'setup' ? Infinity : CAPACITY[role] || 1, pcap = role === 'setup' ? 0 : projectCap()
-  const total = b.all.filter((i) => i.status === 'in_progress' && leadOf(i.assignee)).length
+  const ws = b.workers || [], used = places(role, b.all, ws).used, cap = role === 'setup' ? Infinity : CAPACITY[role] || 1, pcap = role === 'setup' ? 0 : projectCap()
+  const total = placesTotal(ROLES, b.all, ws)
   const free = Math.max(0, Math.min(cap - used, pcap ? pcap - total : Infinity))
   // A P0 may go past capacity by one (the owner, 2026-11-06): the first P0 in the queue that the free capacity doesn't
   // reach is handed too, while the role then holds at most cap+1 (and the project at most its cap+1). So an incident
@@ -609,9 +615,26 @@ async function expire(b, running) {
   }
   if (changed) editState((s) => { s._expiries = { ...(s._expiries || {}), ...counts } })
 }
+// A worker that finished its turn (seen running on a pass, idle on the next) wakes its lead with a reason (talk: never
+// held back): read its report, integrate it, give the verdict. Only for roles whose workers bin/lead starts (a `worker`
+// spec in roles.json); the code lead hears from Paseo itself (notifyOnFinish). Key: its item, else its name.
+const workerSeen = {} // worker agent id -> its status on the last pass
+function workersDone(b) {
+  const seen = new Set()
+  for (const w of b.workers || []) {
+    seen.add(w.id)
+    if (TOLD.has(w.role) && workerSeen[w.id] === 'running' && w.status === 'idle') {
+      note(w.role, w.item || `worker:${w.name || w.id}`, `Your worker ${w.name || w.id}${w.item ? ` on ${w.item}` : ''} finished its turn: read its report (lead worker report ${w.role} ${w.name || '<name>'}), integrate it, and give your verdict on the item.`)
+      log(`worker ${w.role}/${w.name || w.id} finished its turn: ${w.role} told`)
+    }
+    workerSeen[w.id] = w.status
+  }
+  for (const id of Object.keys(workerSeen)) if (!seen.has(id)) delete workerSeen[id]
+}
 async function reconcile1() {
   loadRoles()
   const b = await board(true)
+  workersDone(b)
   const agents = {}
   for (const role of ROLES) {
     try { agents[role] = await lead(role) } catch (e) { log('paseo ls failed:', e.message); return }
