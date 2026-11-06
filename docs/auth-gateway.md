@@ -167,6 +167,23 @@ enforced by the board's API from the assertion's role:
 - The board stamps the author's role on every item (`by:<role>`) and comment.
 - Viewers are read-only: the board refuses every non-GET for a viewer assertion.
 
+## The T2 go: where the owner approves, and why nothing else counts
+`approved` on a `t2` item is the owner's go. The Supervisor (system profile, `bin/supervisor`) and `bin/flow` count it
+only from the board's journal record that added it, and only when that record's actor is an approver: the bridge's
+actor `bridge`, or the owner's name (`owner_name` in mm's config; mm writes it into each board's `.run/endpoints.json`).
+- **The public side**, signed in as the owner: the gateway's signed assertion says who writes, and the rails above let
+  only `owner` change `approved`. The write goes to the board with the owner's gateway name as its actor, so the owner's
+  gateway account must carry the name set as `owner_name`.
+- **The bridge**: the Approve button of its Telegram message for a `t2` item writes `approved` with actor `bridge`, and
+  a comment that names the owner's Telegram identity.
+- **The local side** (no assertion: a name the visitor picks, or the board's default actor) refuses adding or removing
+  `approved` (403, logged): it says nothing signed about who writes.
+- **Agents**: bd's actor is self-declared (`--actor`, `BEADS_ACTOR`, git `user.name`, `$USER`). The guard refuses an
+  agent's command that writes as `bridge` or as the owner's name, or that sets or removes `approved` with bd. A label a
+  lead adds or relays does not count: on an item in progress, the Supervisor reports it (`t2-unapproved`).
+- Limits: the guard reads command text. A script file, `bd batch` input or a direct call to bd's HTTP API can still name
+  any actor; the Supervisor's journal check and review's audit are the controls after the fact.
+
 ## The store, and who may write it
 - `$MM_HOME/auth/`: 0700; `accounts.db` (Better Auth's tables, plus mm's `mm_token` and `mm_board_session`), `secret`
   (Better Auth's), `signing.key`, all 0600. Only the gateway process writes them.

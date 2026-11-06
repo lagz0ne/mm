@@ -23,8 +23,12 @@ file and the program disagree, the program wins; say so on the board.
 
 ## Risk tiers on the board
 Label every machine change `t1` or `t2` (see the program). A `t2` item needs, in this order: a plan with rollback and
-a lockout safeguard in the item, review's sign-off (`signed-off` label + comment), the human's approval (over
-Telegram; it shows as `approved`). Only then does ops run it. T3 is never done by a lead: ask the human.
+a lockout safeguard in the item, review's sign-off (`signed-off` label + comment), the human's approval (it shows as
+`approved`). Only then does ops run it. T3 is never done by a lead: ask the human.
+The owner approves in one of two ways, and only these count: the **Approve** button of the bridge's Telegram message
+(actor `bridge`), or the board's public address, signed in as the owner. The Supervisor reads who added `approved`
+from the board's journal. No lead sets or relays `approved`, and no lead writes as `bridge` or as the owner: the guard
+refuses it, and the board's local side refuses `approved` too.
 
 ## Seeing the machine
 `bin/brain status` and `bin/brain score` (the machine's state and debt), `mm ls`, `mm obs status|errors|slow|logs`
