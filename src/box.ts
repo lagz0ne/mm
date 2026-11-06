@@ -14,7 +14,7 @@ import { apiEnabled, apiSocketDir, granted } from './apistate'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, HOME, run, which } from './env'
 import { MM_LOG_CONFIG } from './obs'
-import { BOX_READONLY, BOXES, boxHook, dependsOn, gitRefusal, hostGitEnv, loadAll, processes as pcProcesses, PROJECT_LOG_CONFIG, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, startSkipped, up as projectUp, writeRunFiles } from './project'
+import { BOX_READONLY, BOXES, boxHook, dependsOn, gitRefusal, hostGitEnv, leaveHost, loadAll, processes as pcProcesses, PROJECT_LOG_CONFIG, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, startSkipped, up as projectUp, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
 import paseoJoinScript from '../box/paseo-join.mjs' with { type: 'text' }
@@ -452,9 +452,8 @@ export const HOME_DIR = HOME
 export function on(root: string): Step[] {
   const a = readAnswers(root), steps: Step[] = []
   if (a.box) return [{ step: 'box on', status: 'skip', detail: `${a.project} is a box already` }]
-  run(['process-compose', '-U', '-u', DIRS.socket, 'namespace', 'stop', a.project], { timeoutMs: 120_000 })
-  rmSync(join(PROJECTS_PC, `${a.project}.yaml`), { force: true })
-  const l = loadAll(); steps.push({ step: 'host', status: l.ok ? 'ok' : 'fail', detail: l.ok ? `${a.project} unloaded from the host's process manager` : short(l) })
+  // its processes stop and leave the host's process manager, also when the portless wrappers ignore TERM (sy-pfbr)
+  const l = leaveHost(root, a.project); steps.push({ step: 'host', status: l.ok ? 'ok' : 'fail', detail: l.detail })
   if (!l.ok) return steps
   // the engine as the host has it now (the host's own files): what the host may run of it later (review sy-b15.6)
   sealEngine(root); steps.push({ step: 'engine', status: 'ok', detail: 'bin/ and site/ sealed on the host' })

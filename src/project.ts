@@ -3,10 +3,10 @@
 import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { apiEnabled, granted } from './apistate'
 import { getPath, held, loadConfig } from './config'
-import { DIRS, engineDirs, HOME, run, servicePath, toolPath, which } from './env'
+import { DIRS, engineDirs, HOME, run, servicePath, toolPath, which, within } from './env'
 import { obsEndpoints } from './obs'
 import { writeSecretPaths } from './inputs'
 import { publicKeyPem } from './auth'
@@ -597,10 +597,14 @@ export function loadAll() {
   // for projects)
   const dirFiles = (d: string) => (existsSync(d) ? readdirSync(d).filter((f) => f.endsWith('.yaml')).sort().map((f) => join(d, f)) : [])
   const files = [join(DIRS.pc, 'base.yaml'), ...dirFiles(PROJECTS_PC), ...dirFiles(join(DIRS.pc, 'box-public'))]
-  const r = run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'update', ...files.flatMap((f) => ['-f', f])], { timeoutMs: 60_000 })
+  const ms = Number(process.env.MM_PC_UPDATE_MS || 60_000), t0 = Date.now()
+  const r = run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'update', ...files.flatMap((f) => ['-f', f])], { timeoutMs: ms })
   // nothing to change (e.g. the last project was just removed) is not a failure
-  if (/No processes were updated/i.test(r.out + r.err)) return { ...r, ok: true, started: [] as string[] }
-  return { ...r, started: startSkipped(dependsOn(files)) }
+  if (/No processes were updated/i.test(r.out + r.err)) return { ...r, ok: true, started: [] as string[], hung: false }
+  // no answer in time (the update waits for processes that don't stop): say so, never an empty failure (sy-pfbr 2)
+  const hung = !r.ok && Date.now() - t0 >= ms - 250
+  if (hung) return { ...r, err: `process-compose's project update gave no answer in ${Math.round(ms / 1000)} s`, hung, started: [] as string[] }
+  return { ...r, hung, started: startSkipped(dependsOn(files)) }
 }
 
 /** Each process in these process files, with its dependencies: name -> dependency -> condition ({} for none). */
@@ -671,6 +675,109 @@ export function processes(project?: string, socket = DIRS.socket) {
   try { const j = JSON.parse(r.out); all = Array.isArray(j) ? (j as P[]).filter((p) => p && typeof p.name === 'string') : [] } catch { return [] }
   const ns = (p: { namespace: string | string[] }) => (Array.isArray(p.namespace) ? p.namespace : [p.namespace])
   return project ? all.filter((p) => ns(p as never).includes(project)) : all
+}
+
+// ---------- leaving the host's process manager (mm box on; sy-pfbr) ----------
+/**
+ * The words a command becomes when process-compose's shell (`bash -c`) runs it as one simple command (bash then execs
+ * it: they are the process's argv). `$$` is process-compose's own `$`; leading NAME=value words and `exec` go. null
+ * when the shell would do more (operators, expansions, globs) or process-compose fills a $VAR: then only the shell
+ * itself, `bash -c <command>`, is that process.
+ */
+export function commandWords(cmd: string): string[] | null {
+  const raw = cmd.replaceAll('$$', '\0'); if (raw.includes('$')) return null
+  const s = raw.replaceAll('\0', '$'), words: { t: string; x: boolean; set: boolean; q: boolean }[] = []
+  let w: (typeof words)[number] | null = null
+  for (let i = 0; i < s.length;) {
+    const c = s[i]
+    if (c === ' ' || c === '\t') { if (w) words.push(w); w = null; i++; continue }
+    if ('\n;&|<>()`'.includes(c) || (c === '#' && !w)) return null
+    w ??= { t: '', x: false, set: false, q: false }
+    if (c === "'") { const j = s.indexOf("'", i + 1); if (j < 0) return null; w.t += s.slice(i + 1, j); w.q = true; i = j + 1; continue }
+    if (c === '"') {
+      w.q = true
+      for (i++; ; i++) {
+        if (i >= s.length) return null
+        const d = s[i]
+        if (d === '"') { i++; break }
+        if (d === '\\' && '$`"\\'.includes(s[i + 1] ?? '\0')) { w.t += s[++i]; continue }
+        if (d === '$' || d === '`') w.x = true
+        w.t += d
+      }
+      continue
+    }
+    if (c === '\\') { if (i + 1 >= s.length) return null; w.t += s[i + 1]; w.q = true; i += 2; continue }
+    if (c === '$' || '*?[{'.includes(c) || (c === '~' && !w.t)) w.x = true
+    if (c === '=' && !w.q && !w.set && /^[A-Za-z_]\w*$/.test(w.t)) w.set = true
+    w.t += c; i++
+  }
+  if (w) words.push(w)
+  while (words.length && words[0].set) words.shift()
+  if (words[0] && !words[0].q && words[0].t === 'exec') words.shift()
+  if (!words.length || words.some((x) => x.x) || words[0].t.startsWith('-')) return null
+  return words.map((x) => x.t)
+}
+/** Is this argv (from /proc) the process process-compose started for `cmd`, exactly? Its shell running the command,
+ *  or the command's own words: the program as typed, or a script (found on PATH) run by its #! interpreter. */
+export function sameCommand(argv: string[], cmd: string): boolean {
+  if (argv.length === 3 && /^(\/.*\/)?(ba)?sh$/.test(argv[0]) && argv[1] === '-c' && argv[2] === cmd.replaceAll('$$', '$')) return true
+  const w = commandWords(cmd); if (!w) return false
+  const i = argv.length - w.length // the program's place: after at most an interpreter and its one argument
+  if (i < 0 || i > 2 || w.slice(1).some((x, k) => argv[i + 1 + k] !== x)) return false
+  const prog = argv[i]
+  return i === 0 ? prog === w[0] : prog.includes('/') && (w[0].includes('/') ? prog === w[0] : basename(prog) === w[0])
+}
+const procArgv = (pid: number) => { try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean) } catch { return [] } }
+const procCwd = (pid: number) => { try { return readlinkSync(`/proc/${pid}/cwd`) } catch { return '' } }
+/** Running (a zombie has ended: its parent just hasn't reaped it yet). */
+const procAlive = (pid: number) => { try { const st = readFileSync(`/proc/${pid}/stat`, 'utf8'); return st.slice(st.lastIndexOf(')') + 2, st.lastIndexOf(')') + 3) !== 'Z' } catch { return false } }
+/**
+ * `mm box on` (sy-pfbr): the project's processes stop and leave the host's process manager. A process that ignores
+ * TERM (a portless wrapper in a container) stays Terminating, and process-compose's next project update waits for it
+ * past its timeout. So, after the stop, a wrapper that still runs is stopped by mm: TERM, then KILL (its service gets
+ * TERM through its pdeathsig). Only process-compose's own pid for it, and only when that pid's command line is exactly
+ * the one mm gave it and it runs in the project's root: never a loose match (a person's shell, an agent working there).
+ * Then the reload, tried again as mm archive does. The detail says what mm stopped, or what still hangs.
+ */
+export function leaveHost(root: string, project: string, waitMs = 10_000): { ok: boolean; detail: string } {
+  const pf = join(PROJECTS_PC, `${project}.yaml`)
+  let defs: Record<string, { command?: unknown }> = {}
+  try { defs = (Bun.YAML.parse(readFileSync(pf, 'utf8')) as { processes?: typeof defs })?.processes || {} } catch {}
+  const was = processes(project).filter((p) => Object.hasOwn(defs, p.name) && Number(p.pid) > 0).map((p) => ({ name: p.name, pid: Number(p.pid) }))
+  run(['process-compose', '-U', '-u', DIRS.socket, 'namespace', 'stop', project], { timeoutMs: 120_000 })
+  rmSync(pf, { force: true })
+  const left = () => was.filter((p) => procAlive(p.pid)), stopped: string[] = []
+  const wrapper = (p: { name: string; pid: number }) => {
+    const cmd = String(defs[p.name]?.command ?? '')
+    return cmd.startsWith('portless ') && sameCommand(procArgv(p.pid), cmd) && within(procCwd(p.pid), root)
+  }
+  const stopWrappers = (ms: number) => {
+    for (const end = Date.now() + ms; left().length && Date.now() < end;) Bun.sleepSync(250)
+    const hit = left().filter(wrapper)
+    for (const p of hit) try { process.kill(p.pid, 'SIGTERM') } catch {}
+    for (let i = 0; i < 30 && hit.some((p) => procAlive(p.pid)); i++) Bun.sleepSync(100)
+    for (const p of hit) {
+      const kill = procAlive(p.pid); if (kill) try { process.kill(p.pid, 'SIGKILL') } catch {}
+      stopped.push(`${p.name} (pid ${p.pid}${kill ? ', KILL' : ''})`)
+    }
+    return hit.length
+  }
+  stopWrappers(waitMs)
+  let l = loadAll(), n = left().length
+  for (let i = 0; i < 5 && !l.ok; i++) {
+    // a reload that got no answer waits on a process: again only once something has stopped since
+    const more = stopWrappers(2000), now = left().length
+    if (l.hung && !more && now >= n) break
+    if (!now) Bun.sleepSync(2000) // ...else it races processes still stopping
+    n = now; l = loadAll()
+  }
+  const killed = stopped.length ? `; stopped ${stopped.length} wrapper(s) left running after the stop: ${stopped.join(', ').slice(0, 200)}` : ''
+  const still = left().map((p) => `${p.name} (pid ${p.pid}${wrapper(p) ? '' : ', not a wrapper with mm\'s exact command line: left alone'})`)
+  if (l.ok && !still.length) return { ok: true, detail: `${project} unloaded from the host's process manager${killed}` }
+  // (after an update that got no answer, process-compose lets go of what it waited for: the next one is "ok", and the
+  // process runs on outside it; so a process of the project that still runs is a failure too)
+  const why = l.ok ? `${project} unloaded, but not all of it stopped` : (l.err || l.out).trim().split('\n').slice(-3).join(' ').slice(0, 200) || `process-compose exit ${l.code}`
+  return { ok: false, detail: `${why}${still.length ? `; still running: ${still.join(', ').slice(0, 300)}: stop it, then mm box on again` : ''}${killed}` }
 }
 
 export function listProjects() {

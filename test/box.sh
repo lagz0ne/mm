@@ -329,6 +329,7 @@ if grep -q "process $PROJECT.bd-serve won't run" <<<"$NEWLOG"; then
   check "...the restart left bd-serve Skipped in the box: box on started it again (sy-5pvp)" grep -q 'started again what it had skipped: .*bd-serve' /tmp/box-on.out
 else ok "...(the restart came too late to leave bd-serve Skipped in this run: nothing to heal)"; fi
 check "...and the board is ready right after box on, without waiting for health (sy-5pvp)" sh -c "for i in \$(seq 1 15); do mm inspect '$REF' 2>/dev/null | grep -q 'board .*Ready' && exit 0; sleep 1; done; exit 1"
+check "...box on's host step says what it did, never an empty failure (sy-pfbr)" grep -q 'unloaded from the host' /tmp/box-on.out
 for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
 check "...its board is ready in the box, and the item made there before is still there" sh -c "mm inspect '$REF' | grep -q 'board .*Ready' && IN \"cd $ROOT && bin/bd list --json\" | grep -q 'made in the box'"
 check "...and it joined the machine's Paseo again (one entry)" sh -c "[ \"\$(SP host ls --json | jq --arg p '$PROJECT' '[.[] | select(.label == \$p)] | length')\" = 1 ]"
