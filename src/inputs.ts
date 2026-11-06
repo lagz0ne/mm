@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, w
 import { basename, dirname, join } from 'node:path'
 import { granted } from './apistate'
 import { type Config, getPath, loadConfig, saveConfig, setPath, when } from './config'
-import { DIRS, HOME, run } from './env'
+import { DIRS, HOME, run, secretsDir } from './env'
 import { manifest } from './manifest'
 import * as vault from './vault'
 
@@ -44,9 +44,10 @@ export function machineSecretPaths(): { files: string[]; dirs: string[] } {
       if (d !== HOME && d !== join(HOME, '.claude') && d.startsWith(`${HOME}/`)) dirs.add(d)
     }
   }
-  // where opened secrets live while they are used, when the machine names its own (a noswap tmpfs, MM_SECRETS_DIR):
-  // a person's Claude token is opened there for one run (sy-8n4w); the default folder is in the template's fixed list
-  if (process.env.MM_SECRETS_DIR?.startsWith('/')) dirs.add(vault.secretsBase())
+  // where opened secrets live while they are used, when the machine names its own (a noswap tmpfs: vault.secrets_dir,
+  // or MM_SECRETS_DIR): a person's Claude token is opened there for one run (sy-8n4w); the default folder is in the
+  // template's fixed list
+  const opened = secretsDir(); if (opened.from !== 'default') dirs.add(opened.path)
   return { files: [...files].sort(), dirs: [...dirs].sort() }
 }
 /** The folders of machineSecretPaths() that hold only secrets (sy-392): the folder of each secret input filled by hand

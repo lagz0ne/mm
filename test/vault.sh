@@ -50,6 +50,49 @@ check "a changed sealed file is refused (digest)" bash -c "! mm vault run acme-s
 cp "$T/good.age" "$MM_HOME/vault/acme-shop.api_key.age"; chmod 600 "$MM_HOME/vault/acme-shop.api_key.age"
 check "mm vault check: ok again" mm vault check
 
+echo '== one opened-secrets folder for every call (sy-lt7c)'
+# what each caller in mm decides, from the source: the vault's base, the outside list, the secret paths for config-check
+cat >"$T/callers.ts" <<EOF
+import { outsidePaths, secretsDir } from '$SRC/src/env'
+import { machineSecretPaths } from '$SRC/src/inputs'
+import * as vault from '$SRC/src/vault'
+const s = secretsDir(), o = outsidePaths().find((x) => x.id === 'opened secrets')!.path, sp = machineSecretPaths().dirs
+console.log(JSON.stringify({ from: s.from, base: vault.secretsBase(), outside: o, run: vault.runtimeDir('acme-shop'), listed: sp.includes(s.path) }))
+EOF
+CALLERS="bun '$T/callers.ts' 2>>'$LOG'"
+dr() { { mm doctor -o json 2>/dev/null || true; } | jq -e "[.[] | select(.item==\"secrets folder callers\")] | length == 1 and ($1)"; }
+export MM_DOCKER_CONF="$T/mm-docker.conf"   # doctor reads the wrapper's config from here, never the machine's /etc one
+KEYED="$SHM/kp/keyed"; mkdir -p "$SHM/kp" "$MM_HOME/bin"; chmod 755 "$SHM/kp"
+check "no key: the default (the user's runtime folder)" bash -c "$CALLERS | jq -e '.from==\"default\" and .base==\"$SHM/mm/secrets\"'"
+check "...doctor: the callers agree" dr '.[0].status=="ok"'
+mm config set vault.secrets_dir "$KEYED" >>"$LOG" 2>&1
+check "the key wins over the default" bash -c "mm vault run acme-shop API_KEY -- sh -c 'case \"\$API_KEY_FILE\" in $KEYED/acme-shop/*) exit 0;; *) exit 1;; esac'"
+check "...every caller gets the key's folder (vault, outside list, config-check's list)" bash -c "$CALLERS | jq -e '.from==\"config\" and .base==\"$KEYED\" and .outside==\"$KEYED\" and .run==\"$KEYED/acme-shop\" and .listed'"
+check "...0700; its parent, the machine's, keeps its mode (only the default's mm/ is narrowed)" bash -c "[ \$(stat -c %a '$KEYED') = 700 ] && [ \$(stat -c %a '$SHM/kp') = 755 ]"
+check "MM_SECRETS_DIR wins over the key" bash -c "MM_SECRETS_DIR='$SHM/noswap' mm vault run acme-shop API_KEY -- sh -c 'case \"\$API_KEY_FILE\" in '$SHM'/noswap/acme-shop/*) exit 0;; *) exit 1;; esac'"
+check "...every caller gets it" bash -c "MM_SECRETS_DIR='$SHM/noswap' $CALLERS | jq -e '.from==\"env\" and .base==\"$SHM/noswap\" and .outside==\"$SHM/noswap\" and .listed'"
+check "doctor: the key alone, callers agree" dr '.[0].status=="ok" and (.[0].detail | test("vault.secrets_dir"))'
+check "doctor: this call's MM_SECRETS_DIR differs from the key: a warning" bash -c "MM_SECRETS_DIR='$SHM/noswap' mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item==\"secrets folder callers\") | .status==\"warn\" and (.detail | test(\"this call\"))'"
+printf '#!/bin/sh\nexport MM_SECRETS_DIR="%s"\nexec true\n' "$SHM/pcdir" >"$MM_HOME/bin/mm-pc-up"
+check "doctor: mm-pc's launcher names another folder: a warning" dr '.[0].status=="warn" and (.[0].detail | test("mm-pc-up"))'
+printf '#!/bin/sh\nexport MM_SECRETS_DIR="%s"\nexec true\n' "$KEYED" >"$MM_HOME/bin/mm-pc-up"
+check "...the same folder: they agree" dr '.[0].status=="ok"'
+rm -f "$MM_HOME/bin/mm-pc-up"
+printf '#!/bin/sh\ncase "$*" in *is-system-running*) echo running;; *show*mm-pc.service*Environment*) echo "PATH=/usr/bin MM_SECRETS_DIR=%s";; *) exit 1;; esac\n' "$SHM/pcunit" >"$T/bin/systemctl"; chmod +x "$T/bin/systemctl"
+check "doctor: MM_SECRETS_DIR in mm-pc's unit differs: a warning" dr '.[0].status=="warn" and (.[0].detail | test("its unit"))'
+rm -f "$T/bin/systemctl"
+printf 'user = %s\nsecrets = %s\n' "$(id -un)" "$SHM/other" >"$T/mm-docker.conf"
+check "doctor: the wrapper's secrets line differs: a warning" bash -c "MM_DOCKER_CONF='$T/mm-docker.conf' mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item==\"secrets folder callers\") | .status==\"warn\" and (.detail | test(\"mm-docker\"))'"
+printf 'user = %s\n' "$(id -un)" >"$T/mm-docker.conf"
+check "...no secrets line (its default) while the key names another: a warning" bash -c "MM_DOCKER_CONF='$T/mm-docker.conf' mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item==\"secrets folder callers\") | .status==\"warn\" and (.detail | test(\"its default\"))'"
+printf 'user = %s\nsecrets = %s/\n' "$(id -un)" "$KEYED" >"$T/mm-docker.conf"
+check "...the same folder: they agree" bash -c "MM_DOCKER_CONF='$T/mm-docker.conf' mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item==\"secrets folder callers\") | .status==\"ok\" and (.detail | test(\"mm-docker\"))'"
+printf 'user = someone-else\nsecrets = %s\n' "$SHM/other" >"$T/mm-docker.conf"
+check "...a wrapper config for another user is not this one's" bash -c "MM_DOCKER_CONF='$T/mm-docker.conf' mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item==\"secrets folder callers\") | .status==\"ok\"'"
+mm config set vault.secrets_dir relative/dir >>"$LOG" 2>&1
+check "a key that isn't an absolute path is ignored (the default), and doctor names it" bash -c "$CALLERS | jq -e '.from==\"default\"' && mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item==\"secrets folder key\") | .status==\"warn\"'"
+mm config unset vault.secrets_dir >>"$LOG" 2>&1
+
 echo '== no value anywhere'
 check "no output contains the value" bash -c "! grep -q '$V' '$LOG'"
 check "no file under MM_HOME contains it in the clear" bash -c "! grep -rq '$V' '$MM_HOME'"

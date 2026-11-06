@@ -20,9 +20,14 @@ waits on `age` being installed** (a signed system package; the manifest lists it
 - **At start**, mm opens only the secrets a service declares (`secrets: [name, …]` in its services file) into
   `$XDG_RUNTIME_DIR/mm/secrets/<project>/<name>` (0600, folders 0700), with `age -d -i vault/key` reading the
   ciphertext and writing to that file. The service reads the file by path (`<NAME>_FILE` env), never a value in env.
-  `MM_SECRETS_DIR` replaces that folder (e.g. a tmpfs the brain mounts with `noswap`). `mm doctor` checks the vault's
-  modes and digests and that the folder is a tmpfs (fail), and warns when some swap is not dm-crypt and the folder
-  isn't mounted `noswap` (sy-suk 5: that mount needs root, so it's a brain migration for ops).
+  The machine names another folder in its config: `mm config set vault.secrets_dir <folder>` (an absolute path, e.g.
+  a tmpfs the brain mounts with `noswap`). Every mm call reads it: from a shell, an agent or the process manager, so
+  they all open secrets in the same place. `MM_SECRETS_DIR` overrides it for one call (a test); one rule decides it
+  (`secretsDir()` in `src/env.ts`). `mm doctor` checks the vault's modes and digests and that the folder is a tmpfs
+  (fail), and warns when some swap is not dm-crypt and the folder isn't mounted `noswap` (sy-suk 5: that mount needs
+  root, so it's a brain migration for ops). It also warns when the callers disagree (`secrets folder callers`): the
+  key (or the default), this call's `MM_SECRETS_DIR`, an `MM_SECRETS_DIR` in mm-pc's unit, launcher or base file, and
+  the mm-docker wrapper's own `secrets` line (`docs/mm-docker.md`).
 - Nothing prints a value: `mm vault ls` shows names, sizes, digests and which services use them.
 
 ## Restore (whole machine)

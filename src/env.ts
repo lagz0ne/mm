@@ -49,6 +49,31 @@ export function portlessDir(): string {
   return DIRS.portless
 }
 /**
+ * The opened-secrets folder (sy-lt7c): where the vault opens secrets while they are used (a memory-backed folder). One
+ * rule for every mm call, from a shell, an agent or the process manager: $MM_SECRETS_DIR (an override, for one call or
+ * a test), else config.yaml `vault.secrets_dir` (the machine's choice, e.g. a `noswap` tmpfs the brain mounts), else
+ * the user's runtime folder ($XDG_RUNTIME_DIR/mm/secrets: systemd's tmpfs). Only an absolute path (or ~/...) counts; any
+ * other value is ignored here, and mm doctor names it. The mm-docker wrapper keeps its own root-owned `secrets` line
+ * (it never reads this config); mm doctor checks that the two agree.
+ */
+export const SECRETS_KEY = 'vault.secrets_dir'
+export const defaultSecretsDir = () => join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 0}`, 'mm', 'secrets')
+const absPath = (v: unknown) => { const s = typeof v === 'string' ? v.trim().replace(/^~(?=\/)/, HOME) : ''; return s.startsWith('/') ? s.replace(/(.)\/+$/, '$1') : undefined }
+/** config.yaml's `vault.secrets_dir` as written (undefined when unset), read on every call. */
+export function secretsDirKey(): unknown {
+  try { return ((Bun.YAML.parse(readFileSync(DIRS.config, 'utf8')) as { vault?: { secrets_dir?: unknown } } | null)?.vault?.secrets_dir) ?? undefined } catch { return undefined }
+}
+/** What a call without MM_SECRETS_DIR uses: the key, else the default. */
+export function configuredSecretsDir(): { path: string; from: 'config' | 'default' } {
+  const k = absPath(secretsDirKey())
+  return k ? { path: k, from: 'config' } : { path: defaultSecretsDir(), from: 'default' }
+}
+export function secretsDir(): { path: string; from: 'env' | 'config' | 'default' } {
+  const e = absPath(process.env.MM_SECRETS_DIR)
+  return e ? { path: e, from: 'env' } : configuredSecretsDir()
+}
+
+/**
  * The environment that keeps the tools mm runs inside $MM_HOME: each one's own default is a folder in the home folder (or
  * /tmp). Set for mm's own calls (below), for every process the process manager runs (the launcher exports it; the
  * definitions carry the portless one), and npm's for mm's installs (src/install.ts).
@@ -78,7 +103,7 @@ export function outsidePaths(): Outside[] {
   const h = (...p: string[]) => join(HOME, ...p)
   const legacy = one ? [] : (['projects', 'brain', 'system', 'backups', 'archive'] as const).map((k): Outside => ({
     id: `layout ${k}`, path: DIRS[k], what: `the ${k} folder (legacy layout)`, use: 'later', to: join(MM, k), note: 'the one-root move (the whole layout at once, by ops)' }))
-  const runtime = process.env.MM_SECRETS_DIR || join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 0}`, 'mm', 'secrets')
+  const runtime = secretsDir().path
   return [
     { id: 'boot unit', path: h('.config', 'systemd', 'user', 'mm-pc.service'), what: 'the systemd user unit that starts the process manager at boot', use: 'allowed' },
     { id: 'PATH line', path: h('.profile'), what: 'one PATH line (~/.mm/bin first)', use: 'allowed' },

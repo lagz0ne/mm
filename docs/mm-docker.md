@@ -79,13 +79,19 @@ user = <owner>                  # the only account that may call it (sudo's SUDO
 docker = /usr/bin/docker        # the default
 mm_home = /home/<owner>/.mm     # the default: <owner's home>/.mm
 projects = /home/<owner>/.mm/projects   # one-root layout; ~/projects in the legacy one
-secrets = /run/user/<uid>/mm/secrets    # the default; MM_SECRETS_DIR's value if mm runs with one
+secrets = /run/user/<uid>/mm/secrets    # the default; the same folder as mm's vault.secrets_dir (see below)
 root_containers = no            # the default: no root, no capabilities in any container (yes: an older mm only)
 test_root = /home/<owner>/.cache/mm-docker-test   # mm's tests' area (none: no test area); see "mm's tests"
 test_prefix = mmt-              # the default: a test's folder in test_root is <prefix><name>
 max_context_mb = 64             # the default: the most a build folder may hold
 max_cp_mb = 512                 # the default: the most a cp into a container may hold
 ```
+
+**The secrets folder** (`secrets`): a box's opened secrets are mounted from there only. It must name the same folder
+as mm's own setting, `vault.secrets_dir` in mm's config (the default when that is unset: the user's runtime folder,
+`/run/user/<uid>/mm/secrets`). The wrapper never reads mm's config: that file is the owner's, and the wrapper runs as
+root, so a folder the owner names there could let a mount reach anywhere. So the two are set apart, by the same
+person (ops), and `mm doctor` warns when they disagree (`secrets folder callers`; it reads this file, which is 0644).
 
 **The tests' area** (`test_root`): a folder `<test_root>/<test_prefix><name>/` and all in it belong to the throwaway
 project `<test_prefix><name>`, as a project's own folder does (mounts, `cp`, an `--env-file`). A folder there without

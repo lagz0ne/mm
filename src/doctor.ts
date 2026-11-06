@@ -2,7 +2,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { type Config, getPath, loadConfig, when } from './config'
-import { DIRS, HOME, hasSystemdUser, isRoot, run, which } from './env'
+import { canon, configuredSecretsDir, DIRS, HOME, hasSystemdUser, isRoot, run, SECRETS_KEY, secretsDir, secretsDirKey, tilde, which } from './env'
 import { machineSecretPaths, needs, secretOnlyDirs } from './inputs'
 import { AI_DIR } from './ai'
 import { API_DIR } from './apistate'
@@ -93,6 +93,48 @@ export function secretModes(): Check {
   return { layer: 'secret', item: 'secret modes', status: 'fail',
     detail: `${wide.length} too wide: ${wide.slice(0, 5).map((w) => `${shown(w.path)} 0${w.mode.toString(8)}`).join(', ')}${wide.length > 5 ? ', …' : ''}`,
     fix: [...fixes].map(([m, ps]) => `chmod ${m} ${ps.join(' ')}`).join('; ') }
+}
+
+/**
+ * sy-lt7c: every caller must open secrets in one folder, else a service, a box mount or a person's run looks in the
+ * wrong place, or one caller opens them in a swappable folder. The callers: an mm call without MM_SECRETS_DIR (the
+ * config key, else the default), this call (its MM_SECRETS_DIR), the process manager (MM_SECRETS_DIR in mm-pc's unit,
+ * its launcher or base.yaml) and the mm-docker wrapper (its own root-owned `secrets` line; it never reads mm's config).
+ * Only paths are read: from the unit's environment just MM_SECRETS_DIR, from the wrapper's config just `user` and
+ * `secrets`. The wrapper's config: /etc/mm-docker.conf, or MM_DOCKER_CONF (the wrapper's own test-mode variable).
+ */
+export function secretsDirChecks(): Check[] {
+  const out: Check[] = [], item = 'secrets folder callers'
+  const key = secretsDirKey(), mine = configuredSecretsDir(), now = secretsDir()
+  if (key !== undefined && mine.from === 'default')
+    out.push({ layer: 'vault', item: 'secrets folder key', status: 'warn', detail: `${SECRETS_KEY} is not an absolute path: ignored (the default ${tilde(mine.path)} is used)`, fix: `mm config set ${SECRETS_KEY} <a tmpfs folder>` })
+  if (process.env.MM_SECRETS_DIR && now.from !== 'env')
+    out.push({ layer: 'vault', item: 'secrets folder env', status: 'warn', detail: 'MM_SECRETS_DIR is not an absolute path: ignored' })
+  const callers: { who: string; path: string }[] = [{ who: mine.from === 'config' ? `mm (${SECRETS_KEY})` : 'mm (the default)', path: mine.path }]
+  if (now.from === 'env') callers.push({ who: 'this call (MM_SECRETS_DIR)', path: now.path })
+  const envIn = (text: string) => /(?:^|[\s"'])(?:export\s+)?MM_SECRETS_DIR=["']?([^\s"']+)/m.exec(text)?.[1]
+  if (hasSystemdUser()) {
+    const v = envIn(run(['systemctl', '--user', 'show', 'mm-pc.service', '-p', 'Environment', '--value'], { timeoutMs: 5000 }).out)
+    if (v) callers.push({ who: 'mm-pc (MM_SECRETS_DIR in its unit)', path: v })
+  }
+  for (const [who, f] of [['mm-pc (its launcher, mm-pc-up)', join(DIRS.bin, 'mm-pc-up')], ['mm-pc (base.yaml)', join(DIRS.pc, 'base.yaml')]] as const) {
+    let v: string | undefined; try { v = envIn(readFileSync(f, 'utf8')) } catch {}
+    if (v) callers.push({ who, path: v })
+  }
+  const conf = process.env.MM_DOCKER_CONF || '/etc/mm-docker.conf'
+  let text: string | undefined; try { text = readFileSync(conf, 'utf8') } catch {}
+  if (text !== undefined) {
+    const kv: Record<string, string> = {}
+    for (const l of text.split('\n')) { const s = l.split('#', 1)[0], i = s.indexOf('='); if (i > 0) kv[s.slice(0, i).trim()] = s.slice(i + 1).trim() }
+    if (!kv.user || kv.user === run(['id', '-un']).out.trim())
+      callers.push({ who: kv.secrets ? `mm-docker (${conf} secrets)` : `mm-docker (${conf}: no secrets line, its default)`, path: kv.secrets || `/run/user/${process.getuid?.() ?? 0}/mm/secrets` })
+  }
+  const all = new Set(callers.map((c) => canon(c.path)))
+  out.push(all.size === 1
+    ? { layer: 'vault', item, status: 'ok', detail: `${callers.length} caller(s) open secrets in ${tilde(mine.path)}: ${callers.map((c) => c.who).join(', ')}` }
+    : { layer: 'vault', item, status: 'warn', detail: `the callers disagree: ${callers.map((c) => `${c.who} ${tilde(c.path)}`).join('; ')}`,
+      fix: `one folder for all: mm config set ${SECRETS_KEY} <folder>; MM_SECRETS_DIR in mm-pc's environment the same, or gone; the wrapper's \`secrets =\` line the same (root's file: ops)` })
+  return out
 }
 
 export function doctor(): Check[] {
@@ -209,10 +251,11 @@ export function doctor(): Check[] {
   for (const c of vault.check()) out.push({ layer: 'vault', item: 'vault', status: c.ok ? 'ok' : 'fail', detail: c.detail, fix: c.ok ? undefined : 'chmod 700 ~/.mm/vault, 600 the files; a digest mismatch: restore the file from mastermind' })
   if (vault.ready()) {
     let at = vault.secretsBase(); while (!existsSync(at) && at !== dirname(at)) at = dirname(at)
-    out.push(vault.isTmpfs(at) ? { layer: 'vault', item: 'secrets folder', status: 'ok', detail: `${at} is memory-backed` } : { layer: 'vault', item: 'secrets folder', status: 'fail', detail: `${at} is not a tmpfs: opened secrets would land on disk`, fix: 'set MM_SECRETS_DIR to a tmpfs (or use a systemd user session)' })
+    out.push(vault.isTmpfs(at) ? { layer: 'vault', item: 'secrets folder', status: 'ok', detail: `${at} is memory-backed` } : { layer: 'vault', item: 'secrets folder', status: 'fail', detail: `${at} is not a tmpfs: opened secrets would land on disk`, fix: `name a tmpfs: mm config set ${SECRETS_KEY} <folder> (or use a systemd user session)` })
     const w = vault.swapRisk()
     if (w) out.push({ layer: 'vault', item: 'swap', status: 'warn', detail: w })
   }
+  out.push(...secretsDirChecks())
 
   out.push(secretModes())
 

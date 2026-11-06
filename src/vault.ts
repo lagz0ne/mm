@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { DIRS, run } from './env'
+import { DIRS, run, secretsDir } from './env'
 
 export const VAULT = DIRS.vault
 const KEY = join(VAULT, 'key'), RCPT = join(VAULT, 'recipients.txt'), DIG = join(VAULT, 'digests.txt')
@@ -82,17 +82,20 @@ function decrypt(name: string, identity = KEY): Buffer {
 /** Does a sealed secret open with this machine's key (digest checked)? The value stays in memory and is dropped. */
 export function canOpen(name: string): true { decrypt(name).fill(0); return true }
 
-/** Where a project's opened secrets live while its services run: a memory-backed folder, 0700. */
-/** The base folder for opened secrets: $MM_SECRETS_DIR (e.g. a `noswap` tmpfs the brain mounts), else the user's
- *  runtime folder (systemd's tmpfs). */
-export const secretsBase = () => process.env.MM_SECRETS_DIR || join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 0}`, 'mm', 'secrets')
-export function runtimeDir(project: string) {
-  const base = secretsBase(), d = join(base, project)
+/** The base folder for opened secrets: env.ts secretsDir() (MM_SECRETS_DIR, else config `vault.secrets_dir`, else the
+ *  user's runtime folder). */
+export const secretsBase = () => secretsDir().path
+/** Make <base>/<sub> 0700. Only the default's own mm/ folder (in the user's runtime folder) is narrowed too: a folder the
+ *  machine names (a tmpfs the brain mounts) is the machine's. */
+function baseDir(sub: string) {
+  const s = secretsDir(), d = join(s.path, sub)
   mkdirSync(d, { recursive: true, mode: 0o700 })
-  if (!process.env.MM_SECRETS_DIR) chmodSync(dirname(base), 0o700)
-  chmodSync(base, 0o700); chmodSync(d, 0o700)
+  if (s.from === 'default') chmodSync(dirname(s.path), 0o700)
+  chmodSync(s.path, 0o700); chmodSync(d, 0o700)
   return d
 }
+/** Where a project's opened secrets live while its services run: a memory-backed folder, 0700. */
+export const runtimeDir = (project: string) => baseDir(project)
 /** sy-suk 5: opened secrets sit in a tmpfs, whose pages can be swapped out. A warning when some swap is not
  *  encrypted (dm-crypt) and the folder is not mounted `noswap`. Undefined when there is nothing to warn about. */
 export function swapRisk(dir = secretsBase()): string | undefined {
@@ -102,7 +105,7 @@ export function swapRisk(dir = secretsBase()): string | undefined {
   if (!plain.length) return undefined
   let at = dir; while (!existsSync(at) && at !== dirname(at)) at = dirname(at)
   if (/(^|,)noswap(,|$)/.test(run(['findmnt', '-no', 'OPTIONS', '-T', at]).out.trim())) return undefined
-  return `swap is not encrypted (${plain.join(', ')}) and ${at} is not mounted noswap: an opened secret can reach the swap disk (a noswap tmpfs for MM_SECRETS_DIR is a brain migration)`
+  return `swap is not encrypted (${plain.join(', ')}) and ${at} is not mounted noswap: an opened secret can reach the swap disk (a noswap tmpfs for vault.secrets_dir is a brain migration)`
 }
 export const isTmpfs = (dir: string) => /^(tmpfs|ramfs)$/.test(run(['stat', '-f', '-c', '%T', dir]).out.trim())
 
@@ -128,10 +131,7 @@ export function drop(name: string): boolean {
 /** Open one sealed value for one run (sy-8n4w): a new file, 0600, in `<secrets base>/_run/` (0700; `_run` is never a
  *  project's name, so no box mounts it), only on a memory-backed folder. The caller hands it on and removes it at once. */
 export function openForRun(name: string): string {
-  const base = secretsBase(), d = join(base, '_run')
-  mkdirSync(d, { recursive: true, mode: 0o700 })
-  if (!process.env.MM_SECRETS_DIR) chmodSync(dirname(base), 0o700)
-  chmodSync(base, 0o700); chmodSync(d, 0o700)
+  const d = baseDir('_run')
   if (!isTmpfs(d)) throw new Error(`${d} is not memory-backed (tmpfs): refusing to open a secret there`)
   const f = join(d, `${randomBytes(12).toString('hex')}`)
   const v = decrypt(name)

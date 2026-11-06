@@ -168,7 +168,7 @@ function promptIdentity(): string {
   } finally { spawnSync('sh', ['-c', 'stty echo </dev/tty']); writeSync(fd, '\n'); closeSync(fd) }
   if (!/^AGE-SECRET-KEY-1[0-9A-Z]+$/.test(line) && !/^AGE-PLUGIN-[A-Z0-9-]+1[0-9A-Z]+$/.test(line)) throw new Error('that is not an age identity line')
   const dir = vault.secretsBase(); mkdirSync(dir, { recursive: true, mode: 0o700 })
-  if (!vault.isTmpfs(dir)) throw new Error(`${dir} is not memory-backed: refusing to hold the identity there (set MM_SECRETS_DIR to a tmpfs, or give --identity <file>)`)
+  if (!vault.isTmpfs(dir)) throw new Error(`${dir} is not memory-backed: refusing to hold the identity there (name a tmpfs in vault.secrets_dir, or give --identity <file>)`)
   const f = join(dir, `.restore-identity-${process.pid}`); writeFileSync(f, `${line}\n`, { mode: 0o600 }); line = ''
   return f
 }
