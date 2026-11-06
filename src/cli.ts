@@ -9,7 +9,7 @@ import { DIRS, HOME, run, tilde } from './env'
 import { expand as expandHome, fill, needs, unmet } from './inputs'
 import { manifest } from './manifest'
 import { onboard } from './onboard'
-import { archive, restore, update } from './lifecycle'
+import { archive, engineDrift, engineReset, restore, update } from './lifecycle'
 import { cron, runOnce } from './cron'
 import * as vaultMod from './vault'
 import * as syncMod from './sync'
@@ -187,10 +187,20 @@ program.command('update [project]').description('bring a project (default: every
   .option('--continue', 'finish an update after resolving its conflicts')
   .option('--abort', 'undo an update that stopped on conflicts')
   .option('--adopt', 'once, for a project made before mm update: record the template (MM_TEMPLATE_DIR) as its baseline')
+  .option('--drift', 'list engine files (bin/, site/) that differ from the template: mm\'s to put back (baseline) or the project\'s (a project commit); change nothing')
+  .option('--reset <file...>', 'put engine files that drifted from the baseline back as the template renders them, in one mm commit (with -n: show only)')
   .action((ref: string | undefined, opts) => {
     const o = fmt()
     const roots = ref ? [findRoot(ref)] : listProjects().map((p) => p.root.replace(/^~(?=\/)/, HOME)).filter((r) => r !== '?')
     let bad = 0
+    if (opts.reset) {
+      if (!ref) { console.error('mm update --reset: name the project'); process.exit(2) }
+      const r = engineReset(roots[0], opts.reset, !!opts.dryRun); print(r.steps, o); process.exit(r.ok ? 0 : 1)
+    }
+    if (opts.drift) {
+      const rows = roots.flatMap((root) => engineDrift(root).map((d) => ({ project: readAnswers(root).project, path: d.path, by: d.by === 'baseline' ? 'baseline (mm update --reset puts it back)' : `project commit ${d.commit}` })))
+      print(rows, o); process.exit(rows.some((r) => r.by.startsWith('baseline')) ? 1 : 0)
+    }
     for (const root of roots) {
       const r = update(root, opts)
       if (!r.ok) bad++

@@ -29,6 +29,59 @@ function updMoved(root: string, git: ReturnType<typeof gitIn>): string | null {
   return head === rec.head && mh === rec.next ? null : 'HEAD or MERGE_HEAD is not what mm made when it began this update (a box can write them)'
 }
 
+// ---------- engine drift (sy-h5se) ----------
+// A project adopted in place (mm update --adopt) took a template render as its merge base without taking its files.
+// Where its own copy of an engine file lacked something the base has, every later three-way merge reads that as "the
+// project removed it" and keeps it out, so the file never catches up (playground's bin/lib/svc.mjs lost serviceLogs).
+// Drift: an engine file (bin/, site/) that differs from the template's render for this project although no commit of
+// the project's own changed it since mm took its baseline. Those are mm's to put back; a file a project commit changed
+// is the project's (its setup agent decides).
+export type Drift = { path: string; by: 'baseline' | 'project'; commit?: string }
+const RESETTABLE = (p: string) => /^(bin|site)\//.test(p)
+const MM_COMMIT = /^mm( update)?: /
+// The reference is the template render the project last took (its mm-template branch), not the current template: a file
+// the next mm update brings is not drift.
+const tree = (git: ReturnType<typeof gitIn>, rev: string) => new Map(git(['ls-tree', '-r', rev, '--', 'bin', 'site']).out.trim().split('\n').filter(Boolean)
+  .map((l) => { const [meta, p] = l.split('\t'); const [mode, , sha] = meta.split(' '); return [p, `${mode} ${sha}`] as const }))
+export function engineDrift(root: string): Drift[] {
+  const git = gitIn(root)
+  if (!git(['rev-parse', '-q', '--verify', 'refs/heads/mm-template']).ok) return []
+  const adopt = git(['log', '--first-parent', '-1', '--format=%H', '--grep=^mm: adopt template', 'HEAD']).out.trim()
+  const base = adopt || git(['rev-list', '--max-parents=0', '--first-parent', 'HEAD']).out.trim().split('\n').pop() || ''
+  const want = tree(git, 'refs/heads/mm-template'), have = tree(git, 'HEAD'), out: Drift[] = []
+  for (const [p, id] of want) {
+    if (!RESETTABLE(p) || p.includes('node_modules/') || have.get(p) === id) continue
+    const log = base ? git(['log', '--first-parent', '--format=%h%x1f%s', `${base}..HEAD`, '--', p]).out.trim().split('\n').filter(Boolean) : []
+    const own = log.map((l) => l.split('\x1f')).find(([, s]) => !MM_COMMIT.test(s || ''))
+    out.push(own ? { path: p, by: 'project', commit: own[0] } : { path: p, by: 'baseline' })
+  }
+  return out.sort((x, y) => x.path.localeCompare(y.path))
+}
+/** Put engine files back as the template renders them, in one mm commit: only files that drifted from the baseline
+ *  (no project commit changed them), never a box project's (its engine comes from mm's seal). */
+export function engineReset(root: string, paths: string[], dryRun = false): { steps: Step[]; ok: boolean } {
+  const git = gitIn(root), steps: Step[] = [], t = template()
+  const fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return { steps, ok: false } }
+  if (boxish(root)) return fail('reset', 'a box project: mm up puts its engine back from mm\'s seal')
+  const dirty = git(['status', '--porcelain', '--untracked-files=no']).out.trim()
+  if (dirty) return fail('clean tree', `commit or discard local changes first:\n${dirty}`)
+  const drift = new Map(engineDrift(root).map((d) => [d.path, d])), at = readAnswers(root).template_version
+  const want = paths.map((p) => p.replace(/^\.\//, ''))
+  for (const p of want) {
+    const d = drift.get(p)
+    if (!RESETTABLE(p)) return fail('reset', `${p}: only engine files (bin/, site/)`)
+    if (!d) return fail('reset', `${p}: not drifted (as the template it last took, ${at}, has it), or not the template's`)
+    if (d.by === 'project') return fail('reset', `${p}: the project's own commit ${d.commit} changed it, so it is the project's: its setup agent decides`)
+  }
+  if (dryRun) { steps.push({ step: 'reset', status: 'ok', detail: `would put back as template ${at}: ${want.join(', ')}` }); return { steps, ok: true } }
+  const co = git(['checkout', 'refs/heads/mm-template', '--', ...want]); if (!co.ok) return fail('reset', short(co))
+  // only these paths go in the commit, whatever else is staged
+  const c = git(['commit', '-q', '-m', `mm: reset ${want.join(', ')} to template ${at}`, '-m', 'No commit of the project changed these since mm took its baseline: the three-way merge had kept them behind (sy-h5se).', '--', ...want], { SETUP_HUMAN: '1' })
+  if (!c.ok) { git(['reset', '-q', 'HEAD', '--', ...want]); git(['checkout', 'HEAD', '--', ...want]); return fail('reset', short(c)) }
+  steps.push({ step: 'reset', status: 'ok', detail: `${want.join(', ')}: as template ${at} (${git(['rev-parse', '--short', 'HEAD']).out.trim()}); mm up ${readAnswers(root).project} to run it` })
+  return { steps, ok: true }
+}
+
 // ---------- mm update ----------
 export type UpdateOpts = { dryRun?: boolean; adopt?: boolean; continue?: boolean; abort?: boolean }
 export type UpdateResult = { steps: Step[]; from: string; to: string; changed: string[]; conflicts: string[]; ok: boolean }
