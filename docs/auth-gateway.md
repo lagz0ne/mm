@@ -59,6 +59,13 @@ they hold a role on. No session: `/` goes to the sign-in page.
   an ISO time (or absent); any other field or value, a non-200, a timeout or too many bytes makes that card say
   "unavailable" (logged at `warn` with the reason), and the rest of the page is unchanged. No item text ever leaves a
   board this way.
+- **The worst signal** (one line per card): the gateway asks `GET /api/summary?signal=1`, and the board adds whole
+  numbers only (`needs_you_min`, `approvals`, `queue`, `queue_min`) and one role id (`queue_role`, the role whose queue
+  head waits longest). The role id must match `^[a-z][a-z0-9-]{0,30}$` and be one of that project's roles as the
+  gateway reads them (`<project>/leads/roles.json`, inside the project's folder only, plus `setup`); anything else
+  makes the card "unavailable". The gateway writes the line itself ("review queue 3, oldest 40 min", "needs you 2
+  (1 approval), oldest 3 h", "nothing waiting"). It is red only when the board needs the person: `needs-you` items or
+  an approval wait. A board without the signal (an older template) gets no line, or only "needs you n".
 - **The page** is made on the server, has no script, escapes every value, and carries the gateway's headers
   (`Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`, `no-store`, `no-referrer`, `nosniff`); its
   stylesheet is `/s/app.css` (below).

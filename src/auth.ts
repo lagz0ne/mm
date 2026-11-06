@@ -16,7 +16,7 @@
 // State: $MM_HOME/auth/ (0700): accounts.db (Better Auth + mm's tokens and board sessions), secret, signing.key (0600).
 import { Database } from 'bun:sqlite'
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign } from 'node:crypto'
-import { chmodSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, constants as fsc, existsSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { betterAuth } from 'better-auth'
 import { getMigrations } from 'better-auth/db/migration'
@@ -112,16 +112,17 @@ const upstreamOf = (bind: string | undefined, port: number | undefined) => {
  * come from resolve() (services.yaml and .mm-answers.yaml, read-only in a box), as mm cron takes a box's jobs; a box's
  * routes from the host's own record of what the owner granted (never the box's files).
  */
-export function hostClaims(): { claims: Record<string, Map<string, string>>; routes: Record<string, Set<string>>; odd: string[] } {
-  const claims: Record<string, Map<string, string>> = {}, routes: Record<string, Set<string>> = {}, odd: string[] = []
+export function hostClaims(): { claims: Record<string, Map<string, string>>; routes: Record<string, Set<string>>; odd: string[]; roots: Record<string, string> } {
+  const claims: Record<string, Map<string, string>> = {}, routes: Record<string, Set<string>> = {}, odd: string[] = [], roots: Record<string, string> = {}
   const boxes = new Set<string>()
   for (const pdir of [join(DIRS.pc, 'projects'), join(DIRS.pc, 'boxes')]) for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
     const project = f.slice(0, -'.yaml'.length)
     if (pdir.endsWith('boxes')) boxes.add(project)
     const m = /from (.+)\/services\.yaml/.exec(readFileSync(join(pdir, f), 'utf8')); if (!m) continue
     try {
-      const r = resolve(m[1].replace(/^~(?=\/)/, process.env.HOME || ''))
+      const root = m[1].replace(/^~(?=\/)/, process.env.HOME || ''), r = resolve(root)
       if (r.answers.project !== project) { odd.push(`${f}: the project's answers name ${r.answers.project}`); continue }
+      roots[project] = root
       for (const sv of Object.values(r.services))
         if (sv.public_url && sv.public?.auth === 'required') (claims[new URL(sv.public_url).host] ||= new Map()).set(project, upstreamOf(sv.public_bind, sv.public_port))
     } catch {}
@@ -130,7 +131,7 @@ export function hostClaims(): { claims: Record<string, Map<string, string>>; rou
     if (!boxes.has(p)) continue // a project that is no box (any more) has no box routes
     for (const r of granted(p).routes) if (!r.open) (routes[r.host] ||= new Set()).add(p)
   }
-  return { claims, routes, odd }
+  return { claims, routes, odd, roots }
 }
 
 // ---------- the gateway ----------
@@ -192,11 +193,13 @@ export async function gateway() {
   const HOST_CACHE_MS = Number(process.env.MM_AUTH_HOST_CACHE_MS) || 30e3 // the tests make it short
   // ups: a board host -> where the router sends it (the board's gated public side at public_bind:public_port, from
   // resolve(), as routeUp gives the router), so the home page asks each board at the address the host gave it
-  let hostMap: { at: number; map: Record<string, string>; hosts: Record<string, string>; ups: Record<string, string>; said: string } = { at: 0, map: {}, hosts: {}, ups: {}, said: '' }
+  // roles: a project -> its role ids (rolesAt(), for the home card's worst signal, sy-6h43)
+  let hostMap: { at: number; map: Record<string, string>; hosts: Record<string, string>; ups: Record<string, string>; roles: Record<string, Set<string>>; said: string } = { at: 0, map: {}, hosts: {}, ups: {}, roles: {}, said: '' }
   const loadHosts = () => {
     if (now() - hostMap.at < HOST_CACHE_MS) return hostMap
     const map: Record<string, string> = {}, hosts: Record<string, string> = {}, ups: Record<string, string> = {}
-    const { claims, routes, odd } = hostClaims()
+    const { claims, routes, odd, roots } = hostClaims()
+    const roles = Object.fromEntries(Object.entries(roots).map(([p, root]) => [p, rolesAt(root)]))
     // a host two projects claim goes to neither (no "last one wins"); a board's host is never also a box's route
     for (const [host, ps] of Object.entries(claims)) {
       if (ps.size > 1 || routes[host]) { odd.push(`${host}: claimed by ${[...new Set([...ps.keys(), ...(routes[host] || [])])].sort().join(', ')}`); continue }
@@ -211,7 +214,7 @@ export async function gateway() {
     }
     const said = odd.sort().join('\n')
     if (said && said !== hostMap.said) log('warn', 'board hosts refused', { refused: odd })
-    return (hostMap = { at: now(), map, hosts, ups, said })
+    return (hostMap = { at: now(), map, hosts, ups, roles, said })
   }
   const projectOf = (host: string) => loadHosts().map[host] || null
   const userByName = (name: string) => db.query('SELECT * FROM user WHERE name = ?').get(name) as { id: string; name: string; role?: string; banned?: number } | null
@@ -263,11 +266,11 @@ export async function gateway() {
   // the address the host gave its route (never a project's .run/), no redirects, 3 s, 16 KB; all boards at once; no
   // cache, so a revoke shows on the next load. What a board sends back is untrusted: only whole numbers and one time.
   const SUMMARY_MS = 3000, SUMMARY_MAX = 16 * 1024
-  const summaryFrom = async (project: string, host: string, up: string, name: string, role: Role): Promise<Summary | null> => {
+  const summaryFrom = async (project: string, host: string, up: string, name: string, role: Role, roles: Set<string>): Promise<Summary | null> => {
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), SUMMARY_MS)
     let why = ''
     try {
-      const r = await fetch(`${up}/api/summary`, { redirect: 'manual', signal: ac.signal, headers: { 'x-mm-assertion': signAssertion(name, role, host),
+      const r = await fetch(`${up}/api/summary?signal=1`, { redirect: 'manual', signal: ac.signal, headers: { 'x-mm-assertion': signAssertion(name, role, host),
         'x-forwarded-host': host, 'x-forwarded-proto': 'https', accept: 'application/json', 'accept-encoding': 'identity' } })
       if (r.status !== 200 || !r.body) { why = `HTTP ${r.status}`; ac.abort(); return null }
       if (Number(r.headers.get('content-length') || 0) > SUMMARY_MAX) { why = 'too big'; ac.abort(); return null }
@@ -278,16 +281,16 @@ export async function gateway() {
         parts.push(value)
       }
       let o: unknown; try { o = JSON.parse(Buffer.concat(parts).toString('utf8')) } catch { why = 'not JSON'; return null }
-      const sm = summaryOf(o); if (!sm) why = 'not a summary'
+      const sm = summaryOf(o, roles); if (!sm) why = 'not a summary'
       return sm
     } catch (e) { why = ac.signal.aborted ? 'timeout' : (e as Error).name || 'error'; return null }
     finally { clearTimeout(timer); if (why) log('warn', 'board summary unavailable', { project, host, why }) }
   }
   const home = async (p: { userId: string; name: string }) => {
-    const { hosts, ups } = loadHosts()
+    const { hosts, ups, roles } = loadHosts()
     const granted = Object.entries(hosts).sort(([a], [b]) => a.localeCompare(b))
       .flatMap(([project, host]) => { const role = roleOn(p.userId, project); return role ? [{ project, host, role }] : [] })
-    const cards = await Promise.all(granted.map(async (c) => ({ ...c, s: ups[c.host] ? await summaryFrom(c.project, c.host, ups[c.host], p.name, c.role) : null })))
+    const cards = await Promise.all(granted.map(async (c) => ({ ...c, s: ups[c.host] ? await summaryFrom(c.project, c.host, ups[c.host], p.name, c.role, roles[c.project] || new Set()) : null })))
     return html(homePage(p.name, cards))
   }
 
@@ -547,18 +550,60 @@ export async function callApi(path: string, body?: Record<string, unknown>) {
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 
 // ---------- the home page's parts (sy-ukbz) ----------
-type Summary = { open: number; p0: number; blocked: number; needs_you: number; mine: number; last?: string }
+type Summary = { open: number; p0: number; blocked: number; needs_you: number; mine: number; last?: string
+  needs_you_min?: number; approvals?: number; queue?: number; queue_min?: number; queue_role?: string }
 const COUNTS = ['open', 'p0', 'blocked', 'needs_you', 'mine'] as const
+/** The worst signal's parts (sy-6h43), each optional (a board on an older template sends none): whole numbers again. */
+const SIGNALS = ['needs_you_min', 'approvals', 'queue', 'queue_min'] as const
+const ROLE_ID = /^[a-z][a-z0-9-]{0,30}$/
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/
-/** A board's answer, read strictly: the five counts as whole numbers 0..1e6, `last` an ISO time or absent, nothing else. */
-export function summaryOf(o: unknown): Summary | null {
+/** A board's answer, read strictly: the five counts as whole numbers 0..1e6, `last` an ISO time or absent; the worst
+ *  signal's numbers (SIGNALS) whole numbers 0..1e6 or absent, and `queue_role` absent or one of `roles` (that project's
+ *  role ids, as the gateway knows them: rolesAt()); nothing else. */
+export function summaryOf(o: unknown, roles: Set<string> = new Set()): Summary | null {
   if (!o || typeof o !== 'object' || Array.isArray(o)) return null
   const x = o as Record<string, unknown>
-  if (Object.keys(x).some((k) => k !== 'last' && !(COUNTS as readonly string[]).includes(k))) return null
-  for (const k of COUNTS) { const v = x[k]; if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 1e6) return null }
+  if (Object.keys(x).some((k) => k !== 'last' && k !== 'queue_role' && !(COUNTS as readonly string[]).includes(k) && !(SIGNALS as readonly string[]).includes(k))) return null
+  const whole = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 1e6
+  for (const k of COUNTS) if (!whole(x[k])) return null
+  for (const k of SIGNALS) if (x[k] !== undefined && !whole(x[k])) return null
   if (x.last !== undefined && (typeof x.last !== 'string' || !ISO.test(x.last) || Number.isNaN(Date.parse(x.last)))) return null
+  if (x.queue_role !== undefined && (typeof x.queue_role !== 'string' || !ROLE_ID.test(x.queue_role) || !roles.has(x.queue_role))) return null
   const n = (k: typeof COUNTS[number]) => x[k] as number
-  return { open: n('open'), p0: n('p0'), blocked: n('blocked'), needs_you: n('needs_you'), mine: n('mine'), ...(x.last ? { last: new Date(x.last as string).toISOString() } : {}) }
+  const sig = Object.fromEntries(SIGNALS.filter((k) => x[k] !== undefined).map((k) => [k, x[k] as number]))
+  return { open: n('open'), p0: n('p0'), blocked: n('blocked'), needs_you: n('needs_you'), mine: n('mine'), ...(x.last ? { last: new Date(x.last as string).toISOString() } : {}),
+    ...sig, ...(x.queue_role ? { queue_role: x.queue_role as string } : {}) }
+}
+/** A project's role ids, as the gateway knows them (sy-6h43): its leads/roles.json, and setup (every board has it). Read
+ *  only inside the project's folder (opened without following a final link, then checked by where the open file really
+ *  is), at most 64 KB, only ids that look like one. Anything else: setup alone. */
+export function rolesAt(root: string): Set<string> {
+  const out = new Set<string>(['setup'])
+  let fd = -1
+  try {
+    fd = openSync(join(root, 'leads', 'roles.json'), fsc.O_RDONLY | fsc.O_NOFOLLOW)
+    const real = (() => { try { return readlinkSync(`/proc/self/fd/${fd}`) } catch { return realpathSync(join(root, 'leads', 'roles.json')) } })()
+    const st = fstatSync(fd)
+    if (!real.startsWith(realpathSync(root) + '/') || !st.isFile() || st.size > 65536) return out
+    const d = JSON.parse(readFileSync(fd, 'utf8'))
+    for (const r of Array.isArray(d?.roles) ? d.roles : []) if (typeof r?.id === 'string' && ROLE_ID.test(r.id)) out.add(r.id)
+  } catch {} finally { if (fd >= 0) closeSync(fd) }
+  return out
+}
+const mins = (m: number) => (m < 60 ? `${m} min` : m < 2880 ? `${Math.floor(m / 60)} h` : `${Math.floor(m / 1440)} d`)
+/** The card's one line (sy-6h43), made here from the board's numbers and its checked role id, never from a board's
+ *  text: the worst signal. Red (hot) only when it needs the owner: items that need you (needs-you, or for the owner a
+ *  t2 waiting for the approval). null: a board on an older template (no signal sent). */
+export function worstOf(s: Summary): { text: string; hot: boolean } | null {
+  const oldest = (m: number | undefined) => (m === undefined ? '' : `, oldest ${mins(m)}`)
+  if (s.needs_you > 0) {
+    const a = Math.min(s.approvals ?? 0, s.needs_you), other = s.needs_you - a
+    const what = !a ? `needs you ${s.needs_you}` : !other ? `${a} approval${a === 1 ? ' waits' : 's wait'} for you` : `needs you ${s.needs_you} (${a} approval${a === 1 ? '' : 's'})`
+    return { text: what + oldest(s.needs_you_min), hot: true }
+  }
+  if (s.queue_role && s.queue) return { text: `${s.queue_role} queue ${s.queue}${oldest(s.queue_min)}`, hot: false }
+  if (s.blocked > 0) return { text: `${s.blocked} blocked`, hot: false }
+  return s.queue !== undefined ? { text: 'nothing waiting', hot: false } : null
 }
 // ---------- the gateway's pages (sy-vey6): the boards' Swiss style, one stylesheet, no inline style ----------
 // The CSP (default-src 'self') blocks style="" and <style>, so every page links /s/app.css, served from here. The same
@@ -575,7 +620,7 @@ function homePage(name: string, cards: { project: string; host: string; role: st
   const count = (label: string, hint: string, v: number, hot = false) => `<div${hot && v ? ' class="hot"' : ''} title="${hint}"><dt>${label}</dt><dd>${v}</dd></div>`
   const card = (c: typeof cards[number]) => `<section class="card"><h2>${esc(c.project)}</h2>
 <p class="role">You are <b>${esc(c.role)}</b>${c.role === 'viewer' ? ' (read-only)' : ''}</p>
-${c.s ? `<dl class="counts">${count('Open', 'open items', c.s.open)}${count('P0', 'open P0 items', c.s.p0, true)}${count('Blocked', 'blocked items', c.s.blocked)}${count('Needs you', 'items that need a human', c.s.needs_you, true)}${count('Mine', 'open items assigned to you', c.s.mine)}</dl>
+${(() => { const w = c.s && worstOf(c.s); return w ? `<p class="worst${w.hot ? ' hot' : ''}">${esc(w.text)}</p>\n` : '' })()}${c.s ? `<dl class="counts">${count('Open', 'open items', c.s.open)}${count('P0', 'open P0 items', c.s.p0, true)}${count('Blocked', 'blocked items', c.s.blocked)}${count('Needs you', 'items that need a human', c.s.needs_you, true)}${count('Mine', 'open items assigned to you', c.s.mine)}</dl>
 ${c.s.last ? `<p class="last">Last activity: ${esc(c.s.last.slice(0, 16).replace('T', ' '))} UTC</p>` : ''}` : '<p class="na">Summary unavailable right now.</p>'}
 <p class="go"><a class="${c.role === 'viewer' ? 'view' : 'open'}" href="/s?b=${encodeURIComponent(c.host)}&amp;r=%2F">${c.role === 'viewer' ? 'View the board (read-only)' : 'Open the board'}</a></p></section>`
   const nav = `<span class="here">Boards</span><span class="who">Signed in as <b>${esc(name)}</b></span><form method="post" action="/s/out"><button type="submit" class="quiet">Sign out</button></form>`
@@ -611,6 +656,8 @@ button.quiet:hover{border-bottom-color:var(--swiss);color:var(--swiss)}
 .card h2{margin:0 0 .15rem;font-size:1.25rem;line-height:1.2;font-weight:700;letter-spacing:-.01em;overflow-wrap:anywhere}
 .card .role,.card .last,.card .na{margin:0;font-size:13px;color:var(--muted)}
 .card .role b{color:var(--fg)}
+.card .worst{margin:.6rem 0 0;font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.card .worst.hot{color:var(--swiss);border-left:3px solid var(--swiss);padding-left:.5rem}
 .counts{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0 .75rem;margin:.9rem 0 .6rem}
 .counts dt{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .counts dd{margin:.2rem 0 0;font-size:1.75rem;line-height:1;font-weight:700;font-variant-numeric:tabular-nums}

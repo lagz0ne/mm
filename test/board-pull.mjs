@@ -199,7 +199,9 @@ try {
   ok('the pairs (speed next to quality) are mm obs flow\'s PAIRS', JSON.stringify(flow.pairs) === JSON.stringify({ queue: ['first_pass'], cycle: ['reopened', 'escaped'], handoff: ['first_pass'] }))
 
   step('the board: /api/summary\'s worst signal (numbers and one role id)')
-  const sm = await get('/api/summary')
+  const old = await get('/api/summary')
+  ok('without ?signal=1 (a gateway that reads only the counts): the five counts and the time, nothing more', Object.keys(old).sort().join() === 'blocked,last,mine,needs_you,open,p0', JSON.stringify(old))
+  const sm = await get('/api/summary?signal=1')
   ok('the five counts as before', sm.open === 11 && sm.p0 === 1 && sm.blocked === 1 && sm.needs_you === 1 && sm.mine === 0, JSON.stringify(sm))
   ok('the worst queue: ops, 2 items, its head waits 50 min (review\'s waits 40)', sm.queue_role === 'ops' && sm.queue === 2 && sm.queue_min === 50, JSON.stringify(sm))
   ok('needs-you: the oldest waits 90 min; no approvals (not the owner)', sm.needs_you_min === 90 && sm.approvals === 0)
