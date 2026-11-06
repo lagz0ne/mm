@@ -148,7 +148,7 @@ function finish(root: string, res: UpdateResult): UpdateResult {
     if (!b.ok) return fail('board build', b)
     steps.push({ step: 'board build', status: 'ok', detail: deps ? 'deps + build' : 'build' })
   }
-  // the run files first: config-check renders the denies from them (the machine's secret paths, sy-5ag); up() writes them again
+  // the run files first, and mm's list of the machine's secret paths: config-check renders the denies from them (sy-5ag); up() writes them again
   writeRunFiles(root, readAnswers(root).box ? '/run/mm/sock/pc.sock' : DIRS.socket)
   const cc = run([join(root, 'bin', 'config-check'), '--render'], { cwd: root })
   if (!cc.ok) return fail('governance check', cc)

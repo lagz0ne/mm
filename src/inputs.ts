@@ -28,9 +28,9 @@ const tilde = (p: string) => (p.startsWith(HOME) ? `~${p.slice(HOME.length)}` : 
 export const machineInputs = () => manifest.machine.inputs as Record<string, Input>
 /**
  * Where this machine keeps its secrets (review sy-5ag): every secret input's file in the manifest, and the folder it is in
- * (never $HOME itself, never Claude's own folder), plus Paseo's home and Claude's own login. mm writes the list into each
- * project's .run/endpoints.json; the template's config-check denies all of it to every role, so a new input is covered
- * without a template change. Paths only, never a value.
+ * (never $HOME itself, never Claude's own folder), plus Paseo's home and Claude's own login. mm writes the list to
+ * <mm>/secret-paths.json (writeSecretPaths); the template's config-check denies all of it to every role, so a new input is
+ * covered without a template change. Paths only, never a value.
  */
 export function machineSecretPaths(): { files: string[]; dirs: string[] } {
   const files = new Set<string>([join(HOME, '.claude', '.credentials.json')]), dirs = new Set<string>([join(HOME, '.paseo')])
@@ -44,6 +44,16 @@ export function machineSecretPaths(): { files: string[]; dirs: string[] } {
     }
   }
   return { files: [...files].sort(), dirs: [...dirs].sort() }
+}
+/** Where config-check reads machineSecretPaths() from: mm's own folder, outside every project, so neither a box nor a
+ *  project's run files choose it (review sy-v92 2). config-check denies every role a change to it. */
+export const secretPathsFile = () => join(DIRS.mm, 'secret-paths.json')
+/** Write the list (paths only), whole or not at all: a temp file renamed over the old one. */
+export function writeSecretPaths() {
+  const f = secretPathsFile(), tmp = `${f}.${process.pid}.tmp`
+  mkdirSync(DIRS.mm, { recursive: true })
+  writeFileSync(tmp, JSON.stringify({ ...machineSecretPaths(), about: 'the machine\'s secret paths (no values), from mm\'s manifest; config-check denies them to every role' }, null, 2) + '\n', { mode: 0o644 })
+  renameSync(tmp, f)
 }
 export const configKey = (name: string, i: Input) => i.config || name
 /** A var's default, resolved ($(hostname -s), $HOME). */

@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, engineDirs, HOME, run, servicePath, toolPath, which } from './env'
 import { obsEndpoints } from './obs'
-import { machineSecretPaths } from './inputs'
+import { writeSecretPaths } from './inputs'
 import { publicKeyPem } from './auth'
 import { pcRunning, writeBase } from './pc'
 import { rendered, renderTo, template, templateCommit } from './template'
@@ -147,7 +147,7 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
   const themes = ['birds', 'scientists', 'mythology', 'cities', 'gems', 'stars']
   must('personas', run(['node', join(root, 'bin', 'persona'), 'theme', themes[Math.floor(Math.random() * themes.length)]], { cwd: root }))
   must('board build', run(['sh', '-c', 'npm ci --no-audit --no-fund --silent && npm run build --silent'], { cwd: join(root, 'site'), timeoutMs: 900_000 }))
-  // the run files first: config-check renders the denies from them (the machine's secret paths, sy-5ag); up() writes them again
+  // the run files first, and mm's list of the machine's secret paths: config-check renders the denies from them (sy-5ag); up() writes them again
   writeRunFiles(root, answers.box ? '/run/mm/sock/pc.sock' : DIRS.socket)
   must('governance check', run([join(root, 'bin', 'config-check'), '--render'], { cwd: root }))
   git(['add', '-A'])
@@ -289,9 +289,11 @@ export function writeRunFiles(root: string, pcSocket: string) {
     // how this machine runs a container, and the pinned images of optional services (bin/doop-run; plans/doop.md)
     containers: { docker: String(process.env.MM_DOCKER || getPath(loadConfig(), 'box.docker') || 'docker'),
       doop_image: String(process.env.MM_DOOP_IMAGE || getPath(loadConfig(), 'doop.image') || 'mm-doop:0.12.0') },
-    machine_secrets: machineSecretPaths(), // where the machine's secrets are (paths only): config-check denies them to every role (sy-5ag)
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
   writeInProject(root, '.run/endpoints.json', JSON.stringify(ep, null, 2))
+  // where the machine's secrets are (paths only), for config-check to deny to every role (sy-5ag): in mm's folder, never
+  // in the project's run files, which the project (a box too) can write (review sy-v92 2)
+  writeSecretPaths()
 }
 
 /**

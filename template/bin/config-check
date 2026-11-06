@@ -35,31 +35,37 @@ const RAW_STATUS = ['bd', 'bin/bd'].flatMap((b) => [`Bash(${b} update *--status 
 // gateway's socket, or reads its store or a box's Paseo password. `mm revoke` stays free (it only takes access away).
 // The same for spending (sy-b15.10): no agent sets an AI budget, or reads or edits the AI gateway's store (its keys'
 // hashes, budgets, use) or the machine's upstream key.
+// mm's folder, as the host knows it: MM_HOME (mm sets it for what it runs) and the default, never .run/endpoints.json's
+// "dirs" (the project's to write, a box's too: review sy-v92 2). Each deny below names every one of them.
+const MMS = [...new Set([process.env.MM_HOME, `${HOME}/.mm`].filter((x) => x && x.startsWith('/')))]
 const OWNER_ONLY = ['Bash(mm user*)', 'Bash(mm grant*)', 'Bash(mm token*)', 'Bash(mm auth*)', 'Bash(*auth.sock*)',
-  'Read(/{mm}/auth/**)', 'Edit(/{mm}/auth/**)', 'Read(/{mm}/paseo/**)', 'Edit(/{mm}/paseo/**)',
-  'Bash(mm ai budget*)', 'Bash(*ai.sock*)', 'Read(/{mm}/ai/**)', 'Edit(/{mm}/ai/**)',
+  'Bash(mm ai budget*)', 'Bash(*ai.sock*)',
+  ...MMS.flatMap((m) => ['auth', 'paseo', 'ai'].flatMap((d) => [`Read(/${m}/${d}/**)`, `Edit(/${m}/${d}/**)`])),
   `Read(/${HOME}/.config/secrets/ai-upstream.key)`, `Edit(/${HOME}/.config/secrets/ai-upstream.key)`]
-// The machine's secrets (review sy-5ag): every path mm lists in .run/endpoints.json (machine_secrets: each secret input's
-// file and folder in the manifest, Paseo's home, Claude's login), so a new input is covered without a template change;
-// always joined with a fixed list (the brain's keys in either layout among them), so the run file, which a box can
-// write, can add paths but never take one away (review sy-v92 1). Read and Edit, and any Bash command that names one
+// The machine's secrets (review sy-5ag): every path mm lists in <mm>/secret-paths.json (each secret input's file and
+// folder in the manifest, Paseo's home, Claude's login), so a new input is covered without a template change. That
+// file is the host's: mm writes it outside every project, a box never sees it, and no role may change it (review
+// sy-v92 2). Always joined with a fixed list (the brain's keys in either layout among them), so a missing or emptied
+// list can add paths but never take one away (review sy-v92 1). Read and Edit, and any Bash command that names one
 // (absolute, ~ or $HOME form).
 // The vault (sy-uvgq): its folder (the machine key `key`, the recipients, the sealed files) and where opened secrets
 // live while services run (a tmpfs: /run/user/<uid>/mm/secrets, or $XDG_RUNTIME_DIR/mm/secrets). Both layouts' vault
-// folder, and mm's own idea of it (dirs()).
+// folder, mm's own as the host knows it (MMS), and the run file's (dirs(): it can only add one).
 const UID = process.getuid?.() ?? 0, XDG = process.env.XDG_RUNTIME_DIR
-const VAULTS = [...new Set([dirs().vault, `${HOME}/.mm/vault`])]
+const VAULTS = [...new Set([...MMS.map((m) => `${m}/vault`), `${HOME}/.mm/vault`, dirs().vault])]
 const OPENED = [...new Set([`/run/user/${UID}/mm/secrets`, ...(XDG ? [`${XDG}/mm/secrets`] : [])])]
 const MS_FIXED = { files: [`${HOME}/.claude/.credentials.json`],
   dirs: [`${HOME}/.mm/brain/.keys`, `${HOME}/brain/.keys`, `${HOME}/.config/secrets`, `${HOME}/.paseo`, `${HOME}/.ssh`, ...VAULTS, ...OPENED] }
 // spellings the absolute, ~ and $HOME forms don't catch: the variable forms of the tmpfs, and the key by its own name
 const VAULT_BASH = ['Bash(*vault/key*)', 'Bash(*$XDG_RUNTIME_DIR/mm/secrets*)', 'Bash(*${XDG_RUNTIME_DIR}/mm/secrets*)', 'Bash(*$MM_HOME/vault*)', 'Bash(*${MM_HOME}/vault*)']
-const MS_RUN = (() => { try { return JSON.parse(fs.readFileSync(path.join(P, '.run', 'endpoints.json'), 'utf8')).machine_secrets || {} } catch { return {} } })()
+const MS_FILES = MMS.map((m) => `${m}/secret-paths.json`)
+const MS_HOST = MS_FILES.map((f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) || {} } catch { return {} } })
 const strs = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.startsWith('/')) : [])
-const MS = { files: [...new Set([...MS_FIXED.files, ...strs(MS_RUN.files)])], dirs: [...new Set([...MS_FIXED.dirs, ...strs(MS_RUN.dirs)])] }
+const MS = { files: [...new Set([...MS_FIXED.files, ...MS_HOST.flatMap((h) => strs(h.files))])], dirs: [...new Set([...MS_FIXED.dirs, ...MS_HOST.flatMap((h) => strs(h.dirs))])] }
 const named = (p) => [p, ...(p.startsWith(`${HOME}/`) ? [`~${p.slice(HOME.length)}`, `$HOME${p.slice(HOME.length)}`] : [])].map((x) => `Bash(*${x}*)`)
 const SECRET_DENY = [...(MS.files || []).flatMap((f) => [`Read(/${f})`, `Edit(/${f})`, ...named(f)]),
-  ...(MS.dirs || []).flatMap((d) => [`Read(/${d}/**)`, `Edit(/${d}/**)`, ...named(d)]), ...VAULT_BASH]
+  ...(MS.dirs || []).flatMap((d) => [`Read(/${d}/**)`, `Edit(/${d}/**)`, ...named(d)]), ...VAULT_BASH,
+  ...MS_FILES.flatMap((f) => [`Edit(/${f})`, `Write(/${f})`, ...named(f)])]
 // The project's own secrets (Doop's account, agent key and auth secret among them; plans/doop.md): no Bash command that
 // names them, and no running the helper that prints the Doop key (only Claude Code runs it, as the MCP's headersHelper)
 const PROJECT_SECRETS = ['Bash(*{root}/secrets*)', 'Bash(*secrets/doop*)', 'Bash(*doop-mcp-headers*)', 'Edit(/{root}/secrets/**)']
