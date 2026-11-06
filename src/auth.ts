@@ -6,7 +6,7 @@
 //   HTTP (loopback, and bind_host for the web proxy in docker), on the gateway's host:
 //     /api/auth/*                      Better Auth (the link's verify step sets the session, then /s/done)
 //     GET  /s?b=<board host>&r=<path>  signed in -> the board's callback; else "ask the owner for a link"
-//     GET  /s/done                     after the link: the boards this person can open
+//     GET  / , GET /s/done             the home page: the boards this person holds a role on, with each board's counts
 //     POST /s/out                      ends the session (and its board sessions)
 //   On a board host:
 //     GET  /_mm/auth/callback?c=…      a one-time code -> that board's own cookie (mm_board, host-only, Strict)
@@ -154,10 +154,17 @@ export async function gateway() {
 
   // a board host -> its project (from where mm put each board's public name); cached briefly
   const HOST_CACHE_MS = Number(process.env.MM_AUTH_HOST_CACHE_MS) || 30e3 // the tests make it short
-  let hostMap: { at: number; map: Record<string, string>; hosts: Record<string, string>; said: string } = { at: 0, map: {}, hosts: {}, said: '' }
+  // ups: a board host -> where the router sends it (the board's gated public side at public_bind:public_port, from
+  // resolve(), as routeUp gives the router), so the home page asks each board at the address the host gave it
+  let hostMap: { at: number; map: Record<string, string>; hosts: Record<string, string>; ups: Record<string, string>; said: string } = { at: 0, map: {}, hosts: {}, ups: {}, said: '' }
+  const upstreamOf = (bind: string | undefined, port: number | undefined) => {
+    if (!port) return ''
+    const b = !bind || bind === '0.0.0.0' ? '127.0.0.1' : bind === '::' ? '::1' : bind
+    return `http://${b.includes(':') ? `[${b}]` : b}:${port}`
+  }
   const loadHosts = () => {
     if (now() - hostMap.at < HOST_CACHE_MS) return hostMap
-    const map: Record<string, string> = {}, hosts: Record<string, string> = {}, claims: Record<string, Set<string>> = {}, odd: string[] = []
+    const map: Record<string, string> = {}, hosts: Record<string, string> = {}, ups: Record<string, string> = {}, claims: Record<string, Map<string, string>> = {}, odd: string[] = []
     // the host's projects and the project boxes (mm registers each box in pc/boxes). Never from <root>/.run/, which a
     // box can write (review sy-b15.17): the project is the registry file's name (the host writes pc/), and its public
     // names come from resolve() (services.yaml and .mm-answers.yaml, read-only in a box), as mm cron takes a box's jobs
@@ -168,17 +175,17 @@ export async function gateway() {
         const r = resolve(m[1].replace(/^~(?=\/)/, process.env.HOME || ''))
         if (r.answers.project !== project) { odd.push(`${f}: the project's answers name ${r.answers.project}`); continue }
         for (const sv of Object.values(r.services))
-          if (sv.public_url && sv.public?.auth === 'required') (claims[new URL(sv.public_url).host] ||= new Set()).add(project)
+          if (sv.public_url && sv.public?.auth === 'required') (claims[new URL(sv.public_url).host] ||= new Map()).set(project, upstreamOf(sv.public_bind, sv.public_port))
       } catch {}
     }
     // a host two projects claim goes to neither (no "last one wins")
     for (const [host, ps] of Object.entries(claims)) {
-      if (ps.size > 1) { odd.push(`${host}: claimed by ${[...ps].sort().join(', ')}`); continue }
-      const [p] = ps; map[host] = p; hosts[p] ||= host
+      if (ps.size > 1) { odd.push(`${host}: claimed by ${[...ps.keys()].sort().join(', ')}`); continue }
+      const [[p, up]] = ps; map[host] = p; hosts[p] ||= host; if (up) ups[host] = up
     }
     const said = odd.sort().join('\n')
     if (said && said !== hostMap.said) log('warn', 'board hosts refused', { refused: odd })
-    return (hostMap = { at: now(), map, hosts, said })
+    return (hostMap = { at: now(), map, hosts, ups, said })
   }
   const projectOf = (host: string) => loadHosts().map[host] || null
   const userByName = (name: string) => db.query('SELECT * FROM user WHERE name = ?').get(name) as { id: string; name: string; role?: string; banned?: number } | null
@@ -223,6 +230,39 @@ export async function gateway() {
   const assertion = (userId: string, role: Role, host: string) => {
     const u = userById(userId)!
     return new Response(null, { status: 200, headers: { 'x-mm-assertion': signAssertion(u.name, role, host), 'x-board-user': u.name, 'x-board-role': role } })
+  }
+
+  // ---------- the home page (sy-ukbz): every board this person holds a role on, with that board's counts ----------
+  // Each board is asked for this person with one fresh assertion (this person, this role, that board's host, 60 s), at
+  // the address the host gave its route (never a project's .run/), no redirects, 3 s, 16 KB; all boards at once; no
+  // cache, so a revoke shows on the next load. What a board sends back is untrusted: only whole numbers and one time.
+  const SUMMARY_MS = 3000, SUMMARY_MAX = 16 * 1024
+  const summaryFrom = async (project: string, host: string, up: string, name: string, role: Role): Promise<Summary | null> => {
+    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), SUMMARY_MS)
+    let why = ''
+    try {
+      const r = await fetch(`${up}/api/summary`, { redirect: 'manual', signal: ac.signal, headers: { 'x-mm-assertion': signAssertion(name, role, host),
+        'x-forwarded-host': host, 'x-forwarded-proto': 'https', accept: 'application/json', 'accept-encoding': 'identity' } })
+      if (r.status !== 200 || !r.body) { why = `HTTP ${r.status}`; ac.abort(); return null }
+      if (Number(r.headers.get('content-length') || 0) > SUMMARY_MAX) { why = 'too big'; ac.abort(); return null }
+      const rd = r.body.getReader(), parts: Uint8Array[] = []
+      for (let n = 0; ;) {
+        const { done, value } = await rd.read(); if (done) break
+        n += value.byteLength; if (n > SUMMARY_MAX) { why = 'too big'; ac.abort(); return null }
+        parts.push(value)
+      }
+      let o: unknown; try { o = JSON.parse(Buffer.concat(parts).toString('utf8')) } catch { why = 'not JSON'; return null }
+      const sm = summaryOf(o); if (!sm) why = 'not a summary'
+      return sm
+    } catch (e) { why = ac.signal.aborted ? 'timeout' : (e as Error).name || 'error'; return null }
+    finally { clearTimeout(timer); if (why) log('warn', 'board summary unavailable', { project, host, why }) }
+  }
+  const home = async (p: { userId: string; name: string }) => {
+    const { hosts, ups } = loadHosts()
+    const granted = Object.entries(hosts).sort(([a], [b]) => a.localeCompare(b))
+      .flatMap(([project, host]) => { const role = roleOn(p.userId, project); return role ? [{ project, host, role }] : [] })
+    const cards = await Promise.all(granted.map(async (c) => ({ ...c, s: ups[c.host] ? await summaryFrom(c.project, c.host, ups[c.host], p.name, c.role) : null })))
+    return html(homePage(p.name, cards))
   }
 
   async function http(req: Request, srv?: { requestIP?: (r: Request) => { address: string } | null }): Promise<Response> {
@@ -294,6 +334,7 @@ export async function gateway() {
     }
     if (path === '/s') {
       const board = u.searchParams.get('b') || '', back = safeBack(u.searchParams.get('r')), p = await personOf(req)
+      if (p && !board) return new Response(null, { status: 302, headers: { location: '/', ...headers } }) // signed in, no board asked: home
       const next = p && callbackFor(p, board, back)
       if (next) return new Response(null, { status: 302, headers: { location: next, ...headers } })
       if (p) return html(page(`Signed in as <b>${esc(p.name)}</b>, but you have no access to ${esc(board || 'this board')}. Ask the owner.`))
@@ -316,9 +357,14 @@ export async function gateway() {
     if (path === '/s/done') {
       const p = await personOf(req)
       if (!p) return html(page('That link has expired or was used already. Ask the owner for a new one.'), 403)
-      const { hosts } = loadHosts(), open = Object.entries(hosts).filter(([proj]) => roleOn(p.userId, proj))
-      return html(page(`Signed in as <b>${esc(p.name)}</b>. ${open.length ? `Your boards:</p><ul>${open.map(([proj, h0]) => `<li><a href="https://${esc(h0)}/">${esc(proj)}</a></li>`).join('')}</ul><p>` : 'You have no board yet; the owner can grant you one.'}`))
+      return home(p)
     }
+    // the home page on the gateway's own host; no session: the sign-in page
+    if (path === '/' && req.method === 'GET' && host === authHost) {
+      const p = await personOf(req)
+      return p ? home(p) : new Response(null, { status: 302, headers: { location: '/s', ...headers } })
+    }
+    if (path === '/s/home.css') return new Response(HOME_CSS, { headers: { 'content-type': 'text/css', ...headers } })
     if (path === '/s/out' && req.method === 'POST') {
       const p = await personOf(req)
       if (p) { db.run('DELETE FROM mm_board_session WHERE parent = ?', [p.token]); db.run('DELETE FROM session WHERE token = ?', [p.token]); log('info', 'signed out', { user: p.name }) }
@@ -466,6 +512,40 @@ export async function callApi(path: string, body?: Record<string, unknown>) {
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
+
+// ---------- the home page's parts (sy-ukbz) ----------
+type Summary = { open: number; p0: number; blocked: number; needs_you: number; mine: number; last?: string }
+const COUNTS = ['open', 'p0', 'blocked', 'needs_you', 'mine'] as const
+const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/
+/** A board's answer, read strictly: the five counts as whole numbers 0..1e6, `last` an ISO time or absent, nothing else. */
+export function summaryOf(o: unknown): Summary | null {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null
+  const x = o as Record<string, unknown>
+  if (Object.keys(x).some((k) => k !== 'last' && !(COUNTS as readonly string[]).includes(k))) return null
+  for (const k of COUNTS) { const v = x[k]; if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 1e6) return null }
+  if (x.last !== undefined && (typeof x.last !== 'string' || !ISO.test(x.last) || Number.isNaN(Date.parse(x.last)))) return null
+  const n = (k: typeof COUNTS[number]) => x[k] as number
+  return { open: n('open'), p0: n('p0'), blocked: n('blocked'), needs_you: n('needs_you'), mine: n('mine'), ...(x.last ? { last: new Date(x.last as string).toISOString() } : {}) }
+}
+/** Made on the server, no script; every value escaped; the name and link from the gateway's own data, never a board's. */
+function homePage(name: string, cards: { project: string; host: string; role: string; s: Summary | null }[]) {
+  const count = (label: string, v: number, cls = '') => `<li${cls && v ? ` class="${cls}"` : ''}><b>${v}</b> ${label}</li>`
+  const card = (c: typeof cards[number]) => `<section class="card"><h2>${esc(c.project)}</h2>
+<p class="role">You are <b>${esc(c.role)}</b>${c.role === 'viewer' ? ' (read-only)' : ''}</p>
+${c.s ? `<ul class="counts">${count('open', c.s.open)}${count('P0', c.s.p0, 'hot')}${count('blocked', c.s.blocked)}${count('need a human', c.s.needs_you, 'hot')}${count('assigned to you', c.s.mine)}</ul>
+${c.s.last ? `<p class="last">Last activity: ${esc(c.s.last.slice(0, 16).replace('T', ' '))} UTC</p>` : ''}` : '<p class="na">Summary unavailable right now.</p>'}
+<p><a class="${c.role === 'viewer' ? 'view' : 'open'}" href="/s?b=${encodeURIComponent(c.host)}&amp;r=%2F">${c.role === 'viewer' ? 'View the board (read-only)' : 'Open the board'}</a></p></section>`
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Your boards</title>
+<link rel="stylesheet" href="/s/home.css"><body><header><h1>Your boards</h1><p>Signed in as <b>${esc(name)}</b>.</p>
+<form method="post" action="/s/out"><button type="submit">Sign out</button></form></header>
+${cards.length ? `<main>${cards.map(card).join('\n')}</main>` : '<p>You have no board yet; the owner can grant you one.</p>'}`
+}
+const HOME_CSS = `body{font-family:system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem;line-height:1.5;color:#222}
+header{display:flex;gap:1rem;align-items:baseline;flex-wrap:wrap}h1{font-size:1.4rem;margin:0}header form{margin-left:auto}
+main{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:1rem;margin-top:1rem}
+.card{border:1px solid #ccc;border-radius:.5rem;padding:.8rem 1rem}.card h2{font-size:1.1rem;margin:0 0 .2rem}
+.role,.last,.na{color:#555;margin:.2rem 0}.counts{list-style:none;padding:0;margin:.5rem 0;display:flex;flex-wrap:wrap;gap:.3rem 1rem}
+.counts .hot b{color:#b00}a.open,a.view{font-weight:600}`
 function codePage(code: string, board: string) {
   return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in</title>
 <body style="font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;line-height:1.5"><h1 style="font-size:1.4rem">Sign in${board ? ` to ${esc(board)}` : ''}</h1>

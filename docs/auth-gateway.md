@@ -26,7 +26,7 @@ Status: **built** (`src/auth.ts`; `test/auth.sh`, `test/auth-e2e.sh`, `test/box-
 - `mm user link <name>` prints a link: Better Auth's magic-link plugin, with mm capturing the URL instead of sending
   mail. It works **once** and expires after 24 h. The owner gives it to the person themselves.
 - Opening it (`https://auth.<domain>/api/auth/magic-link/verify?token=…`) gives a **session on the gateway's host
-  only**, then `/s/done`, which lists the boards this person can open.
+  only**, then `/s/done`, the home page (below).
 - **One session opens everything granted, without a cookie on the parent domain** (sy-p2i): when the person opens a
   board, forward-auth sends them to `/s?b=<board host>`. With a live session and a grant on that project, the gateway
   answers with a **302 to `https://<board host>/_mm/auth/callback?c=<one-time code>`** (single use, 30 s, bound to that
@@ -34,6 +34,29 @@ Status: **built** (`src/auth.ts`; `test/auth.sh`, `test/auth-e2e.sh`, `test/box-
   host, then goes back to the page. The person sees one redirect, never a new link. The same works on `*.localhost`.
 - The page loads no third-party script and is served with `Content-Security-Policy: default-src 'self'`,
   `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+
+## Home
+`https://auth.<domain>/` (and `/s/done`, where a link lands) is the signed-in person's home page: one card per board
+they hold a role on. No session: `/` goes to the sign-in page.
+- **Which cards:** every project in the host's registry (the same host map forward-auth uses, never a project's or a
+  box's `.run/`) where `roleOn` gives this person a role. The owner sees every project, the system board included. A
+  project the person isn't granted never appears, not even its name. A host two projects claim has no card.
+- **A card:** the project's name and its board link from the gateway's own data (the link is `/s?b=<board host>`, the
+  one-redirect flow), the person's role (a viewer's card says read-only and has only a read-only view link), and the
+  board's counts: open, P0, blocked, items that need a human (`needs-you`; for the owner also `t2` items with
+  `signed-off` that wait for `approved`), assigned to this person, and the last activity time.
+- **The counts come from each board**, `GET /api/summary`, asked for this person: one fresh assertion per board and
+  page load (this person, this role, that board's host, 60 s; the forward-auth signer), sent to the board's public side
+  at the address the host gave its route (`public_bind:public_port` from `resolve()`). The board checks it like any
+  other request and applies its own role rules; a viewer may read it. All boards are asked at once; each gets 3 s and
+  16 KB, and no redirect is followed. No cache: a revoke shows on the next load.
+- **A board's answer is untrusted.** Only `{open, p0, blocked, needs_you, mine}` as whole numbers 0..1e6 and `last` as
+  an ISO time (or absent); any other field or value, a non-200, a timeout or too many bytes makes that card say
+  "unavailable" (logged at `warn` with the reason), and the rest of the page is unchanged. No item text ever leaves a
+  board this way.
+- **The page** is made on the server, has no script, escapes every value, and carries the gateway's headers
+  (`Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`, `no-store`, `no-referrer`, `nosniff`); its
+  stylesheet is `/s/home.css` on the same host.
 
 ## Hosts and cookies
 - The session cookie (Better Auth's, `__Secure-` prefixed) is **host-only** on `auth.<domain>`, `HttpOnly; Secure`,
