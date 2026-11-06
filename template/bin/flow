@@ -8,10 +8,11 @@
 // sends the same values again. When the board pruned the part of the journal it needs (7 days by default), it starts
 // again from the oldest record kept.
 // Env (tests): FLOW_STATE, FLOW_NOW (ms), FLOW_REVIEWER (default review), FLOW_APPROVERS (actors whose `approved` counts;
-// default bridge), SVC_URL_BD_SERVE, MM_OBS_METRICS, MM_OBS_TRACES.
+// default the bridge's actor `bridge` and the owner's name, owner_name in .run/endpoints.json when mm writes it: sy-44xa),
+// SVC_URL_BD_SERVE, MM_OBS_METRICS, MM_OBS_TRACES.
 import fs from 'node:fs'
 import path from 'node:path'
-import { ROOT, projectName, requireUrl } from './lib/svc.mjs'
+import { ROOT, endpoints, projectName, requireUrl } from './lib/svc.mjs'
 import { cli, info, pushSamples, pushSpans } from './lib/obs.mjs'
 import { createFlow, promLines } from './lib/flow.mjs'
 
@@ -40,7 +41,7 @@ async function events(since) {
 let saved = null
 try { saved = JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch {}
 if (saved && saved.project !== PROJECT) saved = null // another board's place means nothing here
-const OPTS = { project: PROJECT, roles, reviewer: E.FLOW_REVIEWER || 'review', approvers: (E.FLOW_APPROVERS || 'bridge').split(',').filter(Boolean) }
+const OPTS = { project: PROJECT, roles, reviewer: E.FLOW_REVIEWER || 'review', approvers: (E.FLOW_APPROVERS !== undefined ? E.FLOW_APPROVERS.split(',') : ['bridge', endpoints().owner_name]).filter(Boolean) }
 let flow = createFlow(saved, OPTS)
 const samples = [], spans = []
 let restarted = false

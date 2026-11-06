@@ -295,6 +295,20 @@ const fromMid = [...new Set(vm)].map(parse).filter((s) => /cycle|first_pass|paus
 ok('an item first seen past the floor: no cycle, paused or first-pass sample for the round that began before; sy-e\'s round after its reopen counts',
   fromMid.map(short).sort().join(' | ') === 'cycle_seconds platform sy-e @260 = 3600 | paused_seconds platform sy-e all @260 = 0', fromMid.map(short).join(' | '))
 
+step('the owner\'s name (owner_name in .run/endpoints.json, mm writes it) is an approver too (sy-44xa, sy-h2yt)')
+create('sy-o', 'ops', m(600), { assignee: 'ops', labels: ['t2'] }); upd('sy-o', 'ops', m(605), { status: 'in_progress' })
+label('sy-o', 'review', m(610), 'signed-off'); label('sy-o', 'alex', m(620), 'approved'); upd('sy-o', 'ops', m(640), { status: 'closed' })
+events.forEach((e, i) => { e.seq = i + 1 }); journalUpTo = events.length; floor = 1
+const approvalWait = async (owner) => {
+  fs.rmSync(STATE, { force: true }); vm.length = 0
+  fs.writeFileSync(path.join(BRD, '.run', 'endpoints.json'), JSON.stringify({ ...(owner ? { owner_name: owner } : {}), services: {} }))
+  const x = await collect(); return x.code === 0 ? sampleSet(vm).find((s) => s.startsWith('paused_seconds ops sy-o approval ')) : `exit ${x.code} ${x.err}`
+}
+let wait = await approvalWait('alex')
+ok('approved by the owner\'s name ends the approval wait (10 min)', wait === 'paused_seconds ops sy-o approval @640 = 600', wait)
+wait = await approvalWait('')
+ok('...no owner_name: the same label does not count (the wait runs to the close, 30 min)', wait === 'paused_seconds ops sy-o approval @640 = 1800', wait)
+
 if (process.env.FLOW_SHOW) console.log((await mm('obs', 'flow')).out + (await mm('obs', 'item', 'sy-d')).out) // to look at the tables
 srv.close()
 fs.rmSync(T, { recursive: true, force: true })

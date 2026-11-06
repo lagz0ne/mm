@@ -303,9 +303,13 @@ export function writeRunFiles(root: string, pcSocket: string) {
     mkdirSync(dirname(f), { recursive: true, mode: 0o755 })
     writeFileSync(f, JSON.stringify({ dolt_port: dport, services: Object.fromEntries(Object.entries(services).flatMap(([n, s]) => s.public_port ? [[n, { public_port: s.public_port }]] : [])) }, null, 2))
   }
+  const owner = String(getPath(loadConfig(), 'owner_name') ?? '').trim()
   const ep = { manager: 'process-compose (mm)', self_healing: true, restart: `process-compose -U -u ${pcSocket} process restart ${a.project}.{service}`,
     logs: `tail -n {lines} ${join(root, '.run', 'logs')}/{service}.log`, observability: obsEndpoints(), dirs: engineDirs(),
     ...(publicKeyPem() ? { auth: { public_key: publicKeyPem() } } : {}), // the gateway's key: boards verify its assertions
+    // the owner's name (mm's config owner_name; absent when unset): with the bridge, the only actor whose `approved`
+    // counts (bin/supervisor, bin/flow), and a name the guard keeps agents from writing as (sy-h2yt)
+    ...(owner ? { owner_name: owner } : {}),
     // how this machine runs a container, and the pinned images of optional services (bin/doop-run; plans/doop.md): Doop's
     // by digest only (bin/doop-run refuses a tag: sy-7452)
     containers: { docker: String(process.env.MM_DOCKER || getPath(loadConfig(), 'box.docker') || 'docker'),
