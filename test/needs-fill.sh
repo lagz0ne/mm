@@ -50,6 +50,7 @@ check "...value kept" test "$(cat "$SECRET")" = "$V1"
 printf '%s\n' "$V2" >"$T/key"; printf 'line2\n' >>"$T/key"
 mm fill claude-oauth-token --from "$T/key" --replace >/dev/null && ok "fill --from a file --replace" || bad "fill --from"
 check "file kept byte for byte (keys)" cmp -s "$T/key" "$SECRET"
+check "...and it says to delete the --from file (sy-392)" grep -q "Now delete $T/key" "$LOG"
 check "empty value refused" sh -c "! printf '' | \"$MM\" fill cloudflare-token"
 (sleep 2; printf '%s\r' "$V3") | script -qec "\"$MM\" fill expose-password" /dev/null >"$T/tty.out" 2>&1   # typed after the prompt; cat "$T/tty.out" >>"$LOG"
 check "fill from a terminal (hidden prompt)" test "$(cat "$HOME/.config/secrets/expose.pass" 2>/dev/null)" = "$V3"
@@ -80,6 +81,35 @@ P2="$T/proj2"; mkdir -p "$P2"; echo "# from $P2/services.yaml" >"$MM_HOME/pc/pro
 cp "$(dirname "$0")/../template/secrets.json" "$P2/secrets.json"
 check "a project with the template's secrets.json: no ACCESS_* row (Cloudflare Access is not used)" \
   sh -c "\"$MM\" needs -p acme-tmpl -o json | jq -e 'type == \"array\" and all(.[]; .name | startswith(\"ACCESS_\") | not)'"
+
+echo '== secret modes in doctor (sy-392: stat only)'
+RUN="$T/run"; mkdir -p "$RUN"   # the opened-secrets folder ($XDG_RUNTIME_DIR/mm/secrets): this test's, never the machine's
+sm() { XDG_RUNTIME_DIR="$RUN" "$MM" doctor -o json 2>/dev/null | jq -r --arg k "$1" '.[] | select(.item=="secret modes") | .[$k] // ""'; }
+check "all narrow: ok" test "$(sm status)" = ok
+chmod 755 "$HOME/.config/secrets"
+check "a 0755 ~/.config/secrets fails" test "$(sm status)" = fail
+check "...names it with its mode" sh -c "XDG_RUNTIME_DIR='$RUN' \"$MM\" doctor -o json | jq -e '.[] | select(.item==\"secret modes\") | .detail | test(\"~/.config/secrets 0755\")'"
+check "...and the fix: chmod 700 ~/.config/secrets" test "$(sm fix)" = "chmod 700 ~/.config/secrets"
+chmod 700 "$HOME/.config/secrets"
+touch "$HOME/.config/secrets/stray"; chmod 644 "$HOME/.config/secrets/stray"
+check "a 0644 file in the secrets folder fails (chmod 600)" test "$(sm fix)" = "chmod 600 ~/.config/secrets/stray"
+rm -f "$HOME/.config/secrets/stray"
+chmod 750 "$P/secrets"
+check "a project's 0750 secrets/ fails" sh -c "XDG_RUNTIME_DIR='$RUN' \"$MM\" doctor -o json | jq -e '.[] | select(.item==\"secret modes\" and .status==\"fail\") | .fix | test(\"chmod 700 $P/secrets\")'"
+chmod 700 "$P/secrets"
+mkdir -p "$MM_HOME/paseo"; chmod 755 "$MM_HOME/paseo"
+check "mm's own 0755 paseo folder fails" test "$(sm fix)" = "chmod 700 ~/.mm/paseo"
+chmod 700 "$MM_HOME/paseo"
+mkdir -p "$RUN/mm/secrets/acme-shop"; chmod 700 "$RUN/mm/secrets" "$RUN/mm/secrets/acme-shop"; chmod 750 "$RUN/mm/secrets/acme-shop"
+check "a host project's 0750 opened-secrets folder fails" test "$(sm fix)" = "chmod 700 $RUN/mm/secrets/acme-shop"
+chmod 700 "$RUN/mm/secrets/acme-shop"
+B="$T/boxp"; mkdir -p "$B" "$MM_HOME/pc/boxes"; echo 'project: acme-box' >"$B/.mm-answers.yaml"; echo "# from $B/services.yaml" >"$MM_HOME/pc/boxes/acme-box.yaml"
+mkdir -p "$RUN/mm/secrets/acme-box"; chmod 750 "$RUN/mm/secrets/acme-box"; touch "$RUN/mm/secrets/acme-box/x"; chmod 640 "$RUN/mm/secrets/acme-box/x"
+check "a box's 0750 folder and 0640 files (its group reads them) are ok" test "$(sm status)" = ok
+chmod 755 "$RUN/mm/secrets/acme-box"
+check "...but not open to others (chmod o-rwx)" test "$(sm fix)" = "chmod o-rwx $RUN/mm/secrets/acme-box"
+rm -rf "$RUN/mm/secrets/acme-box" "$B" "$MM_HOME/pc/boxes/acme-box.yaml"
+check "all narrow again: ok" test "$(sm status)" = ok
 
 echo '== no value anywhere'
 for v in "$V1" "$V2" "$V3" "$V4"; do check "no output contains ${v:0:14}…" sh -c "! grep -q '$v' '$LOG'"; done

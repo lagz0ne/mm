@@ -3,7 +3,9 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { type Config, getPath, loadConfig, when } from './config'
 import { DIRS, HOME, hasSystemdUser, isRoot, run, which } from './env'
-import { needs } from './inputs'
+import { machineSecretPaths, needs, secretOnlyDirs } from './inputs'
+import { AI_DIR } from './ai'
+import { API_DIR } from './apistate'
 import { boxish, engineRefusal, listProjects } from './project'
 import { engineDrift } from './lifecycle'
 import { manifest, type Tool } from './manifest'
@@ -58,6 +60,39 @@ export function checkTool(name: string, t: Tool, c: Config): Check {
   if (!v) return row(t.min ? 'warn' : 'ok', `${path.replace(HOME, '~')} (version unreadable)`)
   if (t.min && !atLeast(v, t.min)) return row('fail', `${v} < ${t.min}`, 'mm onboard')
   return row('ok', `${v}  ${path.replace(HOME, '~')}`)
+}
+
+/**
+ * Who may enter a secrets folder (sy-392): its owner only. Every folder the machine's secrets are in (machineSecretPaths:
+ * the machine inputs' folders, Paseo's home, ~/.ssh), mm's own secret folders (auth, paseo, ai, api, the opened-secrets
+ * folder; the vault has its own row) and each project's secrets/ folder: 0700 or narrower. Each file in a folder that
+ * holds only secrets: 0600 or narrower. A box's opened-secrets folder (0750, files 0640) and a box project's own tree
+ * (g+rwX) let the box's group in by design: there, only the bits for others count. Stat only: nothing is opened.
+ */
+export function secretModes(): Check {
+  const wide: { path: string; mode: number; fix: string }[] = []
+  const look = (p: string, dir: boolean, box = false) => {
+    let m: number; try { const st = statSync(p); if (st.isDirectory() !== dir) return; m = st.mode & 0o777 } catch { return }
+    const allowed = box ? 0o770 : dir ? 0o700 : 0o600
+    if (m & ~allowed) wide.push({ path: p, mode: m, fix: box ? 'o-rwx' : dir ? '700' : '600' })
+  }
+  const filesIn = (d: string, box = false) => { try { for (const f of readdirSync(d)) look(join(d, f), false, box) } catch {} }
+  const sp = machineSecretPaths(), only = new Set(secretOnlyDirs())
+  for (const d of new Set([...sp.dirs, ...only])) { look(d, true); if (only.has(d)) filesIn(d) }
+  for (const d of ['auth', 'paseo'].map((x) => join(DIRS.mm, x))) { look(d, true); filesIn(d) }
+  for (const d of [AI_DIR, API_DIR]) look(d, true)
+  const projects = listProjects().filter((p) => p.root !== '?'), boxes = new Set(projects.filter((p) => p.box).map((p) => p.project))
+  const base = vault.secretsBase()
+  look(base, true)
+  try { for (const x of readdirSync(base)) { const d = join(base, x), box = boxes.has(x); look(d, true, box); filesIn(d, box) } } catch {}
+  for (const p of projects) { const d = join(expand(p.root), 'secrets'); look(d, true, !!p.box); filesIn(d, !!p.box) }
+  if (!wide.length) return { layer: 'secret', item: 'secret modes', status: 'ok', detail: 'every secrets folder 0700, every secret file 0600 (or narrower)' }
+  const shown = (p: string) => p.replace(HOME, '~')
+  const fixes = new Map<string, string[]>()
+  for (const w of wide) fixes.set(w.fix, [...(fixes.get(w.fix) || []), shown(w.path)])
+  return { layer: 'secret', item: 'secret modes', status: 'fail',
+    detail: `${wide.length} too wide: ${wide.slice(0, 5).map((w) => `${shown(w.path)} 0${w.mode.toString(8)}`).join(', ')}${wide.length > 5 ? ', …' : ''}`,
+    fix: [...fixes].map(([m, ps]) => `chmod ${m} ${ps.join(' ')}`).join('; ') }
 }
 
 export function doctor(): Check[] {
@@ -177,8 +212,10 @@ export function doctor(): Check[] {
     if (w) out.push({ layer: 'vault', item: 'swap', status: 'warn', detail: w })
   }
 
+  out.push(secretModes())
+
   // the machine's process manager
-  const pc = run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'state'], { timeoutMs: 10_000 })
+  const pc =run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'state'], { timeoutMs: 10_000 })
   out.push(pc.ok
     ? { layer: 'service', item: 'mm-pc', status: 'ok', detail: `process-compose answering on ${DIRS.socket.replace(HOME, '~')}` }
     : { layer: 'service', item: 'mm-pc', status: 'fail', detail: 'process-compose not answering on ~/.mm/pc.sock', fix: 'mm onboard' })
