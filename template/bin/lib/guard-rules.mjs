@@ -83,6 +83,26 @@ export const RULES = // BEGIN RULES
       "why": "searches a secret folder: never load its contents."
     },
     {
+      "id": "proc-env",
+      "on": "bash",
+      "pre": true,
+      "re": "(?:/proc/[^\\s'\"`;|&<>]*/mem|/(?:environ|cmdline|auxv))(?![\\w.-])",
+      "why": "reads another process's environment or command line (/proc/<pid>/environ, cmdline): tokens live there. Use ps -o pid,comm, or the named /proc files (meminfo, loadavg, uptime, pressure)."
+    },
+    {
+      "id": "proc-env-file",
+      "on": "file",
+      "re": "/proc/[^\\s'\"`]*(?:environ|cmdline|auxv|/mem)(?![\\w.-])",
+      "why": "reads another process's environment or command line: tokens live there."
+    },
+    {
+      "id": "ps-env",
+      "on": "bash",
+      "pre": true,
+      "re": "(?:^|[\\s;&|(`$])ps\\s+(?:\\S+\\s+)*[a-df-zA-Z]*e[a-zA-Z]*(?![\\w-])",
+      "why": "ps with its BSD-style e option prints every process's environment, where tokens live. Use ps -ef or ps -o."
+    },
+    {
       "id": "sudo",
       "on": "bash",
       "boards": "project",

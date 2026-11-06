@@ -364,6 +364,21 @@ export const OWN = [
   ['Edit', '/home/alice/mm/template/bin/guard', 'allow', "mm's template copy, not this board's guard"],
   ['Edit', '/home/alice/.ssh/authorized_keys', 'deny'],
   ['Bash', 'echo ssh-ed25519 AAAA >> ~/.ssh/authorized_keys', 'deny'],
+  // another process's environment or command line: tokens live there (setup, sy-asaw)
+  ['Bash', 'cat /proc/1234/environ', 'deny'],
+  ['Bash', 'tr "\\0" "\\n" < /proc/self/environ', 'deny'],
+  ['Bash', 'cat /proc/pressure/../1234/environ', 'deny'],
+  ['Bash', 'for p in /proc/[0-9]*; do cat $p/cmdline; done', 'deny'],
+  ['Bash', 'xxd /proc/42/cmdline', 'deny'],
+  ['Bash', 'strings /proc/42/mem', 'deny'],
+  ['Read', '/proc/1234/environ', 'deny'],
+  ['Bash', 'ps auxe', 'deny'],
+  ['Bash', 'ps eww 1234', 'deny'],
+  ['Bash', 'cat /proc/meminfo', 'allow'],
+  ['Bash', 'cat /proc/loadavg', 'allow'],
+  ['Bash', 'ps -ef', 'allow'],
+  ['Bash', 'ps -o pid,comm -u rocky', 'allow'],
+  ['Bash', 'ps aux', 'allow'],
 ]
 
 export const NORMAL = [

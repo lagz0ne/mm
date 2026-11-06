@@ -53,7 +53,7 @@
       "Bash(rpm -q *)",
       "Bash(dnf check-update*)",
       "Bash(ls *)",
-      "Bash(cat /proc/*)",
+      "Bash(cat /proc/meminfo)", "Bash(cat /proc/loadavg)", "Bash(cat /proc/uptime)", "Bash(cat /proc/pressure/*)", "Bash(cat /proc/mounts)", "Bash(cat /proc/swaps)",
       "Bash(expose ls)",
       "Read({brain}/**)",
       "Read({home}/mm/**)",

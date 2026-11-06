@@ -34,7 +34,7 @@
       "Bash(free *)",
       "Bash(rpm -q *)",
       "Bash(ls *)",
-      "Bash(cat /proc/*)",
+      "Bash(cat /proc/meminfo)", "Bash(cat /proc/loadavg)", "Bash(cat /proc/uptime)", "Bash(cat /proc/pressure/*)", "Bash(cat /proc/mounts)", "Bash(cat /proc/swaps)",
       "Read({brain}/**)",
       "Read({home}/mm/**)",
       "Read({projects}/**)",
