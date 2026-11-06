@@ -136,6 +136,8 @@ const G_BASH_OK = (G.bash_ok || []).map((x) => new RegExp(x))
 const GUARD = path.join(P, 'bin', 'guard')
 const GUARD_CMD = /^[\w./+-]+$/.test(GUARD) ? GUARD : `'${GUARD.replaceAll("'", "'\\''")}'`
 const GUARD_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Grep']
+/** Every PreToolUse hook command, as written (a command with quotes in it is compared as itself, not as JSON text). */
+const hookCmds = (pre) => (Array.isArray(pre) ? pre : []).flatMap((m) => (Array.isArray(m?.hooks) ? m.hooks : []).map((h) => String(h?.command ?? '')))
 const hasGuard = (h) => (h?.PreToolUse || []).some((e) => typeof e?.matcher === 'string' && GUARD_TOOLS.every((t) => e.matcher.split('|').includes(t))
   && (e.hooks || []).some((x) => x?.type === 'command' && x.command === GUARD_CMD))
 function guarded(who, j) {
@@ -153,7 +155,7 @@ function render(tmpl, role, assistant = false) {
   // the guard hook (sy-8t0.5): every lead and setup, first, by this board's own bin/guard; never an assistant's (no hooks)
   if (!assistant && !hasGuard(hooks)) hooks = { ...(hooks || {}), PreToolUse: [{ matcher: GUARD_TOOLS.join('|'), hooks: [{ type: 'command', command: GUARD_CMD, timeout: 10 }] }, ...(hooks?.PreToolUse || [])] }
   for (const h of (G.hooks_required || []).map(gfill)) {
-    if (JSON.stringify(hooks?.PreToolUse || []).includes(h)) continue
+    if (hookCmds(hooks?.PreToolUse).includes(h)) continue
     hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: 'Bash|Read|Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: h, timeout: 10 }] }] }
   }
   const govDeny = [...ALWAYS_DENY.map(gfill), ...BRAIN_DENY, ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? mandatoryDeny(role) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
@@ -246,7 +248,7 @@ for (const role of ROLES) {
   }
   // write roots of another role are never allowed (one writer per repo)
   for (const [other, roots] of Object.entries(G_WRITE)) if (other !== role) for (const a of j.permissions?.allow || []) if (/^(Edit|Write)\(/.test(a) && under(a, roots)) bad(`${role}: writes ${other}'s area (${a})`)
-  const cmds = JSON.stringify(j.hooks?.PreToolUse || [])
+  const cmds = hookCmds(j.hooks?.PreToolUse)
   for (const h of (G.hooks_required || []).map(gfill)) if (!cmds.includes(h)) bad(`${role}: settings.json must run the hook ${h}`)
   guarded(role, j)
   if (j.permissions?.defaultMode === 'bypassPermissions') bad(`${role}: bypassPermissions is not allowed`)

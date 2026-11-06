@@ -45,7 +45,14 @@ for B in "$PROJ" "$SYS"; do
   done
   [ "$n" -ge 4 ] && ok "${B#$T/}: the guard runs first in all $n settings (leads and setup), as $B/bin/guard"
 done
-check "the system board keeps governance's own hook too (the brain's guard), after it" bash -c "for f in $SYS/leads/*/.claude/settings.json; do jq -e '.hooks.PreToolUse[1].hooks[0].command | endswith(\"/brain/bin/guard\")' \"\$f\" >/dev/null || exit 1; done"
+check "the system board keeps governance's own hook too (the brain's guard), after it: the installed copy, never the brain's working tree (sy-ehq4)" bash -c "for f in $SYS/leads/*/.claude/settings.json; do jq -e '.hooks.PreToolUse[1].hooks[0].command | (contains(\"/.local/lib/brain/guard\") and (contains(\"/brain/bin/guard\") | not))' \"\$f\" >/dev/null || exit 1; done"
+# the hook command itself: the installed guard runs when it is there; when it is missing, the call is denied (never let through)
+BG=$(jq -r '.hooks.PreToolUse[1].hooks[0].command' "$(ls $SYS/leads/*/.claude/settings.json | head -1)")
+printf '%s' "$BG" >"$T/bg.sh"   # the hook command as rendered (the installed guard is not there yet in this HOME)
+check "...with no installed guard: the hook denies (the deny answer, exit 0)" bash -c "out=\$(echo '{}' | sh '$T/bg.sh') && echo \"\$out\" | jq -e '.hookSpecificOutput.permissionDecision == \"deny\"' >/dev/null"
+mkdir -p "$HOME/.local/lib/brain"; printf '#!/bin/sh\necho installed-guard-ran\n' >"$HOME/.local/lib/brain/guard"; chmod +x "$HOME/.local/lib/brain/guard"
+check "...with the installed guard: it runs, and only it answers" bash -c "[ \"\$(echo '{}' | sh '$T/bg.sh')\" = installed-guard-ran ]"
+rm -rf "$HOME/.local/lib/brain"
 check "an assistant does not get the guard (a read-only assistant has no tool it reads)" bash -c "! grep -q '$SYS/bin/guard' '$SYS/assistants/_template/.claude/settings.json'"
 CMD=$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$PROJ/leads/code/.claude/settings.json")
 check "the rendered hook command runs: sudo true is denied, git status passes" bash -c "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sudo true\"}}' | sh -c '$CMD' | grep -q '\"deny\"' && test -z \"\$(printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"}}' | sh -c '$CMD')\""
