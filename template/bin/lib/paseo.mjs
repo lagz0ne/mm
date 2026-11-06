@@ -5,13 +5,27 @@
 // the installed CLI's own copy. If it can't load or connect, every call falls back to the CLI, so nothing breaks.
 // Address: PASEO_URL, else .run/endpoints.json "paseo", else the daemon's default. Leads never use this module (their
 // Paseo use stays the CLI, under the guard and their permission rules).
+// A brake on that (sy-e5i): in an agent's shell (CLAUDECODE or PASEO_AGENT_ID set), the calls that change an agent
+// (send, archive) refuse, unless the process is one of the engine's own services that make them (ENGINE: wake). The
+// reads stay open there: bin/lead start, run by the setup agent, takes sdkPath() through bin/lib/lead-workspace.mjs.
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { endpoints } from './svc.mjs'
 
 const E = process.env
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+/** The engine's scripts that may change an agent: the services the process manager runs, never an agent's shell. */
+const ENGINE = [path.join(HERE, '..', 'wake')]
+const real = (f) => { try { return fs.realpathSync(f) } catch { return path.resolve(f) } }
+/** Throws when this process is an agent's (its shell, or a script it started) and not one of the engine's services. */
+function engineOnly(what) {
+  if (!E.CLAUDECODE && !E.PASEO_AGENT_ID) return
+  const main = process.argv[1] ? real(process.argv[1]) : ''
+  if (main && ENGINE.some((f) => real(f) === main)) return
+  throw new Error(`bin/lib/paseo.mjs ${what}: refused in an agent's shell (the engine's services make this call; an agent uses the paseo CLI, under its permission rules)`)
+}
 const BIN = E.PASEO_BIN || 'paseo'
 const URL_ = E.PASEO_URL || endpoints().paseo || 'ws://127.0.0.1:6767/ws'
 let client = null, connecting = null, sdkFailed = ''
@@ -72,12 +86,14 @@ export async function list(labels = {}, { archived = false } = {}) {
 }
 /** Send a message to an agent (no wait). */
 export async function send(id, text) {
+  engineOnly('send')
   const c = await sdk()
   if (c) return c.agents.ref(id).send(text)
   await cli(['send', id, '--no-wait', '--prompt', text])
 }
 /** Archive an agent (soft: its history stays in Paseo). */
 export async function archive(id) {
+  engineOnly('archive')
   const c = await sdk()
   if (c) return c.agents.ref(id).archive()
   await cli(['archive', '--force', id])
