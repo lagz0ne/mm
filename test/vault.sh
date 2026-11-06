@@ -13,6 +13,8 @@ bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
 check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 T=$(mktemp -d); SHM=$(mktemp -d /dev/shm/mmv.XXXX); trap 'rm -rf "$T" "$SHM"' EXIT
 export HOME="$T/home" MM_HOME="$T/home/.mm" MM_OBS_TRACES="" XDG_RUNTIME_DIR="$SHM"
+# this machine's swap is not this test's: a stand-in /proc/swaps with none on (vault: opened secrets only where swap cannot reach, sy-rjwg 6)
+printf 'Filename\tType\tSize\tUsed\tPriority\n' >"$T/swaps"; export MM_PROC_SWAPS="$T/swaps"
 mkdir -p "$MM_HOME/pc/projects" "$T/bin" "$T/proj"
 printf '#!/bin/sh\nexec %s "$@"\n' "$MMC" >"$T/bin/mm"; chmod +x "$T/bin/mm"; export PATH="$T/bin:$PATH"
 echo "# from $T/proj/services.yaml" >"$MM_HOME/pc/projects/acme-shop.yaml"
@@ -44,6 +46,13 @@ check "...in a memory-backed folder (0700)" bash -c "[ \"\$(stat -f -c %T '$SHM'
 check "not on disk: refused when the runtime folder isn't tmpfs" bash -c "! XDG_RUNTIME_DIR='$T' mm vault run acme-shop API_KEY -- true"
 check "MM_SECRETS_DIR (e.g. a noswap tmpfs) is where it opens" bash -c "MM_SECRETS_DIR='$SHM/noswap' mm vault run acme-shop API_KEY -- sh -c 'case \"\$API_KEY_FILE\" in '$SHM'/noswap/acme-shop/*) exit 0;; *) exit 1;; esac'"
 check "...and it is refused there too when that isn't tmpfs" bash -c "! MM_SECRETS_DIR='$T/disk' mm vault run acme-shop API_KEY -- true"
+# swap on, plain (not dm-crypt), and the tmpfs not mounted noswap: an opened secret could be paged out to disk (sy-rjwg 6)
+printf 'Filename\tType\tSize\tUsed\tPriority\n/dev/mm-test-noswap-dev partition 524284 0 -2\n' >"$T/swaps-on"
+if findmnt -no OPTIONS -T "$SHM" | grep -qE '(^|,)noswap(,|$)'; then ok "(skipped: this machine's /dev/shm is noswap)"; ok "(skipped)"; else
+check "swap on (plain) and the tmpfs not noswap: refused, it says why, nothing opened" bash -c "! MM_PROC_SWAPS='$T/swaps-on' mm vault run acme-shop API_KEY -- true 2>'$T/sw.err' && grep -q 'not mounted noswap' '$T/sw.err'"
+check "...a person's run file too (openForRun): refused, no file in _run/" bash -c "! MM_PROC_SWAPS='$T/swaps-on' bun -e \"import { openForRun } from '$SRC/src/vault'; openForRun('acme-shop.api_key')\" 2>'$T/sw2.err' && grep -q 'not mounted noswap' '$T/sw2.err' && [ -z \"\$(ls -A '$SHM/mm/secrets/_run' 2>/dev/null)\" ]"
+fi
+check "no swap on: it opens (as above)" bash -c "mm vault run acme-shop API_KEY -- true"
 check "mm doctor reports the vault: modes and digests ok, the secrets folder memory-backed" bash -c "mm doctor -o json 2>/dev/null | jq -e '[.[] | select(.layer==\"vault\")] | (map(select(.item==\"vault\")) | length > 0 and all(.status==\"ok\")) and (map(select(.item==\"secrets folder\" and .status==\"ok\")) | length == 1)'"
 cp "$MM_HOME/vault/acme-shop.api_key.age" "$T/good.age"; printf 'x' >>"$MM_HOME/vault/acme-shop.api_key.age"
 check "a changed sealed file is refused (digest)" bash -c "! mm vault run acme-shop API_KEY -- true && mm vault check | grep -q FAIL"

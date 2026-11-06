@@ -253,7 +253,7 @@ export function doctor(): Check[] {
     let at = vault.secretsBase(); while (!existsSync(at) && at !== dirname(at)) at = dirname(at)
     out.push(vault.isTmpfs(at) ? { layer: 'vault', item: 'secrets folder', status: 'ok', detail: `${at} is memory-backed` } : { layer: 'vault', item: 'secrets folder', status: 'fail', detail: `${at} is not a tmpfs: opened secrets would land on disk`, fix: `name a tmpfs: mm config set ${SECRETS_KEY} <folder> (or use a systemd user session)` })
     const w = vault.swapRisk()
-    if (w) out.push({ layer: 'vault', item: 'swap', status: 'warn', detail: w })
+    if (w) out.push({ layer: 'vault', item: 'swap', status: 'fail', detail: `${w}; so mm refuses to open secrets there (sy-rjwg 6)`, fix: `name a noswap tmpfs: mm config set ${SECRETS_KEY} <folder> (a brain migration mounts it), or turn the swap off or encrypt it` })
   }
   out.push(...secretsDirChecks())
 

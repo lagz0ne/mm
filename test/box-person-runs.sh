@@ -22,6 +22,8 @@ check() { local d=$1; shift; if "$@" >"$T/check.out" 2>&1; then ok "$d"; else ba
 T=$(mktemp -d); SHM=$(mktemp -d /dev/shm/mmb.XXXX); GW=""; WK=""; SV=""
 trap '[ -n "$GW" ] && kill $GW 2>/dev/null; [ -n "$WK" ] && kill $WK 2>/dev/null; [ -n "$SV" ] && kill $SV 2>/dev/null; [ -n "${KEEP:-}" ] && echo "kept: $T" || rm -rf "$T" "$SHM"' EXIT
 export HOME="$T/home" MM_HOME="$T/home/.mm" MM_LAYOUT=one-root MM_OBS_TRACES="" XDG_RUNTIME_DIR="$SHM" MM_API_DIR="$T/api" MM_API_SYNC_MS=300 MM_API_PERSON_RATE=30
+# this machine's swap is not this test's: a stand-in /proc/swaps with none on (vault: opened secrets only where swap cannot reach, sy-rjwg 6)
+printf 'Filename\tType\tSize\tUsed\tPriority\n' >"$T/swaps"; export MM_PROC_SWAPS="$T/swaps"
 mkdir -p "$MM_HOME/pc/projects" "$MM_HOME/pc/boxes" "$T/bin"
 printf '#!/bin/sh\nexec %s "$@"\n' "$MMC" >"$T/bin/mm"; chmod +x "$T/bin/mm"; export PATH="$T/bin:$PATH"
 PORT=$(( 42000 + RANDOM % 800 )); AUTH=auth.example.org

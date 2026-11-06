@@ -293,7 +293,22 @@ function undo(r: Req): Applied {
 }
 
 // ---------- the service ----------
+/** A person's run file (vault.openForRun) lives in <secrets>/_run/ only between its write and the remove that follows at
+ *  once; an mm killed in between leaves it in the tmpfs. mm.api sweeps them at its start (review sy-rjwg 6): every entry
+ *  older than `ageMs` (so a run another mm is opening right now keeps its file), the folder itself never followed
+ *  through a link. Returns how many went. */
+export function sweepRunFiles(dir = join(vault.secretsBase(), '_run'), ageMs = 60e3): number {
+  try { if (!lstatSync(dir).isDirectory()) return 0 } catch { return 0 }
+  let n = 0
+  for (const f of readdirSync(dir)) {
+    const x = join(dir, f)
+    try { if (Date.now() - lstatSync(x).mtimeMs >= ageMs) { rmSync(x, { force: true, recursive: true }); n++ } } catch {}
+  }
+  return n
+}
+
 export async function serve() {
+  try { const n = sweepRunFiles(); if (n) log('warn', 'person run files left by a killed mm, removed', { count: n }) } catch (e) { log('error', 'run files sweep failed', { error: (e as Error).message }) }
   const d = store()
   const find = (id: string) => (d.query('SELECT * FROM request WHERE id = ? OR (item != \'\' AND item = ?)').get(id, id) as Req | null)
   const count = (project: string, since: number, outcomes: string) => (d.query(`SELECT COUNT(*) AS n FROM calls WHERE project = ? AND at >= ? AND outcome ${outcomes}`).get(project, since) as { n: number }).n

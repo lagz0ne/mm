@@ -16,6 +16,8 @@ bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
 check() { local d=$1; shift; if "$@" >"$T/check.out" 2>&1; then ok "$d"; else bad "$d"; tail -5 "$T/check.out" | sed 's/^/       /'; fi; }
 T=$(mktemp -d); SHM=$(mktemp -d /dev/shm/mmr.XXXX); trap 'rm -rf "$T" "$SHM"' EXIT
 export MM_OBS_TRACES="" GIT_CONFIG_GLOBAL="$T/gitconfig" XDG_RUNTIME_DIR="$SHM"
+# this machine's swap is not this test's: a stand-in /proc/swaps with none on (vault: opened secrets only where swap cannot reach, sy-rjwg 6)
+printf 'Filename\tType\tSize\tUsed\tPriority\n' >"$T/swaps"; export MM_PROC_SWAPS="$T/swaps"
 git config --global user.name test; git config --global user.email test@example.invalid; git config --global init.defaultBranch main
 mkdir -p "$T/bin"; printf '#!/bin/sh\nexec %s "$@"\n' "$MMC" >"$T/bin/mm"; chmod +x "$T/bin/mm"; export PATH="$T/bin:$PATH"
 R="$T/remote.git"; LOG="$T/out"; M_BRAIN=brain-marker-5521 M_BOARD=board-marker-7730 M_CFG=cfg-marker-1942 M_CODE=code-marker-3307 V=v4ult-secret-6619

@@ -23,6 +23,8 @@ bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
 check() { local d=$1; shift; if "$@" >"$T/check.out" 2>&1; then ok "$d"; else bad "$d"; tail -3 "$T/check.out" | sed 's/^/       /'; fi; }
 T=$(mktemp -d); SHM=$(mktemp -d /dev/shm/mmp.XXXX); GW=""; WK=""; trap '[ -n "$GW" ] && kill $GW 2>/dev/null; [ -n "$WK" ] && kill $WK 2>/dev/null; rm -rf "$T" "$SHM"' EXIT
 export HOME="$T/home" MM_HOME="$T/home/.mm" MM_LAYOUT=one-root MM_OBS_TRACES="" XDG_RUNTIME_DIR="$SHM"
+# this machine's swap is not this test's: a stand-in /proc/swaps with none on (vault: opened secrets only where swap cannot reach, sy-rjwg 6)
+printf 'Filename\tType\tSize\tUsed\tPriority\n' >"$T/swaps"; export MM_PROC_SWAPS="$T/swaps"
 mkdir -p "$MM_HOME/pc/projects" "$T/bin"
 printf '#!/bin/sh\nexec %s "$@"\n' "$MMC" >"$T/bin/mm"; chmod +x "$T/bin/mm"; export PATH="$T/bin:$PATH"
 PORT=$(( 41100 + RANDOM % 800 )); AUTH=auth.example.org

@@ -96,23 +96,32 @@ function baseDir(sub: string) {
 }
 /** Where a project's opened secrets live while its services run: a memory-backed folder, 0700. */
 export const runtimeDir = (project: string) => baseDir(project)
-/** sy-suk 5: opened secrets sit in a tmpfs, whose pages can be swapped out. A warning when some swap is not
- *  encrypted (dm-crypt) and the folder is not mounted `noswap`. Undefined when there is nothing to warn about. */
+/** sy-suk 5: opened secrets sit in a tmpfs, whose pages can be swapped out. Why that can happen in `dir`: some swap
+ *  is on and not encrypted (dm-crypt), and the folder is a tmpfs not mounted `noswap` (ramfs never swaps). Undefined
+ *  when it can't. MM_PROC_SWAPS is for tests: a file read in place of /proc/swaps. */
 export function swapRisk(dir = secretsBase()): string | undefined {
   let swaps: string[] = []
-  try { swaps = readFileSync('/proc/swaps', 'utf8').split('\n').slice(1).map((l) => l.split(/\s+/)[0]).filter(Boolean) } catch { return undefined }
+  try { swaps = readFileSync(process.env.MM_PROC_SWAPS || '/proc/swaps', 'utf8').split('\n').slice(1).map((l) => l.split(/\s+/)[0]).filter(Boolean) } catch { return undefined }
   const plain = swaps.filter((dev) => !/^crypt$/m.test(run(['lsblk', '-no', 'TYPE', dev]).out.trim()))
   if (!plain.length) return undefined
   let at = dir; while (!existsSync(at) && at !== dirname(at)) at = dirname(at)
+  if (run(['stat', '-f', '-c', '%T', at]).out.trim() === 'ramfs') return undefined
   if (/(^|,)noswap(,|$)/.test(run(['findmnt', '-no', 'OPTIONS', '-T', at]).out.trim())) return undefined
   return `swap is not encrypted (${plain.join(', ')}) and ${at} is not mounted noswap: an opened secret can reach the swap disk (a noswap tmpfs for vault.secrets_dir is a brain migration)`
+}
+/** Opened secrets only where they stay in memory (review sy-rjwg 6): a tmpfs, and not one whose pages can go to a
+ *  plain swap disk. Throws with the reason. */
+function memoryOnly(d: string, what: string) {
+  if (!isTmpfs(d)) throw new Error(`${d} is not memory-backed (tmpfs): refusing to ${what} there`)
+  const w = swapRisk(d)
+  if (w) throw new Error(`refusing to ${what} in ${d}: ${w}`)
 }
 export const isTmpfs = (dir: string) => /^(tmpfs|ramfs)$/.test(run(['stat', '-f', '-c', '%T', dir]).out.trim())
 
 /** Open the secrets a service declares into its project's runtime folder; returns NAME -> file, for <NAME>_FILE env. */
 export function openFor(project: string, names: string[]): Record<string, string> {
   const d = runtimeDir(project)
-  if (!isTmpfs(d)) throw new Error(`${d} is not memory-backed (tmpfs): refusing to write secrets there`)
+  memoryOnly(d, 'write secrets')
   const out: Record<string, string> = {}
   for (const n of names) { const f = join(d, n); writeAtomic(f, decrypt(n)); out[n] = f }
   return out
@@ -132,7 +141,7 @@ export function drop(name: string): boolean {
  *  project's name, so no box mounts it), only on a memory-backed folder. The caller hands it on and removes it at once. */
 export function openForRun(name: string): string {
   const d = baseDir('_run')
-  if (!isTmpfs(d)) throw new Error(`${d} is not memory-backed (tmpfs): refusing to open a secret there`)
+  memoryOnly(d, 'open a secret')
   const f = join(d, `${randomBytes(12).toString('hex')}`)
   const v = decrypt(name)
   try { writeFileSync(f, v, { mode: 0o600, flag: 'wx' }) } finally { v.fill(0) }

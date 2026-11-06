@@ -24,8 +24,11 @@ waits on `age` being installed** (a signed system package; the manifest lists it
   a tmpfs the brain mounts with `noswap`). Every mm call reads it: from a shell, an agent or the process manager, so
   they all open secrets in the same place. `MM_SECRETS_DIR` overrides it for one call (a test); one rule decides it
   (`secretsDir()` in `src/env.ts`). `mm doctor` checks the vault's modes and digests and that the folder is a tmpfs
-  (fail), and warns when some swap is not dm-crypt and the folder isn't mounted `noswap` (sy-suk 5: that mount needs
-  root, so it's a brain migration for ops). It also warns when the callers disagree (`secrets folder callers`): the
+  (fail). mm opens no secret (a service's, or a person's run file) in a tmpfs whose pages could go to a plain swap disk:
+  some swap on that is not dm-crypt, and the folder not mounted `noswap` (ramfs never swaps). It refuses there, and
+  `mm doctor` fails the `swap` check (sy-suk 5, sy-rjwg 6: the `noswap` mount needs root, so it's a brain migration for
+  ops). A person's run file (`<secrets>/_run/`) lives only between its write and the remove right after; mm.api, at its
+  start, removes any there older than a minute (left by an mm killed in between). It also warns when the callers disagree (`secrets folder callers`): the
   key (or the default), this call's `MM_SECRETS_DIR`, an `MM_SECRETS_DIR` in mm-pc's unit, launcher or base file, and
   the mm-docker wrapper's own `secrets` line (`docs/mm-docker.md`).
 - Nothing prints a value: `mm vault ls` shows names, sizes, digests and which services use them.

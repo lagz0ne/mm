@@ -81,6 +81,10 @@ S1="$MM_HOME/box/acme-shop/api/api.sock"; S2="$MM_HOME/box/acme-other/api/api.so
 # the checks below make many calls: a high rate limit until the limits' own section, which starts it again with 10
 serve() { [ -n "$SV" ] && kill $SV 2>/dev/null && wait $SV 2>/dev/null; rm -f "$S1" "$S2" "$AS"; MM_API_RATE=${1:-} mm api serve >>"$T/api.log" 2>&1 & SV=$!
   for _ in $(seq 1 100); do [ -S "$S1" ] && [ -S "$S2" ] && [ -S "$AS" ] && break; sleep 0.2; done; }
+# person run files a killed mm left in the secrets folder's _run/ (sy-rjwg 6): this test's own folder, never the machine's
+export MM_SECRETS_DIR="$T/secrets"; RUND="$MM_SECRETS_DIR/_run"; mkdir -p "$RUND"; chmod 700 "$RUND"
+printf 'left' >"$RUND/oldrun"; touch -d '5 minutes ago' "$RUND/oldrun"; printf 'opening' >"$RUND/freshrun"
+mkdir -p "$T/keepme"; : >"$T/keepme/x"; touch -d '5 minutes ago' "$T/keepme/x"; ln -s "$T/keepme" "$RUND/oldlink"; touch -h -d '5 minutes ago' "$RUND/oldlink"
 serve 1000
 # a box's call: POST <call> with a JSON body; the answer's body, or its HTTP code
 call() { curl -s --unix-socket "$1" -X POST -H 'content-type: application/json' -d "$3" "http://api/$2"; }
@@ -95,6 +99,9 @@ export -f call code own st items codeof; export S1 S2 AS
 echo '== the way in'
 check "a socket for each registered box: 0660 in a 0750 folder (the box's user has the owner's group)" bash -c "[ \"\$(stat -c %a '$S1')\" = 660 ] && [ \"\$(stat -c %a \"\$(dirname '$S1')\")\" = 750 ] && [ -S '$S2' ]"
 check "the owner's socket: 0600 in mm.api's 0700 folder" bash -c "[ \"\$(stat -c %a '$AS')\" = 600 ] && [ \"\$(stat -c %a '$MM_HOME/api')\" = 700 ]"
+check "at its start, mm.api removed the person run file a killed mm left in _run/ (and said so in its log)" bash -c "! test -e '$RUND/oldrun' && grep -q 'person run files left by a killed mm' '$T/api.log'"
+check "...not one just made (a run opening it now)" test -e "$RUND/freshrun"
+check "...a link there goes, its target stays" bash -c "! test -L '$RUND/oldlink' && test -e '$T/keepme/x'"
 check "no TCP port: mm.api listens on nothing else" bash -c "! /usr/sbin/ss -Hltnp 2>/dev/null | grep -q \"pid=$SV,\""
 
 echo '== only the four calls, each in its fixed format (nothing filed for a refusal)'
