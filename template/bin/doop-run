@@ -60,7 +60,7 @@ case "${1:-}" in
     release; exec tar -czf "$out" -C "$P/data" doop ;;
   release)
     # a container left over (its wrapper was killed): stopped the clean way, so its database closes and it regroups
-    $DOCKER stop -t 10 "$NAME" >/dev/null 2>&1 || true; $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
+    $DOCKER stop -t 20 "$NAME" >/dev/null 2>&1 || true; $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
     $DOCKER network rm "$NET" >/dev/null 2>&1 || true
     release; exit 0 ;;
   "") ;;
@@ -79,7 +79,7 @@ rnd() { node -e "process.stdout.write(require('crypto').randomBytes($1).toString
   echo "BETTER_AUTH_SECRET=$(cat "$S/doop-auth-secret")"; echo "SIGNUP_EMAIL_DOMAINS=$(cat "$S/doop-signup-domain")"
 } >"$S/doop.env"
 # a Doop left over (its wrapper was killed): stopped the clean way first, so its database closes and its files regroup
-$DOCKER stop -t 10 "$NAME" >/dev/null 2>&1 || true; $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
+$DOCKER stop -t 20 "$NAME" >/dev/null 2>&1 || true; $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
 
 # its network: internal (no route out), a fixed /24 per project (the same one each start while it is free)
 subnet() { $DOCKER network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$NET" 2>/dev/null || true; }
@@ -127,7 +127,7 @@ pid=$!
 PD=""; command -v setpriv >/dev/null && PD="setpriv --pdeathsig TERM"
 $PD socat "TCP-LISTEN:$PORT,bind=127.0.0.1,fork,reuseaddr" "TCP:$IP:4400" 2>/dev/null &
 fwd=$!
-stop() { kill $fwd 2>/dev/null || true; $DOCKER stop -t 10 "$NAME" >/dev/null 2>&1 || true; wait $pid 2>/dev/null || true
+stop() { kill $fwd 2>/dev/null || true; $DOCKER stop -t 20 "$NAME" >/dev/null 2>&1 || true; wait $pid 2>/dev/null || true
   $DOCKER network rm "$NET" >/dev/null 2>&1 || true; }
 trap 'stop; exit 0' TERM INT
 # alive? /proc, not kill -0: with `sudo docker`, $pid is root's and can't be signalled by the owner

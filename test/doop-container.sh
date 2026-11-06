@@ -109,7 +109,7 @@ check "the backup while it runs (doop-run backup, as bin/backup): all of it, its
 
 echo "== stop"
 t0=$(date +%s%N); kill -TERM "$RUN"; for _ in $(seq 1 200); do [ -d "/proc/$RUN" ] || break; sleep 0.2; done; dt=$(( ($(date +%s%N) - t0) / 100000000 ))
-check "TERM: doop-run ends (in $((dt / 10)).$((dt % 10))s; the process manager waits 10s)" bash -c "! [ -d /proc/$RUN ]"; RUN=""
+check "TERM: doop-run ends (in $((dt / 10)).$((dt % 10))s; the process manager waits 30s)" bash -c "! [ -d /proc/$RUN ] && [ $dt -lt 300 ]"; RUN=""
 check "...its container and its network go, the loopback port is free" bash -c "! D inspect '$C' >/dev/null 2>&1 && ! D network inspect '$NET' >/dev/null 2>&1 && ! /usr/sbin/ss -Hltn | awk '{print \$4}' | grep -qx '127.0.0.1:$PORT'"
 check "...and Doop left its files group-readable and -writable, folders setgid" bash -c "[ -z \"\$(find '$P/data/doop' ! -type l ! -perm -060 -print -quit)\" ] && [ -z \"\$(find '$P/data/doop' -type d ! -perm -2070 -print -quit)\" ]"
 check "the backup while it is stopped: the host owner's own tar" bash -c "'$P/bin/doop-run' backup '$T/doop2.tar.gz' && tar -tzf '$T/doop2.tar.gz' | grep -qx 'doop/pg/global/pg_control'"
