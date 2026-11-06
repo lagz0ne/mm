@@ -57,6 +57,8 @@ export const toolEnv = (): Record<string, string> => ({
   PORTLESS_STATE_DIR: portlessDir(),
   PROC_COMP_CONFIG: DIRS.pcConfig,
   PC_CLIENT_LOG_FILE: join(DIRS.pc, 'client.log'), // a client call's log; else /tmp/process-compose-<user>-client.log
+  npm_config_cache: join(DIRS.npm, '.cache'),      // npm's cache and logs (a board's npm ci, mm's installs); else ~/.npm
+  npm_config_update_notifier: 'false',             // else ~/.npm/_update-notifier-last-checked
 })
 for (const [k, v] of Object.entries(toolEnv())) process.env[k] ||= v
 

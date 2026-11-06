@@ -38,6 +38,12 @@ mm doctor -o json >/tmp/doctor.json 2>/dev/null
 jq -e '[.[] | select(.status == "fail")] | length > 0 and all(.layer == "var" or .layer == "secret" or .layer == "account")' /tmp/doctor.json >/dev/null \
   && ok "onboard: only inputs left ($(jq -r '[.[] | select(.status == "fail") | .item] | join(", ")' /tmp/doctor.json))" || { bad "onboard"; tail -20 /tmp/onboard.out; }
 echo "     mm $(mm --version)"
+# zero side effects (sy-8w1): mm's tools and state under ~/.mm; outside it only the boot unit and the PATH lines
+check "nothing of mm's outside ~/.mm (doctor: outside rows all ok)" jq -e '[.[] | select(.layer == "outside" and .status != "ok")] | length == 0' /tmp/doctor.json
+check "no ~/.portless, ~/.config/process-compose, ~/.npm, ~/.local/bin/claude, ~/.local/share/claude" \
+  sh -c '! test -e ~/.portless && ! test -e ~/.config/process-compose && ! test -e ~/.npm && ! test -e ~/.local/bin/claude && ! test -e ~/.local/share/claude'
+check "claude runs from ~/.mm/tools/claude" sh -c 'readlink -f "$(command -v claude)" | grep -q "^$HOME/.mm/tools/claude/" && claude --version'
+echo "     outside ~/.mm after onboard: $(cd ~ && find . -path ./.mm -prune -o ! -type d -print | sed 's|^\./||' | sort | tr '\n' ' ')"
 sleep 3; check "process manager outlives mm" process-compose -U -u "$HOME/.mm/pc.sock" project state
 check "mm needs: exit 1 while a required input is missing" sh -c '! mm needs'
 check "fill the required inputs (dummy values, from a pipe)" sh -c 'for n in $(mm needs -o json | jq -r ".[] | select(.required and .status == \"missing\" and .kind == \"secret\") | .name"); do printf "cleanbox-dummy-%s" "$n" | mm fill "$n" || exit 1; done'
@@ -53,6 +59,11 @@ check "the board's engine knows the folders (endpoints.json dirs)" sh -c 'jq -e 
 for _ in $(seq 1 90); do mm inspect acme/shop 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
 check "board ready" sh -c 'mm inspect acme/shop | grep -q "board .*Ready"'
 check "board answers by name" curl -sf -o /dev/null http://board.acme-shop.localhost:1355/api/whoami
+check "the names proxy keeps its state in ~/.mm/portless (no ~/.portless)" sh -c 'test -d ~/.mm/portless && ! test -e ~/.portless'
+check "with the board running: no ~/.npm (board build), ~/.portless, ~/.config/process-compose, ~/.local" \
+  sh -c '! test -e ~/.npm && ! test -e ~/.portless && ! test -e ~/.config/process-compose && ! test -e ~/.local'
+# what is still outside (bd's ~/.beads and ~/.config/bd are a known one, sy-8w1's follow-up; the filled secret is an input's path)
+echo "     outside ~/.mm with the board running: $(cd ~ && find . -path ./.mm -prune -o ! -type d -print | sed 's|^\./||' | sed 's|^\(\.beads\)/.*|\1/...|' | sort -u | tr '\n' ' ')"
 check "item on the board" sh -c 'cd ~/.mm/projects/acme/shop && bin/bd create "hello from a clean box" --json | grep -q "\"id\""'
 check "item through the board API" sh -c 'curl -sf http://board.acme-shop.localhost:1355/api/v0/beads/issues?limit=10 | grep -q "hello from a clean box"'
 check "bd stays quiet on a fresh board: no-hooks, metrics off, no hook (sy-8s1)" sh -c 'cd ~/.mm/projects/acme/shop/control && [ "$(../bin/bd config get no-hooks | tail -1)" = true ] && [ "$(../bin/bd config get metrics.disabled | tail -1)" = true ] && mm doctor -o json | jq -e ".[] | select(.item == \"bd quiet acme/shop\") | .status == \"ok\""'

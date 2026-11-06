@@ -2,7 +2,7 @@
 // Every download is checked against its published sha256 before use.
 import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { archNames, asRoot, DIRS, run, which } from './env'
+import { archNames, asRoot, DIRS, run, toolEnv, which } from './env'
 import type { Install } from './manifest'
 
 const fill = (s: string) => s.replaceAll('{goarch}', archNames.goarch).replaceAll('{rustarch}', archNames.rustarch).replaceAll('{node}', archNames.node)
@@ -37,8 +37,9 @@ function unpack(archive: Uint8Array, name: string, dest: string) {
   if (!r.ok) throw new Error(`tar ${name}: ${r.err.trim()}`)
 }
 
-/** npm, kept inside $MM_HOME: its cache (and the logs in it) under npm/, no update check. */
-export const npmEnv = () => ({ npm_config_cache: join(DIRS.npm, '.cache'), npm_config_update_notifier: 'false' })
+/** npm, kept inside $MM_HOME: its cache (and the logs in it) under npm/, no update check (env.ts toolEnv, given again
+ *  here so a caller's own npm settings can't send mm's installs elsewhere). */
+export const npmEnv = () => { const e = toolEnv(); return { npm_config_cache: e.npm_config_cache, npm_config_update_notifier: e.npm_config_update_notifier } }
 
 const CLAUDE_DIST = 'https://downloads.claude.ai/claude-code-releases'
 /**
