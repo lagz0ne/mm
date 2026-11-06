@@ -8,11 +8,11 @@
 // (src/ai.ts, kind `person`: bound to the project and the person, ending by the host's clock after runTtlMs()), and
 // hands that over `docker exec -i`'s stdin. The run reaches the model through mm.ai, which calls it with the person's
 // own token on the host; the box's egress never gets the model's host. The host's record (src/personruns.ts) keeps each
-// run until its key ends. bin/wake starts its runs through here on the host (item work as the item's requester,
-// upkeep as the project's sponsor), and src/boxruns.ts for a box (the person the host's record of asks holds).
+// run until its key ends. bin/wake starts its runs through here on the host (item work as the person who asked for
+// it in the host's record of asks, src/personasks.ts), and src/boxruns.ts for a box (the same record; there, also a budget).
 import { closeSync, openSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { aiEnabled, mintKey, revokeKey, store as aiStore } from './ai'
+import { aiEnabled, budgetRefusal, mintKey, revokeKey, store as aiStore } from './ai'
 import { egressList, egressReload, execArgs } from './box'
 import { getPath, loadConfig } from './config'
 import { run } from './env'
@@ -67,6 +67,8 @@ export async function startRun(person: string, ref: string, role: string, o: { m
   if (!p.token) console.error(`mm run-as: ${person} is the owner and has no personal token set: the run uses the machine's own token (the owner's), as every lead does`)
   // a box: the run gets an mm.ai key of its own, never the token (sy-otxx 2); mm.ai must be on to carry it
   if (p.box && p.token && !aiEnabled()) throw new Error(`a person's run in a box reaches the model through mm.ai only, and mm.ai is off on this machine (ai.enabled): no run`)
+  // ...and only within a monthly budget of that person's for the project, set by the owner (review sy-otxx, condition 3)
+  if (p.box && p.token) { const d = aiStore(); try { const no = budgetRefusal(d, p.project, person); if (no) throw new Error(`${no}: no run`) } finally { d.close() } }
   const entry: PersonRun | null = p.box && p.token ? { person, role, agent: null, at: Date.now(), expires: p.expires } : null
   let keyHash = ''
   if (entry) { sweep(p.root); saveRuns(p.project, [...runsOf(p.project), entry]) }

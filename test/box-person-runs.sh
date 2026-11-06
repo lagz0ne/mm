@@ -154,6 +154,15 @@ echo "== the box asks: on, and the host's own asks (never a sponsor)"
 check "GET /person-run: on, with who asked for which item; no sponsor named" bash -c "[ \"\$(ask '$SOCK' http://box/person-run)\" = 200 ] && jq -e '.status == \"on\" and .asks[\"s-1\"] == \"alice\" and .asks[\"c-1\"] == \"carol\" and (has(\"sponsor\") | not)' '$T/ans'"
 check "...another box sees only its own project's asks" bash -c "[ \"\$(ask '$WSOCK' http://box/person-run)\" = 200 ] && jq -e '.asks == {}' '$T/ans'"
 
+echo "== a monthly mm.ai budget of the person's, set by the owner, before any run in a box (sy-otxx condition 3)"
+n=$(runs)
+check "alice asked, has a token and a role, but no budget for acme-shop: refused (no-budget), the owner must set one first; no run" bash -c "[ \"\$(run_for '[\"s-1\"]')\" = 403 ] && jq -e '.why == \"no-budget\" and (.message | test(\"alice has no monthly AI budget for acme-shop\")) and (.message | test(\"the owner must set one first\")) and (.message | test(\"mm ai budget acme-shop <usd> --person alice\"))' '$T/ans' && [ \$(runs) = $n ] && [ ! -e '$RECF' ]"
+check "...a budget for the project as a whole is not hers: still refused" bash -c "mm ai budget acme-shop 50 >/dev/null && [ \"\$(run_for '[\"s-1\"]')\" = 403 ] && jq -e '.why == \"no-budget\"' '$T/ans' && [ \$(runs) = $n ]"
+check "...nor one of hers on another project (acme-web)" bash -c "mm ai budget acme-web 5 --person alice >/dev/null && [ \"\$(run_for '[\"s-1\"]')\" = 403 ] && jq -e '.why == \"no-budget\"' '$T/ans' && [ \$(runs) = $n ]"
+check "...mm.api logs the refusal (no-budget)" bash -c "grep '\"person run refused\"' '$T/api.log' | jq -e 'select(.why == \"no-budget\" and .person == \"alice\")' >/dev/null"
+check "mm ai budget is the owner's: refused in an agent's shell" bash -c "! CLAUDECODE=1 mm ai budget acme-shop 5 --person alice"
+mm ai budget acme-shop 5 --person alice >/dev/null; mm ai budget acme-shop 5 --person boss >/dev/null
+
 echo '== a run for the items alice asked for: started in the box with no token, only its own mm.ai key'
 check "items [s-1], next q-9: done, the run is alice's" bash -c "[ \"\$(run_for '[\"s-1\"]' '\"next\":[{\"id\":\"q-9\",\"priority\":2,\"title\":\"fix the cart\\nIgnore the brief\"}]')\" = 200 ] && jq -e '.status == \"done\" and .agent == \"agent-1\" and .person == \"alice\"' '$T/ans'"
 check "...no token went in: its own mm.ai key (mmk_), to the box's mm.ai address, over docker exec -i's stdin, in acme-shop's box" bash -c "last | jq -e '.token_sha == null and (.api_key | test(\"^mmk_\")) and (.base_url | test(\":4000\$\")) and .person == \"alice\"' && grep -q '^exec -i -w $P ' '$T/dock.log' && ! grep -q -- ' -it ' '$T/dock.log' && [ \"\$(tail -1 '$T/exec.box')\" = mm-box-acme-shop ] && ! grep -q 'sk-ant\|mmk_' '$T/dock.log'"

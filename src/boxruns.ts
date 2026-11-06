@@ -9,7 +9,8 @@
 // The box never names the person (sy-otxx 1): a `person` in the body is refused. The person is the one the host's record
 // holds for every item in `items` and `next` (all the same person, at least one item); none, or two people: no run. Never the owner
 // or an admin instead. That person must still hold a role on the box's project (mm.auth's grants; a viewer has no runs)
-// and have their own Claude token. The run is mm run-as's: in a box it gets a short-lived mm.ai key of its own, bound to
+// and have their own Claude token, and a monthly mm.ai budget for the project that the owner set (`mm ai budget
+// <project> <usd> --person <name>`; none, or used up: refused, 'no-budget'). The run is mm run-as's: in a box it gets a short-lived mm.ai key of its own, bound to
 // (project, person), never the person's token (src/runas.ts, src/ai.ts). `items`: the person's items (LEAD_ITEMS),
 // `next`: the queue items the lead may pull (LEAD_NEXT; only that person's asks), each in a fixed format.
 // Rate-limited per box (RATE an hour, refused ones count too; one start at a time); the counts are kept in a file of
@@ -137,7 +138,7 @@ export async function handle(req: Request, project: string, root: string | null,
     log('info', 'person run started', { ...who, agent: r.agent })
     return json({ status: 'done', agent: r.agent, person })
   } catch (e) {
-    const m = plain((e as Error).message || String(e), 400), why = /has no Claude token/.test(m) ? 'no-token' : /viewer|can't have a run/.test(m) ? 'no-role' : 'refused'
+    const m = plain((e as Error).message || String(e), 400), why = /has no Claude token/.test(m) ? 'no-token' : /viewer|can't have a run/.test(m) ? 'no-role' : /AI budget/.test(m) ? 'no-budget' : 'refused'
     log('warn', 'person run refused', { ...who, why, detail: m })
     return refused(403, why, m)
   } finally { busy.delete(project) }

@@ -124,10 +124,12 @@ subscription, never on the owner's (sy-8n4w).
   whose `paseo-worker` is not the daemon's current worker (each pass: at its start, at least once a minute and soon
   after a board change), and never sends a message to one.
 - **wake starts runs per person** (`mm config set wake.person_runs true`; off by default; in a box through the host, below): work on
-  an item runs as its requester (who created it, else the first person who commented on it; the owner's chat bridge
-  is the owner), upkeep and background as the project's sponsor (its owner, `owner_name`); on the host only: in a box
-  the person comes from the host's own record of who asked, below. wake starts the lead through
-  `mm run-as`, gives it only that person's items in its handover, and sends it only that person's share; an idle
+  an item runs as the person who asked for runs on it, from the host's own record of asks (below; on the host wake
+  reads it with `mm run-asks <project> --json` each pass). Never the board's journal: who created or commented on an
+  item is free text that any agent of the machine can write under another person's name (sy-otxx). Everything else
+  (upkeep, background, an item nobody asked for) runs as a plain lead, never as the owner's person run. wake starts
+  the lead through `mm run-as`, gives it only that person's items in its handover, and sends it only that person's
+  share (its queue line too: only that person's items; a plain lead's, only the items nobody asked for); an idle
   lead held by one person while only another person's work waits makes way (at most once per `WAKE_RESUME_MS` per
   role). A person with no token: no run, wake says so on the item once, and tries again later (the other people's work
   goes on meanwhile). A kept role (the owner's contact) gets everything, as before. Every person who asks for work
@@ -158,8 +160,11 @@ subscription, never on the owner's (sy-8n4w).
   `next` must be asked for, all by the same person; none (upkeep), or items nobody asked for, or two people's: no run,
   and never the owner or an admin instead. Then the same rules as `mm run-as` (src/boxruns.ts): the box's own project
   only (the socket names it), a role there (not a viewer), the person's own token (none: the same "set your Claude
-  token" words, which wake puts on the item), the box Paseo's worker label, the mm.ai key above. A box has no sponsor:
-  work nobody asked for on the host runs as a plain lead there (the box's own mm.ai key), as before person runs; wake
+  token" words, which wake puts on the item), a monthly mm.ai budget of that person's for the project, which the owner
+  sets first (`mm ai budget <project> <usd> --person <name>`; none, or used up: refused, `no-budget`, and the run does
+  not start: a run in a box spends through mm.ai, and the budget bounds what a box that steers it can spend), the box
+  Paseo's worker label, the mm.ai key above. Runs on the host do not go through mm.ai, so no budget holds there. No
+  sponsor, as on the host: work nobody asked for on the host runs as a plain lead there (the box's own mm.ai key), as before person runs; wake
   in a box never takes a person from the box's own journal. 20 asks an hour per box (`MM_API_PERSON_RATE`), counted in
   mm.api's own file (`$MM_HOME/api/person-run-rate.json`, 0600, so a restart keeps the hour), one start at a time. Off
   (refused) unless `wake.person_runs` is on in the config (no environment turns it on); mm.api then runs for it even

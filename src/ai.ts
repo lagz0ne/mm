@@ -124,6 +124,14 @@ export function setBudget(d: Database, project: string, person: string, usd: num
 }
 const budgetOf = (d: Database, project: string, person: string) =>
   (d.query('SELECT usd FROM ai_budget WHERE project = ? AND person = ?').get(project, person) as { usd: number } | null)?.usd
+/** Why a person's run in a box may not start for want of a budget, or null (review sy-otxx, condition 3): mm.ai's calls
+ *  for that person in that project are bounded only by their own monthly budget, so the owner sets one first. */
+export function budgetRefusal(d: Database, project: string, person: string): string | null {
+  const b = budgetOf(d, project, person)
+  if (!b) return `${person} has no monthly AI budget for ${project}: a person's run in a box spends through mm.ai, so the owner must set one first (mm ai budget ${project} <usd> --person ${person})`
+  if (spent(d, project, person) >= b) return `the monthly AI budget of ${person} in ${project} is used up ($${b.toFixed(2)}): the owner can raise it (mm ai budget ${project} <usd> --person ${person})`
+  return null
+}
 /** This month's use, by project, person and model, with the budgets. */
 export function report(d: Database, since = monthStart()) {
   const rows = d.query(`SELECT project, person, model, COUNT(*) AS calls, SUM(input) AS input, SUM(output) AS output, SUM(cache_read) AS cache_read,
