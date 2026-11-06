@@ -49,9 +49,9 @@ machine:
                  for: "the paseo-telegram bridge (approvals and chat with agents)",
                  how: "@BotFather on Telegram: /newbot, or /token for an existing bot" }
     claude-oauth-token: { kind: secret, required: true, path: "~/.config/secrets/claude-oauth.token",
-                 for: "CLAUDE_CODE_OAUTH_TOKEN for agents (shell + paseo service)",
+                 for: "CLAUDE_CODE_OAUTH_TOKEN for agents (shell + paseo service); mm.ai's upstream too, when ai.upstream_key_input is claude-oauth-token (never in a box)",
                  how: "`claude setup-token` on any machine signed in to your Claude account" }
-    ai-upstream-key: { kind: secret, when: "ai.enabled == true", path: "~/.config/secrets/ai-upstream.key",
+    ai-upstream-key: { kind: secret, when: "ai.enabled == true && ai.upstream_key_input != claude-oauth-token", path: "~/.config/secrets/ai-upstream.key",
                  for: "mm.ai, the AI gateway for project boxes: its key for the upstream (never in a box)",
                  how: "an Anthropic API key (console.anthropic.com > API Keys), or the key of an Anthropic-compatible gateway (then set ai.upstream to its URL)" }
     expose-password: { kind: secret, required: true, when: "access == domain", path: "~/.config/secrets/expose.pass",
