@@ -44,6 +44,13 @@ Status: **built** (`src/auth.ts`; `test/auth.sh`, `test/auth-e2e.sh`, `test/box-
 - Product apps and boards never share a cookie. A separate suffix for boards (`*.b.<domain>`) is still recommended, so
   product code is never same-site with a board; that is the machine's routing and DNS.
 
+## Board routes: the gateway or the shared password
+- A service with `public.auth: required` (a board) gets its route from the machine's route tool. While the gateway is
+  off, `mm up` writes it with the shared password (`expose --auth`, `[auth]` in `expose ls`). Once the machine turns
+  the gateway on (`auth.enabled`), `mm up` and `mm update` write it with `expose --sso` (forward-auth to the gateway,
+  `[sso]`), and rewrite an `[auth]` route they find. Turning the gateway off writes the password back on the next
+  `mm up` (the rollback). A route that is right already is left alone; an open route (`auth: none`) gets neither.
+
 ## Tools: bearer tokens
 - `mm token <name> <project> [--days n]` prints a token (`mmt_…`, shown once, stored as a hash), bound to **one
   project**, 30 days by default, at most 365. `/verify` takes `Authorization: Bearer <token>` and gives the same

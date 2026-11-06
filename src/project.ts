@@ -466,7 +466,7 @@ export function up(root: string): Step[] {
   // public routes (domain mode): the machine's `expose` tool writes the router entry
   for (const [, s] of Object.entries(services)) {
     if (!s.public_port || !s.public || hold) continue
-    steps.push(routeUp(a, s.public.name, s.public_port, s.public.auth === 'required', `${s.public_url}${s.public.auth === 'required' ? ' (password)' : ''}`))
+    steps.push(routeUp(a, s.public.name, s.public_port, s.public.auth === 'required', `${s.public_url}`))
   }
   return steps
 }
@@ -481,15 +481,25 @@ export function routeTool(a: Answers): string | null {
 }
 /** One public route, written only when it is missing or differs from what the tool lists (same port, same login):
  *  `mm up` and `mm update` re-write nothing that is right already. */
+/** How a route with `public.auth: required` is gated (sy-lyeo): through the sign-in gateway (`expose --sso`) once the
+ *  machine has turned it on (`auth.enabled`), else the shared password (`--auth`). Turning the gateway off writes the
+ *  password back at the next `mm up` (the rollback). */
+export function routeGate(): { flag: '--sso' | '--auth'; mark: '[sso]' | '[auth]'; note: string } {
+  const on = getPath(loadConfig(), 'auth.enabled')
+  return on === true || on === 'true' ? { flag: '--sso', mark: '[sso]', note: ' (sign-in)' } : { flag: '--auth', mark: '[auth]', note: ' (password)' }
+}
 export function routeUp(a: Answers, name: string, port: number, auth: boolean, url: string): Step {
-  const step = `public ${name}`, tool = routeTool(a)
+  const step = `public ${name}`, tool = routeTool(a), gate = auth ? routeGate() : null
   if (!tool) return { step, status: 'skip', detail: 'a throwaway project gets no live route (a test sets MM_EXPOSE)' }
   if (!run(['sh', '-c', 'command -v "$1"', 'sh', tool]).ok) return { step, status: 'fail', detail: `no \`${tool}\` tool on this machine` }
   const ls = run([tool, 'ls'], { timeoutMs: 30_000 })
   const line = ls.ok ? ls.out.split('\n').find((l) => l.startsWith(`https://${name}.`)) : undefined
-  if (line && new RegExp(`:${port}(\\s|$)`).test(line) && line.includes('[auth]') === auth) return { step, status: 'ok', detail: `${url} (already there)` }
-  const r = run([tool, name, String(port), ...(auth ? ['--auth'] : [])], { timeoutMs: 30_000 })
-  return { step, status: r.ok ? 'ok' : 'fail', detail: r.ok ? url : (r.err || r.out).trim().slice(0, 160) }
+  // right already: the same port, and exactly this gate (an [auth] route is rewritten to [sso] once the gateway is on)
+  const marks = line ? (['[auth]', '[sso]'] as const).filter((m) => line.includes(m)) : []
+  const same = gate ? marks.length === 1 && marks[0] === gate.mark : marks.length === 0
+  if (line && new RegExp(`:${port}(\\s|$)`).test(line) && same) return { step, status: 'ok', detail: `${url}${gate?.note ?? ''} (already there)` }
+  const r = run([tool, name, String(port), ...(gate ? [gate.flag] : [])], { timeoutMs: 30_000 })
+  return { step, status: r.ok ? 'ok' : 'fail', detail: r.ok ? `${url}${gate?.note ?? ''}` : (r.err || r.out).trim().slice(0, 160) }
 }
 /** Remove one public route (mm archive); a throwaway project's are only the test tool's. */
 export function routeRm(a: Answers, name: string): Step {

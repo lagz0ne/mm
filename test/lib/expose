@@ -1,7 +1,7 @@
 #!/bin/bash
 # A test's own route tool (review sy-uzh): the same commands and `ls` format as the machine's `expose`, but each route
 # is a file in $MM_EXPOSE_DIR, never in the live web proxy's folder. mm uses it when MM_EXPOSE names it (test/lib/routes.sh).
-#   expose <name> <port> [--auth] | expose rm <name> | expose ls
+#   expose <name> <port> [--auth|--sso] | expose rm <name> | expose ls      (--sso: the sign-in gateway, `[sso]` in ls)
 set -euo pipefail
 DIR=${MM_EXPOSE_DIR:?MM_EXPOSE_DIR is not set}; mkdir -p "$DIR"
 valid() { [[ $1 =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || { echo "expose: bad name '$1'" >&2; exit 2; }; }
@@ -10,11 +10,12 @@ case "${1:-}" in
     for f in "$DIR"/expose-*.yml; do
       [ -e "$f" ] || continue
       n=${f##*/expose-}; n=${n%.yml}
-      printf '%-36s %s%s\n' "https://$n.test" "$(sed -n 's/^url: //p' "$f")" "$(grep -qx 'auth' "$f" && echo '  [auth]')"
+      printf '%-36s %s%s\n' "https://$n.test" "$(sed -n 's/^url: //p' "$f")" "$(grep -qx 'auth' "$f" && echo '  [auth]')$(grep -qx 'sso' "$f" && echo '  [sso]')"
     done ;;
   rm) valid "${2:-}"; rm -f "$DIR/expose-$2.yml"; echo "removed https://$2.test" ;;
   *)
     valid "$1"; [[ ${2:-} =~ ^[0-9]+$ ]] || { echo "expose: bad port '${2:-}'" >&2; exit 2; }
-    { echo "url: http://127.0.0.1:$2"; [ "${3:-}" = --auth ] && echo auth; true; } >"$DIR/expose-$1.yml"
+    case "${3:-}" in ''|--auth|--sso) ;; *) echo "expose: unknown option '$3'" >&2; exit 2 ;; esac
+    { echo "url: http://127.0.0.1:$2"; [ "${3:-}" = --auth ] && echo auth; [ "${3:-}" = --sso ] && echo sso; true; } >"$DIR/expose-$1.yml"
     echo "https://$1.test" ;;
 esac
