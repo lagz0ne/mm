@@ -193,9 +193,13 @@ export function cli(name = SERVICE, attrs = {}) {
   als.enterWith(root)
   process.env.TRACEPARENT = root.traceparent()
   process.on('exit', (code) => {
-    if (code) root.status = { code: 2, message: `exit ${code}` }
-    root.end({ exit_code: code })
-    log(code ? 'error' : 'info', `${name} ${code ? `failed (exit ${code})` : 'done'}`, { op: name, exit_code: code, duration_ms: Number((nowNs() - root.start) / 1000000n) })
+    // root.refused: the command said no to its caller (bd: "not claimable", "blocked", a guarded update that lost):
+    // the caller has the answer; it is not a failure of the service, so it is a warn and the span stays unset
+    const refused = Boolean(code && root.refused)
+    if (code && !refused) root.status = { code: 2, message: `exit ${code}` }
+    root.end({ exit_code: code, ...(refused ? { outcome: 'refused' } : {}) })
+    log(refused ? 'warn' : code ? 'error' : 'info', `${name} ${refused ? `refused (exit ${code})` : code ? `failed (exit ${code})` : 'done'}`,
+      { op: name, exit_code: code, ...(refused ? { outcome: 'refused' } : {}), duration_ms: Number((nowNs() - root.start) / 1000000n) })
     clearTimeout(timer); timer = null
     if (!queue.length || !TRACES) return
     try { execFileSync('curl', ['-sf', '-m', '2', '-o', '/dev/null', '-H', 'content-type: application/json', '--data-binary', '@-', TRACES], { input: body(queue), stdio: ['pipe', 'ignore', 'ignore'] }) } catch {}
