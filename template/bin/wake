@@ -626,10 +626,10 @@ async function tidyPersonRuns() {
   for (const a of stale) {
     if (archivedRuns.has(a.id)) continue
     try {
-      await P_.archive(a.id)
-      archivedRuns.add(a.id); count('mm_wake_person_runs_archived_total', {})
-      log(`archived ${a.labels.role || 'a'} run for ${a.labels.person} (${a.shortId || a.id}): the Paseo daemon restarted since it was made (worker ${a.labels['paseo-worker'] || 'unknown'}, now ${cur}), and it would come back on the daemon's token, not theirs`)
-    } catch (e) { log(`archive of the person run ${a.id} failed (tried again on the next pass):`, e.message) }
+      await P_.remove(a.id) // deleted, not archived: a send to an archived run would bring it back (sy-q8fv)
+      archivedRuns.add(a.id); count('mm_wake_person_runs_deleted_total', {})
+      log(`deleted ${a.labels.role || 'a'} run for ${a.labels.person} (${a.shortId || a.id}): the Paseo daemon restarted since it was made (worker ${a.labels['paseo-worker'] || 'unknown'}, now ${cur}), and it would come back on the daemon's token, not theirs`)
+    } catch (e) { log(`delete of the person run ${a.id} failed (tried again on the next pass):`, e.message) }
   }
 }
 /** The person to start `role`'s lead as now, with that person's share of what waits: { person, items (ids), next (the
@@ -807,10 +807,10 @@ async function reconcile1() {
         && Date.now() - (startedAt[role] || 0) >= RESUME_GAP
       if (r.live === false || swap) {
         try {
-          await P_.archive(a.id)
-          log(r.live === false ? `archived ${role}'s run for ${p} (${a.shortId || a.id}): made before the Paseo daemon restarted` : `archived ${role}'s run for ${p} (${a.shortId || a.id}), idle: only other people's work waits (${[...new Set(ids.map(runnerOf))].join(', ')})`)
+          await P_.remove(a.id) // a person run is deleted, never archived (sy-q8fv)
+          log(r.live === false ? `deleted ${role}'s run for ${p} (${a.shortId || a.id}): made before the Paseo daemon restarted` : `deleted ${role}'s run for ${p} (${a.shortId || a.id}), idle: only other people's work waits (${[...new Set(ids.map(runnerOf))].join(', ')})`)
           delete idleFrom[role]; delete idleSeen[role]; a = null
-        } catch (e) { log(`archive of ${role}'s run ${a.id} failed (left running):`, e.message) }
+        } catch (e) { log(`delete of ${role}'s run ${a.id} failed (left running):`, e.message) }
       }
     }
     if (a && a.status !== 'closed') { if (kept[role] || keptGone.has(role)) await keptBack(role, a, b); await closeIdle(role, a, own); continue }

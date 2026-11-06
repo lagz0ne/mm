@@ -119,7 +119,8 @@ subscription, never on the owner's (sy-8n4w).
   hooks the run starts, and the run is labelled `person=<name>` and `paseo-worker=<the daemon's worker>` (its pid and
   start; a daemon that can't say its worker gets no run). Like every lead, it is that role's one lead.
 - **After a Paseo restart:** Paseo keeps no run's environment, so a person's run the daemon held before it restarted
-  could come back only on the daemon's own token (the owner's). bin/wake archives every person run of its project
+  could come back only on the daemon's own token (the owner's). bin/wake deletes (never only archives: a send to an
+  archived run would bring it back) every person run of its project
   whose `paseo-worker` is not the daemon's current worker (each pass: at its start, at least once a minute and soon
   after a board change), and never sends a message to one.
 - **wake starts runs per person** (`mm config set wake.person_runs true`; off by default; on the host only): work on

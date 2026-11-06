@@ -91,6 +91,12 @@ export async function send(id, text) {
   if (c) return c.agents.ref(id).send(text)
   await cli(['send', id, '--no-wait', '--prompt', text])
 }
+/** Delete an agent for good (interrupted if running, then hard-deleted: no history left to resume). The engine's only:
+ *  person runs (sy-q8fv), which must never come back on the daemon's own token, as an archived run would on a send. */
+export async function remove(id) {
+  engineOnly('delete')
+  await cli(['delete', id])
+}
 /** Archive an agent (soft: its history stays in Paseo). */
 export async function archive(id) {
   engineOnly('archive')

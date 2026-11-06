@@ -55,6 +55,7 @@ if (cmd === 'ls') {
   console.log(JSON.stringify(list.map((x) => ({ id: x.id, shortId: x.id, status: x.status, ...(process.env.STUB_LABELS === '1' ? { labels: x.labels } : {}) }))))
 } else if (cmd === 'daemon') console.log(JSON.stringify({ workerPid: Number(fs.readFileSync(T + '/worker.pid', 'utf8')) }))
 else if (cmd === 'archive') { const id = a.filter((x) => x !== '--force')[0], l = agents(); for (const x of l) if (x.id === id) x.archived = true; save(l); fs.appendFileSync(T + '/archived.log', id + '\\n') }
+else if (cmd === 'delete') { const id = a[0]; save(agents().filter((x) => x.id !== id)); fs.appendFileSync(T + '/deleted.log', id + '\\n') }
 else if (cmd === 'send') { fs.appendFileSync(T + '/sent.log', 'TO ' + a[0] + ' at ' + Date.now() + '\\n' + a[a.indexOf('--prompt') + 1] + '\\n----\\n') }
 `, { mode: 0o755 })
   // stub mm: run-as makes the person's run (labels as bin/lead and run-as.mjs give them); a person in notoken: refused
@@ -98,7 +99,7 @@ l.push({ id, status: 'idle', labels: { project, role, person, 'paseo-worker': wo
   const w = spawn('node', [path.join(PR, 'bin', 'wake')], { env, stdio: ['ignore', 'pipe', 'pipe'] })
   let out = ''; w.stdout.on('data', (d) => (out += d)); w.stderr.on('data', (d) => (out += d))
   const runas = () => read(path.join(T, 'runas.log')).split('\n').filter(Boolean).map((l) => JSON.parse(l))
-  const sent = () => read(path.join(T, 'sent.log')), archived = () => read(path.join(T, 'archived.log')), bdlog = () => read(BDLOG)
+  const sent = () => read(path.join(T, 'sent.log')), archived = () => read(path.join(T, 'deleted.log')), softArchived = () => read(path.join(T, 'archived.log')), bdlog = () => read(BDLOG)
   const live = () => JSON.parse(read(AG)).filter((x) => !x.archived)
 
   try {
@@ -110,7 +111,7 @@ l.push({ id, status: 'idle', labels: { project, role, person, 'paseo-worker': wo
     ok('...never through a plain bin/lead start', !read(path.join(T, 'plain.log')))
     // alice's run, idle, while only bob's work waits (his unanswered comment): it makes way, and bob's run starts
     ok("alice's run makes way for bob's: archived, then the qa lead starts as bob", await until(() => runas().some((r) => r.person === 'bob' && r.role === 'qa'))
-      && archived().includes('run-alice-qa') && /archived qa's run for alice .*idle: only other people's work waits \(bob\)/.test(out))
+      && archived().includes('run-alice-qa') && /deleted qa's run for alice .*idle: only other people's work waits \(bob\)/.test(out))
     ok("...and his waiting item goes to his run", await until(() => sent().split('----').some((m) => /TO run-bob-qa/.test(m) && m.includes('q-2'))))
     ok("...and nothing of bob's went to alice's run", !sent().split('----').some((m) => m.includes('TO run-alice') && m.includes('q-2')))
     const bobRun = () => live().find((x) => x.labels.person === 'bob')?.id
@@ -143,7 +144,7 @@ l.push({ id, status: 'idle', labels: { project, role, person, 'paseo-worker': wo
     const n0 = runas().length
     newWorker()
     ok(`a daemon restart: every person run made before is archived (${before.join(', ')})`, before.length > 0 && await until(() => before.every((id) => archived().includes(id))))
-    ok('...wake said why', await until(() => /archived .*run for (bob|boss).*the Paseo daemon restarted/.test(out), 4000))
+    ok('...wake said why', await until(() => /deleted .*run for (bob|boss).*the Paseo daemon restarted/.test(out), 4000))
     const sentBefore = sent().length
     emit(ev('comment', 'q-2', 'bob', { comment: { id: 'c3', author: 'bob', text: 'after the restart' } }))
     ok("...bob's next comment goes to a new run of his (on the new worker), never to the archived one", await until(() => runas().slice(n0).some((r) => r.person === 'bob'))
@@ -153,8 +154,11 @@ l.push({ id, status: 'idle', labels: { project, role, person, 'paseo-worker': wo
     const l = JSON.parse(read(AG)); l.push({ id: 'manual-y', status: 'idle', labels: { project: 'wp', role: 'other', person: 'alice', 'paseo-worker': '1.1' } },
       { id: 'plain-x', status: 'running', labels: { project: 'wp', role: 'other' } }); fs.writeFileSync(`${AG}.t`, JSON.stringify(l)); fs.renameSync(`${AG}.t`, AG)
     ok('the tidy archives any person run of the project made on another worker (also one wake did not start), and says why', await until(() => archived().includes('manual-y')
-      && /archived (a|other) run for alice \(manual-y\): the Paseo daemon restarted since it was made/.test(out), 6000))
+      && /deleted (a|other) run for alice \(manual-y\): the Paseo daemon restarted since it was made/.test(out), 6000))
     ok('...and never a plain agent (no person label)', !archived().includes('plain-x'))
+    // deleted, not archived: a send to an archived run would bring it back on the daemon's token (sy-q8fv)
+    ok('...a person run is deleted for good, never only archived (it is gone from Paseo)', !softArchived().includes('manual-y')
+      && !JSON.parse(read(AG)).some((x) => x.id === 'manual-y' || x.id === 'run-alice-qa'))
   } finally {
     w.kill(); srv.close(); for (const x of workers) x.kill()
     if (process.env.WAKE_TEST_OUT) fs.writeFileSync(`${process.env.WAKE_TEST_OUT}.${labels ? 'labels' : 'cli'}`, `${out}\n--- runas\n${read(path.join(T, 'runas.log'))}\n--- archived\n${archived()}\n--- bd\n${bdlog()}`)
