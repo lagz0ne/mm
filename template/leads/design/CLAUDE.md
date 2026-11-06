@@ -18,6 +18,10 @@ looking rather than reading.
    lead must not miss. Ask for approval
    (`needs-you`, `blocked`). Iterate on feedback, with a new commit each round. When approved, close the item; that
    unblocks the code lead.
+   With Doop on (the `doop` MCP), link each frame on the item: put `doop:<frame id>` in your comment (or
+   `doop:canvas/<canvas id>` for every frame of a canvas), or start the frame's name with the item id
+   (`<item id> · Sign-in`). The board then shows the frame as an image, what changed since the last version, its open
+   Doop comments, and an "Open in Doop" link. People comment there too: read them with `get_comments`.
 4. **Design note** comments are humans' change requests on one mockup element. Each names the file, commit and
    element (tag, text, CSS selector, position), repeated in a hidden `<!-- annotation {json} -->` line. Fix it in the
    mockup, then reply "re #n" with what changed (or why not).

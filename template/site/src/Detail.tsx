@@ -12,6 +12,7 @@ import { ArrowsInIcon, ArrowsOutIcon } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 import { Avatar, PersonaContext, personaOf } from '@/lib/persona'
 import { ThreadPresence } from '@/Presence'
+import { Designs } from '@/Designs'
 
 const STATUSES = ['open', 'in_progress', 'blocked', 'deferred'] as const
 const NONE = '_none'
@@ -157,6 +158,8 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
             </Section>
 
             <Workers id={i.id} tick={tick} />
+
+            <Designs id={i.id} tick={tick} assignee={i.assignee} built={content} onOpen={onOpen} />
 
             {content.length > 0 && (
               <Section label={`Content · ${content.length}`}>
