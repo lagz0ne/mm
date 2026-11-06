@@ -14,6 +14,7 @@ import { type NamesMode, namesMode, routeName } from './names'
 import { pcRunning, writeBase } from './pc'
 import { rendered, renderTo, template, templateCommit } from './template'
 import pkg from '../package.json'
+import portlessClaim from './portless-claim.mjs' with { type: 'text' }
 
 export interface Answers { client: string; name: string; project: string; short: string; root: string; template_version: string; created: string; profile?: string; throwaway?: boolean; box?: boolean
   services_on?: string[] } // optional services this project runs (services.yaml optional: true), e.g. doop
@@ -22,6 +23,25 @@ export const PROJECTS_PC = join(DIRS.pc, 'projects')
 /** Project boxes: one file each (`# from <root>/services.yaml`), so mm, the gateway and the sentinel find them; never
  *  loaded into the host's process manager (a box runs its own). */
 export const BOXES = join(DIRS.pc, 'boxes')
+/**
+ * The check an HTTP service runs before its portless wrapper takes over its name (src/portless-claim.mjs, sy-1qkv):
+ * written into `dir` (the host's: mm's pc folder; a box's: its cfg folder), by a temp name and a rename, so a service
+ * starting meanwhile never reads half a file. Returns its path.
+ */
+export function writePortlessClaim(dir: string): string {
+  const f = join(dir, 'portless-claim.mjs')
+  try { if (readFileSync(f, 'utf8') === portlessClaim) return f } catch {}
+  mkdirSync(dir, { recursive: true })
+  const tmp = join(dir, `.portless-claim.mjs.${randomBytes(6).toString('hex')}.tmp`)
+  try { writeFileSync(tmp, portlessClaim, { mode: 0o644 }); renameSync(tmp, f) } catch (e) { rmSync(tmp, { force: true }); throw e }
+  return f
+}
+/** A service's portless wrapper command, from its whole command (serviceProcess): after mm's claim check, or the whole
+ *  line (a definition from before the check); '' when it has none. */
+export function wrapperCommand(cmd: string): string {
+  const m = /^node '(?:[^']|'"'"')*' [^\s']+ && exec (portless .*)$/s.exec(cmd)
+  return m ? m[1] : cmd.startsWith('portless ') ? cmd : ''
+}
 
 export function parseRef(ref: string): { client: string; name: string } {
   const m = /^([a-z][a-z0-9-]{0,30})\/([a-z][a-z0-9-]{0,30})$/.exec(ref || '')
@@ -241,7 +261,7 @@ export const PROJECT_LOG_CONFIG = { add_timestamp: true, timestamp_format: '2006
 /** One service as a process-compose process, on the host or in a project box. Host: secrets through `mm vault run`.
  *  Box (secretsDir): mm isn't in the box, so the service gets <NAME>_FILE paths in the read-only secrets mount. */
 export function serviceProcess(root: string, project: string, n: string, s: SvcResolved, services: Record<string, SvcResolved>,
-  o: { env: Record<string, string | undefined>; socket: string; pdeath: string; secretsDir?: string }): Record<string, unknown> {
+  o: { env: Record<string, string | undefined>; socket: string; pdeath: string; secretsDir?: string; claim: string }): Record<string, unknown> {
   let cmd = s.command.replaceAll('$PORT', '$$$$PORT') // keep $PORT for the service's shell (process-compose would expand it)
   const files: Record<string, string> = {}
   // secrets the service declares: opened at every start (the runtime folder is memory-backed: gone after a reboot)
@@ -249,8 +269,11 @@ export function serviceProcess(root: string, project: string, n: string, s: SvcR
   else if (s.secrets?.length) cmd = `${which('mm') || join(DIRS.bin, 'mm')} vault run ${project} ${s.secrets.join(',')} -- sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
   // the service dies with its wrapper (portless): no orphan keeps the port after a crash or kill. --force: a restart
   // takes over its own name from the previous wrapper, which process-compose may still be stopping (sy-5ku 2); the
-  // name is this project's service, so nothing else holds it
-  if (s.port === 'http') cmd = `portless ${n}.${project} --force ${o.pdeath}sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
+  // name is this project's service, so nothing else holds it. --force sends TERM to the pid on record: first, mm's
+  // check (o.claim, src/portless-claim.mjs) drops a record whose pid is now another process, so that one is never
+  // signalled (sy-1qkv); `exec` keeps the wrapper on the pid process-compose started
+  const q = (x: string) => `'${x.replaceAll("'", `'"'"'`)}'`
+  if (s.port === 'http') cmd = `${o.claim ? `node ${q(o.claim)} ${n}.${project} && exec ` : ''}portless ${n}.${project} --force ${o.pdeath}sh -c ${q(cmd)}`
   // ready.exec: a command that says the service answers (dolt: bin/dolt-ready runs a query, sy-5ku 1), not that its
   // socket file exists; a dependent with `ready` waits for it
   const probe = s.ready?.http ? { exec: { command: `curl -sf -o /dev/null --max-time 3 ${s.url}${s.ready.http}` } }
@@ -536,6 +559,7 @@ export function up(root: string): Step[] {
     ...(obs.traces ? { MM_OBS_TRACES: obs.traces, MM_OBS_METRICS: obs.metrics } : {}) }
   const processes: Record<string, unknown> = {}
   const pdeath = run(['sh', '-c', 'command -v setpriv']).ok ? 'setpriv --pdeathsig TERM ' : ''
+  const claim = writePortlessClaim(DIRS.pc) // what each HTTP service checks before its wrapper takes over its name
   // a restored box on hold (until the human says the old box is down): only what stays inside the box starts.
   // `outward: false` declares it; mm's own board engine counts as inward; anything else (wake starts leads, the app
   // slot, public routes) is held back, so an unknown service is never let out by default
@@ -543,7 +567,7 @@ export function up(root: string): Step[] {
   const inward = (n: string, s: Svc) => s.outward === false || (s.outward === undefined && ['dolt', 'bd-serve', 'board'].includes(n))
   for (const [n, s] of Object.entries(services)) {
     if (hold && !inward(n, s)) { held_back.push(n); continue }
-    processes[`${a.project}.${n}`] = serviceProcess(root, a.project, n, s, services, { env, socket, pdeath })
+    processes[`${a.project}.${n}`] = serviceProcess(root, a.project, n, s, services, { env, socket, pdeath, claim })
   }
   // public services: a forwarder from bind_host to the service's loopback port (the web proxy runs in docker)
   for (const [n, s] of Object.entries(services)) {
@@ -772,8 +796,8 @@ export function leaveHost(root: string, project: string, waitMs = 10_000): { ok:
   rmSync(pf, { force: true })
   const left = () => was.filter((p) => procAlive(p.pid)), stopped: string[] = []
   const wrapper = (p: { name: string; pid: number }) => {
-    const cmd = String(defs[p.name]?.command ?? '')
-    return cmd.startsWith('portless ') && sameCommand(procArgv(p.pid), cmd) && within(procCwd(p.pid), root)
+    const cmd = String(defs[p.name]?.command ?? ''), w = wrapperCommand(cmd), argv = procArgv(p.pid)
+    return !!w && (sameCommand(argv, w) || sameCommand(argv, cmd)) && within(procCwd(p.pid), root)
   }
   const stopWrappers = (ms: number) => {
     for (const end = Date.now() + ms; left().length && Date.now() < end;) Bun.sleepSync(250)
