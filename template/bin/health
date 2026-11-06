@@ -50,8 +50,11 @@ for (const c of checks) {
   }
   s.fails += 1
   console.log(`${c.id}: FAILED (${s.fails} in a row): ${c.title}`)
-  // a self-healing manager (mm: restart policy + liveness probes) restarts it already; a second restart races it
-  if (c.service && s.fails <= 3 && c.id !== FORCE && !endpoints().self_healing) { try { restartService(c.service); console.log(`${c.id}: restarted`) } catch (e) { console.log(`${c.id}: restart failed: ${e.message}`) } }
+  // a self-healing manager (mm: restart policy + liveness probes) restarts it already; a second restart races it. But it
+  // never starts again what it gave up on (left Skipped or stopped behind a dependency, sy-5ku): after 3 failed checks
+  // (3 minutes) one restart, which is no race any more
+  const selfHealing = !!endpoints().self_healing
+  if (c.service && c.id !== FORCE && (selfHealing ? s.fails === 3 : s.fails <= 3)) { try { restartService(c.service); console.log(`${c.id}: restarted`) } catch (e) { console.log(`${c.id}: restart failed: ${e.message}`) } }
   if (s.fails >= 3 && !s.incident) {
     const r = await bd('POST', '/v0/beads/issues', { title: `Incident: ${c.title}`, issue_type: 'bug', priority: 0, labels: ['incident', 'needs-you'], actor: 'watchdog', owner: 'watchdog',
       description: `The watchdog found **${c.title}** on ${s.fails} checks in a row (one per minute) and could not fix it by restarting${c.service ? ` \`${c.service}\`` : ''}.\n\nCheck the process manager's log for ${c.service || 'it'}. This item closes itself when the check passes again.` }).catch(() => ({}))
