@@ -14,7 +14,7 @@ import { apiEnabled, apiSocketDir, granted } from './apistate'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, HOME, run, which } from './env'
 import { MM_LOG_CONFIG } from './obs'
-import { BOX_READONLY, BOXES, boxHook, gitRefusal, hostGitEnv, loadAll, PROJECT_LOG_CONFIG, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, up as projectUp, writeRunFiles } from './project'
+import { BOX_READONLY, BOXES, boxHook, dependsOn, gitRefusal, hostGitEnv, loadAll, processes as pcProcesses, PROJECT_LOG_CONFIG, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, startSkipped, up as projectUp, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
 import paseoJoinScript from '../box/paseo-join.mjs' with { type: 'text' }
@@ -346,12 +346,23 @@ export function up(root: string): Step[] {
   writeRunFiles(root, '/run/mm/sock/pc.sock')
   mkdirSync(BOXES, { recursive: true }); writeFileSync(join(BOXES, `${a.project}.yaml`), `# from ${root}/services.yaml\n# a project box (${n.box}): it runs in its own container, not on this process manager\n`)
   for (let i = 0; i < 60 && !existsSync(join(sock, 'pc.sock')); i++) Bun.sleepSync(500)
-  steps.push(existsSync(join(sock, 'pc.sock')) ? { step: 'process manager', status: 'ok', detail: `${Object.keys(bp.processes).length} processes in the box` } : { step: 'process manager', status: 'fail', detail: 'the box did not start its process manager (see .run/logs/process-compose.log)' })
+  const pcUp = existsSync(join(sock, 'pc.sock')), healed = pcUp ? healSkipped(root) : []
+  steps.push(pcUp ? { step: 'process manager', status: 'ok', detail: `${Object.keys(bp.processes).length} processes in the box${healed.length ? `; started again what it had skipped: ${healed.join(', ')}` : ''}` } : { step: 'process manager', status: 'fail', detail: 'the box did not start its process manager (see .run/logs/process-compose.log)' })
   // the machine's Paseo gets the box as a host (a new entry each up: the password may be new)
   steps.push(paseoJoin(a.project, `${net.ip}:${PASEO_PORT}`))
   // its public services (the board's gated side): forwarded from the host's bind_host to the box, and exposed
   steps.push(...publicUp(root, net.ip))
   return steps
+}
+
+/** The box's first start (sy-5pvp): what its own process manager left Skipped (a slow Dolt restarted while bd-serve
+ *  waited) started once its dependencies are up, by the host's own bounded pass (startSkipped: never for a dependency
+ *  down for good, at most 90 s), on the box's socket, and only the names in mm's file for the box. */
+export function healSkipped(root: string): string[] {
+  const hd = hostDir(readAnswers(root).project), sk = join(hd, 'sock', 'pc.sock')
+  try { if (!lstatSync(sk).isSocket()) return [] } catch { return [] } // the box made it: only a real socket
+  for (let i = 0; i < 20 && !pcProcesses(undefined, sk).length; i++) Bun.sleepSync(500) // its list answers once it has loaded
+  return startSkipped(dependsOn([join(hd, 'cfg', 'pc.yaml')]), undefined, sk)
 }
 
 export function down(root: string): Step[] {

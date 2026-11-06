@@ -317,7 +317,18 @@ check "...its services run on the host again (board ready), and no file stays th
 check "...on the host, its ports are the host's copy, not what the box wrote" sh -c "[ \"\$(jq .dolt_port '$ROOT/.run/services.json')\" = '$DP' ] && [ \"\$(jq .services.board.public_port '$ROOT/.run/services.json')\" != 40002 ]"
 check "...and mm shell refuses it (not a box project now)" sh -c "mm shell '$REF' true </dev/null; [ \$? = 2 ]"
 check "...and it left the machine's Paseo (on the host, its agents are that Paseo's own)" sh -c "[ -z \"\$(joined)\" ]"
+# a slow Dolt in the box's first start (sy-5pvp): its Dolt restarts 1 s after it runs, while bd-serve waits for it
+PCLOG="$ROOT/.run/logs/process-compose.log"; PCB=$(stat -c %s "$PCLOG" 2>/dev/null || echo 0)
+( for _ in $(seq 1 900); do D inspect "$BOX" >/dev/null 2>&1 && process-compose -U -u "$HD/sock/pc.sock" process list -o json 2>/dev/null | jq -e --arg n "$PROJECT.dolt" '.[] | select(.name == $n and .status == "Running")' >/dev/null && break; sleep 0.2; done
+  sleep 1; process-compose -U -u "$HD/sock/pc.sock" process restart "$PROJECT.dolt" >/dev/null 2>&1 ) & SLOW=$!
 check "mm box on: back in the box; nothing of it on the host's process manager" sh -c "mm box on '$REF' >/tmp/box-on.out 2>&1 && grep -qx 'box: true' '$ROOT/.mm-answers.yaml' && D inspect '$BOX' >/dev/null && ! process-compose -U -u $HOME/.mm/pc.sock process list -o json | jq -e '.[] | select(.name | startswith(\"$PROJECT.\"))'"
+kill $SLOW 2>/dev/null; wait $SLOW 2>/dev/null
+# this start's lines of the box's process-compose log (all of it if the box began a new one)
+NEWLOG=$( [ "$(stat -c %s "$PCLOG" 2>/dev/null || echo 0)" -ge "$PCB" ] && tail -c +$((PCB + 1)) "$PCLOG" || cat "$PCLOG" )
+if grep -q "process $PROJECT.bd-serve won't run" <<<"$NEWLOG"; then
+  check "...the restart left bd-serve Skipped in the box: box on started it again (sy-5pvp)" grep -q 'started again what it had skipped: .*bd-serve' /tmp/box-on.out
+else ok "...(the restart came too late to leave bd-serve Skipped in this run: nothing to heal)"; fi
+check "...and the board is ready right after box on, without waiting for health (sy-5pvp)" sh -c "for i in \$(seq 1 15); do mm inspect '$REF' 2>/dev/null | grep -q 'board .*Ready' && exit 0; sleep 1; done; exit 1"
 for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
 check "...its board is ready in the box, and the item made there before is still there" sh -c "mm inspect '$REF' | grep -q 'board .*Ready' && IN \"cd $ROOT && bin/bd list --json\" | grep -q 'made in the box'"
 check "...and it joined the machine's Paseo again (one entry)" sh -c "[ \"\$(SP host ls --json | jq --arg p '$PROJECT' '[.[] | select(.label == \$p)] | length')\" = 1 ]"
