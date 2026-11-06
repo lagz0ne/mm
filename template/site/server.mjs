@@ -430,7 +430,12 @@ async function sendMachine(res) {
   send(res, 200, machineCache.data)
 }
 // File an item on a project's own board, as the human at this board (system/<name>), through bin/project-item.
+// On the public side it is the owner's only (sy-fei0), as the config API's writes: it steers another project's leads.
 async function sendProjectItem(req, res) {
+  if (req.gateway && req.gateway.r !== 'owner') {
+    log('info', 'refused on the public side: /api/project-item is the owner\'s', { op: 'rails', actor: who(req), role: req.gateway.r, path: '/api/project-item' })
+    return send(res, 403, { title: 'Only the owner can file an item on another project\'s board.' })
+  }
   if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { title: 'JSON only' })
   const actor = who(req)
   if (!validName(actor) || actor === ACTOR) return send(res, 401, { title: 'Name yourself on this board first (top right): the item says who asked.' })
@@ -765,8 +770,11 @@ async function handlePublic(req, res) {
   const c = assertion(req)
   if (!c) { res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); return res.end(SIGN_IN) }
   req.gateway = c
-  if (c.r === 'viewer' && !['GET', 'HEAD'].includes(req.method)) return send(res, 403, { title: 'Viewers can look, not change: ask the owner for member access.' })
   const url = new URL(req.url, 'http://x')
+  if (c.r === 'viewer' && !['GET', 'HEAD'].includes(req.method)) {
+    log('info', `refused on the public side: a viewer's ${req.method}`, { op: 'rails', actor: c.u, role: c.r, path: url.pathname })
+    return send(res, 403, { title: 'Viewers can look, not change: ask the owner for member access.' })
+  }
   if (url.pathname === '/api/whoami' && req.method === 'POST') return send(res, 403, { title: 'Your name comes from your sign-in.' })
   return handle(req, res)
 }

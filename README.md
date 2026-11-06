@@ -138,6 +138,7 @@ node test/wake-reconcile.mjs # bin/wake's reconcile loop: queue heads within cap
 node test/wake-kept.mjs      # bin/wake, a kept role's agent gone and back: one note, needs-you on P0/P1 only, its own labels removed
 node test/lead-state.mjs     # the board's lead states (ready / working on / waiting for you / blocked / start failed)
 test/machine-panel.sh        # the system board's machine panel (SITE_NODE_MODULES=<a site's node_modules>)
+node test/project-item.mjs   # the machine panel's filing on the public side: the owner's only (hermetic, stub mm)
 ```
 
 Releases: push a tag `v<package.json version>`; CI builds each platform natively (`bun compile --trim`, plus a
