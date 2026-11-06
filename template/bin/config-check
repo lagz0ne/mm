@@ -92,6 +92,7 @@ const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm 
 // that is not allowed is refused without asking (defaultMode dontAsk), so no permission request ever reaches a
 // human's phone from an assistant.
 import { ALLOW_RULES as ASSIST_ALLOW, DENY as ASSIST_DENY } from './lib/assist.mjs'
+import { folders as workerFolders, spec as workerSpec, specProblem as workerProblem } from './lib/workers.mjs'
 // Roles: leads/roles.json is the list; every role has a folder and every folder a role.
 let DEF = []
 try { DEF = JSON.parse(fs.readFileSync(path.join(P, 'leads', 'roles.json'), 'utf8')).roles || [] } catch (e) { problems.push(`leads/roles.json unreadable (${e.message})`) }
@@ -143,7 +144,8 @@ function guarded(who, j) {
   if (j.disableAllHooks) bad(`${who}: disableAllHooks is not allowed (it turns the guard off)`)
 }
 try { fs.accessSync(GUARD, fs.constants.X_OK) } catch { bad('bin/guard is missing or not executable (the hook every lead and setup runs)') }
-function render(tmpl, role, assistant = false) {
+// worker: { actor, deny } for a worker's folder (sy-asaw): its own actor, and its denies instead of its lead's
+function render(tmpl, role, assistant = false, worker = null) {
   const fill = (v) => gfill(v).replaceAll('{project}', projectName())
     .replace(/\{url:([\w-]+)\}/g, (m, n) => svcUrl(n) || m) // where the process manager put that service
   const rule = (r) => { const m = /^(Read|Edit|Write)\((.*)\)$/.exec(r); const v = fill(r); return m && m[2].startsWith('{') ? v.replace(/^(Read|Edit|Write)\(\//, '$1(//') : v }
@@ -156,10 +158,11 @@ function render(tmpl, role, assistant = false) {
     if (JSON.stringify(hooks?.PreToolUse || []).includes(h)) continue
     hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: 'Bash|Read|Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: h, timeout: 10 }] }] }
   }
-  const govDeny = [...ALWAYS_DENY.map(gfill), ...BRAIN_DENY, ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? mandatoryDeny(role) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
+  const govDeny = [...ALWAYS_DENY.map(gfill), ...BRAIN_DENY, ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? (worker ? worker.deny : mandatoryDeny(role)) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
   // who the session is, in the settings themselves (sy-670): a lead that Paseo resumes from `closed` runs without the
   // env bin/lead gave it at start, but Claude Code applies this to every session in this folder, however it started
-  const who = assistant ? {} : { env: { ...(tmpl.env || {}), BEADS_ACTOR: role, GIT_AUTHOR_NAME: role, GIT_COMMITTER_NAME: role,
+  const actor = worker?.actor || role
+  const who = assistant ? {} : { env: { ...(tmpl.env || {}), BEADS_ACTOR: actor, GIT_AUTHOR_NAME: actor, GIT_COMMITTER_NAME: actor,
     GIT_AUTHOR_EMAIL: `${role}@${projectName()}.local`, GIT_COMMITTER_EMAIL: `${role}@${projectName()}.local`,
     PATH: [...PATH_FIRST, '/usr/local/bin', '/usr/bin', '/bin'].join(':') } }
   return { ...tmpl, ...who, ...(hooks ? { hooks } : {}), permissions: { ...p,
@@ -196,12 +199,16 @@ for (const dir of SETTINGS_DIRS) {
   }
 }
 
-function mandatoryDeny(role) {
-  const d = [`Read(/${R}/secrets/**)`, 'Bash(git push*)', ...RAW_STATUS, `Edit(/${R}/code/**)`, `Write(/${R}/code/**)`,
+// The denies every lead keeps (and every worker: workerDeny() starts from them)
+function baseDeny() {
+  return [`Read(/${R}/secrets/**)`, 'Bash(git push*)', ...RAW_STATUS, `Edit(/${R}/code/**)`, `Write(/${R}/code/**)`,
     `Edit(/${R}/control/**)`, `Write(/${R}/control/**)`, `Edit(/${R}/leads/**)`, `Write(/${R}/leads/**)`,
     `Edit(/${R}/CLAUDE.md)`, `Write(/${R}/CLAUDE.md)`, `Edit(/${R}/worktrees/CLAUDE.md)`, `Write(/${R}/worktrees/CLAUDE.md)`,
     `Edit(/${R}/setup/**)`, `Write(/${R}/setup/**)`, `Edit(/${R}/release/**)`, `Write(/${R}/release/**)`,
     ...PATH_FIRST.flatMap((d) => [`Edit(/${d}/**)`, `Write(/${d}/**)`])]
+}
+function mandatoryDeny(role) {
+  const d = baseDeny()
   if (WORKERS.has(role)) d.push('mcp__paseo__get_agent_activity', `Edit(/${R}/worktrees/**)`, `Write(/${R}/worktrees/**)`)
   d.push(...(G.deny_all || []).map(grule))
   return d
@@ -244,6 +251,14 @@ for (const role of ROLES) {
     if (!/^[a-z][\w-]*$/.test(target) || ![...ROLES, 'setup'].includes(target)) bad(`${role}: ${a}: write one exact rule per role (Bash(lead start <role>)): no wildcard, no options, a real role`)
     else if (target === role) bad(`${role}: ${a}: a lead may not restart itself`)
   }
+  // its workers (sy-asaw): `lead worker <verb> <role>` and `wt ...` name only its own role's workers
+  for (const a of j.permissions?.allow || []) {
+    const lw = /^Bash\(\s*(?:bin\/)?lead\s+worker\s+([a-z]+)(?:\S*)(?:\s+([^\s)]+))?/.exec(a)
+    if (lw && lw[1] !== 'ls' && lw[2] !== role) bad(`${role}: ${a}: a lead starts, stops and reads only its own workers (Bash(lead worker <verb> ${role} *))`)
+    const w = workerSpec(P, role) && /^Bash\(\s*(?:bin\/)?wt\s+([^\s)]+)(?:\s+([^\s)]+))?/.exec(a)
+    const target = w && (['sync', 'rm'].includes(w[1]) ? w[2] || '' : w[1])
+    if (w && target !== 'ls' && target !== role && !target.startsWith(`${role}-`)) bad(`${role}: ${a}: wt rules name only its own workers (wt ${role} *, wt sync|rm ${role}-*, wt ls)`)
+  }
   // write roots of another role are never allowed (one writer per repo)
   for (const [other, roots] of Object.entries(G_WRITE)) if (other !== role) for (const a of j.permissions?.allow || []) if (/^(Edit|Write)\(/.test(a) && under(a, roots)) bad(`${role}: writes ${other}'s area (${a})`)
   const cmds = JSON.stringify(j.hooks?.PreToolUse || [])
@@ -265,6 +280,79 @@ if (fs.existsSync(path.join(P, 'setup', '.claude', 'settings.tmpl.json'))) {
   let j
   try { j = JSON.parse(fs.readFileSync(f, 'utf8')) } catch { bad('setup: missing or invalid .claude/settings.json (config-check --render)') }
   if (j) guarded('setup', j)
+}
+// Workers (sy-asaw; bin/lib/workers.mjs): a role's `worker` spec in roles.json says what its workers are, and
+// leads/<role>/.claude/worker.tmpl.json what they may do; each worker folder (worktrees/<role>-<name>/, made by bin/wt)
+// gets .claude/settings.local.json rendered from it, with these denies on top (asserted here, whatever the template says):
+//   every worker: its lead's safety denies (baseDeny), its own .claude/ and .git, every other worker's folder and every
+//     file of this board outside worktrees/, the brain and its role's repo checkout (to write), Paseo and starting or
+//     stopping agents or worktrees, sudo, posing as another board actor, the brain's run loop and migrations, mm's
+//     acting commands (update, up, restart, new, archive, restore, ...), git push and tags;
+//   write (platform): also the machine's mm altogether, bin/brain, and every board write;
+//   read (review): also Edit/Write/NotebookEdit altogether, git's writing commands, rm, and every board write;
+//   board (ops): as read, but it may comment (its board actor is <role>/<name>).
+// read and board workers refuse whatever is not allowed (defaultMode dontAsk), so no request reaches a phone.
+const BOARD_WRITE = ['bd', 'bin/bd'].flatMap((b) => ['comments add', 'update', 'close', 'create', 'reopen', 'label', 'dep', 'delete', 'assign', 'edit', 'set-state'].map((c) => `Bash(${b} ${c}*)`))
+const MM_ACTS = ['update', 'up', 'restart', 'new', 'archive', 'restore', 'doop', 'box', 'system', 'config set', 'cron', 'onboard', 'install', 'revoke', 'expose'].map((c) => `Bash(mm ${c}*)`)
+const GIT_WRITE = ['commit', 'add', 'checkout', 'switch', 'reset', 'rebase', 'merge', 'stash', 'branch', 'worktree', 'cherry-pick', 'revert', 'clean', 'restore', 'am', 'apply', 'pull', 'fetch', 'config', 'rm', 'mv', 'gc', 'update-ref'].map((c) => `Bash(git ${c}*)`)
+const WTMPL = (role) => path.join(P, 'leads', role, '.claude', 'worker.tmpl.json')
+const WF = workerFolders(P)
+const ewr = (p) => [`Edit(/${p})`, `Write(/${p})`]
+function workerDeny(f) {
+  const W = `${R}/worktrees/${f.dir}`, s = workerSpec(P, f.role)
+  const d = [...baseDeny(), ...ewr(`${W}/.claude/**`), ...ewr(`${W}/.git`), ...ewr(`${W}/.git/**`),
+    ...WF.filter((o) => o.dir !== f.dir).flatMap((o) => ewr(`${R}/worktrees/${o.dir}/**`)),
+    ...fs.readdirSync(P).filter((e) => e !== 'worktrees').sort().flatMap((e) => [...ewr(`${R}/${e}`), ...ewr(`${R}/${e}/**`)]),
+    ...BRAINS.flatMap((b) => ewr(`${b}/**`)), ...(s?.repo ? ewr(`${s.repo}/**`) : []),
+    'mcp__paseo', 'mcp__paseo__get_agent_activity', 'mcp__paseo__create_agent', 'mcp__paseo__send_agent_prompt',
+    'Bash(sudo *)', 'Bash(*core.hooksPath*)', 'Bash(*--no-verify*)', 'Bash(git push*)', 'Bash(git tag*)',
+    ...['lead', 'bin/lead', 'wt', 'bin/wt', 'paseo'].map((c) => `Bash(${c} *)`), 'Bash(*/bin/lead *)', 'Bash(*/bin/wt *)',
+    'Bash(*BEADS_ACTOR*)', 'Bash(*bd --actor*)', 'Bash(*bd * --actor*)',
+    ...['run', 'migrate', 'promote', 'correct', 'verify', 'snapshot'].map((c) => `Bash(*brain ${c}*)`), ...MM_ACTS]
+  if (s?.kind === 'write') d.push('Bash(mm *)', ...named(`${MM_DIR}/bin/mm`), 'Bash(*bin/brain*)', ...BOARD_WRITE)
+  else d.push('Edit', 'Write', 'NotebookEdit', ...GIT_WRITE, 'Bash(rm *)', ...BOARD_WRITE.filter((x) => s?.kind !== 'board' || !x.includes('comments add')))
+  d.push(...(G.deny_all || []).map(grule))
+  return [...new Set(d)]
+}
+const underAny = (p, roots) => roots.some((r) => `${p}/`.startsWith(r.endsWith('/') ? r : `${r}/`))
+for (const r of DEF) {
+  if (r.worker === undefined) { if (SYSTEM_BOARD && r.workers === true) bad(`roles.json: ${r.id} has workers but no worker spec ("worker": {"kind": "write|read|board", ...}): this board's workers need one`); continue }
+  const s = workerSpec(P, r.id)
+  if (!s) { bad(`roles.json: ${r.id}'s worker must be an object {"kind": ..., "repo": ...}`); continue }
+  const why = workerProblem(P, s); if (why) { bad(`roles.json: ${r.id}'s worker: ${why}`); continue }
+  if (s.kind === 'write' && !underAny(s.repo, G_WRITE[r.id] || [])) bad(`roles.json: ${r.id}'s write worker's repo ${s.repoRaw} is not one of ${r.id}'s write roots (governance.json write.${r.id}): one writer per repo`)
+  if (s.kind === 'read' && !underAny(s.repo, [...G_READ, ...(G_WRITE[r.id] || [])])) bad(`roles.json: ${r.id}'s read worker's repo ${s.repoRaw} is not readable by ${r.id} (governance.json read)`)
+  if (!fs.existsSync(WTMPL(r.id))) bad(`${r.id}: its workers need leads/${r.id}/.claude/worker.tmpl.json (their permissions)`)
+}
+for (const f of WF) {
+  const s = workerSpec(P, f.role), who = `worker ${f.dir}`, out = path.join(f.path, '.claude', 'settings.local.json')
+  let t
+  try { t = JSON.parse(fs.readFileSync(WTMPL(f.role), 'utf8')) } catch (e) { bad(`${who}: leads/${f.role}/.claude/worker.tmpl.json is missing or not valid JSON (${e.message})`); continue }
+  if (JSON.stringify(t).includes(R)) bad(`leads/${f.role}/.claude/worker.tmpl.json hard-codes ${R}; write {root} or {worktree} instead`)
+  const deny = workerDeny(f)
+  if (process.argv.includes('--render')) {
+    const repo = s.repoRaw.startsWith('{') ? s.repoRaw : `/${s.repo}` // a placeholder, or //<absolute> (Read/Edit/Write form)
+    const filled = JSON.parse(JSON.stringify(t).replaceAll('{worktree}', `{root}/worktrees/${f.dir}`).replaceAll('{repo}', repo))
+    fs.mkdirSync(path.dirname(out), { recursive: true })
+    fs.writeFileSync(out, JSON.stringify(render(filled, f.role, false, { actor: `${f.role}/${f.name}`, deny }), null, 2) + '\n')
+  }
+  let j
+  try { j = JSON.parse(fs.readFileSync(out, 'utf8')) } catch { bad(`${who}: missing or invalid .claude/settings.local.json (config-check --render)`); continue }
+  const has = new Set(j.permissions?.deny || [])
+  for (const d of deny) if (!has.has(d)) bad(`${who}: settings lost the worker deny ${d}`)
+  guarded(who, j)
+  if (j.env?.BEADS_ACTOR !== `${f.role}/${f.name}`) bad(`${who}: its board actor must be ${f.role}/${f.name}`)
+  const mode = j.permissions?.defaultMode
+  if (mode === 'bypassPermissions') bad(`${who}: bypassPermissions is not allowed`)
+  if (s.kind !== 'write' && mode !== 'dontAsk') bad(`${who}: a ${s.kind} worker's defaultMode must be dontAsk (refuse, never ask)`)
+  const readRoot = (a) => (/^Read\(\/(\/.*?)(?:\/\*\*)?\)$/.exec(a) || [])[1]
+  const okGov = (a) => G_BASH_OK.some((re) => re.test(a)) || (!!readRoot(a) && underAny(readRoot(a), [...G_READ, ...(G_WRITE[f.role] || [])]))
+  const mineW = (a) => new RegExp(`^(Edit|Write)\\(//(tmp/|${esc(R.slice(1))}/worktrees/${esc(f.dir)}/)`).test(a)
+  for (const a of j.permissions?.allow || []) {
+    if (FORBIDDEN_ALLOW.some((re) => re.test(a)) && !okGov(a)) bad(`${who}: forbidden allow rule ${a}`)
+    if (s.kind !== 'write' && /^(Edit|Write|NotebookEdit|MultiEdit)\b/.test(a)) bad(`${who}: a ${s.kind} worker writes no file (${a})`)
+    if (s.kind === 'write' && /^(Edit|Write)\(/.test(a) && !mineW(a)) bad(`${who}: writes outside its own folder (${a})`)
+  }
 }
 // Assistants: read-only by permissions, whatever their brief says.
 const SYSTEM_NAMES = new Set(['wake', 'watchdog', 'brain', 'ui', 'beads', 'smoke', 'system', 'admin', 'setup', 'guest', 'human', 'mm-upstream'])

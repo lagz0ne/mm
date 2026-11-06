@@ -1,0 +1,30 @@
+{
+  "_doc": "A review worker (sy-asaw): reads a read-only checkout of mm's repo ({worktree}, at a ref) and the machine's repos; writes nothing, not even the board. config-check renders it into the worker's folder and adds the worker denies.",
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Read({worktree}/**)",
+      "Read({repo}/**)",
+      "Read({brain}/**)",
+      "Read({projects}/**)",
+      "Read({mm}/**)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git -C {repo} log*)",
+      "Bash(git -C {repo} show*)",
+      "Bash(git -C {repo} diff*)",
+      "Bash(git -C {brain} log*)",
+      "Bash(git -C {brain} show*)",
+      "Bash(git -C {brain} diff*)",
+      "Bash(ls *)",
+      "Bash(bd show *)",
+      "Bash(bd comments *)",
+      "Bash(bd list *)",
+      "Bash(mm ls*)",
+      "Bash(mm inspect *)",
+      "Bash(mm obs *)"
+    ]
+  }
+}

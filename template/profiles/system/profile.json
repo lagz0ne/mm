@@ -1,5 +1,5 @@
 {
-  "_doc": "Profile 'system': the machine's own board and leads (ops, review, platform, setup), made by `mm system init` in ~/brain/system. Overlays this folder on the base template and drops the product parts below.",
-  "omit": ["leads/requirement/", "leads/design/", "leads/code/", "leads/qa/", "leads/architecture/", "leads/ops/", "worktrees/",
-           "bin/land", "bin/deploy", "bin/wt", "ops/land-check"]
+  "_doc": "Profile 'system': the machine's own board and leads (ops, review, platform, setup), made by `mm system init` in ~/brain/system. Overlays this folder on the base template and drops the product parts below. Its own bin/wt and worktrees/CLAUDE.md replace the base's (workers of the board's roles, not of a product repo).",
+  "omit": ["leads/requirement/", "leads/design/", "leads/code/", "leads/qa/", "leads/architecture/", "leads/ops/",
+           "bin/land", "bin/deploy", "ops/land-check"]
 }

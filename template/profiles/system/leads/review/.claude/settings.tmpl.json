@@ -43,7 +43,13 @@
       "Read({home}/.local/state/brain/**)",
       "Read(//var/log/**)",
       "Read(//etc/**)",
-      "Write(//tmp/**)"
+      "Write(//tmp/**)",
+      "Bash(lead worker start review *)",
+      "Bash(lead worker stop review *)",
+      "Bash(lead worker report review *)",
+      "Bash(lead worker ls*)",
+      "Bash(wt ls)",
+      "Bash(wt rm review-*)"
     ],
     "deny": [
       "Read({root}/secrets/**)",

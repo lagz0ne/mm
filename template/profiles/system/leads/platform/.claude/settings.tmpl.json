@@ -44,7 +44,15 @@
       "Read({mm}/**)",
       "Edit({home}/mm/**)",
       "Write({home}/mm/**)",
-      "Write(//tmp/**)"
+      "Write(//tmp/**)",
+      "Bash(lead worker start platform *)",
+      "Bash(lead worker stop platform *)",
+      "Bash(lead worker report platform *)",
+      "Bash(lead worker ls*)",
+      "Bash(wt ls)",
+      "Bash(wt rm platform-*)",
+      "Bash(git merge --ff-only *)",
+      "Bash(wt sync platform-*)"
     ],
     "deny": [
       "Read({root}/secrets/**)",

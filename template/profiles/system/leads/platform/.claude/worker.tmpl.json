@@ -1,0 +1,43 @@
+{
+  "_doc": "A platform worker (sy-asaw): writes only its own worktree of mm's repo ({worktree}, branch <name>), builds and runs hermetic tests there. config-check renders it into the worker's folder and adds the worker denies (no machine mm, no live tests, no sudo, no board writes, no push).",
+  "permissions": {
+    "allow": [
+      "Read({worktree}/**)",
+      "Edit({worktree}/**)",
+      "Write({worktree}/**)",
+      "Read({repo}/**)",
+      "Write(//tmp/**)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git rebase main*)",
+      "Bash(git rev-parse*)",
+      "Bash(bun install --frozen-lockfile*)",
+      "Bash(bun run pack*)",
+      "Bash(bun run build*)",
+      "Bash(bun x tsc --noEmit*)",
+      "Bash(bun scripts/pack-template.ts*)",
+      "Bash(node test/*)",
+      "Bash(test/*)",
+      "Bash(ls *)",
+      "Bash(bd show *)",
+      "Bash(bd comments *)"
+    ],
+    "deny": [
+      "Bash(*test/lifecycle.sh*)",
+      "Bash(*test/box.sh*)",
+      "Bash(*test/doop.sh*)",
+      "Bash(*test/sentinel.sh*)",
+      "Bash(*test/machine-panel.sh*)",
+      "Bash(*cli.ts update*)",
+      "Bash(*cli.ts up *)",
+      "Bash(*cli.ts restart*)",
+      "Bash(*dist/mm update*)",
+      "Bash(*dist/mm up *)",
+      "Bash(*dist/mm restart*)"
+    ]
+  }
+}
