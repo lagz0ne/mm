@@ -2,7 +2,8 @@
 // bin/wake, leads on demand (sy-809m): a role with no agent is started with bin/lead start when an item waits for it,
 // within one check, and then gets the item; nothing starts while the restore hold is on; a failed start is said on the
 // item once and kept for the Leads page; a lead idle for WAKE_IDLE_CLOSE_MS with nothing of its own open is closed
-// (never one in a turn, or one with an item in progress or labelled needs-you), and the next request starts it again.
+// (never one in a turn, or one with an item in progress or labelled needs-you), and the next request starts it again;
+// a kept role (roles.json `keep`, the owner's contact) is never closed and never started: its waiting items get needs-you.
 // Hermetic: temp folder and MM_HOME, stub paseo, bin/lead, bin/bd and bd-serve, no obs.
 //   node test/wake-ondemand.mjs            exit 0 = every check passed
 import { spawn } from 'node:child_process'
@@ -18,10 +19,10 @@ const ok = (d, c) => { c ? pass++ : fail++; console.log(`  ${c ? '\x1b[32mok\x1b
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 async function until(fn, ms = 10000) { const t = Date.now(); while (Date.now() - t < ms) { if (fn()) return true; await sleep(200) } return false }
 
-const ROLES = ['qa', 'dev', 'ops', 'arch', 'rev', 'sec']
+const ROLES = ['qa', 'dev', 'ops', 'arch', 'rev', 'sec', 'own', 'chat'] // own, chat: kept (the owner's contact)
 fs.cpSync(path.join(SRC, 'template', 'bin'), path.join(T, 'proj', 'bin'), { recursive: true })
 fs.mkdirSync(path.join(T, 'proj', 'leads'), { recursive: true })
-fs.writeFileSync(path.join(T, 'proj', 'leads', 'roles.json'), JSON.stringify({ roles: ROLES.map((id) => ({ id })) }))
+fs.writeFileSync(path.join(T, 'proj', 'leads', 'roles.json'), JSON.stringify({ roles: ROLES.map((id) => ({ id, ...(['own', 'chat'].includes(id) ? { keep: true } : {}) })) }))
 fs.mkdirSync(path.join(T, 'proj', 'control'), { recursive: true })
 const BDLOG = path.join(T, 'bd.log')
 fs.writeFileSync(path.join(T, 'proj', 'bin', 'bd'), `#!/bin/sh\nprintf '%s\\n' "$*" >>"${BDLOG}"\n`, { mode: 0o755 })
@@ -38,7 +39,7 @@ echo "START $2" >>"${STARTED}"; echo idle >"${T}/$2.status"
 `, { mode: 0o755 })
 // stub paseo: <role>.status holds the agent's status (none = no agent); a plain archive refuses a running agent
 const SENT = path.join(T, 'sent.txt'), ARCH = path.join(T, 'archived.txt'), st = (r, s) => fs.writeFileSync(path.join(T, `${r}.status`), s)
-st('qa', 'none'); st('dev', 'idle'); st('ops', 'idle'); st('arch', 'running'); st('rev', 'idle'); st('sec', 'none')
+st('qa', 'none'); st('dev', 'idle'); st('ops', 'idle'); st('arch', 'running'); st('rev', 'idle'); st('sec', 'none'); st('own', 'idle'); st('chat', 'closed')
 fs.writeFileSync(path.join(T, 'paseo'), `#!/bin/sh
 case "$1" in
   ls) for r in ${ROLES.join(' ')}; do case "$*" in *role=$r\\ *|*role=$r) s=$(cat ${T}/$r.status); [ "$s" = none ] && { echo '[]'; exit 0; }
@@ -53,6 +54,7 @@ esac
 const items = [
   { id: 'd-1', assignee: 'dev', status: 'in_progress', title: 'dev is on it', labels: [] },
   { id: 'o-1', assignee: 'ops', status: 'open', title: 'waits for the human', labels: ['needs-you'] },
+  { id: 'c-1', assignee: 'chat', status: 'in_progress', title: 'the owner asked the contact', labels: [] },
 ]
 const records = [], streams = []
 const srv = http.createServer((req, res) => {
@@ -106,6 +108,16 @@ try {
   ok('ops (an item labelled needs-you) is not closed', !/ARCHIVE ops/.test(archived()))
   ok('arch (in a turn) is not closed', !/ARCHIVE arch/.test(archived()))
   ok('a closed lead with nothing waiting is not started again', starts('rev') === 0)
+  ok('a kept role (own) idle longer than WAKE_IDLE_CLOSE_MS is not archived', !/ARCHIVE own/.test(archived()))
+
+  console.log('== a kept role is never started: the human is asked')
+  ok('chat (kept) is closed with an item in progress: not started', starts('chat') === 0)
+  ok('...its item gets needs-you instead, and it is logged', /label add c-1 needs-you --actor wake/.test(bdlog()) && /chat is kept \(the owner's contact\): its agent is closed/.test(opsLog()))
+  ok('...once, not on every check', (bdlog().match(/label add c-1 needs-you/g) || []).length === 1)
+  create('c-2', 'chat', 'a new request for the contact')
+  ok('a new item for it: labelled needs-you too, still not started', await until(() => /label add c-2 needs-you/.test(bdlog())) && starts('chat') === 0)
+  st('chat', 'none'); create('c-3', 'chat', 'the contact is gone')
+  ok('its agent gone (none) and work waits: still not started, needs-you', await until(() => /label add c-3 needs-you/.test(bdlog())) && starts('chat') === 0)
 
   console.log('== the next request starts it again')
   create('r-1', 'rev', 'a review for rev')

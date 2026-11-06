@@ -3,6 +3,7 @@
   "roles": [
     {
       "id": "ops",
+      "keep": true,
       "title": "Ops & SRE",
       "initial": "O",
       "color": "#b91c1c",

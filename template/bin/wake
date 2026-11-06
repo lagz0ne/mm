@@ -28,7 +28,10 @@ const MAX_HOPS = Number(process.env.WAKE_MAX_HOPS || 3)
 import fs from 'node:fs'
 // Roles come from leads/roles.json (re-read on change); setup = the governance agent. RACI from leads/raci.json.
 // roles.json `lead`: the board's Lead (the role a BLOCKED goes to when the item's activity names no Accountable role).
+// A role with `"keep": true` is the owner's contact (e.g. the system board's ops agent: the owner's chat bridge points at
+// its agent id): wake never closes it and never starts one (a new start is a new id), it asks the human instead.
 const ROLES = []
+const KEEP = new Set()
 let BOARD_LEAD = null
 const pending = {} // role -> issue id -> latest reason
 function loadRoles() {
@@ -36,6 +39,7 @@ function loadRoles() {
   try { d = JSON.parse(fs.readFileSync(path.join(P, 'leads', 'roles.json'), 'utf8')); ids = d.roles.map((r) => r.id) } catch { ids = [] } // no roles file: only the setup agent
   ROLES.splice(0, ROLES.length, ...ids, 'setup')
   BOARD_LEAD = ids.includes(d.lead) ? d.lead : null
+  KEEP.clear(); for (const r of (Array.isArray(d.roles) ? d.roles : [])) if (r && r.keep === true) KEEP.add(r.id)
   for (const r of ROLES) pending[r] ||= new Map()
 }
 loadRoles()
@@ -219,13 +223,15 @@ async function tick() {
 // role), and the new lead's first prompt lists its items in progress and blocked (the handover, sy-8n1). The reasons
 // stay pending, and tick() sends them once the new lead is idle.
 // A lead idle for WAKE_IDLE_CLOSE_MS (default 30 min; 0 = never) with nothing of its own open is closed (archived, as
-// bin/lead stop does, but never mid-turn), and the next request starts it again here.
+// bin/lead stop does, but never mid-turn), and the next request starts it again here. A kept role (roles.json `keep`)
+// is neither closed nor started: when its agent is closed or gone and work waits, the human is asked (needs-you).
 const RESUME_CHECK = Number(process.env.WAKE_RESUME_CHECK_MS || 60000), RESUME_GAP = Number(process.env.WAKE_RESUME_MS || 600000)
 const IDLE_CLOSE = Number(process.env.WAKE_IDLE_CLOSE_MS ?? 1800000)
 const startedAt = {} // role -> when wake last started its lead (the rate limit)
 const startFailed = {} // role -> the failure already said on its items (once per run of failures)
 const idleFrom = {} // role -> { id, at }: since when wake has seen that agent idle
 let heldSaid = false
+const keptSaid = {} // kept role -> the items already labelled needs-you for it (until its agent is up again)
 
 // The project's restore hold (mm restore, until `mm restore --release`): no lead starts. mm doesn't run wake while it
 // holds, so this is the second guard, for a hold set while wake runs.
@@ -242,8 +248,18 @@ const leadStart = (role) => new Promise((ok, no) => execFile(path.join(P, 'bin',
 /** The one way wake starts a lead (a queue dispatcher can call it too): for `role`, because of `items` (ids) and `why`;
  *  `was` = the closed agent it replaces, if any. Checks the restore hold and the rate limit (once per WAKE_RESUME_MS per
  *  role); counts and logs; a failed start is kept for the board's Leads page and said once on the waiting items.
- *  Resolves to { started: true } or { started: false, why: 'held' | 'rate' | 'failed', error? }. */
+ *  A kept role (roles.json `keep`) is never started: its waiting items are labelled needs-you instead (once each).
+ *  Resolves to { started: true } or { started: false, why: 'kept' | 'held' | 'rate' | 'failed', error? }. */
 async function startLead(role, { was = null, items = [], why = '' } = {}) {
+  if (KEEP.has(role)) {
+    const said = (keptSaid[role] ||= new Set()), fresh = [...new Set(items)].filter((id) => !said.has(id))
+    if (fresh.length) {
+      log(`${role} is kept (the owner's contact): its agent is ${was ? `closed (${was.shortId || was.id})` : 'gone'} and work waits (${why}); not starting a new one, labelling needs-you: ${fresh.join(' ')}`)
+      count('mm_wake_kept_waits_total', { role })
+      for (const id of fresh) { said.add(id); bdRun(['label', 'add', id, 'needs-you'], `label ${id}`) }
+    }
+    return { started: false, why: 'kept' }
+  }
   if (held()) {
     if (!heldSaid) { heldSaid = true; log(`restore hold on: not starting leads (${role} waits: ${why})`) }
     return { started: false, why: 'held' }
@@ -275,6 +291,7 @@ async function startLead(role, { was = null, items = [], why = '' } = {}) {
 // when it gives one), no reason waiting, and no item of its own in progress, blocked or labelled needs-you. A plain
 // `paseo archive` (no --force) refuses an agent in a turn, so a lead is never cut off.
 async function closeIdle(role, a, own) {
+  if (KEEP.has(role)) { delete idleFrom[role]; return } // the owner's contact stays, idle or not
   if (!IDLE_CLOSE || a.status !== 'idle') { if (a.status !== 'idle') delete idleFrom[role]; return }
   if (idleFrom[role]?.id !== a.id) idleFrom[role] = { id: a.id, at: Date.now() }
   const since = Math.max(idleFrom[role].at, Date.parse(a.updated || '') || 0)
@@ -306,7 +323,7 @@ async function ensureLeads1() {
     let a
     try { a = await lead(role) } catch (e) { log('paseo ls failed:', e.message); return }
     const own = async () => (await items()).filter((i) => i.assignee === role && i.status !== 'closed')
-    if (a && a.status !== 'closed') { await closeIdle(role, a, own); continue }
+    if (a && a.status !== 'closed') { delete keptSaid[role]; await closeIdle(role, a, own); continue }
     if (Date.now() - (startedAt[role] || 0) < RESUME_GAP) continue
     const reasons = pending[role]
     const mine = (await own()).filter((i) => i.status === 'in_progress' || i.status === 'blocked')
