@@ -4,8 +4,9 @@
 //   Python: t = open(p).read(); d = json.loads(t.split('// BEGIN RULES\n', 1)[1].split('// END RULES', 1)[0])
 // Every regex is written for both JavaScript and Python's re (no named groups, fixed-width lookbehind only, no flags).
 //
-// parts: fragments a rule names as {{NAME}} (expanded until none is left). ROOT is not here: the guard fills it with
-//   the board's own folder (absolute, ~ and $HOME forms, escaped); another guard fills its own, or (?!) for none.
+// parts: fragments a rule names as {{NAME}} (expanded until none is left). ROOT and OWNER are not here: the guard
+//   fills ROOT with the board's own folder (absolute, ~ and $HOME forms, escaped) and OWNER with the owner's name
+//   (owner_name in the board's .run/endpoints.json, mm writes it; any case); another guard fills its own, or (?!) for none.
 //   CMD     command position: line start, after ; & | ( ) { } ! newline backtick $(, a quote after -c / eval / ( [ ,
 //           (bash -c '…', os.system('…'), ["sudo", …]), -exec, and after a wrapper (env, exec, nohup, nice, timeout N,
 //           xargs, time, stdbuf, setsid, eval, watch, flock F, runuser, ssh HOST, which, sudo, doas, …) and its options
@@ -17,6 +18,8 @@
 //   WRITE   a verb that writes a file (sed -i, tee, >, cp, mv, rm, install, ln, truncate, open(…), …)
 //   APPROVAL the approval path's files: Claude settings (not the .tmpl.json the setup agent edits) and hooks, this
 //           guard (the board's own bin/guard, not a template copy elsewhere), the bridge, mm's process definitions
+//   APPROVER an actor whose `approved` counts (bin/supervisor, bin/flow): the bridge's (`bridge`) and the owner's name
+//   BD      bd as a command word (bd, bin/bd, ~/.mm/…/bin/bd, "bd"), then a space
 // rules, checked in order; the first that matches denies with its reason:
 //   on: bash (tool_input.command) | file (Read Edit Write MultiEdit NotebookEdit Grep: the path) | file-write (not Read
 //       or Grep). re must match; and, if given, must match too.
@@ -38,6 +41,8 @@ export const RULES = // BEGIN RULES
     "SECRET_DIR": "(?:\\.ssh|\\.keys|\\.config/secrets|\\.paseo|{{MMDIR}}/(?:auth|ai|api|paseo|vault)|/mm/secrets|/projects/(?:[\\w.-]+/){1,2}secrets|{{ROOT}}/secrets)/?$",
     "DUMP": "(?:\\b(?:cat|less|more|head|tail|bat|batcat|xxd|od|hexdump|strings|base64|base32|basenc|grep|egrep|fgrep|zgrep|rg|ag|awk|gawk|sed|cut|tr|sort|uniq|diff|cmp|comm|join|paste|tac|nl|rev|fold|column|pr|expand|iconv|cp|mv|ln|install|scp|rsync|curl|wget|nc|ncat|socat|tee|printf|echo|read|mapfile|readarray|source|vi|vim|view|nano|emacs|python3?|node|bun|deno|perl|ruby|php|lua|jq|yq|sqlite3|tar|zip|7z|gzip|gunzip|zcat|bzip2|xz|zstd|dd|openssl|gpg|age|xargs|split)\\b|<|(?:^|[;&|]\\s*)\\.\\s+\\S)",
     "WRITE": "(?:\\bsed\\s+(?:-\\w+\\s+)*-i|\\bperl\\s+(?:-\\w+\\s+)*-\\w*i|\\btee\\b|>>?|\\b(?:cp|mv|rm|install|ln|truncate|chmod|chown|touch|patch|dd|rsync|unlink)\\b|\\b(?:open|write\\w*|append\\w*)\\(\\s*['\"]?)",
+    "APPROVER": "(?:[bB][rR][iI][dD][gG][eE]|{{OWNER}})",
+    "BD": "(?:^|[\\s;&|(){}`'\"/])bd['\"]?(?=\\s)",
     "APPROVAL": "(?:\\.claude/settings(?!\\.tmpl)[\\w.-]*\\.json|\\.claude/hooks/|\\.local/lib/(?:paseo-telegram|brain)/|{{MMDIR}}/(?:claude/(?:[\\w.-]+/)?settings[\\w.-]*\\.json|pc/[\\w.-]+\\.ya?ml)|(?:^|[\\s'\"=])(?:\\.\\./)*bin/(?:guard|lib/guard-rules\\.mjs)(?![\\w.-])|{{ROOT}}/bin/(?:guard|lib/guard-rules\\.mjs)(?![\\w.-]))"
   },
   "rules": [
@@ -118,6 +123,27 @@ export const RULES = // BEGIN RULES
       "on": "bash",
       "re": "(?:\\bpaseo\\b|@getpaseo/)[^;&|]*\\bpermit\\b[^;&|]*\\s(?:allow|deny|approve|reject|respond)\\b",
       "why": "answers a permission request: only the human approves."
+    },
+    {
+      "id": "approver-actor",
+      "on": "bash",
+      "pre": true,
+      "re": "(?:--actor['\"]?(?:=|\\s+)|\\b(?:BEADS_ACTOR|BD_ACTOR|USER|LOGNAME)=|\\buser\\.name['\"]?(?:=|\\s+))['\"]?{{APPROVER}}['\"]?(?![\\w.-])",
+      "why": "writes to the board as an approver (the bridge or the owner): only their own `approved` counts, so an agent never writes under their name. Write as yourself; the owner approves on the board's public address or with the bridge's button."
+    },
+    {
+      "id": "approver-list",
+      "on": "bash",
+      "pre": true,
+      "re": "\\b(?:SUPERVISOR|FLOW)_APPROVERS=",
+      "why": "changes who counts as an approver (a test setting of bin/supervisor and bin/flow): the bridge and the owner only."
+    },
+    {
+      "id": "approved-label",
+      "on": "bash",
+      "pre": true,
+      "re": "{{BD}}[^;&|\\n]*?(?:\\slabel\\s+(?:add|remove)\\s[^;&|\\n]*?|\\s--(?:add-label|remove-label|set-labels)(?:=|\\s+)['\"]?(?:[^\\s,'\"]+,\\s*)*|\\screate\\s[^;&|\\n]*?\\s(?:-l=?\\s*|--labels(?:=|\\s+))['\"]?(?:[^\\s,'\"]+,\\s*)*)(?<![\\w.:-])['\"]?approved(?![\\w.:-])",
+      "why": "sets or removes `approved`: that is the owner's T2 go, never an agent's. The owner gives it on the board's public address (signed in as the owner) or with the bridge's Approve button; ask for it on the item."
     },
     {
       "id": "approval-write",

@@ -86,6 +86,20 @@ sed -n 's/^\(SYSTEM\|NORMAL\): /       /p' "$T/check.out"
 cp -r "$PROJ" "$T/boxed"; printf 'profile: system\nbox: true\n' >"$T/boxed/.mm-answers.yaml"
 check "a box that says it is the system profile gets the project's rule (sudo denied)" bash -c "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sudo -n true\"}}' | '$T/boxed/bin/guard' | grep -q '\"deny\"'"
 
+echo "== approvals (sy-h2yt): the owner's name in the run files; no agent writes as an approver or sets approved"
+cat >"$T/runfiles.ts" <<EOF
+import { join } from 'node:path'
+import { writeRunFiles } from '$SRC/src/project'
+writeRunFiles(process.argv[2], join(process.env.MM_HOME!, 'pc.sock'))
+EOF
+printf 'owner_name: alex\n' >"$MM_HOME/config.yaml"
+check "mm writes the owner's name (config owner_name) into the board's .run/endpoints.json" bash -c "PATH='$HOME/.bun/bin:$PATH' bun '$T/runfiles.ts' '$PROJ' && jq -e '.owner_name == \"alex\"' '$PROJ/.run/endpoints.json'"
+rm -f "$MM_HOME/config.yaml"
+check "...and none when owner_name is not set" bash -c "PATH='$HOME/.bun/bin:$PATH' bun '$T/runfiles.ts' '$SYS' && jq -e 'has(\"owner_name\") | not' '$SYS/.run/endpoints.json'"
+check "the guard: the bridge's and the owner's name (any case) and approved are the owner's; other actors and labels pass" node "$SRC/test/lib/guard-run.mjs" "$PROJ" APPROVER
+sed -n 's/^APPROVER: /       /p' "$T/check.out"
+check "...no owner_name: the bridge and approved stay denied, a person's name is free" node "$SRC/test/lib/guard-run.mjs" "$SYS" APPROVER_NO_OWNER
+
 echo "== the hook's answer"
 G="$PROJ/bin/guard"
 hook() { printf '%s' "$1" | "${@:2}" "$G"; }
@@ -123,7 +137,7 @@ cat >"$T/rules.py" <<'EOF'
 import json, re, sys
 t = open(sys.argv[1]).read()
 d = json.loads(t.split('// BEGIN RULES\n', 1)[1].split('// END RULES', 1)[0])
-parts = dict(d["parts"], ROOT="(?!)")
+parts = dict(d["parts"], ROOT="(?!)", OWNER="(?!)")
 def expand(s, n=0):
     return re.sub(r"\{\{(\w+)\}\}", lambda m: expand(parts[m.group(1)], n + 1), s)
 for r in d["rules"]:
@@ -134,7 +148,8 @@ for r in d["rules"]:
 def deny(cmd):
     return any(r["on"] == "bash" and re.search(expand(r["re"]), cmd) and (not r.get("and") or re.search(expand(r["and"]), cmd))
                for r in d["rules"])
-want = {"cat ~/.config/secrets/x": True, "sudo -n true": True, "mm token owner shop": True, "git status": False, "ls -l ~/.ssh/": False}
+want = {"cat ~/.config/secrets/x": True, "sudo -n true": True, "mm token owner shop": True, "git status": False, "ls -l ~/.ssh/": False,
+        "bd label add sy-1 approved": True, "bd update sy-1 --actor bridge": True, "bd list -l approved": False}
 bad = [c for c, w in want.items() if deny(c) != w]
 print(f"{len(d['rules'])} rules compile in Python; {len(want) - len(bad)}/{len(want)} answers match")
 sys.exit(1 if bad else 0)

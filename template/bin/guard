@@ -4,7 +4,8 @@
 //   stdin: the hook's JSON (tool_name, tool_input). stdout: nothing (no objection: the permission rules decide), or
 //   {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[guard] …"}}
 // What it denies is data, in lib/guard-rules.mjs (secret reads in any spelling, sudo and its kin, mm's owner-only
-// commands and sockets, the approval path's files, …). It never asks and never allows on its own.
+// commands and sockets, the approval path's files, writing to the board as an approver or setting `approved`, …). It
+// never asks and never allows on its own.
 // An internal error (bad input, a broken rules file, a bug) denies the call: fail closed. A syntax error in this file
 // exits non-zero, and Claude Code lets the call through; mm update and the box seal keep this file as mm made it.
 import fs from 'node:fs'
@@ -31,6 +32,15 @@ function rootPattern() {
     if (home && r.startsWith(`${home}/`)) for (const h of ['~', '$HOME', '${HOME}']) alts.add(esc(h + r.slice(home.length)))
   }
   return `(?:${[...alts].join('|')})`
+}
+
+/** The owner's name as a regex, any case (owner_name in the board's .run/endpoints.json: mm writes it), or (?!) when
+ *  the file or the name is not there: the rules about approvers then name only the bridge. */
+function ownerPattern() {
+  let name = ''
+  try { name = JSON.parse(fs.readFileSync(path.join(ROOT, '.run', 'endpoints.json'), 'utf8')).owner_name } catch {}
+  if (typeof name !== 'string' || !name.trim()) return '(?!)'
+  return [...name.trim()].map((c) => (c.toLowerCase() !== c.toUpperCase() ? `[${c.toLowerCase()}${c.toUpperCase()}]` : esc(c))).join('')
 }
 
 function expand(src, parts, depth = 0) {
@@ -118,7 +128,7 @@ async function main() {
   if (process.env.MM_GUARD_TEST_RAISE === '1') throw new Error('injected') // tests only: an error must deny
   const { RULES } = await import('./lib/guard-rules.mjs')
   if (!RULES || !Array.isArray(RULES.rules) || typeof RULES.parts !== 'object') throw new Error('rules: bad shape')
-  const parts = { ...RULES.parts, ROOT: rootPattern() }
+  const parts = { ...RULES.parts, ROOT: rootPattern(), OWNER: ownerPattern() }
   const system = systemBoard()
   const rules = RULES.rules.map((r) => {
     if (!['bash', 'file', 'file-write'].includes(r.on) || typeof r.re !== 'string' || typeof r.why !== 'string') throw new Error(`rules: bad rule ${r.id}`)
