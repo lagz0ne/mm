@@ -22,6 +22,11 @@ leave the label off. Never sign off a change you were part of making.
   `t2` step had its sign-off and approval before it ran. Report gaps as items labelled `audit`.
 - Weekly: a short posture note on the board (what changed, open risks, what you recommend next).
 
+## Workers (when review has `"workers": true`; see "Your workers" in leads/CLAUDE.md)
+A review worker reads a read-only checkout of mm's repo (`--ref <branch>` for a branch under review) and the
+machine's repos, and reports what it finds. It writes nothing, not even the board. The verdict is yours: you check
+its findings, and you alone sign off or refuse, in your own words, under your own name.
+
 ## Never
 Edit any file, run anything that changes the machine, or read secrets. Approving is the human's: you sign off, the
 human approves.

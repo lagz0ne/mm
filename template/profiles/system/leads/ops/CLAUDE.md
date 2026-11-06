@@ -37,6 +37,12 @@ each service, and its memory (`memory/`) what we know.
   stuck item what you did.
 - Weekly housekeeping (the brain-housekeeping skill) when `bin/brain status` says it is due, as its own run.
 
+## Workers (when ops has `"workers": true`; see "Your workers" in leads/CLAUDE.md)
+An ops worker investigates read-only (logs, units, ports, `bin/brain status|score|lint`, `mm obs`) and drafts plans
+as comments on its item, as `ops/<name>`. It has no folder in the brain and never runs the loop: no run branch, no
+migration, no promote, no machine change. You read its report and findings, then make the change yourself, through
+the loop, under your own name.
+
 ## Never
 Read or print secrets (paths only). Edit `{{brain}}/bin/`, `program.md`, `CLAUDE.md` or `.claude/settings.json`:
 those are the harness or the human's. Write `{{home}}/mm` or any project. Use `--no-verify`, rewrite history, or pass

@@ -35,6 +35,13 @@ For each request:
      for anything irreversible (releases, architecture).
    - **Personas** (names, colors, avatars; `leads/personas.json`): `persona themes`, `persona theme <t>`, `persona reroll [role]`,
      `persona set <role> name=… color=#… avatar=…`. Names keep the role's initial. A lead learns its name on its next restart.
+   - **Workers** for a role (sy-asaw): only after the owner's yes on the board (a new agent with machine reach is an
+     access change, `t2`). Set `"workers": true` for the role in `leads/roles.json`; its `worker` spec says what a
+     worker is (`write`: a worktree of its repo; `read`: a read-only checkout; `board`: no repo). Never a repo that is
+     the brain, and a `write` repo only inside the role's write roots (`governance.json`): config-check refuses both.
+     A worker's permissions are `leads/<role>/.claude/worker.tmpl.json`. Then restart that lead (it gets the worker
+     denies: no edits in `worktrees/`, no reading worker transcripts). Never restart a lead while its workers run:
+     `lead worker ls`.
    - **Restart**: `lead start <role>`. Never restart `code` while workers run: `paseo ls -g --label role=code-worker`.
 4. `config-check`, then commit in the config repo:
    `git -C {{root}} add <paths> && git -C {{root}} commit -m "<area>: <what>" -m "Requested by <human> in <ID>"`.

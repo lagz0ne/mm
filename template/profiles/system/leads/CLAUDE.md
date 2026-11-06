@@ -36,12 +36,32 @@ kind of work:
 - **Capacity:** your role's `capacity` in `leads/roles.json` (default 1) is the most items you hold in progress at once,
   yours and your workers' together (the project has a cap over all roles too). At capacity, finish, hand over or block
   one before you claim the next; `wake` keeps the rest of the queue waiting.
-- **Workers** (roles that have them): claim the item yourself, then give it to one worker in its own worktree (your role
-  brief says how). The item stays yours: you frame it, integrate the result and end the unit of work. Never more
+- **Workers** (roles that have them): claim the item yourself, then give it to one worker in its own folder (see
+  "Your workers" below). The item stays yours: you frame it, integrate the result and end the unit of work. Never more
   workers than your free capacity.
 - **Lease:** a claim stays yours while the item moves (any comment or change). An item in progress with no update for
   30 min goes back to your queue (status open, by `wake`), and the Supervisor reports it; the 3rd time, it goes to the
   human (`needs-you`). Claim it again to go on.
+
+## Your workers (only when your role has `"workers": true` in `leads/roles.json`)
+Workers are off until the owner says yes; then setup switches them on for a role. Until then `lead worker` and `wt`
+refuse. A worker is a Paseo agent in `worktrees/<role>-<name>/` (it reads `worktrees/CLAUDE.md`, the worker brief), with
+its own permissions (`leads/<role>/.claude/worker.tmpl.json`, rendered by config-check). What it is depends on your role:
+platform: a worktree of mm's repo on branch `<name>`; review: a read-only checkout; ops: no repo, it reads the machine
+and writes only comments, as `ops/<name>`. Never a worktree of the brain.
+- **Cap:** each worker is one place in your capacity, and so is each item you hold that no worker works on. The
+  project's cap counts the same way. `lead worker start` refuses past either; one item per worker.
+- **Start:** claim the item, write the worker's brief to a file in `/tmp` (the item, what to do, what to test, what to
+  report, what not to touch), then `lead worker start <role> <name> --item <ID> --brief /tmp/<file>` (review: add
+  `--ref <branch>` for a branch to read). It makes the folder (`wt`), renders its permissions and starts the agent
+  (labels `project`, `role=<role>-worker`, `worker=<name>`, `item=<ID>`). Comment on the item who works on what.
+- **Finished:** wake tells you ("your worker <name> ... finished its turn"). Read only its report:
+  `lead worker report <role> <name>`. Never read its activity or logs.
+- **Integrate and give the verdict yourself:** check the report against the item, re-run what matters, then do your
+  own end of the unit of work (platform lands the branch; review signs off or not; ops posts the plan or finding as
+  `ops`). A worker never claims, hands over, closes or signs off.
+- **Stop:** `lead worker stop <role> <name>` (archives the agent), then `wt rm <role>-<name>` (it refuses a branch
+  with commits not on main; `--force` drops them). `lead worker ls` lists your workers, `wt ls` the folders.
 
 ## End a unit of work with a board change
 `wake` reads the board's state, not the words in a comment: the change itself says who acts next. First comment what

@@ -13,6 +13,13 @@ through their own boards, never by editing their files.
 - Releases (`v<version>` tags) and pushes are `t2`: plan on the item, review signs off, the human approves; ops runs
   the push.
 
+## Workers (when platform has `"workers": true`; see "Your workers" in leads/CLAUDE.md)
+A platform worker builds in its own worktree of mm's repo (`worktrees/platform-<name>/`, branch `<name>` from main)
+and runs only hermetic and container tests there; it never runs the machine's `mm` or a live test, and never pushes.
+You integrate: read its report, `wt sync platform-<name>`, review the diff (`git diff main...<name>`), grep it for
+machine names and paths, then in `{{home}}/mm` `git merge --ff-only <name>` and run the live gates yourself. The
+verdict on the item is yours. Then `lead worker stop platform <name>` and `wt rm platform-<name>`.
+
 ## Rolling out to projects
 - `mm update --dry-run` for every project first; post what changes and any conflicts on the item.
 - Then `mm update <project>` one project at a time. A conflict means the project changed that file itself: don't
