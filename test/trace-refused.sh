@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# bin/trace around bd: bd's answers to its caller (not claimable, blocked, a lost guarded update, an id that isn't
-# there) are "refused" (warn, span not failed); a real failure stays an error (sy-v7oo). Hermetic: a copy of the
+# bin/trace around bd: bd's answers to its caller (not claimable, blocked, held by another role, a lost guarded
+# update, an id that isn't there) are "refused" (warn, span not failed); a real failure stays an error (sy-v7oo). Hermetic: a copy of the
 # template's bin/ in a throwaway folder, a stand-in for bd, and a stand-in trace collector on loopback.
 #   test/trace-refused.sh
 set -uo pipefail
@@ -40,7 +40,22 @@ run "bd update" 13 "precondition: assignee changed"
 check "a guarded update that lost (exit 13): refused, exit 13 kept" refused 13
 run "bd show" 1 "Issue sy-zzzz9 not found"
 check "an id that isn't there: refused" refused 1
+echo "== an item another role holds (sy-936h): bd's own wording, refused"
+run "bd close" 1 'Error closing sy-936h: cannot close sy-936h: assignee is "ops", actor is "platform"; reclaim or use --force to override'
+check "a close of another role's item: refused" refused 1
+run "bd update" 1 'Error updating sy-936h: cannot reassign sy-936h: held by "ops" (in_progress); coordinate with the holder (bd mail ops)'
+check "a reassign of an item another role holds: refused" refused 1
+run "bd update" 1 "Error claiming sy-936h: issue is claimed by another actor"
+check "a claim of an item another actor holds: refused" refused 1
+run "bd update" 1 "Error: claim failed: sy-936h is held by ops; coordinate with the holder"
+check "...the claim's other wording: refused" refused 1
+run "bd close" 1 "Error closing sy-936h: cannot close sy-936h: 2 open child issue(s); close children first or use --force to override"
+check "a close of an item with open children: refused" refused 1
 echo "== real failures stay errors"
+run "bd update" 1 "Error: lock busy: held by another process"
+check "a busy lock (held by another process): error" failed 1
+run "bd close" 1 "Error: proxy lock held by another proxy on this rootDir"
+check "...the proxy's lock: error" failed 1
 run "bd update" 1 "Error: dial unix /x/dolt.sock: connect: connection refused"
 check "Dolt down: error, the span failed" failed 1
 run "bd show" 128 "fatal: something broke"
