@@ -1,6 +1,6 @@
 #!/bin/sh
 # doop-run — the project's own Doop (plans/doop.md), run by the process manager as the optional `doop` service
-# (`mm doop on <project>`). The pinned image mm names in .run/endpoints.json (containers.doop_image), as its own
+# (`mm doop on <project>`). The image mm names in .run/endpoints.json (containers.doop_image; by digest only), as its own
 # container:
 #   - loopback only: 127.0.0.1:$PORT (portless gives it doop.<project>.localhost);
 #   - its data in the project: data/doop/ (PGlite under data/pg, assets under data/assets), backed up with it;
@@ -16,6 +16,12 @@ EP="$P/.run/endpoints.json"
 cfg() { node -e "try{const c=require('$EP').containers||{};process.stdout.write(String(c['$1']||''))}catch{}"; }
 DOCKER=$(cfg docker); DOCKER=${DOCKER:-docker}; IMAGE=$(cfg doop_image)
 [ -n "$IMAGE" ] || { echo "doop-run: no Doop image in $EP (mm up writes it)" >&2; exit 1; }
+# only a digest (review sy-7452 1): a tag is a name anyone who may run docker can point at another image (docker tag)
+digest() { case "$1" in *[!a-z0-9._/:@-]*) return 1 ;; esac; printf '%s' "$1" | grep -Eq '^([a-z0-9][a-z0-9._/:-]*@)?sha256:[0-9a-f]{64}$'; }
+if ! digest "$IMAGE"; then
+  echo "doop-run: refused: the Doop image is '$IMAGE', not a digest. A tag can be moved to another image (docker tag); a digest can't. Pin it by digest: doop.image in mm's config, as sha256:<64 hex> or <name>@sha256:<64 hex> (docker image inspect --format '{{.Id}}' <image>)." >&2
+  exit 1
+fi
 S="$P/secrets"; D="$P/data/doop"; NAME="mm-doop-$PROJECT"
 umask 077; mkdir -p "$S" "$D"; chmod 700 "$S"
 rnd() { node -e "process.stdout.write(require('crypto').randomBytes($1).toString('hex'))"; }

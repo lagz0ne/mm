@@ -68,7 +68,12 @@ const SECRET_DENY = [...(MS.files || []).flatMap((f) => [`Read(/${f})`, `Edit(/$
   ...MS_FILES.flatMap((f) => [`Edit(/${f})`, `Write(/${f})`, ...named(f)])]
 // The project's own secrets (Doop's account, agent key and auth secret among them; plans/doop.md): no Bash command that
 // names them, and no running the helper that prints the Doop key (only Claude Code runs it, as the MCP's headersHelper)
-const PROJECT_SECRETS = ['Bash(*{root}/secrets*)', 'Bash(*secrets/doop*)', 'Bash(*doop-mcp-headers*)', 'Edit(/{root}/secrets/**)']
+// (review sy-7452 2): the folder in every spelling a lead's command can name it by, from its own folder, a worktree or
+// the project root (absolute, ~ and $HOME, ./secrets and ../../secrets, secrets/...), and every other project's secrets
+// too, wherever the projects are (mm's folder, the older layout, and what the run file says: each only adds denies)
+const PROJECTS = [...new Set([...MMS.map((m) => `${m}/projects`), `${HOME}/projects`, dirs().projects].filter((x) => x && x.startsWith('/')))]
+const PROJECT_SECRETS = [...named(`${R}/secrets`), 'Bash(*./secrets*)', 'Bash(* secrets/*)', 'Bash(*secrets/doop*)', 'Bash(*doop-mcp-headers*)', 'Edit(/{root}/secrets/**)',
+  ...PROJECTS.flatMap((d) => [...named(`${d}/*/secrets`), ...['*', '*/*'].flatMap((x) => [`Read(/${d}/${x}/secrets/**)`, `Edit(/${d}/${x}/secrets/**)`])])]
 const ALWAYS_DENY = [`Read(/${HOME}/.ssh/**)`, 'Read(//root/.ssh/**)', 'Bash(mm fill*)', ...BD_QUIET, ...OWNER_ONLY, ...SECRET_DENY, ...PROJECT_SECRETS]
 // Assistants (assistants/<user>/, system profile): no tool that acts or reads on its own (bin/lib/assist.mjs); a tool
 // that is not allowed is refused without asking (defaultMode dontAsk), so no permission request ever reaches a

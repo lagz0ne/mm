@@ -286,7 +286,8 @@ export function writeRunFiles(root: string, pcSocket: string) {
   const ep = { manager: 'process-compose (mm)', self_healing: true, restart: `process-compose -U -u ${pcSocket} process restart ${a.project}.{service}`,
     logs: `tail -n {lines} ${join(root, '.run', 'logs')}/{service}.log`, observability: obsEndpoints(), dirs: engineDirs(),
     ...(publicKeyPem() ? { auth: { public_key: publicKeyPem() } } : {}), // the gateway's key: boards verify its assertions
-    // how this machine runs a container, and the pinned images of optional services (bin/doop-run; plans/doop.md)
+    // how this machine runs a container, and the pinned images of optional services (bin/doop-run; plans/doop.md): Doop's
+    // by digest only (bin/doop-run refuses a tag: sy-7452)
     containers: { docker: String(process.env.MM_DOCKER || getPath(loadConfig(), 'box.docker') || 'docker'),
       doop_image: String(process.env.MM_DOOP_IMAGE || getPath(loadConfig(), 'doop.image') || 'mm-doop:0.12.0') },
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
