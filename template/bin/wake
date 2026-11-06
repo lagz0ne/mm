@@ -76,8 +76,10 @@ function note(role, id, reason, byLead = false, kind = 'talk') {
 }
 
 const leadOf = (actor) => ROLES.find((r) => actor === r || (actor || '').startsWith(`${r}/`)) || null
-// the board's own actors (the Supervisor and sentinel post as watchdog; the system board's answers come as mm-upstream)
-const SYSTEM = ['ui', 'wake', 'watchdog', 'smoke', 'beads', 'mm-upstream']
+// the board's own actors (the Supervisor and sentinel post as watchdog; the system board's answers come as mm-upstream).
+// `brain`: the system board's ops wrote as brain before 2026-11-05; a name no person may take (config-check), so its
+// old comments are never a human's
+const SYSTEM = ['ui', 'wake', 'watchdog', 'smoke', 'beads', 'mm-upstream', 'brain']
 const isHuman = (actor) => !!actor && !leadOf(actor) && !SYSTEM.includes(actor)
 
 function stopLoop(id) {
@@ -212,11 +214,26 @@ async function allIssues() {
   }
   return [...all.values()]
 }
+// The journal after `since`, every page (bd serve gives at most `limit` records a read, oldest first), up to the head
+// the first read names (or a short page). One page alone is the oldest 500 events: on a board with more, an item's
+// last comment in it is an old one (sy-u43j).
+async function journal(since) {
+  const records = []; let head = null
+  for (let page = 0; page < 2000; page++) {
+    const r = await bd(`/v0/beads/events?since=${since}&limit=500`)
+    const recs = (r.records || []).filter((e) => (e.seq || 0) > since)
+    if (head === null) head = Number.isFinite(r.head) ? r.head : null
+    const upTo = head === null ? recs : recs.filter((e) => e.seq <= head)
+    for (const e of upTo) { records.push(e); since = e.seq }
+    if (!recs.length || upTo.length < recs.length || (head !== null ? since >= head : recs.length < 500)) break
+  }
+  return { head: head ?? since, records }
+}
 // On start: an unanswered human comment counts as a reason (the queues are the reconcile's, right after).
 async function catchUp() {
-  const [open, ev] = await Promise.all([allIssues(), bd('/v0/beads/events?since=0&limit=500')])
+  const [open, ev] = await Promise.all([allIssues(), journal(0)])
   const last = {}
-  for (const e of ev.records || []) if (e.op === 'comment' && e.comment) last[e.issue_id] = e.comment.author
+  for (const e of ev.records) if (e.op === 'comment' && e.comment) last[e.issue_id] = e.comment.author
   for (const i of open) seen.set(i.id, { assignee: i.assignee || '', status: i.status })
   for (const i of open) {
     if (last[i.id] && isHuman(last[i.id])) note(i.assignee, i.id, `${i.id} "${clip(i.title, 80)}" has an unanswered comment from ${last[i.id]}`)
@@ -725,8 +742,8 @@ const saved = (() => { try { return Number(JSON.parse(fs.readFileSync(STATE, 'ut
 if (saved && saved < since) {
   const head = since; since = saved
   try {
-    const r = await fetch(new URL(`/v0/beads/events?since=${saved}&limit=500`, BD)).then((x) => x.json())
-    const missed = (r.records || []).filter((e) => (e.seq || 0) > saved && (e.seq || 0) <= head)
+    const r = await journal(saved) // every page: more than 500 events while stopped are all replayed
+    const missed = r.records.filter((e) => (e.seq || 0) > saved && (e.seq || 0) <= head)
     // `seen` holds the board as it is now, not as it was before these: an item's first replayed change is not read as a
     // transition (its later ones are); what it left waiting is in the role's queue, which the lead check reads
     for (const e of missed) seen.delete(e.issue_id)
