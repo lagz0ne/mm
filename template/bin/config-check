@@ -41,7 +41,11 @@ const OWNER_ONLY = ['Bash(mm user*)', 'Bash(mm grant*)', 'Bash(mm token*)', 'Bas
   'Read(/{mm}/auth/**)', 'Edit(/{mm}/auth/**)', 'Read(/{mm}/paseo/**)', 'Edit(/{mm}/paseo/**)',
   'Bash(mm ai budget*)', 'Bash(*ai.sock*)', 'Read(/{mm}/ai/**)', 'Edit(/{mm}/ai/**)',
   'Bash(mm api*)', 'Bash(*approve.sock*)', 'Bash(*{mm}/api/*)', 'Read(/{mm}/api/**)', 'Edit(/{mm}/api/**)',
-  `Read(/${HOME}/.config/secrets/ai-upstream.key)`, `Edit(/${HOME}/.config/secrets/ai-upstream.key)`]
+  `Read(/${HOME}/.config/secrets/ai-upstream.key)`, `Edit(/${HOME}/.config/secrets/ai-upstream.key)`,
+  // the vault's opener and its key maker (review sy-uvgq): `vault run` opens any project's secrets and runs any command
+  // without naming a path; `vault init` would replace the machine's key. The leading * catches ~/.mm/bin/mm, env … mm,
+  // timeout … mm. `mm vault ls|check` stay free.
+  'Bash(*mm vault run*)', 'Bash(*mm vault init*)']
 // The machine's secrets (review sy-5ag): every path mm lists in .run/endpoints.json (machine_secrets: each secret input's
 // file and folder in the manifest, Paseo's home, Claude's login), so a new input is covered without a template change;
 // always joined with a fixed list (the brain's keys in either layout among them), so the run file, which a box can
