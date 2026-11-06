@@ -133,7 +133,8 @@ check "control: the box's own hook (from its commit) runs when git is pointed at
 check "the host's engine seal is back where mm keeps it" test -s ~/.mm/box/acme-shop/engine.json
 check "...and mm-template is the commit the host recorded" sh -c "grep -q \"\$(git -C $R rev-parse refs/heads/mm-template)\" ~/.mm/box/acme-shop/template.json"
 check "the report names the host's record" grep -q "from the host's record" /tmp/r.json
-check "the drill's record: ok, data-only, the HEAD it restored, 0600 (sy-3use)" sh -c "jq -e --arg c \"\$(cat ~/box.head)\" '.ok == true and .data_only == true and .mastermind == \$c' ~/.mm/state/drill.json && [ \$(stat -c %a ~/.mm/state/drill.json) = 600 ]"
+# box C is a data-only restore and has no jq: the record is read with grep (its JSON is mm's own, two-space indented)
+check "the drill's record: ok, data-only, the HEAD it restored, 0600 (sy-3use)" sh -c "f=~/.mm/state/drill.json; grep -q '\"ok\": true' \$f && grep -q '\"data_only\": true' \$f && grep -q \"\\\"mastermind\\\": \\\"\$(cat ~/box.head)\\\"\" \$f && [ \$(stat -c %a \$f) = 600 ]"
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]
 EOF
 

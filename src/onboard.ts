@@ -1,5 +1,5 @@
 // mm onboard: make this machine match the manifest. Idempotent: only fixes what doctor finds missing.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { checkTool, doctor, type Check } from './doctor'
 import { type Config, getPath, loadConfig, saveConfig, setPath, when } from './config'
@@ -48,12 +48,26 @@ function pathLine(steps: Step[]) {
   }
 }
 
+/** The owner's home and runtime folder no wider than 0700 (review sy-b15.16): a box's uid has the owner's group, so a
+ *  group bit there lets every box read the owner's files. A fresh account often has 0750 (Ubuntu's useradd -m), which
+ *  mm doctor fails; onboard narrows it and says so. Only the group and other bits go; the owner's own stay. */
+function homeModes(steps: Step[]) {
+  const uid = process.getuid?.() ?? 1000
+  for (const d of [HOME, `/run/user/${uid}`]) {
+    let m: number; try { m = statSync(d).mode & 0o777 } catch { continue }
+    if ((m & 0o077) === 0) continue
+    try { chmodSync(d, m & 0o700); steps.push({ step: `mode ${d.replace(HOME, '~')}`, status: 'fixed', detail: `0${m.toString(8)} -> 0${(m & 0o700).toString(8)} (the boxes share the owner's group)` }) }
+    catch (e) { steps.push({ step: `mode ${d.replace(HOME, '~')}`, status: 'fail', detail: `0${m.toString(8)}: could not narrow it (${(e as Error).message}); chmod 700 ${d.replace(HOME, '~')}` }) }
+  }
+}
+
 export async function onboard(o: OnboardOpts): Promise<{ steps: Step[]; checks: Check[] }> {
   const steps: Step[] = []
   const c = loadConfig()
   if (getPath(c, 'layout') === undefined) { setPath(c, 'layout', LAYOUT); steps.push({ step: 'layout', status: 'fixed', detail: `${LAYOUT}${LAYOUT === 'one-root' ? ` (everything under ${DIRS.mm.replace(HOME, '~')})` : ''}` }) }
   vars(c, o, steps)
   for (const d of [DIRS.mm, DIRS.bin, DIRS.tools, DIRS.pc, DIRS.projects]) if (!existsSync(d)) { mkdirSync(d, { recursive: true }); steps.push({ step: `dir ${d.replace(HOME, '~')}`, status: 'fixed', detail: 'created' }) }
+  homeModes(steps)
   pathLine(steps)
   // what an older box kept outside $MM_HOME moves in, once (sy-8w1)
   for (const m of moveOutside()) steps.push({ step: m.step, status: m.status === 'refused' ? 'fail' : 'fixed', detail: m.detail })
