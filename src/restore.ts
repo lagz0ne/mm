@@ -4,13 +4,14 @@
 // Plaintext only ever lives in memory or in a 0700 work folder under $MM_HOME/state, removed at the end.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { held, loadConfig, saveConfig, setPath, unsetPath } from './config'
 import { DIRS, HOME, run } from './env'
 import { install } from './install'
 import { type Install, manifest } from './manifest'
 import { onboard } from './onboard'
+import { spanNote } from './obs'
 import { pcRunning } from './pc'
 import { BOX_RECORD_FILES, type BoxRecord, engineRefusal, hostGitEnv, installTools, processes, readAnswers, repairKernel, sealFile, templateRecFile, up, writeInProject } from './project'
 import { ALLOW } from './sync'
@@ -115,15 +116,43 @@ function recoveryPublic(dir: string, identity: string): string {
  * mm's state. The layout is always one-root: a restore is also how a legacy box moves.
  */
 export async function restoreMachine(src: string, o: RestoreOpts): Promise<{ steps: Step[]; ok: boolean; boards: string[] }> {
+  const seen: Seen = {}, r = await restoreRun(src, o, seen)
+  if (!o.drill || !seen.blank) return r // a drill refused before it began (not a blank box) leaves that box's record alone
+  const rec: DrillRecord = { at: new Date().toISOString(), ok: r.ok, data_only: !!o.dataOnly, mastermind: seen.commit ?? null, report: r.steps.map(reportLine) }
+  try { writeDrillRecord(rec); r.steps.push({ step: 'drill record', status: 'ok', detail: `${tl(DRILL_RECORD)} (ok: ${rec.ok})` }) }
+  catch (e) { r.steps.push({ step: 'drill record', status: 'fail', detail: `${tl(DRILL_RECORD)}: ${(e as Error).message}` }); r.ok = false }
+  // the drill is one span: the command's own (cli.ts), with its outcome and its record (obs.ts spanNote)
+  Object.assign(spanNote.attrs, { drill: true, drill_ok: r.ok, data_only: rec.data_only, mastermind: rec.mastermind ?? '', drill_record: DRILL_RECORD, outcome: r.ok ? 'drill passed' : 'drill failed' })
+  return r
+}
+
+/** The last drill's result, for the brain's score (docs/restore.md, "The drill's record"). Names, counts and hashes
+ *  only: the steps carry no value, and anything shaped like an age identity is cut anyway. */
+export const DRILL_RECORD = join(DIRS.mm, 'state', 'drill.json')
+export type DrillRecord = { at: string; ok: boolean; data_only: boolean; mastermind: string | null; report: string[] }
+type Seen = { blank?: boolean; commit?: string }
+const reportLine = (s: Step) => {
+  const l = `${s.status} ${s.step}: ${s.detail}`.replace(/AGE-SECRET-KEY-1[0-9A-Z]+|AGE-PLUGIN-[A-Z0-9-]+1[0-9A-Z]+/gi, '[cut]')
+  return l.length > 300 ? `${l.slice(0, 299)}…` : l
+}
+/** Written whole: a fresh 0600 temp file next to it (never through a link), renamed over the old one; its folder 0700. */
+export function writeDrillRecord(r: DrillRecord, file = DRILL_RECORD) {
+  const dir = dirname(file); mkdirSync(dir, { recursive: true, mode: 0o700 }); chmodSync(dir, 0o700)
+  const tmp = `${file}.${process.pid}.tmp`; rmSync(tmp, { force: true })
+  try { writeFileSync(tmp, `${JSON.stringify(r, null, 2)}\n`, { mode: 0o600, flag: 'wx' }); chmodSync(tmp, 0o600); renameSync(tmp, file) }
+  catch (e) { rmSync(tmp, { force: true }); throw e }
+}
+
+async function restoreRun(src: string, o: RestoreOpts, seen: Seen): Promise<{ steps: Step[]; ok: boolean; boards: string[] }> {
   const fail = (step: string, detail: string) => ({ steps: [{ step, status: 'fail' as const, detail }], ok: false, boards: [] as string[] })
   // sy-suk 2: moving the machine's secrets is the human's (T3). An agent may run only a drill (test keys, nothing out).
   const inAgent = !!(process.env.CLAUDECODE || process.env.PASEO_AGENT_ID)
   if (inAgent && !o.drill) return fail('agent', 'a restore opens the recovery key and every secret: run it yourself at a terminal, not from an agent (only --drill with test keys may run in one)')
-  if (o.identity) return restoreWith(src, o)
+  if (o.identity) return restoreWith(src, o, seen)
   if (inAgent) return fail('identity', 'give --identity <file>: the hidden prompt is for a human at a terminal')
   let file = ''
   try { file = promptIdentity() } catch (e) { return fail('identity', (e as Error).message) }
-  try { return await restoreWith(src, { ...o, identity: file }) } finally { rmSync(file, { force: true }) }
+  try { return await restoreWith(src, { ...o, identity: file }, seen) } finally { rmSync(file, { force: true }) }
 }
 
 /** The recovery identity, typed (or pasted) at the terminal with no echo, into a 0600 file in a memory-backed folder
@@ -144,11 +173,12 @@ function promptIdentity(): string {
   return f
 }
 
-async function restoreWith(src: string, o: RestoreOpts): Promise<{ steps: Step[]; ok: boolean; boards: string[] }> {
+async function restoreWith(src: string, o: RestoreOpts, seen: Seen): Promise<{ steps: Step[]; ok: boolean; boards: string[] }> {
   const steps: Step[] = [], boards: string[] = []
   const fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return { steps, ok: false, boards } }
   const there = [DIRS.config, DIRS.brain, DIRS.system, DIRS.projects, join(DIRS.vault, 'key'), join(HOME, 'projects'), join(HOME, 'brain')].filter(existsSync)
   if (there.length) return fail('blank box', `this box already has mm's state (${there.map(tl).join(', ')}): restore only onto a blank box`)
+  seen.blank = true
   if (!o.identity || !existsSync(o.identity)) return fail('identity', 'the recovery identity file is not there; it is read by age only, never copied')
 
   // a blank box has no age yet, and everything in mastermind is sealed: the signed distro package first (the manifest)
@@ -167,6 +197,7 @@ async function restoreWith(src: string, o: RestoreOpts): Promise<{ steps: Step[]
     for (const b of ['main', 'master']) if (run(['git', '-C', RESTORE_CHECKOUT, 'checkout', '-q', '-B', b, `origin/${b}`]).ok) break
   const t = trust(RESTORE_CHECKOUT, o); steps.push(...t.steps)
   if (!t.commit) return { steps, ok: false, boards }
+  seen.commit = t.commit
   const co = run(['git', '-C', RESTORE_CHECKOUT, 'checkout', '-q', '--detach', t.commit])
   if (!co.ok) return fail('checkout', short(co))
   const bad = manifestOk(RESTORE_CHECKOUT)

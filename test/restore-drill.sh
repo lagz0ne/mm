@@ -130,6 +130,7 @@ check "control: the box's own hook (from its commit) runs when git is pointed at
 check "the host's engine seal is back where mm keeps it" test -s ~/.mm/box/acme-shop/engine.json
 check "...and mm-template is the commit the host recorded" sh -c "grep -q \"\$(git -C $R rev-parse refs/heads/mm-template)\" ~/.mm/box/acme-shop/template.json"
 check "the report names the host's record" grep -q "from the host's record" /tmp/r.json
+check "the drill's record: ok, data-only, the HEAD it restored, 0600 (sy-3use)" sh -c "jq -e --arg c \"\$(cat ~/box.head)\" '.ok == true and .data_only == true and .mastermind == \$c' ~/.mm/state/drill.json && [ \$(stat -c %a ~/.mm/state/drill.json) = 600 ]"
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]
 EOF
 
@@ -160,6 +161,7 @@ check "a new machine key; the recovery key still opens the vault" sh -c 'test -s
 check "the staged board data and the work folder are gone" sh -c '! test -e ~/.mm/projects/acme/shop/.restore && ! ls -d ~/.mm/state/restore-work-* 2>/dev/null'
 check "the report states the teardown (sy-4in 2)" sh -c 'jq -e ".[] | select(.step==\"teardown\") | .status==\"ok\" and (.detail | test(\"unsealed copies removed: yes\"))" /tmp/drill.json'
 check "the identity was not copied onto the box" sh -c '! grep -rqF "$(grep -v "^#" ~/recovery.key)" ~/.mm'
+check "the drill's record: ok, the HEAD it restored, the report's line, 0600 in 0700 (sy-3use)" sh -c "jq -e --arg c \"\$(cat ~/a.head)\" '.ok == true and .data_only == false and .mastermind == \$c and (.report | any(test(\"^ok report: \")))' ~/.mm/state/drill.json && [ \$(stat -c %a ~/.mm/state/drill.json) = 600 ] && [ \$(stat -c %a ~/.mm/state) = 700 ]"
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]
 EOF
 chmod 644 "$WORK"/*.sh
