@@ -2,27 +2,73 @@
 # doop-run — the project's own Doop (plans/doop.md), run by the process manager as the optional `doop` service
 # (`mm doop on <project>`). The image mm names in .run/endpoints.json (containers.doop_image; by digest only), as its own
 # container:
-#   - loopback only: 127.0.0.1:$PORT (portless gives it doop.<project>.localhost);
-#   - its data in the project: data/doop/ (PGlite under data/pg, assets under data/assets), backed up with it;
-#   - the owner's uid, a read-only root, no capabilities, no new privileges, limits;
+#   - its own uid, never the host owner's (review sy-d2t #8 1): 210000 + n, n the third octet of its network's subnet
+#     (unique on this machine; the boxes are 200000 + n, so the two never meet). It has the host owner's group (the
+#     boxes' group rule), umask 002, and when it stops it makes its own files group-readable and -writable (its
+#     database makes them 0600), so the host's tools (archive, restore) still read and remove them;
+#   - no way out (review sy-d2t #8 2): its own `internal` network (mm-doop-net-<project>, 10.232.n.0/24; no route
+#     out, no DNS out). Doop needs nothing outside: its model, image search and the like are off without their keys,
+#     and the fonts its pages name load in the visitor's browser, not here. The board reaches it on loopback only: a
+#     forwarder on 127.0.0.1:$PORT to the container (portless gives it doop.<project>.localhost); nothing is published;
+#   - its data in the project: data/doop/ (PGlite under data/pg, assets under data/assets), backed up with it
+#     (`doop-run backup <file>`: while it runs, Doop's own tar writes it, as Doop's uid). Data an older Doop wrote as
+#     the host owner opens as before: at each start, while no Doop runs, the host owner makes its own files there
+#     group-writable (no chown, no sudo);
+#   - a read-only root, no capabilities, no new privileges, limits;
 #   - its secrets in secrets/ (0600, never on a command line): its auth secret, a random sign-up domain (only who knows
 #     it can make an account), and, after the first start, its own account and the design lead's agent key.
 # The design lead reaches it by MCP (leads/design/.mcp.json, rendered while it runs), with bin/doop-mcp-headers.
+#   doop-run                  the service (PORT and DOOP_URL from the process manager)
+#   doop-run backup <file>    data/doop/ as a tarball (doop/...), for bin/backup
+#   doop-run release          after the service stopped (mm archive runs it before it packs): a Doop container left over
+#                             goes (the clean way), and what a killed Doop left 0600 goes back into the host owner's
+#                             group, as that Doop's own uid
 set -eu
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 PROJECT=$(sed -n 's/^project:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p' "$P/.mm-answers.yaml" 2>/dev/null || true); PROJECT=${PROJECT:-$(basename "$P")}
-: "${PORT:?the process manager gives PORT}" "${DOOP_URL:?services.yaml gives DOOP_URL}"
 EP="$P/.run/endpoints.json"
 cfg() { node -e "try{const c=require('$EP').containers||{};process.stdout.write(String(c['$1']||''))}catch{}"; }
 DOCKER=$(cfg docker); DOCKER=${DOCKER:-docker}; IMAGE=$(cfg doop_image)
-[ -n "$IMAGE" ] || { echo "doop-run: no Doop image in $EP (mm up writes it)" >&2; exit 1; }
+NAME="mm-doop-$PROJECT"; NET="mm-doop-net-$PROJECT"; S="$P/secrets"; D="$P/data/doop"
 # only a digest (review sy-7452 1): a tag is a name anyone who may run docker can point at another image (docker tag)
 digest() { case "$1" in *[!a-z0-9._/:@-]*) return 1 ;; esac; printf '%s' "$1" | grep -Eq '^([a-z0-9][a-z0-9._/:-]*@)?sha256:[0-9a-f]{64}$'; }
-if ! digest "$IMAGE"; then
+pinned() {
+  [ -n "$IMAGE" ] || { echo "doop-run: no Doop image in $EP (mm up writes it)" >&2; exit 1; }
+  digest "$IMAGE" && return 0
   echo "doop-run: refused: the Doop image is '$IMAGE', not a digest. A tag can be moved to another image (docker tag); a digest can't. Pin it by digest: doop.image in mm's config, as sha256:<64 hex> or <name>@sha256:<64 hex> (docker image inspect --format '{{.Id}}' <image>)." >&2
   exit 1
-fi
-S="$P/secrets"; D="$P/data/doop"; NAME="mm-doop-$PROJECT"
+}
+# what a Doop's uid runs over its data, inside a container (only the owner may change a file's mode): its own files
+# group-readable and -writable, its folders setgid. Never follows a symlink (find without -L; they are neither d nor f)
+REGROUP='find /app/data -user "$(id -u)" \( \( -type d -exec chmod g+rwxs {} + \) -o \( -type f -exec chmod g+rw {} + \) \) 2>/dev/null'
+running() { [ "$($DOCKER inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = true ]; }
+release() {
+  [ -d "$D" ] || return 0
+  # the uids of what the host owner can't read or change there, of Doops only (210010-210249)
+  for u in $(find "$D" ! -user "$(id -u)" ! -type l \( ! -perm -060 -o -type d ! -perm -2070 \) -printf '%U\n' 2>/dev/null | sort -u); do
+    case "$u" in 2100[1-9][0-9]|2101[0-9][0-9]|2102[0-4][0-9]) ;; *) continue ;; esac
+    pinned; $DOCKER run --rm --network none --user "$u:$(id -g)" --read-only --cap-drop ALL --security-opt no-new-privileges \
+      -v "$D:/app/data" --entrypoint sh "$IMAGE" -c "$REGROUP; exit 0"
+  done
+}
+case "${1:-}" in
+  backup)
+    out=${2:?doop-run backup <file>}
+    # running: its files are its own (many 0600), so its own tar reads them, inside its container (its uid, no network)
+    if running; then exec $DOCKER exec "$NAME" tar -czf - -C /app --transform 's,^data,doop,S' data >"$out"; fi
+    # stopped: it made them group-readable when it stopped (release, if it was killed before)
+    release; exec tar -czf "$out" -C "$P/data" doop ;;
+  release)
+    # a container left over (its wrapper was killed): stopped the clean way, so its database closes and it regroups
+    $DOCKER stop -t 10 "$NAME" >/dev/null 2>&1 || true; $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
+    $DOCKER network rm "$NET" >/dev/null 2>&1 || true
+    release; exit 0 ;;
+  "") ;;
+  *) echo "usage: doop-run [backup <file> | release]" >&2; exit 2 ;;
+esac
+: "${PORT:?the process manager gives PORT}" "${DOOP_URL:?services.yaml gives DOOP_URL}"
+pinned
+command -v socat >/dev/null || { echo "doop-run: socat is missing (it forwards the loopback port to Doop's network)" >&2; exit 1; }
 umask 077; mkdir -p "$S" "$D"; chmod 700 "$S"
 rnd() { node -e "process.stdout.write(require('crypto').randomBytes($1).toString('hex'))"; }
 [ -s "$S/doop-auth-secret" ] || rnd 32 >"$S/doop-auth-secret"
@@ -32,18 +78,66 @@ rnd() { node -e "process.stdout.write(require('crypto').randomBytes($1).toString
   echo "BETTER_AUTH_URL=$DOOP_URL"; echo "TRUSTED_ORIGINS=$DOOP_URL"
   echo "BETTER_AUTH_SECRET=$(cat "$S/doop-auth-secret")"; echo "SIGNUP_EMAIL_DOMAINS=$(cat "$S/doop-signup-domain")"
 } >"$S/doop.env"
-$DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
+# a Doop left over (its wrapper was killed): stopped the clean way first, so its database closes and its files regroup
+$DOCKER stop -t 10 "$NAME" >/dev/null 2>&1 || true; $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
+
+# its network: internal (no route out), a fixed /24 per project (the same one each start while it is free)
+subnet() { $DOCKER network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$NET" 2>/dev/null || true; }
+SUB=$(subnet)
+if [ -z "$SUB" ]; then
+  start=$(node -e "process.stdout.write(String(require('crypto').createHash('sha256').update(process.argv[1]).digest()[0] % 240))" "$PROJECT")
+  i=0; while [ $i -lt 240 ]; do
+    nn=$((10 + (start + i) % 240))
+    if err=$($DOCKER network create --internal --subnet "10.232.$nn.0/24" --gateway "10.232.$nn.1" --label "mm.project=$PROJECT" --label mm.service=doop "$NET" 2>&1 >/dev/null); then break; fi
+    case "$err" in *overlap*|*"in use"*) i=$((i + 1)) ;; *) echo "doop-run: could not make $NET: $err" >&2; exit 1 ;; esac
+  done
+  SUB=$(subnet)
+fi
+case "$SUB" in 10.232.*.0/24) ;; *) echo "doop-run: $NET has the subnet '$SUB', not 10.232.<n>.0/24 (remove it: docker network rm $NET)" >&2; exit 1 ;; esac
+nn=${SUB#10.232.}; nn=${nn%%.*}
+case "$nn" in [1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]) ;; *) echo "doop-run: $NET has the subnet '$SUB', outside 10.232.10-249 (remove it: docker network rm $NET)" >&2; exit 1 ;; esac
+IP="10.232.$nn.10"
+DUID=$((210000 + nn)); GID=$(id -g)
+
+# its data: group-shared with the host owner (setgid folders keep the group). What the host owner made there (an older
+# Doop that ran as the host owner, a restore) becomes group-writable for Doop. Only now, with no Doop running, so nothing
+# can swap a path under it; symlinks are never followed (find without -L, and they are neither -type d nor -type f).
+chmod 2770 "$D"
+release # what an earlier Doop, killed, left as its own (a uid of a former subnet too)
+find "$D" -mindepth 1 -user "$(id -u)" \( \( -type d -exec chmod g+rwxs {} + \) -o \( -type f -exec chmod g+rw {} + \) \)
+
+# the image's own command (plain words only), in a small wrapper: umask 002, and when Doop ends (docker stop sends TERM
+# to the wrapper, which passes it on), its own files become group-readable and -writable. Its database makes most of
+# them 0600, so without this the host owner could neither pack (mm archive) nor remove them; only their owner, Doop's
+# uid, may change their mode, so it is done in there.
+CMD=$($DOCKER image inspect -f '{{range .Config.Entrypoint}}{{.}} {{end}}{{range .Config.Cmd}}{{.}} {{end}}' "$IMAGE")
+case "$CMD" in *[!A-Za-z0-9._/\ -]*|"") echo "doop-run: refused: the image's command is not plain words: '$CMD'" >&2; exit 1 ;; esac
+WRAP='umask 002; "$@" & p=$!; trap "kill -TERM $p 2>/dev/null" TERM INT; wait $p; s=$?; if kill -0 $p 2>/dev/null; then wait $p; s=$?; fi
+'"$REGROUP"'; exit $s'
+
+# shellcheck disable=SC2086 # CMD is checked above: plain words, split on purpose
 $DOCKER run --rm --name "$NAME" --label "mm.project=$PROJECT" --label mm.service=doop \
-  --user "$(id -u):$(id -g)" --read-only --tmpfs /tmp:rw,nosuid,size=512m \
+  --network "$NET" --ip "$IP" --dns 127.0.0.1 \
+  --user "$DUID:$GID" --read-only --tmpfs /tmp:rw,nosuid,nodev,size=512m \
   --cap-drop ALL --security-opt no-new-privileges --memory 2g --pids-limit 1024 \
-  -p "127.0.0.1:$PORT:4400" -v "$D:/app/data" --env-file "$S/doop.env" "$IMAGE" &
+  -v "$D:/app/data" --env-file "$S/doop.env" --entrypoint sh "$IMAGE" -c "$WRAP" sh $CMD &
 pid=$!
-trap '$DOCKER stop -t 10 "$NAME" >/dev/null 2>&1 || true; wait $pid 2>/dev/null; exit 0' TERM INT
+# the board's way in: loopback only, to Doop's address on its network (nothing else listens there). It dies with this
+# script (pdeathsig), so a killed doop-run leaves no forwarder holding the port
+PD=""; command -v setpriv >/dev/null && PD="setpriv --pdeathsig TERM"
+$PD socat "TCP-LISTEN:$PORT,bind=127.0.0.1,fork,reuseaddr" "TCP:$IP:4400" 2>/dev/null &
+fwd=$!
+stop() { kill $fwd 2>/dev/null || true; $DOCKER stop -t 10 "$NAME" >/dev/null 2>&1 || true; wait $pid 2>/dev/null || true
+  $DOCKER network rm "$NET" >/dev/null 2>&1 || true; }
+trap 'stop; exit 0' TERM INT
+# alive? /proc, not kill -0: with `sudo docker`, $pid is root's and can't be signalled by the owner
+alive() { [ -d "/proc/$pid" ] && [ -d "/proc/$fwd" ]; }
 # first start: Doop's own account for the project, and the design lead's agent key (bin/lib/doop-init.mjs)
 n=0; until curl -sf -o /dev/null "http://127.0.0.1:$PORT/healthz"; do
-  # alive? /proc, not kill -0: with `sudo docker`, $pid is root's and can't be signalled by the owner
-  [ -d "/proc/$pid" ] || { wait $pid; exit 1; }
+  alive || { echo "doop-run: Doop or its loopback forwarder stopped" >&2; stop; exit 1; }
   n=$((n + 1)); [ $n -lt 180 ] || { echo "doop-run: Doop did not answer in 3 min" >&2; break; }; sleep 1
 done
 [ -s "$S/doop-agent-key" ] || node "$P/bin/lib/doop-init.mjs" "http://127.0.0.1:$PORT" "$DOOP_URL" "$S" || echo "doop-run: first-start setup failed (it is tried again at the next start)" >&2
-wait $pid
+# both must stay up: if one stops, the service stops (the process manager starts it again)
+while alive; do sleep 5 & wait $! || true; done
+echo "doop-run: Doop or its loopback forwarder stopped" >&2; stop; exit 1

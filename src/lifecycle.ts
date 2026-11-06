@@ -250,6 +250,13 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   // 4. anything still running from the project (orphans of a crashed wrapper, bd's db proxy, agent tools)
   const swept = sweep(root)
   steps.push({ step: 'sweep', status: 'ok', detail: swept.length ? `stopped ${swept.length} leftover process(es): ${swept.join(', ').slice(0, 160)}` : 'nothing left running' })
+  // 4b. the project's Doop runs as its own uid (bin/doop-run; review sy-d2t): a container its wrapper left goes, and
+  // what a killed one left 0600 goes back into the host owner's group, so the pack reads all of it
+  const doopRun = join(root, 'bin', 'doop-run')
+  if (!a.box && existsSync(join(root, 'data', 'doop')) && existsSync(doopRun)) {
+    const r = run([doopRun, 'release'], { cwd: root, timeoutMs: 120_000 })
+    steps.push({ step: 'doop', status: r.ok ? 'ok' : 'fail', detail: r.ok ? 'stopped; its data is readable to the host owner' : short(r) })
+  }
 
   // 5. pack, verify, delete
   mkdirSync(ARCHIVE_DIR, { recursive: true })
