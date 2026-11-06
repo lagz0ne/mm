@@ -11,12 +11,15 @@
 //                        applied (since this check first ran, when the item is closed), with no `approved` from an
 //                        approver: read from the event journal with its actor, never from the label alone. Clears when
 //                        an approver sets approved, or the item leaves in progress with no applied migration    P1
+//     overcap:<role>     a role with workers holds more places than its capacity (each live worker one, each item in
+//                        progress no worker works on one; +1 while it holds a P0), or, while any role has workers, the
+//                        board more than its cap (overcap:board)                                                    P2
 //     supervisor:<check> the supervisor could not read a source (that check's items are left as they are)     P2
 // Sources, all read-only: the board (bd serve: items, ready, the event journal), Paseo (leads by label project/role),
 // `mm ls` (project roots), git (log, status, worktree list). A reply, a comment or a change means one by a lead, its
 // workers (`<role>/...`) or a human; the system's own authors (wake, watchdog) do not count. A commit counts for an item
 // when its message names the item id (any branch). An agent turn is the assignee's lead running (now, or seen running
-// by an earlier check within the window). A reassign to a person (the owner, a human) is left to needs-you, not watched
+// by an earlier check within the window), or a worker of its role on that item running now. A reassign to a person (the owner, a human) is left to needs-you, not watched
 // here. A requeue is wake's own change (in progress -> open, by `wake`): the one system change read here.
 // The approvers (sy-44xa): the bridge's actor (`bridge`) and the owner's name (`owner_name` in .run/endpoints.json, when
 // mm writes it), else config `approvers`; env SUPERVISOR_APPROVERS (comma list) overrides both. `approved` counts only
@@ -37,6 +40,7 @@ import path from 'node:path'
 import { ROOT, dirs, endpoints, projectName, requireUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
 import * as paseo from './lib/paseo.mjs'
+import { places, projectCap, total, workersOf } from './lib/places.mjs'
 
 cli('supervisor')
 const E = process.env
@@ -80,7 +84,8 @@ for (const k of ['muted', 'notes', 'items', 'running', 'idle']) state[k] ||= {}
 state.seq ||= 0
 state.t2since ||= NOW // closed items: only migrations applied since this check first ran (no flood from older ones)
 
-const ROLES = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'leads', 'roles.json'), 'utf8')).roles.map((r) => r.id) } catch { return [] } })()
+const DEFS = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'leads', 'roles.json'), 'utf8')).roles.filter((r) => r && r.id) } catch { return [] } })()
+const ROLES = DEFS.map((r) => r.id)
 if (!ROLES.includes('setup')) ROLES.push('setup')
 const roleOf = (actor) => ROLES.find((r) => actor === r || String(actor || '').startsWith(`${r}/`)) || null
 
@@ -143,6 +148,8 @@ const leads = once(async () => {
   }
   return out
 })
+// The live workers of the roles that have them (Paseo labels project=<this board> role=<role>-worker; bin/lib/places.mjs)
+const workers = once(async () => workersOf(paseo, SELF, DEFS.filter((r) => r.workers === true).map((r) => r.id)))
 let listedCache = null
 const listed = () => (listedCache ||= JSON.parse(run(MM, ['ls', '-o', 'json'])).filter((p) => !p.throwaway))
 // The git repos watched: the mm repo (~/mm: where the template puts it) and every project's own repo (mm ls), plus config.
@@ -168,7 +175,7 @@ const mine = (i) => (i.labels || []).includes('supervisor')
 
 // ---------- checks: each returns { prefix, problems: [{ key, title, priority, body, note }] } or throws ----------
 async function stall() {
-  const [all, sum, ls, cs] = await Promise.all([issues(), journal(), leads(), commits()])
+  const [all, sum, ls, cs, ws] = await Promise.all([issues(), journal(), leads(), commits(), workers()])
   const problems = [], window = MIN.stall * 60000
   for (const i of all) {
     if (i.status === 'closed' || mine(i)) continue
@@ -184,7 +191,7 @@ async function stall() {
     if (i.status !== 'in_progress' || !(i.priority <= 1)) continue
     const s = sum[i.id], lead = ls[i.assignee]
     const lastAct = s?.act || ms(i.updated_at) // no journal record of it: the item's own time
-    const turn = lead?.status === 'running' ? NOW : state.running[i.assignee] || 0
+    const turn = lead?.status === 'running' || ws.some((w) => w.item === i.id && w.status === 'running') ? NOW : state.running[i.assignee] || 0
     const last = Math.max(lastAct, cs[i.id] || 0, turn)
     if (NOW - last < window) continue
     problems.push({ key: `stall:${i.id}`, priority: 1, title: `Stalled: ${i.id} (P${i.priority}, in progress, ${i.assignee || 'nobody'}) has no comment, commit or agent turn for ${MIN.stall} min`,
@@ -300,6 +307,27 @@ async function t2() {
   return { prefix: 't2-unapproved:', problems }
 }
 
+async function overcap() {
+  const [all, ws] = await Promise.all([issues(), workers()])
+  const problems = [], say = (p) => `${p.used} place(s): ${p.workers.length} worker(s)${p.workers.length ? ` (${p.workers.map((w) => `${w.name || w.id}${w.item ? ` on ${w.item}` : ''}`).join(', ')})` : ''}, ` +
+    `${p.unworked.length} item(s) in progress no worker works on${p.unworked.length ? ` (${p.unworked.map((i) => i.id).join(', ')})` : ''}`
+  const withWorkers = DEFS.filter((r) => r.workers === true)
+  for (const r of withWorkers) {
+    const p = places(r.id, all, ws), cap = Number.isInteger(r.capacity) && r.capacity > 0 ? r.capacity : 1
+    const p0 = p.items.some((i) => i.priority === 0) ? 1 : 0
+    if (p.used <= cap + p0) continue
+    problems.push({ key: `overcap:${r.id}`, priority: 2, title: `Over capacity: the ${r.id} lead holds ${p.used} places, its capacity is ${cap}${p0 ? ' (+1 for a P0)' : ''}`,
+      note: say(p),
+      body: `The **${r.id}** role holds more than its capacity (roles.json \`capacity\` ${cap}${p0 ? ', and one more while it holds a P0' : ''}): ${say(p)}.\n\n` +
+        `Each live worker is one place, and so is each item it holds in progress that no worker works on. Ask the lead to finish, stop (\`lead worker stop\`) or hand over one. This item closes itself when it is within its capacity again.` })
+  }
+  const pcap = projectCap(dirs().mm), t = total([...ROLES], all, ws)
+  const p0 = all.some((i) => i.status === 'in_progress' && i.priority === 0 && roleOf(i.assignee)) ? 1 : 0
+  if (withWorkers.length && pcap && t > pcap + p0) problems.push({ key: 'overcap:board', priority: 2, title: `Over the cap: this board holds ${t} places, its cap is ${pcap}`,
+    note: `${t} of ${pcap}`, body: `Over all roles, this board holds ${t} places (workers and items in progress no worker works on); the cap (\`wake.cap\`) is ${pcap}${p0 ? ', and one more while a P0 is held' : ''}.\n\nThis item closes itself when the board is within its cap again.` })
+  return { prefix: 'overcap:', problems }
+}
+
 // ---------- reconcile with the board (as the sentinel does) ----------
 const open = {} // key -> item
 for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')).items || []) {
@@ -307,7 +335,7 @@ for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')
   if (k && it.status !== 'closed') open[k] = it
 }
 const results = [], failed = []
-for (const [name, fn] of Object.entries({ stall, handoff, idle, dirty, t2 })) {
+for (const [name, fn] of Object.entries({ stall, handoff, idle, dirty, t2, overcap })) {
   try { results.push(await fn()) } catch (e) { failed.push({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) }) }
 }
 await paseo.close()
