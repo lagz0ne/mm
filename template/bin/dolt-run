@@ -1,0 +1,33 @@
+#!/usr/bin/env node
+// dolt-run <socket> <dolt> [args...] — start this project's Dolt, after clearing a socket file nothing answers on.
+// A Dolt that died, or that ran on the other side of a box move (the project folder is shared between the host and its
+// box), leaves .dolt/mysql.sock behind. The next Dolt then can't take it ("file already in use"), serves TCP only, and
+// bd, which talks to it over that socket, never gets a server: the board stays Pending. A socket something still
+// answers on is left alone and the start refused: two Dolts on one database must never run.
+import fs from 'node:fs'
+import net from 'node:net'
+import { spawn } from 'node:child_process'
+
+const [sock, cmd, ...args] = process.argv.slice(2)
+if (!sock || !cmd) { console.error('usage: dolt-run <socket> <dolt> [args...]'); process.exit(2) }
+
+/** 'none' (no file), 'stale' (a socket nothing answers on), 'live' (something answers), 'other' (not a socket). */
+function state(p) {
+  let st; try { st = fs.lstatSync(p) } catch { return Promise.resolve('none') }
+  if (!st.isSocket()) return Promise.resolve('other')
+  return new Promise((ok) => {
+    const c = net.connect(p)
+    const t = setTimeout(() => { c.destroy(); ok('live') }, 2000) // it took the connection but said nothing yet: in use
+    c.once('connect', () => { clearTimeout(t); c.destroy(); ok('live') })
+    c.once('error', (e) => { clearTimeout(t); ok(e.code === 'ECONNREFUSED' || e.code === 'ENOENT' ? 'stale' : 'live') })
+  })
+}
+
+const s = await state(sock)
+if (s === 'live') { console.error(`dolt-run: another Dolt answers on ${sock}: not starting a second one on the same database`); process.exit(1) }
+if (s === 'other') { console.error(`dolt-run: ${sock} is not a socket: not removing it`); process.exit(1) }
+if (s === 'stale') { fs.unlinkSync(sock); console.log(`dolt-run: removed a stale socket (nothing answered on ${sock})`) }
+const child = spawn(cmd, args, { stdio: 'inherit' })
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => child.kill(sig))
+child.on('error', (e) => { console.error(`dolt-run: ${e.message}`); process.exit(127) })
+child.on('exit', (code, sig) => process.exit(code ?? (sig ? 128 : 1)))
