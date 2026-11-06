@@ -82,6 +82,6 @@
     "^Bash\\(sudo -n (firewall-cmd --(list|state|get)|fail2ban-client (status|get)|journalctl|ss -)"
   ],
   "hooks_required": [
-    "{brain}/bin/guard"
+    "test -x {home}/.local/lib/brain/guard && exec {home}/.local/lib/brain/guard || { echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"[brain guard] not installed ({home}/.local/lib/brain/guard): bin/brain promote installs it\"}}'; exit 0; }"
   ]
 }
