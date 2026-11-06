@@ -31,6 +31,9 @@ machine:
                  how: "domain if you have a domain whose DNS is on Cloudflare; else tailscale" }
     domain:    { kind: var, required: true, ask: "Domain", when: "access == domain",
                  for: "public names <name>.<domain>", how: "a domain whose DNS is on Cloudflare" }
+    names:     { kind: var, default: "legacy", choices: [legacy, project], when: "access == domain",
+                 for: "how projects' public services are named: legacy (board-<name>-<client>, <name>-<client>) or project (<project>.<domain>, <service>.<project>.<domain>)",
+                 how: "keep legacy; a switch changes public routes and DNS (the owner's call): run mm names first (docs/project-model.md)" }
     portless_port: { kind: var, default: "1355", for: "the names proxy (<service>.<project>.localhost:<port>); unprivileged" }
     metrics_port:  { kind: var, default: "8428", for: "VictoriaMetrics, loopback (vmui at /vmui)" }
     logs_port:     { kind: var, default: "9428", for: "VictoriaLogs, loopback (UI at /select/vmui)" }

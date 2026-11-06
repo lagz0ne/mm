@@ -29,7 +29,8 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync,
 import { join } from 'node:path'
 import type { Server } from 'bun'
 import { API_DIR, APPROVE_SOCK, apiSocket, apiSocketDir, type Call, CALLS, FIELD, formatOk, granted, grantedProjects, PROJECT_ID, saveGranted } from './apistate'
-import { hostClaims } from './auth'
+import { gatewayHost, hostClaims } from './auth'
+import { boxRoute } from './names'
 import { appReload, egressList, egressReload } from './box'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, run, toolPath } from './env'
@@ -108,14 +109,18 @@ const appSpec = (root: string) => { try { return (Bun.YAML.parse(readFileSync(jo
 /** Is this host someone else's already: a board's (the gateway's host map, sy-b15.17), another box's granted route, or
  *  a route the router has that this box was never granted? */
 export function hostTaken(project: string, name: string, host: string): string | null {
-  const { claims } = hostClaims()
+  const { claims, hosts } = hostClaims()
   if (claims[host]) return `${host} is a board's (the gateway's host map)`
+  // any project's other public service too (the app slot's open route, under names: project app.<project>), and the
+  // gateway's own host (sy-b15.3)
+  if (hosts[host]) return `${host} is ${[...hosts[host]].sort().join(', ')}'s public service`
+  if (host === gatewayHost()) return `${host} is the sign-in gateway's host`
   // another box's granted route, behind the sign-in or open
   for (const p of grantedProjects()) if (p !== project && granted(p).routes.some((r) => r.host === host)) return `${host} is granted to another box`
   const root = boxRoot(project), tool = root ? routeTool(readAnswers(root)) : null
   if (tool && !granted(project).routes.some((r) => r.name === name)) {
     const ls = run([tool, 'ls'], { timeoutMs: 30_000 })
-    if (ls.ok && ls.out.split('\n').some((l) => l.startsWith(`https://${name}.${project}.`))) return `the router has a route ${name}.${project} already`
+    if (ls.ok && ls.out.split('\n').some((l) => l.startsWith(`https://${boxRoute(project, name)}.`))) return `the router has a route ${boxRoute(project, name)} already`
   }
   return null
 }
@@ -154,7 +159,7 @@ const CALL_WHAT: Record<Call, string> = { route: 'a public route', egress: 'a si
 /** The item: every word mm's, the box's value only inside the frame (format-checked, so never more than one short
  *  line without backticks), marked as the box's. */
 export function itemText(r: Pick<Req, 'id' | 'project' | 'call' | 'value' | 'hash'>, domain: string): { title: string; body: string } {
-  const p = r.project, v = r.value, host = `${v}.${p}.${domain || '<domain>'}`
+  const p = r.project, v = r.value, host = `${boxRoute(p, v)}.${domain || '<domain>'}`
   const what: Record<Call, string[]> = {
     route: [`- **What becomes reachable:** https://${host}, served by the box's app slot (the box's own service, on its network; never a host port).`,
       `- **Who can open it:** by default only people signed in at the gateway with a role on ${p}. When approving, the owner can choose no login (anyone on the internet): \`--no-login\`.`],
@@ -222,13 +227,13 @@ function apply(r: Req, open: boolean): Applied {
   const a = readAnswers(root), g = granted(r.project), steps: { status: string; detail: string }[] = []
   if (r.call === 'route') {
     const domain = domainOf(); if (!domain) return { ok: false, detail: 'this machine has no domain (access: domain)' }
-    const host = `${r.value}.${r.project}.${domain}`, taken = hostTaken(r.project, r.value, host)
+    const host = `${boxRoute(r.project, r.value)}.${domain}`, taken = hostTaken(r.project, r.value, host)
     if (taken) return { ok: false, detail: taken }
     g.routes = [...g.routes.filter((x) => x.name !== r.value), { name: r.value, host, open, id: r.id }]; saveGranted(r.project, g)
     // to the app slot's public port (the box's own service, forwarded from the host to the box's address)
     let port: number | undefined
     try { port = (JSON.parse(readFileSync(join(DIRS.mm, 'box', r.project, 'ports.json'), 'utf8')).services?.app?.public_port) as number | undefined } catch {}
-    if (port && Number.isInteger(port)) steps.push(routeUp(a, `${r.value}.${r.project}`, port, !open, `https://${host}`))
+    if (port && Number.isInteger(port)) steps.push(routeUp(a, boxRoute(r.project, r.value), port, !open, `https://${host}`))
     else steps.push({ status: 'skip', detail: 'the box has no app slot running yet: the route is written when it runs (mm up)' })
     return { ok: !steps.some((s) => s.status === 'fail'), detail: `https://${host} ${open ? 'with no login (the owner chose it)' : 'behind the sign-in'}: ${steps.map((s) => s.detail).join('; ')}` }
   }
@@ -251,8 +256,8 @@ function undo(r: Req): Applied {
   const root = boxRoot(r.project), g = granted(r.project)
   if (r.call === 'route') {
     g.routes = g.routes.filter((x) => x.id !== r.id); saveGranted(r.project, g)
-    const s = root ? routeRm(readAnswers(root), `${r.value}.${r.project}`) : { status: 'skip', detail: 'not a box now' }
-    return { ok: s.status !== 'fail', detail: `route ${r.value}.${r.project} removed: ${s.detail}` }
+    const s = root ? routeRm(readAnswers(root), boxRoute(r.project, r.value)) : { status: 'skip', detail: 'not a box now' }
+    return { ok: s.status !== 'fail', detail: `route ${boxRoute(r.project, r.value)} removed: ${s.detail}` }
   }
   if (r.call === 'egress') {
     g.egress = g.egress.filter((x) => x.id !== r.id); saveGranted(r.project, g)
@@ -318,7 +323,7 @@ export async function serve() {
     if (had) { record(project, c, 'repeat'); log('info', 'call: granted already', { box: project, call: c, value, id: had }); return answer('done', 200, { id: had }) }
     if (c === 'route') {
       if (!domain) return refuse('no-domain', 'this machine has no domain')
-      const t = hostTaken(project, value, `${value}.${project}.${domain}`); if (t) return refuse('taken', t)
+      const t = hostTaken(project, value, `${boxRoute(project, value)}.${domain}`); if (t) return refuse('taken', t)
     }
     if (c === 'release') {
       if (!appSpec(root).app) return refuse('no-app-slot', 'the project has no app slot (services.yaml: app)')

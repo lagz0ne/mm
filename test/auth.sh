@@ -156,6 +156,14 @@ fakeproj "$T/proj3" acme-third board-shop-acme; echo "# from $T/proj3/services.y
 check "two projects claim one host: refused for both (alex 401), logged" bash -c "bv '$TK' | head -1 | grep -q 401 && grep 'board hosts refused' '$T/gw.log' | grep -q 'claimed by acme-shop, acme-third'"
 rm -f "$MM_HOME/pc/boxes/acme-third.yaml"; sleep 0.5
 check "...the second claim gone: acme-shop's board is its own again" bash -c "bv '$TK' | head -1 | grep -q 200"
+# the machine's naming rule (sy-b15.3): under names: project a board is <project>.<domain>; the gate follows it
+cp "$MM_HOME/config.yaml" "$T/config.legacy"; printf 'names: project\n' >>"$MM_HOME/config.yaml"; sleep 0.5
+NB=acme-shop.example.org; NB2=acme-other.example.org
+check "names: project: alex's token opens $NB, as member; the old host $BOARD is refused (401)" bash -c "node '$T/verify.mjs' \"\$(bv '$TK' $NB | sed -n 's/^x-mm-assertion: \\(.*\\)\\r\$/\\1/ip')\" '$MM_HOME/auth/signing.key' $NB alex member && bv '$TK' | head -1 | grep -q 401"
+check "...bob's token opens $NB2, not $NB" bash -c "bv '$TKB' $NB2 | head -1 | grep -q 200 && bv '$TKB' $NB | head -1 | grep -q 401"
+check "...no cookie on $NB: sent to sign in for that host" bash -c "curl -s -D - -o /dev/null -H 'x-forwarded-host: $NB' $G/verify | grep -qi '^location: https://$AUTH/s?b=$NB&'"
+cp "$T/config.legacy" "$MM_HOME/config.yaml"; sleep 0.5
+check "names back to legacy (the rollback): $BOARD again, $NB refused" bash -c "bv '$TK' | head -1 | grep -q 200 && bv '$TK' $NB | head -1 | grep -q 401"
 mm user rm bob >/dev/null
 
 echo '== ending it'

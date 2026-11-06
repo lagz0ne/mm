@@ -30,6 +30,7 @@ mm needs                     # every input (answers, secrets, accounts): what is
 mm fill <name> [--from f]    # fill one; a secret from a file, a pipe or a hidden prompt, never the command line
 mm new acme/shop             # a project in ~/projects/acme/shop, services started
 mm ls | inspect acme/shop    # projects, their services and URLs
+mm names                     # each project's public hosts under both naming rules (config names: legacy|project); read-only
 mm up | down | restart acme/shop
 mm update [acme/shop]        # bring projects up to this mm's template (three-way merge; --dry-run, --continue, --abort)
 mm archive acme/shop         # stop, unload, unexpose, archive agents, pack to a tarball, delete; mm restore <tarball>
