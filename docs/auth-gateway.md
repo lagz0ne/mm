@@ -238,6 +238,9 @@ actor `bridge`, or the owner's name (`owner_name` in mm's config; mm writes it i
   lead adds or relays does not count: on an item in progress, the Supervisor reports it (`t2-unapproved`).
 - Limits: the guard reads command text. A script file, `bd batch` input or a direct call to bd's HTTP API can still name
   any actor; the Supervisor's journal check and review's audit are the controls after the fact.
+- **The ledger** (`docs/approvals.md`): with `verifier = ledger` in the root-owned `/etc/mm-approve.conf`, none of the
+  above counts. Only a line that `mm-approve` signed for the owner's Telegram tap does, bound to the item's plan and to
+  the migration or head it lets run. It is a wall only once the owner account has no blanket sudo.
 
 ## The store, and who may write it
 - `$MM_HOME/auth/`: 0700; `accounts.db` (Better Auth's tables, plus mm's `mm_token` and `mm_board_session`), `secret`
