@@ -1,0 +1,76 @@
+#!/usr/bin/env node
+// flow — the board's flow, from its event journal (plans/slp "Measure", sy-o9w5): one trace per item and the flow metrics
+// per role (bin/lib/flow.mjs says what each one is), sent to the machine's traces and metrics stores. Every 5 min under
+// mm cron. It reads the journal (bd serve /v0/beads/events) and nothing a lead writes; it writes nothing on the board.
+// Its place in the journal and each item's state are in .run/flow.json; the place moves only when both stores took what
+// it sent, so a failed send is sent again. The series are a cache: every sample is per item, stamped with the time of
+// the event that ends it, and the span ids are derived from the item, so a rerun or a rebuild (delete .run/flow.json)
+// sends the same values again. When the board pruned the part of the journal it needs (7 days by default), it starts
+// again from the oldest record kept.
+// Env (tests): FLOW_STATE, FLOW_NOW (ms), FLOW_REVIEWER (default review), FLOW_APPROVERS (actors whose `approved` counts;
+// default bridge), SVC_URL_BD_SERVE, MM_OBS_METRICS, MM_OBS_TRACES.
+import fs from 'node:fs'
+import path from 'node:path'
+import { ROOT, projectName, requireUrl } from './lib/svc.mjs'
+import { cli, info, pushSamples, pushSpans } from './lib/obs.mjs'
+import { createFlow, promLines } from './lib/flow.mjs'
+
+cli('flow')
+const E = process.env
+const STATE = E.FLOW_STATE || path.join(ROOT, '.run', 'flow.json')
+const NOW = Number(E.FLOW_NOW) || Date.now()
+const BD = requireUrl('bd-serve')
+const PROJECT = projectName() // the board that sent the events, never a field of an event
+const defs = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'leads', 'roles.json'), 'utf8')).roles || [] } catch { return [] } })()
+const roles = [...new Set([...defs.map((r) => r.id).filter(Boolean), 'setup'])]
+const capacity = Object.fromEntries(defs.filter((r) => typeof r.capacity === 'number').map((r) => [r.id, r.capacity])) // sy-5582
+
+async function events(since) {
+  const r = await fetch(`${BD}/v0/beads/events?since=${since}&limit=500`, { signal: AbortSignal.timeout(15000) })
+  const text = await r.text()
+  if (!r.ok) {
+    let j = null; try { j = JSON.parse(text) } catch {}
+    const floor = Number(j?.floor ?? j?.error?.floor ?? /"floor"\s*:\s*(\d+)/.exec(text)?.[1])
+    if (/events_journal_truncated/.test(text) && floor > 0) return { truncated: floor }
+    throw new Error(`events: HTTP ${r.status} ${text.slice(0, 200)}`)
+  }
+  return JSON.parse(text)
+}
+
+let saved = null
+try { saved = JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch {}
+if (saved && saved.project !== PROJECT) saved = null // another board's place means nothing here
+const OPTS = { project: PROJECT, roles, reviewer: E.FLOW_REVIEWER || 'review', approvers: (E.FLOW_APPROVERS || 'bridge').split(',').filter(Boolean) }
+let flow = createFlow(saved, OPTS)
+const samples = [], spans = []
+let restarted = false
+for (let page = 0; page < 2000; page++) {
+  const since = flow.state().seq
+  const r = await events(since)
+  if (r.truncated) { // the board pruned what comes next: start again from the oldest record it keeps
+    if (restarted) throw new Error(`events: journal truncated again at ${r.truncated}`)
+    restarted = true
+    info(`flow: the journal starts at ${r.truncated} (pruned past ${since}); rebuilding from there`)
+    flow = createFlow({ seq: r.truncated - 1, first: null, last: null, items: {}, deps: {} }, OPTS)
+    samples.length = 0; spans.length = 0
+    continue
+  }
+  const recs = r.records || []
+  const out = flow.fold(recs)
+  samples.push(...out.samples); spans.push(...out.spans)
+  // to the head the board names (a page may be shorter than asked); without one, until a short page
+  if (!recs.length || (Number.isFinite(r.head) ? flow.state().seq >= r.head : recs.length < 500)) break
+}
+const gauges = flow.gauges(NOW, capacity)
+const okM = await pushSamples(promLines([...samples, ...gauges])), okT = await pushSpans(spans)
+const sent = okM && okT
+if (!sent) {
+  console.error(`flow: a store did not take ${samples.length} sample(s) and ${spans.length} span(s); kept the old place to send them again`)
+  process.exit(1)
+}
+flow.prune(NOW)
+const st = flow.state()
+fs.mkdirSync(path.dirname(STATE), { recursive: true })
+fs.writeFileSync(`${STATE}.tmp`, JSON.stringify({ project: PROJECT, ...st }))
+fs.renameSync(`${STATE}.tmp`, STATE)
+console.log(`flow: events ${st.first?.seq ?? '-'}..${st.last?.seq ?? '-'}, ${samples.length} sample(s), ${gauges.length} gauge(s), ${spans.length} span(s), ${Object.keys(st.items).length} item(s) kept`)

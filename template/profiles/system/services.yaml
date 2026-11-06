@@ -39,3 +39,4 @@ schedules:
   backup: { every: "daily 03:40", command: "{root}/bin/backup" }
   sentinel: { every: 5m, command: "node {root}/bin/sentinel" }   # machine + project problems -> incident items for ops
   supervisor: { every: 5m, command: "node {root}/bin/supervisor" }   # stalls, waiting handoffs, idle leads, stale worktrees -> items for ops
+  flow: { every: 5m, command: "node {root}/bin/flow" }   # the board's events -> one trace per item + flow metrics (mm obs flow)
