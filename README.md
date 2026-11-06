@@ -47,6 +47,10 @@ mm sync [--init <repo>]      # seal what can't be rebuilt into your private mast
 mm restore <repo>            # a whole machine onto a blank box, on hold until you say the old box is down (--release)
 ```
 
+`mm fill <name> --from <file>` copies the file; it does not remove it. **Delete that file afterwards** (e.g. `shred -u
+<file>`): mm keeps its own copy (mode 600, in a 700 folder, or sealed in the vault). `mm doctor` fails on a secrets
+folder wider than 700 or a secret file wider than 600 ("secret modes") and names the `chmod` that fixes it.
+
 Secrets are sealed with age to two keys (`docs/vault.md`): the machine's own, and your recovery key, which stays
 offline. **If a key is ever exposed, rotate the secrets themselves:** sealed files stay in git history (mastermind)
 for ever, so resealing them to a new key is not enough. A lost or exposed machine key costs a reseal plus that

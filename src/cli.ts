@@ -112,7 +112,7 @@ program.command('needs').description('every input this machine and its projects 
     process.exit(bad.length ? 1 : 0)
   })
 program.command('fill <name> [value]').description('fill one input (mm needs): a var takes the value; a secret (machine, or <project>:<NAME>) is read from --from <file>, a pipe, or the terminal without echo, never from the command line')
-  .option('--from <file>', 'read the secret from this file (kept byte for byte)').option('--replace', 'overwrite one that is already filled')
+  .option('--from <file>', 'read the secret from this file (kept byte for byte; delete the file afterwards)').option('--replace', 'overwrite one that is already filled')
   .action(async (name: string, value: string | undefined, opts) => {
     try { console.log(await fill(name, value, opts, (p) => projectRoots().find((x) => x.project === p)?.root)) }
     catch (e) { console.error(`mm fill: ${(e as Error).message}`); process.exit(1) }

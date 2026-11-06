@@ -49,6 +49,19 @@ export function machineSecretPaths(): { files: string[]; dirs: string[] } {
   if (process.env.MM_SECRETS_DIR?.startsWith('/')) dirs.add(vault.secretsBase())
   return { files: [...files].sort(), dirs: [...dirs].sort() }
 }
+/** The folders of machineSecretPaths() that hold only secrets (sy-392): the folder of each secret input filled by hand
+ *  (e.g. ~/.config/secrets, the brain's .keys). Not a tool's own home (managed_by: Paseo keeps more there) and not
+ *  ~/.ssh (public halves, known_hosts and config sit beside the keys; ssh refuses a wide private key itself). Doctor
+ *  checks that every file in these is 0600 or narrower; the other folders only for their own mode. */
+export function secretOnlyDirs(): string[] {
+  const dirs = new Set<string>()
+  for (const i of Object.values(machineInputs())) {
+    if (i.kind !== 'secret' || !i.path || i.managed_by) continue
+    const all = /^\{brain\}(\/|$)/.test(i.path) ? BRAINS.map((b) => i.path!.replace(/^\{brain\}/, b)) : [expand(i.path)]
+    for (const d of all.map(dirname)) if (d !== HOME && d !== join(HOME, '.claude') && d !== join(HOME, '.ssh') && d.startsWith(`${HOME}/`)) dirs.add(d)
+  }
+  return [...dirs].sort()
+}
 /** Where config-check reads machineSecretPaths() from: mm's own folder, outside every project, so neither a box nor a
  *  project's run files choose it (review sy-v92 2). config-check denies every role a change to it. */
 export const secretPathsFile = () => join(DIRS.mm, 'secret-paths.json')
@@ -200,8 +213,10 @@ export async function fill(name: string, value: string | undefined, o: FillOpts,
   else v = await readAll()
   if (!o.from) v = v.replace(/\r?\n$/, '') // a typed or piped line; a file is kept byte for byte (keys)
   if (!v.trim()) throw new Error('empty value: nothing written')
-  if (toVault) { vault.seal(vn!, Buffer.from(v)); return `${target.label} sealed (vault/${vn}.age, to the machine key and the recovery key). Services that declare it get it at their next start.` }
+  // the file it came from is a second copy, which mm neither made nor guards (sy-392): the human deletes it
+  const drop = o.from ? ` Now delete ${tilde(expand(o.from))}: mm keeps its own copy.` : ''
+  if (toVault) { vault.seal(vn!, Buffer.from(v)); return `${target.label} sealed (vault/${vn}.age, to the machine key and the recovery key). Services that declare it get it at their next start.${drop}` }
   writeSecret(path, v)
   const used = target.input?.for ? `; used by ${target.input.for}` : ''
-  return `${target.label} filled (${tilde(path)}, mode 600)${used}. Restart what uses it to pick it up.`
+  return `${target.label} filled (${tilde(path)}, mode 600)${used}. Restart what uses it to pick it up.${drop}`
 }
