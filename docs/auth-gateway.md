@@ -58,7 +58,7 @@ they hold a role on. No session: `/` goes to the sign-in page.
 - **A board's answer is untrusted.** Only `{open, p0, blocked, needs_you, mine}` as whole numbers 0..1e6 and `last` as
   an ISO time (or absent); any other field or value, a non-200, a timeout or too many bytes makes that card say
   "unavailable" (logged at `warn` with the reason), and the rest of the page is unchanged. No item text ever leaves a
-  board this way.
+  board this way (titles leave only for the list below).
 - **The worst signal** (one line per card): the gateway asks `GET /api/summary?signal=1`, and the board adds whole
   numbers only (`needs_you_min`, `approvals`, `queue`, `queue_min`) and one role id (`queue_role`, the role whose queue
   head waits longest). The role id must match `^[a-z][a-z0-9-]{0,30}$` and be one of that project's roles as the
@@ -66,6 +66,23 @@ they hold a role on. No session: `/` goes to the sign-in page.
   makes the card "unavailable". The gateway writes the line itself ("review queue 3, oldest 40 min", "needs you 2
   (1 approval), oldest 3 h", "nothing waiting"). It is red only when the board needs the person: `needs-you` items or
   an approval wait. A board without the signal (an older template) gets no line, or only "needs you n".
+- **"Waiting for you"** (the first thing on the page): the items that wait on this person, from every board they hold
+  a role on, oldest first: the ask, the title, the board, the id and the age. Each board is asked `GET /api/waiting`
+  the same way as the counts (this person's own fresh assertion, 3 s, no redirect, no cache) with 32 KB. The board
+  answers by the person in the assertion: the **owner** gets the `needs-you` items and the `t2` items with
+  `signed-off` and no `approved`; a **designer, member or viewer** gets only the open items assigned to their own name
+  (`needs-you` means the owner, so a member never gets the owner's asks). Each entry is `{id, title, age_min,
+  labels}`, with only the labels the ask needs; what doesn't fit in 32 KB is counted in `more`.
+  - **Checked by the gateway:** the answer has only `items` and `more`, else that board's list is dropped (a note
+    names the board). Each item: an id of the boards' pattern (`^[a-z]+-[a-z0-9]+(\.[0-9]+)*$`, at most 64), a title
+    of 1..200 characters with no control, line-separator or bidi characters, `age_min` a whole number, labels only from
+    `needs-you`, `t2`, `signed-off`, and no other field; anything else drops that item.
+  - **The ask is the gateway's:** for the owner "approve (t2, signed off)" (t2 and signed-off) or "needs you"
+    (needs-you), both red, and an item with neither is dropped; for anyone else "assigned to you". **The link is the
+    gateway's:** `/s?b=<board host>&r=/?item=<id>` (the one-redirect flow, then the board opens that item), from the
+    host's registry and the checked id, never from board text. Everything is escaped.
+  - A board on an older template has no such answer (404, or 403 from its proxy): it adds nothing, and that is no
+    error. With no list from any board there is no section at all.
 - **The page** is made on the server, has no script, escapes every value, and carries the gateway's headers
   (`Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`, `no-store`, `no-referrer`, `nosniff`); its
   stylesheet is `/s/app.css` (below).

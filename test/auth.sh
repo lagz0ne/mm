@@ -259,6 +259,16 @@ check "without ?signal=1 (a gateway on an older mm): only the five counts and th
 check "a viewer may read it (200)" test "$(sm "$(mk vic viewer "$BOARD" 60000)")" = 200
 check "no assertion: 401; another board's: 401; an expired one: 401" bash -c "[ \$(sm '') = 401 ] && [ \$(sm '$(mk alex member "$BOARD2" 60000)') = 401 ] && [ \$(sm '$(mk alex member "$BOARD" -1000)') = 401 ]"
 
+echo "== the board's \"Waiting for you\" list (/api/waiting: the asking person's items only; sy-vdi8, review sy-6h43 #5)"
+wl() { curl -s -o "$T/wl" -w '%{http_code}' -H "x-forwarded-host: ${2:-$BOARD}" ${1:+-H "x-mm-assertion: $1"} "http://127.0.0.1:$BP/api/waiting"; }
+export -f wl
+check "the owner: the needs-you item and the signed-off t2 without approved, oldest first, only the labels the ask needs" bash -c "[ \$(wl '$OA') = 200 ] && jq -e '[.items[] | [.id, (.labels | join(\",\"))]] == [[\"it-3\",\"t2,signed-off\"],[\"it-1\",\"needs-you\"]] and .more == 0' '$T/wl'"
+check "...each entry: id, title, age in whole minutes, labels; nothing else (no assignee, no link)" bash -c "wl '$OA' >/dev/null && jq -e '(keys == [\"items\",\"more\"]) and all(.items[]; (keys == [\"age_min\",\"id\",\"labels\",\"title\"]) and (.age_min | type == \"number\" and . == floor and . > 1000))' '$T/wl'"
+check "a member (alex): only the open items assigned to alex (not the closed one), with no needs-you label" bash -c "[ \$(wl '$MA') = 200 ] && jq -e '([.items[].id] == [\"it-3\",\"it-1\"]) and all(.items[]; .labels == [])' '$T/wl'"
+check "a member with nothing assigned (carol) doesn't see the owner's needs-you items: an empty list" bash -c "[ \$(wl '$(mk carol member "$BOARD" 60000)') = 200 ] && jq -e '.items == [] and .more == 0' '$T/wl'"
+check "a viewer may read it (200), and gets only their own (none)" bash -c "[ \$(wl '$(mk vic viewer "$BOARD" 60000)') = 200 ] && jq -e '.items == []' '$T/wl'"
+check "no assertion: 401; another board's: 401" bash -c "[ \$(wl '') = 401 ] && [ \$(wl '$(mk boss owner "$BOARD2" 60000)') = 401 ]"
+
 echo "== the home page on the gateway (sy-ukbz): the boards a person holds a role on, with their counts"
 # fake boards for acme-other and the system board: they record what the gateway sends, and answer as the mode file says
 cat >"$T/fakeboard.mjs" <<'EOF'
@@ -267,9 +277,31 @@ const [port, modef, logf] = process.argv.slice(2)
 const GOOD = { open: 3, p0: 1, blocked: 0, needs_you: 2, mine: 1, last: '2026-11-05T10:00:00.000Z' }
 http.createServer((req, res) => {
   res.on('error', () => {})
+  const json = (o) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)) }
+  // the "Waiting for you" list (sy-vdi8): its own log (<log>.w.jsonl) and mode (<mode>.w); no mode: an older board (404)
+  if (req.url.startsWith('/api/waiting')) {
+    fs.appendFileSync(logf.replace(/\.jsonl$/, '.w.jsonl'), JSON.stringify({ p: req.url, h: req.headers['x-forwarded-host'] || '', a: req.headers['x-mm-assertion'] || '' }) + '\n')
+    let wm = 'older'; try { wm = fs.readFileSync(modef + '.w', 'utf8').trim() } catch {}
+    if (wm === 'older' || wm === 'forbid') { res.writeHead(wm === 'older' ? 404 : 403, { 'content-type': 'application/json' }); return res.end('{"title":"Not allowed from the board"}') }
+    const nu = (id, title, age_min, labels = ['needs-you'], more = {}) => ({ id, title, age_min, labels, ...more })
+    const LIST = [
+      nu('ao-1', 'Fix the <script>alert(3)</script> page', 190),
+      nu('ao-2', 'Approve the push', 20, ['t2', 'signed-off']),
+      nu('ao-3', 'plain work', 5, []),
+      nu('AO-4', 'DROPCAPS', 5), nu('ao-5"><a href=x', 'DROPQUOTE', 5), nu('ao-6', 'L'.repeat(201), 5), nu('ao-7', 'DROPCTL\u0007bell', 5),
+      nu('ao-8', 'DROPLINK', 5, ['needs-you'], { url: 'https://evil.example/x' }), nu('ao-9', 'DROPFRAC', 1.5), nu('ao-10', 'DROPAPPROVED', 5, ['approved']),
+      nu('ao-11', 'DROPBIDI \u202e', 5), nu('ao-1', 'DROPDUP', 5), nu('ao-13', '', 5), nu('ao-14', 'DROPAGE', -1), nu('ao-15', 42, 5),
+      nu('ao-12', 'T'.repeat(200), 1),
+    ]
+    if (wm === 'list') return json({ items: LIST, more: 0 })
+    if (wm === 'more') return json({ items: LIST.slice(0, 2), more: 7 })
+    if (wm === 'empty') return json({ items: [] })
+    if (wm === 'extra') return json({ items: LIST, link: 'https://evil.example/' })
+    if (wm === 'big') return json({ items: Array.from({ length: 300 }, (_, k) => nu(`ao-${100 + k}`, `BIG ${'b'.repeat(150)}`, k)) }) // about 60 KB
+    return json({ items: 'nope' })
+  }
   fs.appendFileSync(logf, JSON.stringify({ p: req.url, h: req.headers['x-forwarded-host'] || '', a: req.headers['x-mm-assertion'] || '' }) + '\n')
   let mode = 'good'; try { mode = fs.readFileSync(modef, 'utf8').trim() } catch {}
-  const json = (o) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)) }
   if (mode === 'hang') return
   if (mode === 'redirect') { res.writeHead(302, { location: `http://127.0.0.1:${port}/followed` }); return res.end() }
   if (mode === 'big') { // 10 MB, chunked (no length up front)
@@ -305,13 +337,15 @@ hp() { gw -D "$T/hh" -o "$T/hp" -w '%{time_total}' -H "cookie: $1" "$G/"; }
 cardof() { tr '\n' ' ' <"$T/hp" | sed 's#</section>#\n#g' | grep -F "<h2>$1</h2>"; }
 cards() { grep -c '<section class="card">' "$T/hp"; }
 nreq() { cat "$T/fb2.jsonl" "$T/sys.jsonl" | wc -l; }
-export -f hp cardof cards nreq; export SA SB SYSB BOARD2
+# the page without the "Waiting for you" list (sy-vdi8: item titles leave a board only there, escaped)
+cardsonly() { sed '/<section class="waiting"/,/<\/section>/d' "$T/hp"; }
+export -f hp cardof cards nreq cardsonly; export SA SB SYSB BOARD2
 check "GET / with no session: the sign-in page (302 to /s)" bash -c "gw -D - -o /dev/null $G/ | grep -qiE '^location: /s[[:space:]]*\$'"
 check "/s signed in, no board asked: to the home page" bash -c "gw -D - -o /dev/null -H 'cookie: $SA' $G/s | grep -qiE '^location: /[[:space:]]*\$'"
 N0=$(nreq); hp "$SA" >/dev/null
 check "a member of acme-shop sees one card: acme-shop, member, its board's counts and last activity" bash -c "[ \$(cards) = 1 ] && cardof acme-shop | grep -q 'You are <b>member</b>' && cardof acme-shop | grep -q '<dt>Open</dt><dd>4</dd>' && cardof acme-shop | grep -q '<dt>Needs you</dt><dd>1</dd>' && cardof acme-shop | grep -q '<dt>Mine</dt><dd>2</dd>' && cardof acme-shop | grep -q 'Last activity: 2026-11-05 10:00 UTC'"
 check "...not even the name of what alex isn't granted (acme-other, system), and those boards were never asked" bash -c "! grep -q -e acme-other -e '$BOARD2' -e system '$T/hp' && [ \$(nreq) = '$N0' ]"
-check "...no item text from the board (a title holds a script), no script on the page" bash -c "! grep -qi -e '<script' -e alert '$T/hp'"
+check "...no item text from the board in the cards (a title holds a script), no script on the page" bash -c "! grep -qi '<script' '$T/hp' && ! cardsonly | grep -qi alert"
 check "...the board link goes through the one-redirect flow (straight to the board's callback)" bash -c "cardof acme-shop | grep -qF 'href=\"/s?b=$BOARD&amp;r=%2F\"' && gw -D - -o /dev/null -H 'cookie: $SA' '$G/s?b=$BOARD&r=%2F' | grep -qi '^location: https://$BOARD/_mm/auth/callback?c='"
 check "the page's headers: CSP default-src 'self' + frame-ancestors 'none', no-store, no-referrer, nosniff" bash -c "grep -qi \"^content-security-policy: default-src 'self'; frame-ancestors 'none'\" '$T/hh' && grep -qi '^cache-control: no-store' '$T/hh' && grep -qi '^referrer-policy: no-referrer' '$T/hh' && grep -qi '^x-content-type-options: nosniff' '$T/hh'"
 check "/s/done (where a link lands) is the same home page" bash -c "gw -H 'cookie: $SA' $G/s/done | grep -q '<h2>acme-shop</h2>'"
@@ -328,9 +362,9 @@ check "a revoke removes the card on the next load (no cache), and that board is 
 mm user add vic >/dev/null; mm grant vic acme-shop --as viewer >/dev/null; LV=$(link_of vic); open_link "$LV" "$T/hv"; SV=$(sess "$T/hv"); hp "$SV" >/dev/null
 check "a viewer: the card says read-only, shows the counts, and has no write link (only the read-only view)" bash -c "cardof acme-shop | grep -q 'You are <b>viewer</b> (read-only)' && cardof acme-shop | grep -q '<dt>Open</dt><dd>4</dd>' && cardof acme-shop | grep -q 'View the board (read-only)' && ! grep -q -e 'class=\"open\"' -e 'Open the board' '$T/hp'"
 echo script >"$T/fb2.mode"; hp "$SB" >/dev/null
-check "a board's answer with <script> in it fails the schema: its card is unavailable, nothing of it on the page" bash -c "cardof acme-other | grep -q 'Summary unavailable' && ! grep -qi -e '<script' -e alert '$T/hp' && cardof acme-shop | grep -q '<dt>Open</dt><dd>4</dd>'"
+check "a board's answer with <script> in it fails the schema: its card is unavailable, nothing of it on the page" bash -c "cardof acme-other | grep -q 'Summary unavailable' && ! grep -qi '<script' '$T/hp' && ! cardsonly | grep -qi alert && cardof acme-shop | grep -q '<dt>Open</dt><dd>4</dd>'"
 echo extra >"$T/fb2.mode"; hp "$SB" >/dev/null
-check "...a field the schema doesn't know (an item title): unavailable, nothing of it on the page" bash -c "cardof acme-other | grep -q 'Summary unavailable' && ! grep -qi -e '<script' -e alert '$T/hp'"
+check "...a field the schema doesn't know (an item title): unavailable, nothing of it on the page" bash -c "cardof acme-other | grep -q 'Summary unavailable' && ! grep -qi '<script' '$T/hp' && ! cardsonly | grep -qi alert"
 echo badnum >"$T/fb2.mode"; hp "$SB" >/dev/null
 check "...a count that isn't a whole number 0..1e6: unavailable" bash -c "cardof acme-other | grep -q 'Summary unavailable' && ! grep -q 10000000 '$T/hp'"
 echo hang >"$T/fb2.mode"; TH=$(hp "$SB")
@@ -374,6 +408,48 @@ N2=$(nreq); hp "$SB" >/dev/null
 check "a box claiming another board's host: no card for either, and no assertion goes to that host" bash -c "! grep -q -e acme-other -e acme-fourth -e '$BOARD2' '$T/hp' && [ \$(nreq) = \$(( $N2 + 1 )) ] && [ \"\$(tail -1 '$T/sys.jsonl' | jq -r .h)\" = '$SYSB' ]"
 rm -f "$MM_HOME/pc/boxes/acme-fourth.yaml"; sleep 0.5; hp "$SB" >/dev/null
 check "...the claim gone: acme-other's card is back" bash -c "cardof acme-other | grep -q '<dt>Open</dt><dd>3</dd>'"
+
+echo "== \"Waiting for you\" on the home page (sy-vdi8; review sy-6h43 #5): checked items, the gateway's ask and link"
+wsec() { sed -n '/<section class="waiting"/,/<\/section>/p' "$T/hp"; }
+wids() { wsec | grep -o 'class="w-id">[^<]*' | sed 's/.*>//' | tr '\n' ' '; }
+nw() { cat "$T/fb2.w.jsonl" 2>/dev/null | wc -l; }
+export -f wsec wids nw
+echo list >"$T/fb2.mode.w"; hp "$SB" >/dev/null
+check "the owner: the list is the first thing on the page" bash -c "grep -q '<main class=\"wrap\"><section class=\"waiting\" aria-labelledby=\"waiting-h\"><h2 id=\"waiting-h\">Waiting for you <span class=\"w-n\">5</span></h2>' '$T/hp'"
+check "...5 items from both boards, oldest first (it-3, it-1 from acme-shop; ao-1, ao-2, ao-12 from acme-other)" bash -c "[ \"\$(wids)\" = 'it-3 it-1 ao-1 ao-2 ao-12 ' ]"
+check "...each row: the gateway's ask (needs you, red), the age, the title as text, the board, the id, the gateway's link" bash -c "wsec | grep -qF '<li><a href=\"/s?b=$BOARD2&amp;r=%2F%3Fitem%3Dao-1\"><span class=\"w-ask hot\">needs you</span><span class=\"w-age\">3 h</span><span class=\"w-title\">Fix the &#60;script&#62;alert(3)&#60;/script&#62; page</span><span class=\"w-where\"><span class=\"w-board\">acme-other</span><span class=\"w-id\">ao-1</span></span></a></li>'"
+check "...a signed-off t2: \"approve (t2, signed off)\", red (from the labels, not from board text)" bash -c "wsec | grep -qF '<span class=\"w-ask hot\">approve (t2, signed off)</span><span class=\"w-age\">20 min</span><span class=\"w-title\">Approve the push</span>' && wsec | grep -qF 'r=%2F%3Fitem%3Dit-3\"><span class=\"w-ask hot\">approve (t2, signed off)</span>'"
+check "a title with <script> shows as text (escaped), and no script is on the page" bash -c "wsec | grep -qF '&#60;script&#62;alert(1)&#60;/script&#62;' && ! grep -qi '<script' '$T/hp'"
+check "a link is never taken from the board: each is /s?b=<the board's host>&r=/?item=<its checked id>; the board's url is nowhere" bash -c "[ \$(wsec | grep -o 'href=\"[^\"]*\"' | wc -l) = 5 ] && ! wsec | grep -o 'href=\"[^\"]*\"' | grep -vqE '^href=\"/s\\?b=(board-shop-acme|board-other-acme)\\.example\\.org&amp;r=%2F%3Fitem%3D[a-z]+-[a-z0-9]+\"\$' && ! grep -q evil.example '$T/hp'"
+check "a bad id drops the item (capitals; a quote and markup)" bash -c "! grep -q -e DROPCAPS -e DROPQUOTE -e AO-4 '$T/hp'"
+check "an over-long title (201) or one with a control or bidi character drops the item; one of exactly 200 stays" bash -c "! grep -qE 'L{201}' '$T/hp' && ! grep -q -e DROPCTL -e DROPBIDI '$T/hp' && grep -qE '>T{200}</span>' '$T/hp'"
+check "...an unknown field (a url), a fraction or a negative age, an unknown label, a repeated id, an empty or non-text title: dropped" bash -c "! grep -q -e DROPLINK -e DROPFRAC -e DROPAGE -e DROPAPPROVED -e DROPDUP '$T/hp' && ! wids | grep -q -e ao-13 -e ao-15"
+check "...an item with no ask for the owner (no label): not on the owner's list" bash -c "! wsec | grep -q 'plain work'"
+check "each board asked for its list with that person's own fresh assertion (boss, owner, that board's host)" bash -c "jq -e '.p == \"/api/waiting\" and .h == \"$BOARD2\"' <(tail -1 '$T/fb2.w.jsonl') && node '$T/verify.mjs' \"\$(tail -1 '$T/fb2.w.jsonl' | jq -r .a)\" '$MM_HOME/auth/signing.key' '$BOARD2' boss owner"
+check "an older board (system: no such answer) adds nothing and is no error (no note, not logged)" bash -c "! wsec | grep -q -e system -e unavailable && ! grep 'board waiting list unavailable' '$T/gw.log' | grep -q '\"project\":\"system\"'"
+CBI=$(gw -D - -o /dev/null -H "cookie: $SB" "$G/s?b=$BOARD&r=%2F%3Fitem%3Dit-1" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
+check "the link opens the item: the board's one-time callback, then /?item=it-1 on the board (its item view)" bash -c "echo '$CBI' | grep -q '^/_mm/auth/callback?c=' && curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' '$G$CBI' | grep -qiE '^location: /\\?item=it-1[[:space:]]*\$'"
+hp "$SA" >/dev/null
+check "a member (alex): only their own items (it-3, it-1), each \"assigned to you\", none red" bash -c "[ \"\$(wids)\" = 'it-3 it-1 ' ] && [ \$(wsec | grep -o 'class=\"w-ask\">assigned to you<' | wc -l) = 2 ] && ! wsec | grep -q -e 'w-ask hot' -e 'approve (t2' -e '>needs you<'"
+hp "$SV" >/dev/null
+check "a viewer with nothing assigned: \"Nothing is waiting for you.\", none of the owner's items" bash -c "wsec | grep -q 'Nothing is waiting for you.' && ! grep -q -e it-1 -e it-3 '$T/hp'"
+mm grant alex acme-other >/dev/null; hp "$SA" >/dev/null
+check "alex granted acme-other: its items join alex's list (asked as alex, member), as \"assigned to you\"" bash -c "[ \"\$(wids)\" = 'it-3 it-1 ao-1 ao-2 ao-3 ao-12 ' ] && ! wsec | grep -q 'w-ask hot' && node '$T/verify.mjs' \"\$(tail -1 '$T/fb2.w.jsonl' | jq -r .a)\" '$MM_HOME/auth/signing.key' '$BOARD2' alex member"
+mm revoke alex acme-other >/dev/null; NW=$(nw); hp "$SA" >/dev/null
+check "a revoke shows at once (no cache): acme-other's items are gone on the next load, and its list is not asked" bash -c "[ \"\$(wids)\" = 'it-3 it-1 ' ] && ! grep -q -e acme-other -e ao-1 '$T/hp' && [ \$(nw) = '$NW' ]"
+echo big >"$T/fb2.mode.w"; hp "$SB" >/dev/null
+check "an answer over 32 KB drops that board's whole list (a note says so); its card and the other board's items stay" bash -c "wsec | grep -q 'acme-other: the list is unavailable right now.' && ! grep -q 'BIG bbb' '$T/hp' && [ \"\$(wids)\" = 'it-3 it-1 ' ] && cardof acme-other | grep -q '<dt>Open</dt><dd>3</dd>' && grep 'board waiting list unavailable' '$T/gw.log' | grep '\"project\":\"acme-other\"' | grep -q 'too big'"
+echo extra >"$T/fb2.mode.w"; hp "$SB" >/dev/null
+check "...an answer with a field it doesn't know (a link): the whole list is dropped" bash -c "wsec | grep -q 'acme-other: the list is unavailable right now.' && ! grep -q evil.example '$T/hp' && ! wids | grep -q ao-"
+echo more >"$T/fb2.mode.w"; hp "$SB" >/dev/null
+check "a board that kept some back (over its own 32 KB): \"7 more on the board\"" bash -c "wsec | grep -q 'acme-other: 7 more on the board.' && wids | grep -q 'ao-1 ao-2'"
+mm user add eve >/dev/null; mm grant eve acme-other >/dev/null; LEV=$(link_of eve); open_link "$LEV" "$T/hev"; SE=$(sess "$T/hev")
+for m in older forbid; do echo $m >"$T/fb2.mode.w"; hp "$SE" >/dev/null; cp "$T/hp" "$T/hp-w-$m"; done
+check "boards on an older template only (404, or 403 from the board's proxy): no list at all and no error, the card as before" bash -c "for m in older forbid; do ! grep -q -e 'class=\"waiting\"' -e unavailable \"$T/hp-w-\$m\" && grep -q '<dt>Open</dt><dd>3</dd>' \"$T/hp-w-\$m\" || exit 1; done"
+echo empty >"$T/fb2.mode.w"; hp "$SE" >/dev/null
+check "...a board with the list and nothing on it: \"Nothing is waiting for you.\"" bash -c "wsec | grep -q 'Nothing is waiting for you.'"
+mm user rm eve >/dev/null
+echo list >"$T/fb2.mode.w"
 
 echo "== the gateway's pages: one stylesheet, no inline style (the CSP blocks it; sy-vey6)"
 pg() { gw -D "$T/pg-$1.h" -o "$T/pg-$1.html" "${@:2}"; }
