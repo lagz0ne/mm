@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { Command, Option } from 'commander'
 import { getPath, loadConfig, saveConfig, setPath, unsetPath } from './config'
-import { doctor } from './doctor'
+import { doctor, throwawayOnly } from './doctor'
 import { DIRS, HOME, run, tilde } from './env'
 import { expand as expandHome, fill, needs, unmet } from './inputs'
 import { manifest } from './manifest'
@@ -17,7 +17,7 @@ import * as vaultMod from './vault'
 import * as syncMod from './sync'
 import { release, restoreMachine } from './restore'
 import { AUTH_SOCK, callApi, namesPlan, serve as authServe } from './auth'
-import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
+import { health, logsql, mmSpan, obsEndpoints, ship, spanNote, tracesql } from './obs'
 import { exportFlow, flowRows, itemPath, tableRow } from './flow'
 import { findRoot, listProjects, namespaceOp, newProject, parseRef, processes, readAnswers, resolve, rootOf, setOptional, up } from './project'
 import * as boxMod from './box'
@@ -58,7 +58,14 @@ program.command('doctor').description('check this machine against the manifest (
   const checks = doctor(), s = summary(checks)
   print(checks as unknown as Record<string, unknown>[], o, 'item')
   if (o.format === 'table' && !o.quiet) console.log(`\n${s.fail ? `${s.fail} failing, ` : ''}${s.warn} warning(s), ${s.ok} ok${s.fail ? ': run `mm onboard`' : ''}`)
+<<<<<<< HEAD
   process.exit(s.fail || process.exitCode ? 1 : 0)
+=======
+  // every failing check names a throwaway project (a test planted the fault): the span is marked as theirs (sy-ha9x)
+  const t = s.fail ? throwawayOnly(checks) : ''
+  if (t) spanNote.attrs.mm_throwaway = t
+  process.exit(s.fail ? 1 : 0)
+>>>>>>> f5ff400 (mm's spans: an answer is not a fault (mm config get not set; mm doctor failing only on a throwaway project))
 })
 
 program.command('onboard').description('install and configure what this machine is missing, then run doctor')
@@ -80,7 +87,8 @@ program.command('onboard').description('install and configure what this machine 
 const config = program.command('config').description('machine config (~/.mm/config.yaml)')
 config.command('get [path]').action((p?: string) => {
   const c = loadConfig(), v = p ? getPath(c, p) : c
-  if (v === undefined) process.exit(1)
+  // not set: exit 1 (scripts test it), but that is an answer, not a fault: the span is not failed (sy-ha9x)
+  if (v === undefined) { spanNote.answer = { code: 1, outcome: 'not set' }; process.exit(1) }
   console.log(typeof v === 'object' ? Bun.YAML.stringify(v, null, 2) : String(v))
 })
 config.command('set <path> <value>').action((p: string, v: string) => { const c = loadConfig(); setPath(c, p, v); saveConfig(c) })
@@ -555,7 +563,10 @@ program.hook('preAction', (_p, cmd) => {
   if (cmd.opts().throwaway && name === 'new') throwaway = String(cmd.args[0] ?? '').replace('/', '-')
   else if (cmd.args[0]) { try { const a = readAnswers(findRoot(String(cmd.args[0]))); if (a.throwaway) throwaway = a.project } catch {} }
   const done = mmSpan(`mm ${name}`, { args, ...(throwaway ? { mm_throwaway: throwaway } : {}) })
-  process.on('exit', (code) => done(code === 0, { exit_code: code }))
+  process.on('exit', (code) => {
+    const a = spanNote.answer, answered = !!a && code === a.code   // an answer the command named, not a fault (obs.ts)
+    done(code === 0 || answered, { exit_code: code, ...spanNote.attrs, ...(answered ? { outcome: a.outcome } : {}) })
+  })
 })
 
 // No arguments: onboard on first run, status afterwards.
