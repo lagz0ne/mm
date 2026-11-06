@@ -459,6 +459,13 @@ export const APPROVER = [
   ['Bash', 'bd comments add sy-1 x --actor alexander', 'allow', 'not the owner'],
   ['Bash', 'bd update sy-1 -a alex -s open --if-assignee ops --if-status in_progress', 'allow', 'handing an item to the owner'],
   ['Bash', 'bd create "bridge the gap" -l t2 --json', 'allow'],
+  // the run file that names the owner (and holds the gateway's key the board checks) is mm's to write
+  ['Edit', '{root}/.run/endpoints.json', 'deny'],
+  ['Write', '{root}/.run/endpoints.json', 'deny'],
+  ['Bash', "jq '.owner_name = \"ops\"' ../../.run/endpoints.json > /tmp/ep && cp /tmp/ep ../../.run/endpoints.json", 'deny'],
+  ['Bash', "sed -i 's/alex/ops/' {root}/.run/endpoints.json", 'deny'],
+  ['Read', '{root}/.run/endpoints.json', 'allow'],
+  ['Bash', 'jq .services {root}/.run/endpoints.json', 'allow'],
 ]
 
 // the same board with no owner_name in its run files: the bridge stays denied; a person's name is free
