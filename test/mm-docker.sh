@@ -20,9 +20,12 @@ T=$(dirname "$0")
 if [ "$1 $2 $3" = "container inspect --format" ] && [[ $4 == '{{.Id}}|'* ]]; then
   n=${!#}; l=$(grep "^$n " "$T/labels" 2>/dev/null | head -1)
   [ -n "$l" ] || { echo "Error: No such container: $n" >&2; exit 1; }
-  set -- $l; echo "$2|/$1|${3:-}"; exit 0
+  set -- $l; echo "$2|/$1|${3:-}|${4:-0}"; exit 0
 fi
 printf '%q ' "$@" >>"$T/calls"; echo >>"$T/calls"
+# cp: out of a container, a tar of $T/ctr (what the container holds); into one, what it got is kept as $T/cpin.tar
+if [ "$1" = cp ] && [ "${!#}" = - ]; then tar -C "$T/ctr" -cf - "$(basename "${2#*:}")"; fi
+if [ "$1" = cp ] && [ "$2" = - ]; then cat >"$T/cpin.tar"; fi
 if [ "$1" = build ]; then ctx=${!#}; (cd "$ctx" && find . -type f | sort | tr '\n' ' ') >>"$T/calls"; echo >>"$T/calls"; fi
 exit 0
 EOF
@@ -44,13 +47,21 @@ mm_home = $MM
 projects = $MM/projects
 secrets = $SEC
 root_containers = no
+test_root = $T/troot
+test_prefix = mmt-
 EOF
 export MM_DOCKER_CONF="$T/conf"
+# a test's own area (sy-e6t3): <test_root>/mmt-<name>/ is the throwaway project mmt-<name>
+TR="$T/troot"; mkdir -p "$TR/mmt-cp/out" "$TR/mmt-cp/in/sub" "$TR/nopfx" "$TR/mmt-two"; echo i >"$TR/mmt-cp/in/sub/f"
+ln -s "$T/outside" "$TR/mmt-cp/evil"
+# what the stand-in's containers hold (docker cp out): a file, a setuid file, a link
+mkdir -p "$T/ctr/server/lib"; echo s >"$T/ctr/server/lib/a.js"; echo x >"$T/ctr/server/suid"; chmod 4755 "$T/ctr/server/suid"
+ln -s lib/a.js "$T/ctr/server/link"; echo p >"$T/ctr/passwd"
 
 # yes <desc> <grep -F for the recorded call | -> <args...>: passes, docker ran once, its line has the text
 yes() {
   local d=$1 want=$2; shift 2; : >"$T/calls"
-  if out=$("$W" "$@" 2>&1) && [ "$(grep -c . "$T/calls")" -ge 1 ] && { [ "$want" = - ] || grep -qF -- "$want" "$T/calls"; }; then ok "$d"
+  if out=$("$W" "$@" 2>&1 | tr -d '\000') && [ "$(grep -c . "$T/calls")" -ge 1 ] && { [ "$want" = - ] || grep -qF -- "$want" "$T/calls"; }; then ok "$d"
   else bad "$d"; echo "       exit/out: $out"; sed 's/^/       ran: /' "$T/calls"; fi
 }
 # no <desc> <args...>: exit 125, "refused", docker ran nothing (an exec's own label check is not a run)
@@ -89,8 +100,10 @@ DOOPGW=(run --rm --name mm-doop-acme-shop --label mm.project=acme-shop --label m
   --user 210040:"$G" --read-only --tmpfs /tmp:rw,nosuid,nodev,size=512m --cap-drop ALL --security-opt no-new-privileges --memory 2g --pids-limit 1024
   -v "$PR/data/doop:/app/data" -v "$PR/.run/doop-gateway.pem:/run/mm-gateway.pem:ro" --env-file "$PR/secrets/doop.env" --entrypoint sh "$DIG" -c 'umask 002; "$@"' sh node server.js)
 REGROUP=(run --rm --network none --user 210040:"$G" --read-only --cap-drop ALL --security-opt no-new-privileges -v "$PR/data/doop:/app/data" --entrypoint sh "$DIG" -c 'exit 0')
-printf 'mm-box-acme-shop %s acme-shop\nmm-doop-acme-shop %s acme-shop\nmm-box-nolabel %s\nmm-box-other %s acme-other\nmm-box-shortid %s acme-shortid\n' \
-  "$(printf 'b%.0s' $(seq 64))" "$(printf 'd%.0s' $(seq 64))" "$(printf 'c%.0s' $(seq 64))" "$(printf 'e%.0s' $(seq 64))" "abc" >"$T/labels"
+# name, id, its mm.project label, how many mounts it has
+printf 'mm-box-acme-shop %s acme-shop 14\nmm-doop-acme-shop %s acme-shop 2\nmm-box-nolabel %s\nmm-box-other %s acme-other 0\nmm-box-shortid %s acme-shortid 0\nmm-egress-acme-shop %s acme-shop 0\nmm-doop-mmt-cp %s mmt-cp 0\nmm-box-acme-badmounts %s acme-badmounts x\n' \
+  "$(printf 'b%.0s' $(seq 64))" "$(printf 'd%.0s' $(seq 64))" "$(printf 'c%.0s' $(seq 64))" "$(printf 'e%.0s' $(seq 64))" "abc" \
+  "$(printf 'f%.0s' $(seq 64))" "$(printf '1%.0s' $(seq 64))" "$(printf '2%.0s' $(seq 64))" >"$T/labels"
 
 echo "== mm's own calls pass (as the wrapper's own command line)"
 yes "box: run" "--volume=$PR:$PR" "${BOXRUN[@]}"
@@ -258,8 +271,6 @@ no "--host=unix:///" --host=unix:///var/run/docker.sock ps
 no "--context" --context evil ps
 no "--config (the CLI's plugins)" --config /tmp/evil ps
 no "-D (debug)" -D ps
-no "docker cp" cp mm-box-acme-shop:/etc/passwd /tmp/x
-no "docker create" create "${BOXRUN[@]:1}"
 no "docker commit" commit mm-box-acme-shop mm-box:evil
 no "docker tag (a moved tag)" tag ubuntu:24.04 mm-box:0.1.1
 no "docker load" load -i /tmp/x.tar
@@ -283,8 +294,156 @@ no "docker inspect dokploy (its env has secrets)" inspect dokploy
 no "docker container inspect dokploy" container inspect dokploy
 no "docker image inspect of another image" image inspect dokploy/dokploy
 no "docker pull by tag" pull alpine:latest
-no "docker ps --filter games" ps --filter label=x
+no "docker ps --filter of another kind" ps --filter before=mm-box-acme-shop
+no "docker ps --filter with a space" ps --filter 'label=a b'
 no "an empty call" ""
+
+echo "== the verbs mm's tests and the leads use (sy-e6t3): create, logs, port, kill, images, rmi, more names at once"
+CREATE=(create --name mm-doop-mmt-cp --label mm.project=mmt-cp --network none --user 210000:"$G" --cap-drop ALL "$DIG")
+yes "create (box/doop/build.sh: a stopped container to copy the source out of)" "create --pull=never --security-opt=no-new-privileges --name=mm-doop-mmt-cp" "${CREATE[@]}"
+yes "create a box, the checks of run" "create --pull=never" create "${BOXRUN[@]:2}"
+no "create with --privileged" create --privileged "${BOXRUN[@]:2}"
+no "create -v /:/host" create -v /:/host "${BOXRUN[@]:2}"
+no "create as root" create --name mm-doop-mmt-cp --label mm.project=mmt-cp --network none --user 0:0 --cap-drop ALL "$DIG"
+no "create without a name (nothing mm could find again)" create --rm --network none --user 210000:"$G" --cap-drop ALL "$DIG"
+no "create of an image that is not mm's" create --name mm-doop-mmt-cp --label mm.project=mmt-cp --network none --user 210000:"$G" --cap-drop ALL ubuntu:24.04
+no "create with --network host" create --name mm-doop-mmt-cp --label mm.project=mmt-cp --network host --user 210000:"$G" --cap-drop ALL "$DIG"
+yes "logs of mm's container, by its id" "logs --tail=50 --timestamps $(printf 'b%.0s' $(seq 64))" logs --tail 50 -t mm-box-acme-shop
+yes "logs -f --since" "logs --follow --since=15m" logs -f --since 15m mm-doop-acme-shop
+no "logs of dokploy" logs dokploy
+no "logs of a name with no mm.project label" logs mm-box-nolabel
+no "logs of a box labelled for another project" logs mm-box-other
+no "logs --details" logs --details mm-box-acme-shop
+no "logs --tail with a word" logs --tail 'all;id' mm-box-acme-shop
+no "logs of two containers" logs mm-box-acme-shop mm-doop-acme-shop
+yes "port (read)" "port mm-doop-acme-shop" port mm-doop-acme-shop
+yes "port of one port" "port mm-doop-acme-shop 4400/tcp" port mm-doop-acme-shop 4400/tcp
+no "port of dokploy-traefik" port dokploy-traefik
+no "port with a word" port mm-doop-acme-shop 'x y'
+yes "kill (doop-container: no clean stop)" "kill mm-doop-acme-shop" kill mm-doop-acme-shop
+yes "kill -s TERM" "kill --signal=TERM" kill -s TERM mm-doop-acme-shop
+no "kill dokploy" kill dokploy
+no "kill -s STOP (not a stop mm uses)" kill -s STOP mm-doop-acme-shop
+yes "images (read)" "images" images
+yes "images --format, one name" "images --format=" images --format '{{.ID}}' mm-box
+yes "images -q --filter dangling=true" "images --quiet --filter=dangling=true" images -q --filter dangling=true
+no "images --filter of another kind" images --filter 'until=1h'
+no "images of two names" images mm-box mm-egress
+yes "rmi -f a test's image" "rmi --force mm-egress:test-1" rmi -f mm-egress:test-1
+yes "rmi of two of mm's images" "rmi mm-doop:gwqa-1 mm-box:x" rmi mm-doop:gwqa-1 mm-box:x
+no "rmi of another image (ubuntu)" rmi ubuntu:24.04
+no "rmi of dokploy's" rmi -f dokploy/dokploy:latest
+no "rmi by id (any image)" rmi "$DIG"
+no "rmi by a short id" rmi 4062eea59e91
+no "rmi of mm's and another" rmi mm-box:x traefik:v3.6.25
+no "rmi -- an option-looking name" rmi -- --force
+yes "rm -f of two (a test's cleanup)" "rm --force mm-box-acme-shop mm-egress-acme-shop" rm -f mm-box-acme-shop mm-egress-acme-shop
+no "rm -f of mm's and dokploy" rm -f mm-box-acme-shop dokploy
+yes "network rm of two" "network rm mm-net-acme-shop mm-doop-net-acme-shop" network rm mm-net-acme-shop mm-doop-net-acme-shop
+no "network rm of mm's and dokploy-network" network rm mm-net-acme-shop dokploy-network
+yes "network inspect bridge (its gateway: the host, as a box sees it)" "network inspect" network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}'
+yes "ps --filter label=mm.project --no-trunc" "ps --no-trunc --filter=label=mm.project=acme-shop" ps --no-trunc --filter label=mm.project=acme-shop
+
+echo "== cp (sy-e6t3): the host and one of mm's containers with no mounts; the host side the project's own, as the owner"
+F64=$(printf 'f%.0s' $(seq 64)); ONE64=$(printf '1%.0s' $(seq 64))
+yes "cp out to - (a tar stream to the caller, box/doop/build.sh)" "cp $F64:/app/server -" cp mm-egress-acme-shop:/app/server -
+yes "cp out into a folder of the project's" "cp $F64:/app/server -" cp mm-egress-acme-shop:/app/server "$PR/data"
+if [ "$(cat "$PR/data/server/lib/a.js" 2>/dev/null)" = s ] && [ "$(stat -c %u "$PR/data/server/lib/a.js")" = "$U" ] && [ "$(readlink "$PR/data/server/link")" = lib/a.js ] \
+  && [ "$(stat -c %a "$PR/data/server/suid")" = 755 ]; then ok "...written as the owner, the link kept, the setuid bit dropped"
+else bad "cp out: what was written"; find "$PR/data/server" -printf '       %u %m %p\n'; fi
+yes "cp out into a test's own folder" "cp $ONE64:/passwd -" cp mm-doop-mmt-cp:/passwd "$TR/mmt-cp/out"
+[ "$(cat "$TR/mmt-cp/out/passwd" 2>/dev/null)" = p ] && ok "...it is there" || bad "cp out to the test's folder"
+yes "cp -q" "cp --quiet" cp -q mm-egress-acme-shop:/passwd -
+python3 -I - "$T/tars" "$TR/mmt-cp/in" <<'PY'
+import io, os, sys, tarfile
+d, src = sys.argv[1], sys.argv[2]; os.makedirs(d)
+def mk(name, *members):
+    with tarfile.open(os.path.join(d, name), 'w') as t:
+        for m, data in members:
+            t.addfile(m, io.BytesIO(data) if data is not None else None)
+def f(n, data=b'x', mode=0o644, uid=1000):
+    m = tarfile.TarInfo(n); m.size = len(data); m.mode = mode; m.uid = uid; return m, data
+def k(n, t, link=''):
+    m = tarfile.TarInfo(n); m.type = t; m.linkname = link; m.mode = 0o755; return m, None
+mk('good.tar', k('sub', tarfile.DIRTYPE), f('sub/f'), f('sub/suid', mode=0o4755, uid=0), f('sub/sgid', mode=0o2775),
+   k('sub/link', tarfile.SYMTYPE, '/etc/passwd'), k('sub/hard', tarfile.LNKTYPE, 'sub/f'))
+mk('abs.tar', f('/etc/cron.d/x'))
+mk('dotdot.tar', f('sub/../../x'))
+mk('dev.tar', k('sda', tarfile.BLKTYPE))
+mk('chr.tar', k('mem', tarfile.CHRTYPE))
+mk('fifo.tar', k('p', tarfile.FIFOTYPE))
+mk('hardout.tar', k('h', tarfile.LNKTYPE, '../../etc/shadow'))
+mk('hardabs.tar', k('h', tarfile.LNKTYPE, '/etc/shadow'))
+PY
+# yesin/noin <desc> <stdin file> <args...>: as yes/no, the call reads the file
+yesin() { local d=$1 f=$2; shift 2; : >"$T/calls"; rm -f "$T/cpin.tar"
+  if out=$("$W" "$@" <"$f" 2>&1) && grep -q '^cp - ' "$T/calls"; then ok "$d"; else bad "$d"; echo "       exit/out: $out"; sed 's/^/       ran: /' "$T/calls"; fi; }
+noin() { local d=$1 f=$2; shift 2; : >"$T/calls"
+  out=$("$W" "$@" <"$f" 2>&1); rc=$?
+  if [ $rc = 125 ] && grep -q refused <<<"$out" && [ ! -s "$T/calls" ]; then ok "$d  ($(sed 's/^mm-docker: refused: //' <<<"$out" | head -c 90))"
+  else bad "$d (exit $rc)"; echo "       out: $out"; sed 's/^/       ran: /' "$T/calls"; fi; }
+yesin "cp - into a container (a tar from the caller)" "$T/tars/good.tar" cp - mm-egress-acme-shop:/tmp
+l=$(tar -tvf "$T/cpin.tar" 2>/dev/null)
+if [ "$(grep -c . <<<"$l")" = 6 ] && ! grep -qE '^[^ ]*[sStT]' <<<"$l" && ! grep -qv ' root/root \| 0/0 ' <<<"$l"; then ok "...copied again: no setuid/setgid bits, owned by the container's root (links as links)"
+else bad "cp in: the copy"; sed 's/^/       /' <<<"$l"; fi
+yesin "cp a folder of the test's into a container (read as the owner)" /dev/null cp "$TR/mmt-cp/in" mm-doop-mmt-cp:/tmp
+tar -tf "$T/cpin.tar" 2>/dev/null | grep -qx 'in/sub/f' && ok "...the folder, by its name" || { bad "cp in from a folder"; tar -tf "$T/cpin.tar" | sed 's/^/       /'; }
+yesin "cp a file of the project's into a container" /dev/null cp "$PR/data/h" mm-egress-acme-shop:/tmp
+noin "cp - with an absolute name in the tar" "$T/tars/abs.tar" cp - mm-egress-acme-shop:/tmp
+noin "cp - with ../ in a name" "$T/tars/dotdot.tar" cp - mm-egress-acme-shop:/tmp
+noin "cp - with a block device" "$T/tars/dev.tar" cp - mm-egress-acme-shop:/tmp
+noin "cp - with a char device" "$T/tars/chr.tar" cp - mm-egress-acme-shop:/tmp
+noin "cp - with a named pipe" "$T/tars/fifo.tar" cp - mm-egress-acme-shop:/tmp
+noin "cp - with a hard link out of the copy (../)" "$T/tars/hardout.tar" cp - mm-egress-acme-shop:/tmp
+noin "cp - with a hard link to an absolute path" "$T/tars/hardabs.tar" cp - mm-egress-acme-shop:/tmp
+printf 'not a tar' >"$T/tars/junk"
+noin "cp - with what is not a tar" "$T/tars/junk" cp - mm-egress-acme-shop:/tmp
+no "cp into a container that has mounts (CVE-2018-15664)" cp "$PR/data/h" mm-box-acme-shop:/tmp
+no "cp out of a container that has mounts" cp mm-doop-acme-shop:/app/data -
+no "cp when docker's answer has no mount count" cp mm-box-acme-badmounts:/x -
+no "cp out to a host path outside the project" cp mm-egress-acme-shop:/etc/passwd /tmp
+no "cp out to the owner's home" cp mm-egress-acme-shop:/etc/passwd "$H"
+no "cp out to another project's folder" cp mm-egress-acme-shop:/etc/passwd "$MM/projects/acme/other"
+no "cp out through a symlink in the project to outside" cp mm-egress-acme-shop:/etc/passwd "$PR/evil"
+no "cp out through a symlink in the test's folder" cp mm-doop-mmt-cp:/passwd "$TR/mmt-cp/evil"
+no "cp out to a test folder without the prefix" cp mm-doop-mmt-cp:/passwd "$TR/nopfx"
+no "cp out to another test's folder" cp mm-doop-mmt-cp:/passwd "$TR/mmt-two"
+no "cp out to a path that is not there (a folder only)" cp mm-egress-acme-shop:/etc/passwd "$PR/data/newname"
+no "cp out onto a file" cp mm-egress-acme-shop:/etc/passwd "$PR/data/h"
+no "cp out to a relative host path" cp mm-egress-acme-shop:/etc/passwd data
+no "cp in from a host file outside" cp "$T/outside/secret" mm-egress-acme-shop:/tmp
+no "cp in from a symlink to outside" cp "$PR/evil" mm-egress-acme-shop:/tmp
+no "cp in from /etc/shadow" cp /etc/shadow mm-egress-acme-shop:/tmp
+no "cp in from another project" cp "$MM/projects/acme/other/.mm-answers.yaml" mm-egress-acme-shop:/tmp
+no "cp between two containers" cp mm-egress-acme-shop:/etc/passwd mm-doop-mmt-cp:/tmp
+no "cp from - to -" cp - -
+no "cp of dokploy" cp dokploy:/etc/dokploy -
+no "cp of a name with no mm.project label" cp mm-box-nolabel:/etc/passwd -
+no "cp of a box labelled for another project" cp mm-box-other:/etc/passwd -
+no "cp of a container that is not there" cp mm-box-ghost:/etc/passwd -
+no "cp -a (keeps the tar's owners)" cp -a - mm-egress-acme-shop:/tmp
+no "cp -L (follows links on the host)" cp -L "$PR/data/h" mm-egress-acme-shop:/tmp
+no "cp --archive" cp --archive mm-egress-acme-shop:/etc/passwd -
+no "cp with a relative path in the container" cp mm-egress-acme-shop:etc/passwd -
+no "cp with a newline in the container path" cp "mm-egress-acme-shop:/etc
+/passwd" -
+no "cp with three paths" cp mm-egress-acme-shop:/a - -
+
+echo "== the test area: <test_root>/<test_prefix><name>/ is the throwaway project <name>"
+TONE=(--rm --network none --user 200040:"$G" --cap-drop ALL)
+yes "a test's own folder mounted (its label)" "--volume=$TR/mmt-cp/in:/x" run -d --name mm-box-mmt-cp --label mm.project=mmt-cp --user 200040:"$G" --cap-drop ALL -v "$TR/mmt-cp/in:/x" "$IMG"
+no "a test's folder in another project's container" run -d --name mm-box-mmt-two --label mm.project=mmt-two --user 200040:"$G" --cap-drop ALL -v "$TR/mmt-cp/in:/x" "$IMG"
+no "a test folder without the prefix" run "${TONE[@]}" -v "$TR/nopfx:/x" "$IMG"
+no "the test root itself" run "${TONE[@]}" -v "$TR:/x" "$IMG"
+no "a symlink in the test's folder to outside" run "${TONE[@]}" -v "$TR/mmt-cp/evil:/x" "$IMG"
+for bad_conf in "test_root = /" "test_root = /tmp" "test_root = $H" "test_root = $MM/.." "test_root = $MM" "test_root = $MM/projects/acme" "test_prefix = x" "test_prefix = MM-" "test_prefix = a b-"; do
+  { grep -v '^test_' "$T/conf"; printf '%s\n' "$bad_conf"; [[ $bad_conf != test_prefix* ]] || echo "test_root = $TR"; } >"$T/bad.conf"
+  : >"$T/calls"; out=$(MM_DOCKER_CONF="$T/bad.conf" "$W" ps 2>&1); rc=$?
+  [ $rc = 125 ] && [ ! -s "$T/calls" ] && ok "config '$bad_conf' is refused ($(sed 's/^mm-docker: refused: //' <<<"$out" | head -c 70))" || bad "config '$bad_conf' (exit $rc: $out)"
+done
+grep -v '^test_' "$T/conf" >"$T/notest.conf"
+: >"$T/calls"; out=$(MM_DOCKER_CONF="$T/notest.conf" "$W" run "${TONE[@]}" -v "$TR/mmt-cp/in:/x" "$IMG" 2>&1); rc=$?
+[ $rc = 125 ] && [ ! -s "$T/calls" ] && ok "no test_root: a test's folder is outside, like any other" || bad "no test_root (exit $rc: $out)"
 
 echo "== build: mm's folder only, copied as checked, mm's tags only"
 B="$T/mm-box-build-abc123"; mkdir -p "$B/npm"; echo 'FROM scratch' >"$B/Dockerfile"; echo '{}' >"$B/npm/package.json"; chmod 700 "$B"
@@ -302,6 +461,10 @@ no "build --allow security.insecure" build --allow security.insecure -t "$IMG" "
 no "build --network host" build --network host -t "$IMG" "$B"
 no "build --cache-from local" build --cache-from type=local,src=/ -t "$IMG" "$B"
 no "build --build-arg other" build --build-arg X=1 -t "$IMG" "$B"
+yes "build mm-doop (box/doop/build.sh: BASE, one of mm's images)" "--tag=mm-doop:gwqa-1 --build-arg=BASE=mm-doop:0.12.0" build -q -t mm-doop:gwqa-1 --build-arg BASE=mm-doop:0.12.0 "$B"
+yes "build --build-arg BASE by digest" "--build-arg=BASE=$DIG" build -q -t mm-doop:gwqa-1 --build-arg "BASE=$DIG" "$B"
+no "build --build-arg BASE of another image" build -t mm-doop:gwqa-1 --build-arg BASE=ubuntu:24.04 "$B"
+no "build -t mm-doop-gw-qa (not mm's name)" build -t mm-doop-gw-qa:1 "$B"
 no "build --build-arg UID=0" build --build-arg UID=0 -t "$IMG" "$B"
 no "build of / " build -t "$IMG" /
 no "build of a folder not mm's (the home)" build -t "$IMG" "$H"

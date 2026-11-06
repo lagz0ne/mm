@@ -92,12 +92,29 @@ def load_conf():
         'projects': os.path.realpath(conf.get('projects') or os.path.join(mm, 'projects')),
         'secrets': os.path.realpath(conf.get('secrets') or f'/run/user/{uid}/mm/secrets'),
         'root_containers': conf.get('root_containers', 'no') == 'yes',
-        'max_context': int(conf.get('max_context_mb', '64')) * 1024 * 1024 if re.fullmatch(r'\d{1,5}', conf.get('max_context_mb', '64')) else refuse('max_context_mb: a number'),
+        'max_context': mb(conf, 'max_context_mb', '64'),
+        'max_cp': mb(conf, 'max_cp_mb', '512'),
+        # the tests' own area (sy-e6t3): a folder <test_root>/<name>/ belongs to the throwaway project <name>, and only
+        # a name that starts with test_prefix (none: no test area)
+        'test_root': os.path.realpath(conf['test_root']) if conf.get('test_root') else None,
+        'test_prefix': conf.get('test_prefix') or 'mmt-',
     }
-    for k in ('mm', 'projects', 'secrets'):
-        if c[k] in ('/', '/home', '/root', '/etc', '/usr', '/var', '/run', '/tmp', pw.pw_dir):
+    if not re.fullmatch(r'[a-z][a-z0-9-]{1,20}-', c['test_prefix']):
+        refuse(f'test_prefix = {show(c["test_prefix"])}: a short name that ends with -')
+    for k in ('mm', 'projects', 'secrets', 'test_root'):
+        if c[k] is not None and c[k] in ('/', '/home', '/root', '/etc', '/usr', '/var', '/run', '/tmp', '/var/tmp', pw.pw_dir):
             refuse(f'{k} = {c[k]} is too wide')
+    if c['test_root'] and any(c[k] == c['test_root'] or inside(c[k], c['test_root']) or inside(c['test_root'], c[k])
+                              for k in ('mm', 'projects', 'secrets')):
+        refuse(f'test_root = {c["test_root"]}: apart from mm\'s home, the projects and the secrets')
     return c
+
+
+def mb(conf, key, default):
+    v = conf.get(key, default)
+    if not re.fullmatch(r'\d{1,5}', v):
+        refuse(f'{key}: a number')
+    return int(v) * 1024 * 1024
 
 
 def env(c):
@@ -118,6 +135,8 @@ IMAGE = re.compile(r'mm-(box|egress|doop)(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?')
 NAMED_DIGEST = re.compile(r'[a-z0-9][a-z0-9._/-]{0,200}(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?@sha256:[0-9a-f]{64}')
 DIGEST = re.compile(rf'sha256:[0-9a-f]{{64}}|{NAMED_DIGEST.pattern}')
 ID = re.compile(r'[0-9a-f]{64}')
+REPO = re.compile(r'[a-z0-9][a-z0-9._/-]{0,127}(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?')
+SIGNALS = {'TERM', 'KILL', 'INT', 'HUP', 'QUIT', 'USR1', 'USR2'}
 TEMPLATE_MAX = 400
 
 
@@ -265,7 +284,11 @@ def inside(p, root):
 
 def owner_project(real, c):
     """Which project a host path belongs to, or None: inside one project's folder (its .mm-answers.yaml names it), or
-    under mm's per-project folders (box/, paseo/, claude/, egress/ in mm's home; the opened secrets' folder)."""
+    under mm's per-project folders (box/, paseo/, claude/, egress/ in mm's home; the opened secrets' folder), or a
+    test's own folder (<test_root>/<test_prefix>...)."""
+    if c['test_root'] and inside(real, c['test_root']):
+        name = real[len(c['test_root']) + 1:].split('/')[0]
+        return name if re.fullmatch(P, name) and name.startswith(c['test_prefix']) else None
     for base in [os.path.join(c['mm'], k) for k in ('box', 'paseo', 'claude', 'egress')] + [c['secrets']]:
         if inside(real, base):
             name = real[len(base) + 1:].split('/')[0]
@@ -317,10 +340,11 @@ EGRESS_CAPS = {'SETUID', 'SETGID'}
 CHOWN_CAPS = {'CHOWN', 'FOWNER', 'DAC_OVERRIDE'}
 
 
-def check_run(args, c):
+def check_run(args, c, sub='run'):
+    """run, and create (sy-e6t3: the same checks; a created container always has its name)."""
     opts, pos = parse(args, RUN, interspersed=False)
     if not pos:
-        refuse('run: no image')
+        refuse(f'{sub}: no image')
     img, cmd = image(pos[0]), pos[1:]
     name = one(opts, '--name')
     kind, project = container(name) if name is not None else (None, None)
@@ -335,6 +359,8 @@ def check_run(args, c):
             refuse(f'label {show(lab)}: only mm.project=<its project> (and mm.service=doop on Doop)')
     if name is not None and f'mm.project={project}' not in every(opts, '--label'):
         refuse(f'{name} needs its label mm.project={project}')
+    if name is None and sub == 'create':
+        refuse('create: a created container has its name (mm-<kind>-<project>) and its label')
     if name is None and one(opts, '--rm') is None:
         refuse('run: a container mm keeps has its name (mm-<kind>-<project>); a nameless one is --rm')
     # capabilities: all dropped; added back only in mm's two fixed sets (below)
@@ -447,7 +473,7 @@ def check_run(args, c):
                     refuse('chown helper: its mounts are read-write')
         else:
             refuse('run: as root, or with capabilities, only mm\'s egress proxy and chown helper (exactly)')
-    out = ['run', '--pull=never', '--security-opt=no-new-privileges']
+    out = [sub, '--pull=never', '--security-opt=no-new-privileges']
     for n, val in opts:
         if n in ('--security-opt', '--volume', '--env-file'):
             continue
@@ -476,15 +502,166 @@ def check_exec(args, c):
     w = one(opts, '--workdir')
     if w is not None and not re.fullmatch(r'/[^\0\n]{0,4000}', w):
         refuse(f'--workdir {show(w)}')
-    # is it really mm's? Its own name and its project's label, by docker; then exec by its id (not a name that could
-    # change in between)
+    return ['exec'] + emit(opts) + [mm_container('exec', name, project, c)[0]] + cmd, []
+
+
+def mm_container(what, name, project, c):
+    """Is it really mm's? Its own name and its project's label, by docker. Returns (its full id, how many mounts it
+    has): the call then names it by its id, not a name that could change in between."""
     r = subprocess.run(c['docker'] + ['container', 'inspect', '--format',
-                                      '{{.Id}}|{{.Name}}|{{index .Config.Labels "mm.project"}}', name],
+                                      '{{.Id}}|{{.Name}}|{{index .Config.Labels "mm.project"}}|{{len .Mounts}}', name],
                        env=env(c), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
     got = r.stdout.strip().split('|') if r.returncode == 0 else []
-    if len(got) != 3 or not ID.fullmatch(got[0]) or got[1] != '/' + name or got[2] != project:
-        refuse(f'exec: {show(name)} is not labelled as mm\'s (mm.project={project})')
-    return ['exec'] + emit(opts) + [got[0]] + cmd, []
+    if len(got) != 4 or not ID.fullmatch(got[0]) or got[1] != '/' + name or got[2] != project \
+            or not re.fullmatch(r'\d{1,4}', got[3]):
+        refuse(f'{what}: {show(name)} is not labelled as mm\'s (mm.project={project})')
+    return got[0], int(got[3])
+
+
+# ---------- cp (sy-e6t3) ----------
+# Only between the host and an mm container that has no mounts at all: docker cp mounts a container's host folders
+# again, by their path, as root (CVE-2018-15664: a folder swapped for a symlink in between is followed), so a container
+# with a mount is refused. The host side is `-` (a tar stream, the caller's own), or a path in the container's own
+# project folder (or its test's), read or written by a process of the owner's (never as root). What goes into a
+# container is copied again by the wrapper, as checked: folders, plain files and links only, no setuid/setgid bits.
+
+OWNER_TAR = '''import os, sys, tarfile
+p = sys.argv[1]
+with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as t:
+    t.add(p, arcname=os.path.basename(p))
+'''
+OWNER_UNTAR = '''import sys, tarfile
+with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as t:
+    t.extractall(sys.argv[1], filter="data")
+'''
+
+
+def as_owner(c):
+    """subprocess options: the child runs as the owner, with the owner's own groups only (in test mode: already)."""
+    if not c['root']:
+        return {}
+    return {'user': c['uid'], 'group': c['gid'], 'extra_groups': os.getgrouplist(pwd.getpwuid(c['uid']).pw_name, c['gid'])}
+
+
+def cp_side(s):
+    if s == '-':
+        return '-', None, None
+    if s.startswith('/'):
+        return 'host', None, s
+    name, sep, path = s.partition(':')
+    if not sep or not re.fullmatch(r'/[^\0\n]{0,4000}', path):
+        refuse(f'cp: {show(s)}: an absolute host path, -, or <container>:<absolute path>')
+    return 'ctr', name, path
+
+
+def rel_ok(n):
+    return n and not n.startswith('/') and '..' not in n.split('/') and '\0' not in n
+
+
+def clean_tar(inp, out, limit):
+    """Copy a tar stream, as checked: names inside it, folders, plain files and links (as the container sees them),
+    modes without setuid, setgid or sticky, owned by the container's root. Anything else refuses the whole copy."""
+    import tarfile
+    try:
+        copy_tar(tarfile, inp, out, limit)
+    except (tarfile.TarError, EOFError, UnicodeError) as e:
+        refuse(f'cp: not a tar stream mm-docker reads ({show(e)})')
+
+
+def copy_tar(tarfile, inp, out, limit):
+    total = 0
+    with tarfile.open(fileobj=inp, mode='r|') as tin, tarfile.open(fileobj=out, mode='w|', format=tarfile.PAX_FORMAT) as tout:
+        for m in tin:
+            if not rel_ok(m.name.rstrip('/')) and m.name not in ('.', './'):
+                refuse(f'cp: {show(m.name)} in the copy leads out of its folder')
+            n = tarfile.TarInfo(m.name)
+            n.mode, n.mtime, n.uid, n.gid = m.mode & 0o777, m.mtime, 0, 0
+            if m.isreg():
+                total += m.size
+                if total > limit:
+                    refuse('cp: the copy is too big (max_cp_mb)')
+                n.size = m.size
+                tout.addfile(n, tin.extractfile(m))
+            elif m.isdir():
+                n.type = tarfile.DIRTYPE
+                tout.addfile(n)
+            elif m.issym() or m.islnk():
+                if m.islnk() and not rel_ok(m.linkname):
+                    refuse(f'cp: the hard link {show(m.name)} leads out of the copy')
+                n.type, n.linkname = m.type, m.linkname
+                tout.addfile(n)
+            else:
+                refuse(f'cp: {show(m.name)} is not a folder, a plain file or a link')
+
+
+def run_cp(args, c):
+    opts, pos = parse(args, {'--quiet': ('q', False)}, interspersed=True)
+    if len(pos) != 2:
+        refuse('cp: a source and a destination')
+    (sk, sname, spath), (dk, dname, dpath) = cp_side(pos[0]), cp_side(pos[1])
+    if [sk, dk].count('ctr') != 1:
+        refuse('cp: between the host and one of mm\'s containers only')
+    name, cpath = (sname, spath) if sk == 'ctr' else (dname, dpath)
+    _, project = container(name)
+    cid, mounts = mm_container('cp', name, project, c)
+    if mounts:
+        refuse(f'cp: {show(name)} has mounts (docker cp would mount their host folders again, as root, by their path)')
+    host = dpath if sk == 'ctr' else spath
+    if host is not None:
+        try:
+            real = os.path.realpath(host, strict=True)
+        except OSError:
+            refuse(f'cp: {show(host)} does not exist')
+        got = owner_project(real, c)
+        if got != project:
+            refuse(f'cp: {show(host)} (really {show(real)}) is not a folder of {project}\'s own')
+        if sk == 'ctr' and not os.path.isdir(real):
+            refuse(f'cp: {show(host)}: copied into an existing folder only')
+    docker, e = c['docker'] + ['cp'] + emit(opts), env(c)
+    if sk == 'ctr' and dk == '-':
+        return subprocess.run(docker + [f'{cid}:{cpath}', '-'], env=e, stdin=subprocess.DEVNULL).returncode
+    if sk == 'ctr':
+        d = subprocess.Popen(docker + [f'{cid}:{cpath}', '-'], env=e, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+        x = subprocess.run([sys.executable, '-I', '-c', OWNER_UNTAR, real], env=e, stdin=d.stdout, cwd='/', **as_owner(c))
+        d.stdout.close()
+        rd = d.wait()
+        return rd or x.returncode
+    with tempfile.TemporaryFile(dir='/var/tmp' if c['root'] else None) as buf:
+        if sk == '-':
+            clean_tar(sys.stdin.buffer, buf, c['max_cp'])
+        else:
+            t = subprocess.Popen([sys.executable, '-I', '-c', OWNER_TAR, real], env=e, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, cwd='/', **as_owner(c))
+            try:
+                clean_tar(t.stdout, buf, c['max_cp'])
+            finally:
+                t.stdout.close()
+                rt = t.wait()
+            if rt:
+                refuse(f'cp: {show(spath)} could not be read as the owner')
+        buf.seek(0)
+        return subprocess.run(docker + ['-', f'{cid}:{cpath}'], env=e, stdin=buf).returncode
+
+
+# ---------- logs (sy-e6t3) ----------
+
+LOGS = {'--follow': ('f', False), '--tail': ('n', True), '--since': (None, True), '--until': (None, True),
+        '--timestamps': ('t', False)}
+
+
+def check_logs(args, c):
+    opts, pos = parse(args, LOGS, interspersed=True)
+    if len(pos) != 1:
+        refuse('logs: one container')
+    _, project = container(pos[0])
+    t = one(opts, '--tail')
+    if t is not None and not re.fullmatch(r'\d{1,7}|all', t):
+        refuse(f'logs: --tail {show(t)}')
+    for k in ('--since', '--until'):
+        v = one(opts, k)
+        if v is not None and not re.fullmatch(r'[0-9A-Za-z:.+-]{1,40}', v):
+            refuse(f'logs: {k} {show(v)}')
+    return ['logs'] + emit(opts) + [mm_container('logs', pos[0], project, c)[0]]
 
 
 # ---------- build ----------
@@ -527,11 +704,12 @@ def check_build(args, c):
     if len(pos) != 1:
         refuse('build: one folder')
     tag = one(opts, '--tag')
-    if tag is None or not re.fullmatch(r'mm-(box|egress)(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?', tag):
-        refuse(f'build: tag {show(tag)}: only mm-box or mm-egress')
+    if tag is None or not IMAGE.fullmatch(tag):
+        refuse(f'build: tag {show(tag)}: only mm-box, mm-egress or mm-doop (box/doop/build.sh)')
     for a in every(opts, '--build-arg'):
-        if a not in (f'UID={c["uid"]}', f'HOME_DIR={c["home"]}'):
-            refuse(f'build: --build-arg {show(a)}: only UID and HOME_DIR, the owner\'s')
+        k, _, v = a.partition('=')
+        if a not in (f'UID={c["uid"]}', f'HOME_DIR={c["home"]}') and not (k == 'BASE' and (IMAGE.fullmatch(v) or DIGEST.fullmatch(v))):
+            refuse(f'build: --build-arg {show(a)}: only UID and HOME_DIR (the owner\'s), and BASE (one of mm\'s images)')
     ctx = pos[0]
     if not ctx.startswith('/'):
         refuse('build: the folder as an absolute path')
@@ -592,19 +770,59 @@ def check_small(sub, args, c):
     if sub in ('rm', 'restart', 'stop'):
         spec = {'--force': ('f', False)} if sub == 'rm' else {'--timeout': ('t', True), '--time': (None, True)}
         opts, pos = parse(args, spec, interspersed=True)
-        if len(pos) != 1:
-            refuse(f'{sub}: one container')
-        container(pos[0])
+        if not pos:
+            refuse(f'{sub}: a container')
+        for n in pos:
+            container(n)
         for n, v in opts:
             if n != '--force' and not re.fullmatch(r'\d{1,3}', v):
                 refuse(f'{sub}: {n} {show(v)}')
         return [sub] + emit(opts) + pos
+    if sub == 'kill':
+        opts, pos = parse(args, {'--signal': ('s', True)}, interspersed=True)
+        if not pos:
+            refuse('kill: a container')
+        for n in pos:
+            container(n)
+        sig = one(opts, '--signal')
+        if sig is not None and sig.upper().removeprefix('SIG') not in SIGNALS:
+            refuse(f'kill: --signal {show(sig)}: only {", ".join(sorted(SIGNALS))}')
+        return ['kill'] + emit(opts) + pos
     if sub == 'ps':
-        opts, pos = parse(args, {'--all': ('a', False), '--quiet': ('q', False), '--format': (None, True)}, interspersed=True)
+        opts, pos = parse(args, {'--all': ('a', False), '--quiet': ('q', False), '--format': (None, True),
+                                 '--no-trunc': (None, False), '--filter': ('f', True)}, interspersed=True)
         if pos:
             refuse('ps: no names')
+        for f in every(opts, '--filter'):
+            if not re.fullmatch(r'(label|name|status|id|network|ancestor|health)=[A-Za-z0-9._:/=*-]{1,200}', f):
+                refuse(f'ps: --filter {show(f)}')
         template(one(opts, '--format') or '')
         return ['ps'] + emit(opts)
+    if sub == 'images':
+        opts, pos = parse(args, {'--all': ('a', False), '--quiet': ('q', False), '--digests': (None, False),
+                                 '--no-trunc': (None, False), '--format': (None, True), '--filter': ('f', True)},
+                          interspersed=True)
+        if len(pos) > 1 or (pos and not REPO.fullmatch(pos[0])):
+            refuse('images: at most one image name')
+        for f in every(opts, '--filter'):
+            if not re.fullmatch(r'dangling=(true|false)|(reference|label|before|since)=[A-Za-z0-9._:/=*-]{1,200}', f):
+                refuse(f'images: --filter {show(f)}')
+        template(one(opts, '--format') or '')
+        return ['images'] + emit(opts) + pos
+    if sub == 'rmi':
+        opts, pos = parse(args, {'--force': ('f', False), '--no-prune': (None, False)}, interspersed=True)
+        if not pos:
+            refuse('rmi: an image')
+        for n in pos:
+            if not IMAGE.fullmatch(n):
+                refuse(f'rmi: {show(n)}: only mm\'s own images, by name (mm-box, mm-egress, mm-doop[:<tag>])')
+        return ['rmi'] + emit(opts) + pos
+    if sub == 'port':
+        opts, pos = parse(args, {}, interspersed=True)
+        if len(pos) not in (1, 2) or (len(pos) == 2 and not re.fullmatch(r'\d{1,5}(/(tcp|udp|sctp))?', pos[1])):
+            refuse('port: one container [and a port]')
+        container(pos[0])
+        return ['port'] + pos
     if sub == 'pull':
         opts, pos = parse(args, {'--quiet': ('q', False)}, interspersed=True)
         if len(pos) != 1 or not NAMED_DIGEST.fullmatch(pos[0]):
@@ -632,15 +850,16 @@ def check_small(sub, args, c):
             if not pos:
                 refuse('network inspect: a name')
             for n in pos:
-                if not (NETWORK.fullmatch(n) or NET_ID.fullmatch(n)):
-                    refuse(f'network inspect: {show(n)} is not one of mm\'s networks or a network id')
+                if not (NETWORK.fullmatch(n) or NET_ID.fullmatch(n) or n == 'bridge'):
+                    refuse(f'network inspect: {show(n)} is not one of mm\'s networks, the default bridge or a network id')
             template(one(opts, '--format') or '')
             return ['network', 'inspect'] + emit(opts) + pos
         if what == 'rm':
             opts, pos = parse(rest, {}, interspersed=True)
-            if len(pos) != 1:
-                refuse('network rm: one network')
-            network(pos[0])
+            if not pos:
+                refuse('network rm: a network')
+            for n in pos:
+                network(n)
             return ['network', 'rm'] + pos
         if what == 'create':
             opts, pos = parse(rest, {'--internal': (None, False), '--subnet': (None, True), '--gateway': (None, True),
@@ -681,10 +900,14 @@ def main(argv):
         refuse(f'{show(sub)}: no global options{reason(sub.split("=")[0])}')
     if sub == 'build':
         return run_build(args, c)
-    if sub == 'run':
-        out, fds = check_run(args, c)
+    if sub == 'cp':
+        return run_cp(args, c)
+    if sub in ('run', 'create'):
+        out, fds = check_run(args, c, sub=sub)
     elif sub == 'exec':
         out, fds = check_exec(args, c)
+    elif sub == 'logs':
+        out, fds = check_logs(args, c), []
     else:
         out, fds = check_small(sub, args, c), []
     argv2 = c['docker'] + out
