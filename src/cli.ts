@@ -10,6 +10,7 @@ import { expand as expandHome, fill, needs, unmet } from './inputs'
 import { manifest } from './manifest'
 import { onboard } from './onboard'
 import { archive, engineDrift, engineReset, restore, update } from './lifecycle'
+import { withUpdateLock } from './updlock'
 import { cron, runOnce } from './cron'
 import * as vaultMod from './vault'
 import * as syncMod from './sync'
@@ -216,8 +217,13 @@ program.command('update [project]').description('bring a project (default: every
       const r = engineReset(roots[0], opts.reset, !!opts.dryRun); print(r.steps, o); process.exit(r.ok ? 0 : 1)
     }
     if (opts.drift) {
-      const rows = roots.flatMap((root) => engineDrift(root).map((d) => ({ project: readAnswers(root).project, path: d.path, by: d.by === 'baseline' ? 'baseline (mm update --reset puts it back)' : `project commit ${d.commit}` })))
-      print(rows, o); process.exit(rows.some((r) => r.by.startsWith('baseline')) ? 1 : 0)
+      let held = 0
+      const rows = roots.flatMap((root) => {
+        const project = readAnswers(root).project, drift = withUpdateLock(root, project, () => engineDrift(root)) // sy-qpqd
+        if ('refused' in drift) { console.error(`mm update --drift: ${drift.refused}`); held++; return [] }
+        return drift.map((d) => ({ project, path: d.path, by: d.by === 'baseline' ? 'baseline (mm update --reset puts it back)' : `project commit ${d.commit}` }))
+      })
+      print(rows, o); process.exit(held || rows.some((r) => r.by.startsWith('baseline')) ? 1 : 0)
     }
     for (const root of roots) {
       const r = update(root, opts)
