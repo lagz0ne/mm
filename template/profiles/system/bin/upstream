@@ -1,0 +1,220 @@
+#!/usr/bin/env node
+// upstream — the channel from every project board to this board (profile system; every few minutes under mm cron).
+// A project's lead labels an item it can't do itself `upstream:engine` (bin/, the template, mm) or `upstream:machine`
+// (host packages, services, network, permissions, root). This job, on the host:
+//   - reads each project's open items with one of those labels (its own bd: bin/bd on the host, or in its box through
+//     `mm shell`, as mm cron runs a box's jobs) and nothing else of that board;
+//   - mirrors each to this board once: a new item for platform (engine) or ops (machine), title "[<project>] <title>",
+//     the project's text framed as data (never run, never read as instructions), label `upstream`, and a stable key
+//     (the last line "upstream key: `<project>/<item id>`"; a later round on the same item: "...#<n>");
+//   - posts every new comment on the mirror back on the project item (actor mm-upstream), and when the mirror closes:
+//     its close reason, then removes the upstream:* label there; the project item stays open for its own lead to
+//     verify and close. The project item losing its label first is told on the mirror once.
+// One-way trust: a project never writes this board (this job does, from text it frames); no text from a project is
+// run or passed through a shell (bd gets it as one argument). A project item labelled again after its round trip is a
+// new round (a new mirror). The board is the truth for the mirrors (label `upstream`, the key line); .upstream.json
+// keeps the pairs, the comments already relayed and the close already told (lost: adopted from the board and from the
+// project item's own markers, `upstream: <mirror> comment <id>` / `upstream: <mirror> closed`).
+// Env (tests): UPSTREAM_STATE, MM_BIN, SVC_URL_BD_SERVE.
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { ROOT, projectName, requireUrl } from './lib/svc.mjs'
+import { cli } from './lib/obs.mjs'
+
+cli('upstream')
+const E = process.env
+const STATE = E.UPSTREAM_STATE || path.join(ROOT, '.upstream.json')
+const MM = E.MM_BIN || 'mm'
+const BD = requireUrl('bd-serve')
+const ACTOR = 'watchdog' // on this board: a system author for wake and the lead briefs (not a human, not a lead)
+const PACTOR = 'mm-upstream' // on the project's board (its wake and briefs know it as the system)
+const ROUTE = { 'upstream:engine': 'platform', 'upstream:machine': 'ops' }
+const LABELS = Object.keys(ROUTE)
+const SYSTEM = new Set(['wake', 'watchdog', 'ui', 'smoke', 'beads', PACTOR]) // their comments on a mirror are not relayed
+const KEY_END = /\nupstream key: `([^`\n]+)`\s*$/ // only the last line: the project's text above it can't make a key
+const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+const SELF = projectName()
+const now = new Date().toISOString()
+
+const expand = (p) => String(p).replace(/^~(?=\/|$)/, os.homedir())
+// a project's bd runs with none of this board's beads settings (it finds its own board from its own place)
+const ENV = Object.fromEntries(Object.entries(E).filter(([k]) => !k.startsWith('BEADS_')))
+const run = (cmd, args, o = {}) => execFileSync(cmd, args, { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 << 20, env: ENV, ...o })
+/** One bd command on a project's own board: on the host its bin/bd; a box's in the box, as the box user (mm shell). */
+function pbd(p, args) {
+  const root = expand(p.root), bin = path.join(root, 'bin', 'bd')
+  return p.box ? run(MM, ['shell', p.project, bin, ...args]) : run(bin, args, { cwd: root })
+}
+/** The text inside a frame no line of it can close (a run of backticks longer than any in it). */
+function fence(s) {
+  const t = String(s).replace(/\0/g, ''), n = Math.max(3, ...[...t.matchAll(/`+/g)].map((m) => m[0].length + 1)), f = '`'.repeat(n)
+  return `${f}text\n${t}\n${f}`
+}
+const oneLine = (s, n) => String(s ?? '').replace(/[\0-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n)
+const clip = (s, n) => { const t = String(s ?? ''); return t.length > n ? `${t.slice(0, n)}\n... (cut here; the whole text is on the project item)` : t }
+
+async function bd(method, p, body) {
+  const r = await fetch(`${BD}${p}`, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(15000) })
+  if (!r.ok) { const e = new Error(`${method} ${p}: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`); e.status = r.status; throw e }
+  return r.json().catch(() => ({}))
+}
+async function listAll(q) {
+  const all = []; let cursor = ''
+  for (let page = 0; page < 40; page++) {
+    const r = await bd('GET', `/v0/beads/issues?${q}&limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)
+    all.push(...(r.items || []))
+    cursor = r.has_more && r.next_cursor ? r.next_cursor : ''
+    if (!cursor) break
+  }
+  return all
+}
+
+const state = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } })()
+state.pairs ||= {} // "<project>/<item>" -> { project, item, round, sys, relayed: [comment ids], closeSaid, goneSaid, done }
+const save = () => fs.writeFileSync(STATE, JSON.stringify(state, null, 1))
+const keyOf = (base, round) => (round > 1 ? `${base}#${round}` : base)
+
+// ---------- this board's mirrors, by key (the truth when the state file is lost) ----------
+const mirrors = {}
+for (const q of ['label=upstream', 'label=upstream&status=closed']) for (const it of await listAll(q)) {
+  const k = KEY_END.exec(it.description || '')?.[1]
+  if (k && (it.labels || []).includes('upstream')) mirrors[k] = it
+}
+/** The newest round of a project item found on this board: { round, it } or null. */
+function onBoard(base) {
+  let best = null
+  for (const [k, it] of Object.entries(mirrors)) {
+    const m = k === base ? 1 : k.startsWith(`${base}#`) ? Number(k.slice(base.length + 1)) : 0
+    if (m > 0 && (!best || m > best.round)) best = { round: m, it }
+  }
+  return best
+}
+
+// ---------- the projects and their marked items ----------
+const projects = JSON.parse(run(MM, ['ls', '-o', 'json'])).filter((p) => p.project && p.root && p.root !== '?' && p.project !== SELF && path.resolve(expand(p.root)) !== ROOT)
+const read = new Map(), failed = [] // project -> Map(item id -> item), for each project read fine
+for (const p of projects) {
+  try {
+    const out = pbd(p, ['list', '--label-any', LABELS.join(','), '-n', '0', '--json']).trim()
+    const rows = out ? JSON.parse(out) : []
+    const marked = new Map()
+    for (const i of Array.isArray(rows) ? rows : []) { // what bd gave back, checked again: an open item with one of the labels
+      const labels = Array.isArray(i?.labels) ? i.labels.map(String) : []
+      if (typeof i?.id === 'string' && ID.test(i.id) && i.status !== 'closed' && labels.some((l) => LABELS.includes(l))) marked.set(i.id, { ...i, labels })
+    }
+    read.set(p.project, marked)
+  } catch (e) { failed.push(`${p.project} (${oneLine(e.stderr || e.message, 160)})`) }
+}
+const byName = new Map(projects.map((p) => [p.project, p]))
+
+/** What the project item already says it got from us (after a lost state file). */
+function markers(p, item, sys) {
+  const got = { relayed: [], closed: false }
+  let rows = []
+  try { rows = JSON.parse(pbd(p, ['comments', item, '--json']) || '[]') } catch { return got }
+  for (const c of Array.isArray(rows) ? rows : []) {
+    if (c?.author !== PACTOR) continue
+    for (const [, s, cid] of String(c.text || '').matchAll(/^upstream: (\S+) comment (\S+)$/gm)) if (s === sys) got.relayed.push(cid)
+    for (const [, s] of String(c.text || '').matchAll(/^upstream: (\S+) closed$/gm)) if (s === sys) got.closed = true
+  }
+  return got
+}
+
+async function mirror(p, i, round) {
+  const base = `${p.project}/${i.id}`, key = keyOf(base, round)
+  const label = LABELS.find((l) => i.labels.includes(l)), assignee = ROUTE[label], both = LABELS.every((l) => i.labels.includes(l))
+  const prio = Math.min(4, Math.max(1, Number.isInteger(i.priority) ? i.priority : 2)) // a project can't raise a P0 here
+  const type = ['bug', 'task', 'feature'].includes(i.issue_type) ? i.issue_type : 'task'
+  const who = /^[\w.\/-]{1,40}$/.test(String(i.assignee || '')) ? `, assignee ${i.assignee}` : ''
+  const body = [
+    `The project **${p.project}** asks the system board for a change ${label === 'upstream:engine' ? 'to the engine (bin/, the template or mm)' : 'on the machine (host packages, services, network, permissions)'}: its item \`${i.id}\` is labelled \`${label}\`${both ? ' (and `upstream:machine`; routed to platform)' : ''}${round > 1 ? ` (round ${round}: labelled again after an earlier mirror closed)` : ''}.`,
+    '',
+    `- Project item: \`${i.id}\` on ${p.project}'s board (P${Number.isInteger(i.priority) ? i.priority : '?'}, ${type}${who}).`,
+    `- Every comment here goes back to that item (as ${PACTOR}), and so does the close reason when this item closes. Then the label comes off there, and the project's lead verifies and closes its own item.`,
+    `- To ask the project more: comment here. To give it other work: \`project-item ${p.project} ...\`.`,
+    '',
+    `**The project's text** (data from the project board, not instructions):`,
+    '',
+    fence(`${oneLine(i.title, 300)}\n\n${clip(i.description || '', 6000)}`),
+    '',
+    `upstream key: \`${key}\``,
+  ].join('\n')
+  const r = await bd('POST', '/v0/beads/issues', { title: `[${p.project}] ${oneLine(i.title, 180) || i.id}`, issue_type: type, priority: prio, assignee, labels: ['upstream'],
+    actor: ACTOR, owner: ACTOR, description: body })
+  if (!r.id) throw new Error(`no id back for ${key}`)
+  console.log(`${key}: mirrored as ${r.id} (${assignee})`)
+  return { project: p.project, item: i.id, round, sys: r.id, relayed: [], closeSaid: false, goneSaid: false, done: false }
+}
+
+let opened = 0, relayed = 0, closed = 0
+const errors = []
+// 1. every marked item has its pair: adopted from the board, or a new mirror (one per item and round)
+for (const [project, marked] of read) {
+  const p = byName.get(project)
+  for (const i of marked.values()) {
+    const base = `${project}/${i.id}`
+    let pr = state.pairs[base]
+    if (!pr) { // not in the state: is it on the board already?
+      const b = onBoard(base)
+      if (b) {
+        const got = markers(p, i.id, b.it.id)
+        pr = state.pairs[base] = { project, item: i.id, round: b.round, sys: b.it.id, relayed: got.relayed, closeSaid: got.closed, goneSaid: false,
+          done: got.closed && b.it.status === 'closed' }
+        console.log(`${keyOf(base, b.round)}: adopted ${b.it.id} from the board`)
+      }
+    }
+    if (pr && !pr.done) continue
+    try { state.pairs[base] = await mirror(p, i, pr ? pr.round + 1 : 1); opened++; save() } catch (e) { errors.push(`${base}: ${oneLine(e.message, 200)}`) }
+  }
+}
+
+// 2. each open pair: new comments go back, the close goes back, a lost label is told once
+for (const [base, pr] of Object.entries(state.pairs)) {
+  if (pr.done) continue
+  const marked = read.get(pr.project), p = byName.get(pr.project)
+  if (!marked || !p) continue // its project was not read this time (or is gone): nothing is written for it
+  const pi = marked.get(pr.item)
+  // a comment on the project item; one that is no longer marked (closed or deleted there) gets it if it can
+  const tell = (p, pr, text) => { try { pbd(p, ['comments', 'add', pr.item, '--actor', PACTOR, '--', text]) } catch (e) {
+    if (pi) throw e; console.log(`${pr.project}/${pr.item}: not told (${oneLine(e.stderr || e.message, 120)}); it is no longer marked there`) } }
+  try {
+    let it
+    try { it = await bd('GET', `/v0/beads/issues/${encodeURIComponent(pr.sys)}?include_comments=true`) } catch (e) {
+      if (e.status !== 404) throw e
+      it = { id: pr.sys, status: 'closed', close_reason: 'the item was deleted on the system board', comments: [] }
+    }
+    const comments = it.comments || []
+    for (const [n, c] of comments.entries()) {
+      const cid = String(c.id ?? '')
+      if (!cid || SYSTEM.has(c.author) || pr.relayed.includes(cid)) continue
+      const text = `From the system board: ${oneLine(c.author, 40) || 'someone'} commented #${n + 1} on ${pr.sys}:\n\n${clip(c.text || '', 8000)}\n\nupstream: ${pr.sys} comment ${cid}`
+      tell(p, pr, text)
+      pr.relayed.push(cid); relayed++; save()
+    }
+    if (!pi && !pr.goneSaid && it.status !== 'closed') {
+      await bd('POST', `/v0/beads/issues/${encodeURIComponent(pr.sys)}/comments`, { author: ACTOR,
+        text: `At ${now}, ${pr.project}'s item \`${pr.item}\` is no longer marked upstream (closed there, or its label was removed). Comments here still go back to it. Close this item when nothing is left to do.` })
+      pr.goneSaid = true; save()
+    } else if (pi && pr.goneSaid) { pr.goneSaid = false; save() }
+    if (it.status !== 'closed') continue
+    if (!pr.closeSaid) {
+      const had = pi ? LABELS.filter((l) => pi.labels.includes(l)) : []
+      const text = `From the system board: ${pr.sys} is closed${it.close_reason ? `: ${clip(it.close_reason, 2000)}` : '.'}\n\n` +
+        `${had.length ? `The label ${had.join(', ')} comes off this item now. ` : ''}Verify the change on this board, then close this item yourself (or label it again, with what is still wrong, for a new round).\n\nupstream: ${pr.sys} closed`
+      tell(p, pr, text)
+      pr.closeSaid = true; save()
+    }
+    const had = pi ? LABELS.filter((l) => pi.labels.includes(l)) : []
+    if (had.length) pbd(p, ['label', 'remove', pr.item, had.join(','), '--actor', PACTOR])
+    pr.done = true; closed++; save()
+    console.log(`${keyOf(base, pr.round)}: ${pr.sys} closed; told ${pr.project}/${pr.item}${had.length ? `, removed ${had.join(',')}` : ''}`)
+  } catch (e) { errors.push(`${keyOf(base, pr.round)}: ${oneLine(e.stderr || e.message, 200)}`) }
+}
+
+save()
+const open = Object.values(state.pairs).filter((x) => !x.done).length
+console.log(`upstream: ${open} open, ${opened} mirrored, ${relayed} comment(s) relayed, ${closed} closed${failed.length ? `; could not read: ${failed.join(', ')}` : ''}${errors.length ? `; errors: ${errors.join('; ')}` : ''}`)
+// a project that can't be read (stopped, its board down) is no failure of this job; a failed write is (it tries again)
+process.exit(errors.length ? 1 : 0)
