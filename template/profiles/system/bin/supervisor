@@ -342,10 +342,10 @@ await paseo.close()
 results.push({ prefix: 'supervisor:', problems: failed.map((f) => ({ key: `supervisor:${f.name}`, priority: 2, title: `Supervisor cannot run its ${f.name} check`, note: f.err.replace(/\d+/g, '#'),
   body: `The supervisor could not read what its **${f.name}** check needs:\n\n${fence(f.err)}\n\nThat check's items are left as they are until it reads again; then this item closes itself.` })) })
 
-let opened = 0, updated = 0, closed = 0
+let opened = 0, updated = 0, closed = 0, keyFailed = 0
 for (const src of results) {
   const present = new Map(src.problems.filter((p) => !IGNORE.some((re) => re.test(p.key))).map((p) => [p.key, p]))
-  for (const p of present.values()) {
+  for (const p of present.values()) try { // one key's failed call never ends the run (sy-pp2a)
     const it = open[p.key]
     if (it) { // open: comment when the finding changed
       if (state.notes[p.key] === undefined) { state.notes[p.key] = p.note; continue } // state lost: adopt, say nothing
@@ -360,14 +360,19 @@ for (const src of results) {
     const r = await bd('POST', '/v0/beads/issues', { title: p.title.slice(0, 200), issue_type: 'task', priority: p.priority, assignee: ASSIGNEE, labels: ['supervisor'],
       actor: ACTOR, owner: ACTOR, description: `${p.body}\n\nsupervisor key: \`${p.key}\`` })
     if (r.id) { state.notes[p.key] = p.note; opened++; console.log(`${p.key}: opened ${r.id}`) }
-  }
+  } catch (e) { keyFailed++; console.error(`${p.key}: its item could not be opened or updated (tried again next run): ${e.message}`) }
   // gone, from a check that ran fine: close it
   for (const k of new Set([...Object.keys(open), ...Object.keys(state.notes), ...Object.keys(state.muted)])) {
     if (!k.startsWith(src.prefix) || present.has(k)) continue
     if (open[k]) {
-      await bd('POST', `/v0/beads/issues/${open[k].id}/comments`, { author: ACTOR, text: `Cleared at ${now}: the supervisor no longer sees it.` })
-      await bd('POST', `/v0/beads/issues/${open[k].id}:close`, { actor: ACTOR, reason: 'cleared (supervisor)' })
-      closed++; console.log(`${k}: cleared; closed ${open[k].id}`)
+      // the Supervisor owns its items: one a role took over (a handoff reassigns it) is still closed when it clears,
+      // with force, as bd refuses a close by another actor than the assignee (sy-pp2a). A failed call on this key is
+      // logged and counted and the run goes on: it never stops the other keys' checks; the next run tries again.
+      try {
+        await bd('POST', `/v0/beads/issues/${open[k].id}/comments`, { author: ACTOR, text: `Cleared at ${now}: the supervisor no longer sees it.` })
+        await bd('POST', `/v0/beads/issues/${open[k].id}:close`, { actor: ACTOR, reason: 'cleared (supervisor)', force: true })
+        closed++; console.log(`${k}: cleared; closed ${open[k].id}`)
+      } catch (e) { keyFailed++; console.error(`${k}: clearing ${open[k].id} failed (tried again next run): ${e.message}`); continue }
     }
     delete state.notes[k]; delete state.muted[k]
   }
@@ -380,4 +385,4 @@ if (known.size) for (const id of Object.keys(state.items)) if (!known.has(id) ||
 for (const [r, t] of Object.entries(state.running)) if (NOW - t > 24 * 3600e3) delete state.running[r]
 fs.writeFileSync(STATE, JSON.stringify(state, null, 1))
 // a failed check is on the board (supervisor:<check>); exit 0 so it is not reported twice
-console.log(`supervisor: ${Object.keys(open).length + opened - closed} open, ${opened} opened, ${updated} updated, ${closed} closed${failed.length ? `; could not run: ${failed.map((f) => `${f.name} (${f.err.slice(0, 120)})`).join(', ')}` : ''}`)
+console.log(`supervisor: ${Object.keys(open).length + opened - closed} open, ${opened} opened, ${updated} updated, ${closed} closed${keyFailed ? `, ${keyFailed} board call(s) failed (tried again next run)` : ''}${failed.length ? `; could not run: ${failed.map((f) => `${f.name} (${f.err.slice(0, 120)})`).join(', ')}` : ''}`)

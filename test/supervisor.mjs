@@ -98,7 +98,12 @@ const srv = http.createServer(async (req, res) => {
   }
   if (req.method === 'POST' && u.pathname === '/v0/beads/issues') return json({ id: item(`sy-s${nextId++}`, { ...b, labels: b.labels }, b.actor).id })
   if (req.method === 'POST' && (m = /^\/v0\/beads\/issues\/([\w.-]+)\/comments$/.exec(u.pathname))) { comment(m[1], b.author, b.text); return json({}) }
-  if (req.method === 'POST' && (m = /^\/v0\/beads\/issues\/([\w.-]+):close$/.exec(u.pathname))) { update(m[1], { status: 'closed', close_reason: b.reason }, b.actor); return json({}) }
+  if (req.method === 'POST' && (m = /^\/v0\/beads\/issues\/([\w.-]+):close$/.exec(u.pathname))) {
+    // as bd does: a close by another actor than the assignee is refused unless forced (sy-pp2a)
+    const it = items.get(m[1])
+    if (it && it.assignee && b.actor && it.assignee !== b.actor && !b.force) { res.writeHead(409, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: `cannot close ${m[1]}: assignee is "${it.assignee}", actor is "${b.actor}"; reclaim or use --force to override` })) }
+    update(m[1], { status: 'closed', close_reason: b.reason }, b.actor); return json({})
+  }
   json({ error: 'no route' }, 404)
 })
 await new Promise((r) => srv.listen(0, '127.0.0.1', r))
@@ -233,6 +238,18 @@ clock = T0 + 81 * MIN
 comment('sy-9', 'platform', 'Taking it again.')
 ok('exit 0', (await supervise()) === 0)
 ok('its role acted on it: cleared', openKeys() === DIRTY)
+
+step('run 9b2 (+82..84 min): an item a role took over still closes when it clears (sy-pp2a)')
+const D3 = openOf(DIRTY)
+update(D3.id, { assignee: 'platform' }, 'ops') // the handoff: ops reassigns the Supervisor's item to platform
+git(WT, ['add', 'third.ts']); git(WT, ['commit', '-qm', 'third'])
+clock = T0 + 82 * MIN
+ok('exit 0: the run does not stop on it', (await supervise()) === 0)
+ok('the reassigned item is closed (with force: bd refuses another actor\'s close otherwise), with "Cleared"', items.get(D3.id).status === 'closed' && /Cleared/.test(items.get(D3.id).comments.at(-1).text))
+write(path.join(WT, 'fourth.ts'), 'x\n', clock - 31 * MIN) // dirty again, so the runs below see what they did before
+clock = T0 + 84 * MIN
+await supervise()
+ok('...and it comes back as a new item when the worktree is dirty again', !!openOf(DIRTY))
 
 step('run 9c (+86 min): t2 items that go ahead without the approver\'s approved (sy-6v8p)')
 // the approvers: the bridge's actor (default `bridge`) and the owner's name, from the board's run files
