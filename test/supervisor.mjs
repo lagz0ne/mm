@@ -125,9 +125,11 @@ lead('ops', 'running'); lead('review', 'idle'); lead('platform', 'idle')
 item('sy-1', { title: 'stalls', status: 'in_progress', priority: 1, assignee: 'platform' }); comment('sy-1', 'platform', 'Plan: do it.')
 item('sy-2', { title: 'moves by commits', status: 'in_progress', priority: 1, assignee: 'platform' }); comment('sy-2', 'platform', 'Plan: commits.')
 item('sy-3', { title: 'moves by agent turns', status: 'in_progress', priority: 0, assignee: 'ops' }); comment('sy-3', 'ops', 'Working.')
-item('sy-4', { title: 'handed over', status: 'in_progress', priority: 2, assignee: 'platform' }); comment('sy-4', 'platform', 'Built it.\nHANDOFF review 1a2b3c4\nThanks.')
+item('sy-4', { title: 'handed over', status: 'in_progress', priority: 2, assignee: 'platform' }); comment('sy-4', 'platform', 'Built it: 1a2b3c4.')
+update('sy-4', { assignee: 'review', status: 'open' }, 'platform') // the handoff: a reassign (bd update -a review --if-assignee platform)
 item('sy-5', { title: 'ready P0 for review', priority: 0, assignee: 'review' })
-item('sy-7', { title: 'waits for the owner', priority: 2, assignee: 'platform' }); comment('sy-7', 'platform', 'HANDOFF owner approve the plan')
+item('sy-7', { title: 'waits for the owner', priority: 2, assignee: 'platform' }); update('sy-7', { assignee: 'alex' }, 'platform') // to a person: needs-you's
+item('sy-10', { title: 'an old signal line', priority: 2, assignee: 'platform' }); comment('sy-10', 'platform', 'Done.\nHANDOFF review 9z9z9z9') // words, not a reassign
 item('sy-8', { title: 'P2 in progress, quiet', status: 'in_progress', priority: 2, assignee: 'platform' })
 
 step('run 1 (+0 min): only the old uncommitted worktree')
@@ -143,7 +145,7 @@ step('run 2 (+12 min): handoff and idle')
 clock = T0 + 12 * MIN
 git(P1, ['add', 'fresh']); git(P1, ['commit', '-qm', 'fresh']) // p1's work got committed
 ok('exit 0', (await supervise()) === 0)
-ok('open: dirty, handoff:sy-4, idle:review (HANDOFF owner and P2 in progress are not watched)', openKeys() === `${DIRTY} handoff:sy-4 idle:review`)
+ok('open: dirty, handoff:sy-4, idle:review (a reassign to a person, a HANDOFF comment line and P2 in progress are not watched)', openKeys() === `${DIRTY} handoff:sy-4 idle:review`)
 ok('handoff item names the role', openOf('handoff:sy-4')?.title.includes('review'))
 ok('idle item names the P0 item and the lead state', /sy-5/.test(openOf('idle:review')?.description) && /idle/.test(openOf('idle:review')?.description))
 
@@ -219,6 +221,18 @@ write(path.join(WT, 'third.ts'), 'x\n', clock - 31 * MIN)
 clock = T0 + 71 * MIN
 await supervise()
 ok('it comes back: a new item', byKey(DIRTY).length === 3 && !!openOf(DIRTY))
+
+step('run 9b (+76 min): wake requeues an expired claim: a stall finding until its role acts')
+item('sy-9', { title: 'claimed, then quiet', status: 'in_progress', priority: 3, assignee: 'platform' }, 'platform', T0 + 20 * MIN)
+clock = T0 + 76 * MIN
+update('sy-9', { status: 'open' }, 'wake') // the requeue: status open, assignee the role, by wake
+comment('sy-9', 'wake', 'Requeued: its claim expired.')
+ok('exit 0', (await supervise()) === 0)
+ok('stall:sy-9 opened at any priority (P3), and says wake put it back', openKeys() === `${DIRTY} stall:sy-9` && /went back to the queue/.test(openOf('stall:sy-9')?.title))
+clock = T0 + 81 * MIN
+comment('sy-9', 'platform', 'Taking it again.')
+ok('exit 0', (await supervise()) === 0)
+ok('its role acted on it: cleared', openKeys() === DIRTY)
 
 step('run 10: the board is down: exit non-zero, nothing written')
 fs.writeFileSync(path.join(T, 'bd.fail'), '')

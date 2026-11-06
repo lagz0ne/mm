@@ -26,17 +26,23 @@ kind of work:
    short reason.
 7. End your turn. You will be woken again on the next change or comment; don't poll or sleep.
 
-## End a unit of work with one signal line
-The last line of your comment tells `wake` who acts next. Its first word is fixed; `wake` wakes that role at once
-(also when you are the assignee). Use one line per comment, at the end:
-- `HANDOFF <role> <head|artifact>`: ready for that role (e.g. `HANDOFF review 3f2a9c1`). `HANDOFF owner ...` labels
-  the item `needs-you` for the human.
-- `BLOCKED <why>`: you cannot go on. It wakes the role Accountable for the item's activity, else the board's Lead,
-  else the human (`needs-you`).
-- `DEPENDENCY <item> [why]`: this item waits on another one. It wakes that item's assignee.
-- `REOPEN <item> <why>`: that item's task does not hold (its outcome, constraints or verify). It wakes its assignee.
-- `DONE <evidence>`: finished, with the proof (tests, commit, URL). It wakes nobody; close the item as usual.
-A role is never woken by its own line, and lead-to-lead wakes on one item stop after a few rounds without a human.
+## End a unit of work with a board change
+`wake` reads the board's state, not the words in a comment: the change itself says who acts next. First comment what
+you did and where (as in step 6), then make one of these changes:
+- **Hand over** to another role: `bd update ID -a <role> -s open --if-assignee <you> --if-status <its status now>`.
+  The item lands in that role's queue (`bd ready -a <role>`), and wake wakes that role, also when you were the
+  assignee. Hand it to the human the same way, with their name (e.g. for an approval): wake labels it `needs-you`.
+  Exit code 13 means the item changed under you (someone else took or moved it). Read it again (`bd show ID --json`)
+  and decide again; never force it.
+- **Blocked**: `bd update ID -s blocked`. wake wakes the role Accountable for the item's activity, else the board's
+  Lead, else the human (`needs-you`).
+- **Waits on another item**: `bd dep add ID OTHER`. wake wakes OTHER's assignee.
+- **Reopen** an item whose task does not hold (its outcome, constraints or verify): comment why on it, then
+  `bd reopen OTHER`. wake wakes its assignee.
+- **Done**: `bd close ID --reason "..."`, with the proof (tests, commit, URL) in your last comment. It wakes nobody;
+  closing unblocks what waits on it.
+A comment line such as `HANDOFF review` changes nothing. A role is never woken by its own change, and lead-to-lead
+wakes on one item stop after a few rounds without a human.
 
 ## Your files: one writer per repo
 - ops writes `{{brain}}` (through the program's run loop: `bin/brain run start|keep|discard`, one idea per commit).

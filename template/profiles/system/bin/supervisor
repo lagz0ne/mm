@@ -2,8 +2,9 @@
 // supervisor — watches how the work flows on this board (profile system; every 5 min under mm cron). It reads; it never
 // builds, never signs off, never accepts, and starts no agent. One item per finding (a stable key, label `supervisor`,
 // for ops), commented when the finding changes, closed when it clears:
-//     stall:<item>       a P0/P1 in progress with no comment, commit or agent turn for 30 min                  P1
-//     handoff:<item>     a comment line `HANDOFF <role> ...` with no reply from that role after 10 min         P1
+//     stall:<item>       a P0/P1 in progress with no comment, commit or agent turn for 30 min, or any item wake
+//                        put back in its role's queue (its claim expired) that the role has not touched since    P1
+//     handoff:<item>     an item reassigned to a role (`bd update -a <role>`) with no act from that role after 10 min P1
 //     idle:<role>        a lead not working (idle, closed, gone) for 10 min while ready P0 work waits for it   P1
 //     dirty:<worktree>   uncommitted files, none touched for 30 min (git worktrees of the mm repo and of each project) P2
 //     supervisor:<check> the supervisor could not read a source (that check's items are left as they are)     P2
@@ -11,7 +12,8 @@
 // `mm ls` (project roots), git (log, status, worktree list). A reply, a comment or a change means one by a lead, its
 // workers (`<role>/...`) or a human; the system's own authors (wake, watchdog) do not count. A commit counts for an item
 // when its message names the item id (any branch). An agent turn is the assignee's lead running (now, or seen running
-// by an earlier check within the window). `HANDOFF owner` is left to needs-you (the human's), not watched here.
+// by an earlier check within the window). A reassign to a person (the owner, a human) is left to needs-you, not watched
+// here. A requeue is wake's own change (in progress -> open, by `wake`): the one system change read here.
 // An item someone closes while its finding is still there mutes that finding until it clears.
 // The board is the truth for which items are open (label `supervisor`, line "supervisor key: `<key>`"); .supervisor.json
 // keeps the journal position and a summary per item, notes, mutes, and when leads were seen running or idle.
@@ -40,7 +42,6 @@ const BD = requireUrl('bd-serve')
 const ACTOR = 'watchdog' // a system author for wake and the lead briefs (not a human, not a lead)
 const SYSTEM = new Set(['wake', 'watchdog', 'ui', 'smoke', 'beads'])
 const KEY_LINE = /^supervisor key: `([^`]+)`$/m
-const HANDOFF = /^HANDOFF ([a-z][\w-]*)(?:\s|$)/gm
 const NOW = Number(E.SUPERVISOR_NOW) || Date.now(), now = new Date(NOW).toISOString()
 const SELF = projectName()
 
@@ -83,7 +84,8 @@ const issues = once(async () => { // every item, all pages
   return [...all.values()]
 })
 // The event journal since the last run, folded into a summary per item: the last change by a person or lead (act),
-// the latest HANDOFF line per role (ho: {seq, at}) and the last thing each role did on it (re: seq).
+// the latest reassign to each role (ho: {seq, at}), the last thing each role did on it (re: seq), wake's latest requeue
+// (rq: {seq, at}), and the item's assignee and status as of the last event (as, st: what a change is read against).
 const journal = once(async () => {
   for (let page = 0; page < 200; page++) {
     const r = await bd('GET', `/v0/beads/events?since=${state.seq}&limit=500`)
@@ -91,13 +93,18 @@ const journal = once(async () => {
     for (const e of recs) {
       state.seq = Math.max(state.seq, e.seq)
       const who = e.comment?.author || e.actor, t = ms(e.comment?.created_at) || ms(e.ts)
-      if (!e.issue_id || !who || SYSTEM.has(who)) continue
-      const s = (state.items[e.issue_id] ||= { act: 0, ho: {}, re: {} })
+      if (!e.issue_id) continue
+      const s = (state.items[e.issue_id] ||= { act: 0, ho: {}, re: {} }), was = { as: s.as, st: s.st }
+      if (e.issue) { s.as = e.issue.assignee || ''; s.st = e.issue.status }
+      if (who === 'wake' && was.st === 'in_progress' && e.issue?.status === 'open') s.rq = { seq: e.seq, at: t } // a requeue
+      if (!who || SYSTEM.has(who)) continue
       s.act = Math.max(s.act, t)
       const role = roleOf(who)
       if (role) s.re[role] = e.seq
-      if (e.op === 'comment' && e.comment?.text) {
-        for (const [, to] of String(e.comment.text).matchAll(HANDOFF)) if (ROLES.includes(to) && to !== role) s.ho[to] = { seq: e.seq, at: t }
+      const to = e.issue?.assignee || ''
+      if (e.issue && was.st !== undefined && to !== was.as) { // reassigned: a handoff to `to` when it is another role
+        for (const r of Object.keys(s.ho)) delete s.ho[r] // handed on: the earlier roles no longer owe a reply
+        if (ROLES.includes(to) && to !== role) s.ho[to] = { seq: e.seq, at: t }
       }
     }
     if (recs.length < 500) break
@@ -143,7 +150,17 @@ async function stall() {
   const [all, sum, ls, cs] = await Promise.all([issues(), journal(), leads(), commits()])
   const problems = [], window = MIN.stall * 60000
   for (const i of all) {
-    if (i.status !== 'in_progress' || !(i.priority <= 1) || mine(i)) continue
+    if (i.status === 'closed' || mine(i)) continue
+    const rq = sum[i.id]?.rq, role = roleOf(i.assignee)
+    if (rq && !((sum[i.id].re[role] || 0) > rq.seq)) { // wake put it back in the queue, and its role has not touched it since
+      problems.push({ key: `stall:${i.id}`, priority: 1, title: `Stalled: ${i.id} (P${i.priority}, ${i.assignee || 'nobody'}) went back to the queue: its claim expired`,
+        note: `requeued by wake at ${at(rq.at)}; assignee ${i.assignee || 'none'}, now ${i.status}`,
+        body: `**${i.id}** "${i.title}" was in progress, and nothing on the board moved for the lease time (wake's setting, 30 min by default). ` +
+          `wake set it back to open at ${at(rq.at)}, assigned to ${i.assignee || 'nobody'}, so it is in that role's queue again.\n\n` +
+          `Find out why it stopped (the lead, its worker), and get it claimed again. After 3 expiries wake labels it needs-you. This item closes itself when the ${i.assignee || 'assigned'} role acts on ${i.id}, or ${i.id} is closed.` })
+      continue
+    }
+    if (i.status !== 'in_progress' || !(i.priority <= 1)) continue
     const s = sum[i.id], lead = ls[i.assignee]
     const lastAct = s?.act || ms(i.updated_at) // no journal record of it: the item's own time
     const turn = lead?.status === 'running' ? NOW : state.running[i.assignee] || 0
@@ -169,8 +186,8 @@ async function handoff() {
     if (!waiting.length) continue
     const roles = waiting.map(([r]) => r).join(', ')
     problems.push({ key: `handoff:${i.id}`, priority: 1, title: `Handoff waits: ${i.id} was handed to ${roles}, no reply for ${MIN.handoff} min`,
-      note: waiting.map(([r, h]) => `HANDOFF ${r} at ${at(h.at)}`).join('\n'),
-      body: `**${i.id}** "${i.title}" has a \`HANDOFF\` line with no reply from that role since:\n\n${waiting.map(([r, h]) => `- ${r}: handed over ${at(h.at)} (${ago(h.at)} ago)`).join('\n')}\n\n` +
+      note: waiting.map(([r, h]) => `handed to ${r} at ${at(h.at)}`).join('\n'),
+      body: `**${i.id}** "${i.title}" was reassigned (handed over), with no reply or change from that role since:\n\n${waiting.map(([r, h]) => `- ${r}: handed over ${at(h.at)} (${ago(h.at)} ago)`).join('\n')}\n\n` +
         `Check that the role was woken and can work (its lead, wake). This item closes itself when the role comments on or changes ${i.id}, or ${i.id} is closed.` })
   }
   return { prefix: 'handoff:', problems }

@@ -2,8 +2,8 @@
 // wake — pokes a role's lead (Paseo agent labelled project=<P> role=<role>) when its work changes on the board.
 // Listens to the Beads event stream; collects reasons per role; sends them only when that lead is idle,
 // so a working lead is never interrupted. Changes a lead (or its workers, actor `<role>/...`) makes never wake it.
-// A comment's typed end signal (HANDOFF <role>, BLOCKED, DEPENDENCY <item>, REOPEN <item>, DONE) also wakes the role it
-// names, even when the writer is the item's assignee (see signal()).
+// The end of a unit of work is a bd state change (reassign, blocked, dep add, reopen, close): it wakes the role who acts
+// next, even when the writer is the item's old assignee (see transition()).
 // Hop limit: after MAX_HOPS lead-to-lead wakes on one item without a human in between, the item gets `needs-you`
 // and leads stop being woken for it until a human acts on it.
 // Leads are on demand: a role with no agent (or a closed one) is started when work waits for it, and a lead idle for
@@ -14,7 +14,6 @@
 // PASEO_NO_SDK=1).
 import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/obs.mjs'
 import * as P_ from './lib/paseo.mjs'
-import { parseSignal } from './lib/signals.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -88,60 +87,71 @@ function raciRoute(e, byLead = false) {
   }
 }
 
-// Typed end signals (plans/slp step 1): a lead ends a unit of work with one comment line whose first word is fixed.
-//   HANDOFF <role> <head|artifact>   wakes <role>; `HANDOFF owner ...` labels the item needs-you
-//   BLOCKED <why>                    wakes the item's Accountable role (its act: activity), else the board's Lead
-//                                    (roles.json `lead`), else labels needs-you
-//   DEPENDENCY <item> [why]          wakes <item>'s assignee
-//   REOPEN <item> <why>              wakes <item>'s assignee (the board's Lead when that is the writer itself)
-//   DONE <evidence>                  wakes nobody (a record: closing the item tells the RACI's Informed roles)
-// This wakes the named role even when the writer is the item's assignee. The last such line in a comment counts.
-// A signal from a lead is a lead-to-lead wake: the hop limit counts it. A role is never woken by its own signal.
-// The parser: bin/lib/signals.mjs.
+// The end of a unit of work is a plain bd state change (plans/slp, "All of it is plain bd"), never a word in a comment:
+//   handoff     bd update <id> -a <role> --if-assignee <me> --if-status <s>   wakes <role> (also when the writer is the
+//               old assignee); a reassign to a person (the owner, a human) labels the item needs-you
+//   blocked     bd update <id> -s blocked     wakes the item's Accountable role (its act: activity), else the board's Lead
+//                                             (roles.json `lead`), else labels needs-you
+//   dependency  bd dep add <id> <other>       wakes <other>'s assignee
+//   reopen      bd reopen <id>                wakes <id>'s assignee (the board's Lead when that is the writer itself)
+//   done        bd close <id>                 wakes nobody (closing tells the RACI's Informed roles)
+// A change is read against what wake last saw of the item (`seen`: its assignee and status). A change by a lead is a
+// lead-to-lead wake: the hop limit counts it. A role is never woken by its own change; the board's own actors (wake's
+// requeue, bd's recompute, the Supervisor) are never a signal.
+const seen = new Map() // item id -> { assignee, status } as of the last event (or the list at start)
 const bdRun = (args, what) => execFile(path.join(P, 'bin/bd'), [...args, '--actor', 'wake'], { cwd: path.join(P, 'control'), timeout: 20000 },
   (err) => err && log(`${what} failed:`, clip(err.message, 200)))
-function signal(e, byLead) {
-  const s = parseSignal(e.comment?.text), woke = new Set()
-  if (!s) return woke
-  const id = e.issue_id, author = e.comment.author || e.actor || 'beads', self = leadOf(e.actor) || leadOf(author)
-  if (SYSTEM.includes(author) || SYSTEM.includes(e.actor)) return woke // only a lead's or a human's line is a signal
-  const title = clip(e.issue?.title, 80), rest = clip(s.rest, 300)
-  count('mm_wake_signals_total', { kind: s.kind })
-  const to = (role, reason) => {
+const KINDS = { handoff: 'HANDOFF', blocked: 'BLOCKED', dependency: 'DEPENDENCY', reopen: 'REOPEN' }
+function transition(e, byLead) {
+  const woke = new Set(), id = e.issue_id, i = e.issue, was = seen.get(id)
+  const writer = e.actor || 'beads', self = leadOf(writer)
+  if (!i || SYSTEM.includes(writer)) return woke
+  const title = clip(i.title, 80), labels = i.labels || []
+  const to = (kind, role, reason) => {
     if (!ROLES.includes(role) || role === self) return false
-    note(role, id, reason, byLead); woke.add(role); log(`${s.kind} on ${id} by ${author}: waking ${role}`); return true
+    count('mm_wake_signals_total', { kind: KINDS[kind] })
+    note(role, id, reason, byLead); woke.add(role); log(`${KINDS[kind]} on ${id} by ${writer}: waking ${role}`); return true
   }
-  const needsYou = (why) => { log(`${s.kind} on ${id} by ${author}: ${why}; labelling needs-you`); bdRun(['label', 'add', id, 'needs-you'], `label ${id}`) }
-  const ofItem = (ref, then) => bd(`/v0/beads/issues/${encodeURIComponent(ref)}`)
-    .then((i) => then(i && i.id ? i : null)).catch(() => then(null))
-  if (s.kind === 'HANDOFF') {
-    const { role, what } = s
-    if (role === 'owner') needsYou('handed to the owner')
-    else if (role !== self && !to(role, `HANDOFF to you from ${author} on ${id} "${title}": ${clip(what, 300) || '(no head or artifact given)'}. It is ready for the ${role} lead: pick it up and answer on the item.`)) {
-      log(`HANDOFF on ${id} by ${author} names no known role (${role || 'none'}); nobody woken`)
-      bdRun(['comments', 'add', id, `HANDOFF names "${role || ''}", which is not a role of this board (${ROLES.filter((r) => r !== 'setup').join(', ')}, or owner). Nobody was woken: write the line again with a role.`], `comment ${id}`)
-    }
-  } else if (s.kind === 'BLOCKED') {
-    const act = (e.issue?.labels || []).find((l) => l.startsWith('act:'))?.slice(4)
+  const needsYou = (kind, why) => {
+    count('mm_wake_signals_total', { kind: KINDS[kind] })
+    log(`${KINDS[kind]} on ${id} by ${writer}: ${why}; labelling needs-you`)
+    if (!labels.includes('needs-you')) bdRun(['label', 'add', id, 'needs-you'], `label ${id}`)
+  }
+  if (e.op === 'dep_add') { // `bd dep add <id> <target>`: <id> now waits on <target>
+    const ref = e.dep?.target
+    if (!ref || (e.dep.kind && e.dep.kind !== 'blocks')) return woke
+    bd(`/v0/beads/issues/${encodeURIComponent(ref)}`).then((d) => {
+      if (!d?.id) return log(`DEPENDENCY on ${id} by ${writer}: no item ${ref} on this board; nobody woken`)
+      if (!to('dependency', d.assignee, `DEPENDENCY: ${writer}'s ${id} "${title}" now waits on your ${ref} "${clip(d.title, 80)}" (${d.status}). Read why on ${id}.`))
+        log(`DEPENDENCY on ${id} by ${writer}: ${ref} has no other lead to wake (${d.assignee || 'unassigned'})`)
+    }).catch(() => {})
+    return woke
+  }
+  if (!was) return woke // never seen before (created while wake was down): the next lead check covers it
+  if (i.assignee && i.assignee !== was.assignee && i.status !== 'closed') {
+    if (ROLES.includes(i.assignee)) to('handoff', i.assignee, `HANDOFF to you from ${writer} on ${id} "${title}" (was ${was.assignee || 'unassigned'}, now ${i.status}). Read its latest comments, then take it up and answer on the item.`)
+    else if (i.assignee !== writer && !SYSTEM.includes(i.assignee)) needsYou('handoff', `handed to ${i.assignee} (a person)`)
+  }
+  if (i.status === 'blocked' && was.status !== 'blocked') {
+    const act = labels.find((l) => l.startsWith('act:'))?.slice(4)
     const acc = Object.entries(raci().find((x) => x.id === act)?.raci || {}).find(([r, l]) => l.includes('A') && ROLES.includes(r) && r !== self)?.[0]
     const target = acc || (BOARD_LEAD !== self ? BOARD_LEAD : null)
-    if (!target || !to(target, `BLOCKED: ${author} is blocked on ${id} "${title}": ${rest || '(no reason given)'}. Help unblock it, or route it to who can.`)) needsYou('no lead to route it to')
-  } else if (s.kind === 'DEPENDENCY' || s.kind === 'REOPEN') {
-    const { ref, why } = s
-    if (ref) ofItem(ref, (i) => {
-      let role = i?.assignee
-      if (s.kind === 'REOPEN' && (!role || role === self)) role = BOARD_LEAD
-      const reason = s.kind === 'DEPENDENCY'
-        ? `DEPENDENCY: ${author}'s ${id} "${title}" waits on your ${ref}${i ? ` "${clip(i.title, 80)}" (${i.status})` : ''}${why ? `: ${clip(why, 300)}` : ''}.`
-        : `REOPEN ${ref}${i ? ` "${clip(i.title, 80)}"` : ''}: ${author} says on ${id} "${title}" that it does not hold: ${clip(why, 300) || '(no reason given)'}.`
-      if (!i) log(`${s.kind} on ${id} by ${author}: no item ${ref} on this board; nobody woken`)
-      else if (!to(role, reason)) log(`${s.kind} on ${id} by ${author}: ${ref} has no other lead to wake (${role || 'unassigned'})`)
-    })
+    if (!target || !to('blocked', target, `BLOCKED: ${writer} set ${id} "${title}" to blocked (assignee ${i.assignee || 'none'}). Read why on the item; help unblock it, or route it to who can.`)) needsYou('blocked', 'no lead to route it to')
   }
-  return woke // the roles woken now (DEPENDENCY and REOPEN wake after a lookup)
+  if (was.status === 'closed' && i.status !== 'closed') {
+    let role = i.assignee
+    if (!role || role === self) role = BOARD_LEAD
+    if (!to('reopen', role, `REOPEN: ${writer} reopened ${id} "${title}" (assignee ${i.assignee || 'none'}): it does not hold. Read why on the item.`))
+      log(`REOPEN of ${id} by ${writer}: no other lead to wake (${role || 'none'})`)
+  }
+  return woke
 }
 
-function onEvent(e) { return span('wake event', { op: e.op, issue: e.issue_id, actor: e.actor }, () => onEvent1(e), { minMs: 1000 }) }
+function onEvent(e) {
+  return span('wake event', { op: e.op, issue: e.issue_id, actor: e.actor }, () => {
+    try { onEvent1(e) } finally { if (e.issue) seen.set(e.issue_id, { assignee: e.issue.assignee || '', status: e.issue.status }) }
+  }, { minMs: 1000 })
+}
 function onEvent1(e) {
   if (e.actor === 'wake') return // its own pause notes
   if (isHuman(e.actor)) { hops.delete(e.issue_id); paused.delete(e.issue_id) } // a human in the loop resets the count
@@ -151,7 +161,7 @@ function onEvent1(e) {
     return
   }
   raciRoute(e, byLead)
-  const signalled = e.op === 'comment' && e.comment ? signal(e, byLead) : new Set()
+  const signalled = transition(e, byLead)
   const role = e.issue?.assignee
   if (!ROLES.includes(role) || leadOf(e.actor) === role || signalled.has(role)) return
   const who = e.actor || 'beads'
@@ -169,12 +179,24 @@ function onEvent1(e) {
 }
 
 // On start: anything already waiting on a lead (ready items, unanswered human comments) counts as a reason.
+// Every item on the board (all pages).
+async function allIssues() {
+  const all = new Map(); let cursor = ''
+  for (let page = 0; page < 40; page++) {
+    const r = await bd(`/v0/beads/issues?limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)
+    for (const i of r.items || []) all.set(i.id, i)
+    cursor = r.has_more && r.next_cursor ? r.next_cursor : ''
+    if (!cursor) break
+  }
+  return [...all.values()]
+}
 async function catchUp() {
-  const [open, ready, ev] = await Promise.all([bd('/v0/beads/issues?limit=500'), bd('/v0/beads/ready?limit=500'), bd('/v0/beads/events?since=0&limit=500')])
+  const [open, ready, ev] = await Promise.all([allIssues(), bd('/v0/beads/ready?limit=500'), bd('/v0/beads/events?since=0&limit=500')])
   const last = {}
   for (const e of ev.records || []) if (e.op === 'comment' && e.comment) last[e.issue_id] = e.comment.author
+  for (const i of open) seen.set(i.id, { assignee: i.assignee || '', status: i.status })
   for (const i of ready.items || []) note(i.assignee, i.id, `${i.id} "${clip(i.title, 80)}" is ready and nobody has picked it up`)
-  for (const i of open.items || []) {
+  for (const i of open) {
     if (last[i.id] && !ROLES.includes(last[i.id])) note(i.assignee, i.id, `${i.id} "${clip(i.title, 80)}" has an unanswered comment from ${last[i.id]}`)
   }
   return ev.head || 0
@@ -389,6 +411,9 @@ if (saved && saved < since) {
   try {
     const r = await fetch(new URL(`/v0/beads/events?since=${saved}&limit=500`, BD)).then((x) => x.json())
     const missed = (r.records || []).filter((e) => (e.seq || 0) > saved && (e.seq || 0) <= head)
+    // `seen` holds the board as it is now, not as it was before these: an item's first replayed change is not read as a
+    // transition (its later ones are); what it left waiting is in the role's queue, which the lead check reads
+    for (const e of missed) seen.delete(e.issue_id)
     for (const e of missed) deliver(e)
     if (missed.length) log(`replayed ${missed.length} event(s) from seq ${saved} (missed while stopped)`)
   } catch (e) { log('replay failed:', e.message) }
