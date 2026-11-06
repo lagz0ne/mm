@@ -180,9 +180,11 @@ export function doctor(): Check[] {
     out.push({ layer: 'access', item: 'tailscale', status: st.ok ? 'ok' : 'warn', detail: st.ok ? 'connected' : 'installed, not connected', fix: st.ok ? undefined : 'sudo tailscale up' })
   }
   if (access === 'domain') {
-    const tr = run(['docker', 'ps', '--format', '{{.Names}}'], { timeoutMs: 10_000 })
-    const trs = run(['sudo', '-n', 'docker', 'ps', '--format', '{{.Names}}'], { timeoutMs: 10_000 })
-    const names = (tr.ok ? tr.out : trs.out)
+    // through mm's own way to Docker (box.docker, e.g. the mm-docker wrapper) when it is set; else plain, then sudo
+    const set = String(process.env.MM_DOCKER || getPath(c, 'box.docker') || '').split(/\s+/).filter(Boolean)
+    const ps = (cmd: string[]) => run([...cmd, 'ps', '--format', '{{.Names}}'], { timeoutMs: 10_000 })
+    const tr = ps(set.length ? set : ['docker'])
+    const names = tr.ok || set.length ? tr.out : ps(['sudo', '-n', 'docker']).out
     out.push({ layer: 'access', item: 'router', status: /traefik/.test(names) ? 'ok' : 'warn', detail: /traefik/.test(names) ? 'Traefik running (routes <name>.<domain>)' : 'no Traefik container found: public names will not route', fix: /traefik/.test(names) ? undefined : 'domain mode: set up Traefik (Dokploy) on this machine' })
   }
   return out
