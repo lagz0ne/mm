@@ -7,6 +7,7 @@ import { BOXES, boxHook, boxish, engineRefusal, gitRefusal, headDrift, hostGitEn
 import { template, templateCommit } from './template'
 import { boxRoute } from './names'
 import { withUpdateLock } from './updlock'
+import { secretsBase } from './vault'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
 const pc = (...a: string[]) => run(['process-compose', '-U', '-u', DIRS.socket, ...a], { timeoutMs: 120_000 })
@@ -293,6 +294,9 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   if (existsSync(pf)) rmSync(pf)
   rmSync(join(BOXES, `${a.project}.yaml`), { force: true }) // a box's registration
   if (a.box) rmSync(join(DIRS.mm, 'box', a.project), { recursive: true, force: true }) // and what mm kept for it (src/box.ts hostDir)
+  // its opened secrets (the memory-backed folder mm opens them in, vault.runtimeDir): nothing of an archived project stays
+  // open there (a box's key and Paseo password were left behind; mm doctor's secret modes failed on them)
+  if (/^[a-z][a-z0-9-]{0,62}$/.test(a.project)) rmSync(join(secretsBase(), a.project), { recursive: true, force: true })
   // the reload can race processes that are still stopping: try again briefly
   let l = loadAll()
   for (let i = 0; i < 5 && !l.ok; i++) { Bun.sleepSync(2000); l = loadAll() }

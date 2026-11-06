@@ -442,7 +442,9 @@ check "...a box's error line with the mark and the word test still reaches mm ob
 IN "rm -f $ROOT/.run/logs/cwh.log" >/dev/null 2>&1
 
 echo "== archive"
+SD=$(D inspect -f '{{range .Mounts}}{{if eq .Destination "/run/mm/secrets"}}{{.Source}}{{end}}{{end}}' "$BOX" 2>/dev/null)
 check "mm archive: the box and its proxy are gone, and what mm kept for it" sh -c "mm archive '$REF' >/dev/null && ! D inspect '$BOX' >/dev/null 2>&1 && ! D inspect '$PX' >/dev/null 2>&1 && ! D network inspect '$NET' >/dev/null 2>&1 && ! test -e '$HD' && ! test -e '$PW' && ! test -e '$MM_HOME_DIR/paseo/$PROJECT' && ! test -e '$MM_HOME_DIR/egress/$PROJECT'"
+check "...and its opened-secrets folder (its AI key, its Paseo password) is gone too" sh -c "[ -n '$SD' ] && ! test -e '$SD'"
 check "...and it left the machine's Paseo" sh -c "[ -z \"\$(joined)\" ]"
 check "...and what the owner granted it through the project API (its requests stay, for the audit)" sh -c "! test -e '$AIT/api/granted/$PROJECT.json' && mm api show '$QE' -o json | jq -e '.status == \"undone\"'"
 check "...its public forwarder and its route are gone" sh -c "! test -e '$MM_HOME_DIR/pc/box-public/$PROJECT.yaml' && { [ -z '$PUBNAME' ] || ! $MM_EXPOSE ls | grep -q '$PUBNAME'; }"
