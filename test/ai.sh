@@ -24,7 +24,7 @@ cat >"$T/up.mjs" <<'EOF'
 import http from 'node:http'; import fs from 'node:fs'
 const [port, out] = process.argv.slice(2)
 http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', async () => {
-  fs.appendFileSync(out, JSON.stringify({ path: req.url, key: req.headers['x-api-key'] || '', auth: req.headers.authorization || '', version: req.headers['anthropic-version'] || '', beta: req.headers['anthropic-beta'] || '' }) + '\n')
+  fs.appendFileSync(out, JSON.stringify({ path: req.url, key: req.headers['x-api-key'] || '', auth: req.headers.authorization || '', version: req.headers['anthropic-version'] || '', beta: req.headers['anthropic-beta'] || '', server_tool: b.includes('web_search') }) + '\n')
   if (req.headers['x-api-key'] !== 'upstream-secret-1') { res.writeHead(401); return res.end('{"type":"error"}') }
   const j = b ? JSON.parse(b) : {}
   if (req.url.startsWith('/v1/messages/count_tokens')) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"input_tokens":42}') }
@@ -102,6 +102,10 @@ for t in web_search_20260209 web_fetch_20260209 code_execution_20260521 mcp_tool
 done
 check "...mcp_servers and a container: 400; and a server tool on count_tokens too" bash -c "call '$S1' '$K1' -d @'$T/b-mcp.json' http://ai/v1/messages | grep -q mcp_servers && call '$S1' '$K1' -d @'$T/b-container.json' http://ai/v1/messages | grep -q container && call '$S1' '$K1' -d @'$T/b-web_search_20260209.json' http://ai/v1/messages/count_tokens | grep -q invalid_request_error"
 check "...and none of them reached the upstream" bash -c "[ \$(wc -l <'$T/up.jsonl') = $N ]"
+# "tools" twice: JS keeps the last (none), a provider may read the first (web search). The upstream gets what mm checked
+printf '{"model":"claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"web_search_20260209","name":"x"}],"tools":[]}' >"$T/b-twice.json"
+check "a key twice (tools: a server tool, then none): the upstream gets the body mm checked, without the server tool (review sy-jm5 1)" bash -c "[ \"\$(code '$S1' '$K1' -d @'$T/b-twice.json' http://ai/v1/messages)\" = 200 ] && tail -1 '$T/up.jsonl' | grep -q '\"server_tool\":false'"
+check "...and a body that is JSON but not an object: 400, never sent" bash -c "N=\$(wc -l <'$T/up.jsonl'); [ \"\$(code '$S1' '$K1' -d '[1,2]' http://ai/v1/messages)\" = 400 ] && [ \"\$(code '$S1' '$K1' -d '\"x\"' http://ai/v1/messages)\" = 400 ] && [ \$(wc -l <'$T/up.jsonl') = \$N ]"
 check "tools that run in the box pass: the caller's own, custom, bash, text editor, memory" bash -c "[ \"\$(code '$S1' '$K1' -d @'$T/b-local.json' http://ai/v1/messages)\" = 200 ]"
 check "a beta that turns on provider-side egress is dropped; the others pass" bash -c "call '$S1' '$K1' -H 'anthropic-beta: interleaved-thinking-2025-05-14,mcp-client-2025-11-20,code-execution-2025-08-25,files-api-2025-04-14' -d '$MSG' http://ai/v1/messages >/dev/null && tail -1 '$T/up.jsonl' | grep -q '\"beta\":\"interleaved-thinking-2025-05-14\"'"
 printf 'ai:\n  enabled: true\n  upstream: http://127.0.0.1:%s\n  max_parallel: 2\n  server_tools:\n    acme-shop: [web_search]\ntelegram:\n  owner_id: "4242"\n' "$UPP" >"$MM_HOME/config.yaml"

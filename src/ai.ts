@@ -220,9 +220,16 @@ export async function serve() {
     }
     const key = upstreamKey()
     if (!key) { log('error', 'no upstream key (mm fill ai-upstream-key)'); return apiError(503, 'api_error', 'the machine has no upstream key yet (the owner: mm fill ai-upstream-key)') }
-    const body = req.method === 'POST' ? await req.arrayBuffer() : undefined
+    const bytes = req.method === 'POST' ? await req.arrayBuffer() : undefined
     let parsed: Record<string, unknown> = {}
-    if (body) { try { parsed = JSON.parse(new TextDecoder().decode(body)) } catch { return apiError(400, 'invalid_request_error', 'the body is not JSON') } }
+    if (bytes) {
+      try { parsed = JSON.parse(new TextDecoder().decode(bytes)) } catch { return apiError(400, 'invalid_request_error', 'the body is not JSON') }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return apiError(400, 'invalid_request_error', 'the body is not a JSON object')
+    }
+    // the upstream gets exactly what was checked (review sy-jm5 1): the parsed body, written out again, never the bytes
+    // as sent. Those could say more than the check saw: a key twice ("tools"), where JS keeps the last and the provider
+    // may read the first
+    const body = bytes ? JSON.stringify(parsed) : undefined
     const serverOk = serverToolsAllowed(project), why = body ? egressRefusal(parsed, serverOk) : null
     if (why) { log('warn', 'server tool refused', { box: project, person: k.person || undefined, why: why.split(';')[0] }); return apiError(400, 'invalid_request_error', why) }
     if (messages) {
