@@ -140,7 +140,8 @@ DH="$T/boxdoop"; SD="$T/boxsock"; KT="$T/boxsecrets"; mkdir -p "$DH" "$SD" "$KT"
 printf '{"containers":{"docker":"%s","doop_image":"%s"}}\n' "$DOCKER" "$IMAGE" >"$DH/endpoints.json"
 printf '{"containers":{"docker":"/bin/false","doop_image":"sha256:%064d"}}\n' 0 >"$P/.run/endpoints.json" # what a box could write: never read
 HP=$(free_port); B3="http://127.0.0.1:$HP"; BP=$(free_port); B4="http://127.0.0.1:$BP"
-hostrun() { DOOP_HOME="$DH" DOOP_PROJECT="$PROJECT" DOOP_BOX_SOCKET="$SD/doop.sock" DOOP_AGENT_KEY_TO="$KT/doop-agent-key" PORT=$HP DOOP_URL=$URL "$P/bin/doop-run" "$@"; }
+# exec: run in the background, the subshell becomes doop-run itself, so $! is doop-run's and a TERM reaches it
+hostrun() { DOOP_HOME="$DH" DOOP_PROJECT="$PROJECT" DOOP_BOX_SOCKET="$SD/doop.sock" DOOP_AGENT_KEY_TO="$KT/doop-agent-key" PORT=$HP DOOP_URL=$URL exec "$P/bin/doop-run" "$@"; }
 hostrun >"$T/run3.log" 2>&1 & RUN=$!
 check "it answers on the host's loopback, with what DOOP_HOME names (the project's .run/ names /bin/false)" up "$B3"
 check "...through the box's socket (0660, the owner's group), to Doop's own listener" bash -c "for i in \$(seq 1 30); do [ -S '$SD/doop.sock' ] && break; sleep 1; done; [ \"\$(stat -c '%a %g' '$SD/doop.sock')\" = '660 $(id -g)' ] && curl -sf --unix-socket '$SD/doop.sock' -o /dev/null 'http://doop.$PROJECT.localhost/healthz'"
@@ -154,6 +155,8 @@ check "its own uid ($DU3): 210000 + n, never the host owner's; its only network 
 check "its data mount is DOOP_HOME/data, nothing of the project" bash -c "[ \"\$(D inspect -f '{{range .Mounts}}{{.Source}} {{end}}' '$C')\" = '$DH/data ' ]"
 check "the backup while it runs (doop-run backup with DOOP_HOME, as mm's landBackup)" bash -c "DOOP_HOME='$DH' DOOP_PROJECT='$PROJECT' '$P/bin/doop-run' backup '$T/doop3.tar.gz' && tar -tzf '$T/doop3.tar.gz' | grep -qx 'doop/pg/global/pg_control'"
 kill -TERM "$RUN"; for _ in $(seq 1 200); do [ -d "/proc/$RUN" ] || break; sleep 0.2; done; RUN=""; kill "$BOXFWD" 2>/dev/null
-check "TERM: its container and network go, the box's socket goes" bash -c "! D inspect '$C' >/dev/null 2>&1 && ! D network inspect '$NET' >/dev/null 2>&1 && ! [ -e '$SD/doop.sock' ]"
+check "TERM: its container goes" bash -c "! D inspect '$C' >/dev/null 2>&1"
+check "...its network goes" bash -c "! D network inspect '$NET' >/dev/null 2>&1"
+check "...the box's socket goes" bash -c "! [ -e '$SD/doop.sock' ]"
 check "the backup while it is stopped: the host owner's tar of DOOP_HOME/data, as doop/" bash -c "DOOP_HOME='$DH' DOOP_PROJECT='$PROJECT' '$P/bin/doop-run' backup '$T/doop4.tar.gz' && tar -tzf '$T/doop4.tar.gz' | grep -qx 'doop/pg/global/pg_control' && ! tar -tzf '$T/doop4.tar.gz' | grep -qv '^doop'"
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]
