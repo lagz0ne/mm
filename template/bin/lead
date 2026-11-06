@@ -4,6 +4,9 @@
 #   bin/lead start <role> [--model provider/model]   start (archives a previous lead of that role first)
 #   bin/lead stop <role>                            archive the lead
 #   bin/lead ls                                     list leads
+#   bin/lead tidy                                   archive this project's old Paseo workspaces and empty projects
+# In Paseo, the project is one project (rooted here) and each role has one workspace in it, reused across restarts
+# (bin/lib/lead-workspace.mjs).
 [ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" lead -- "$0" "$@"
 set -eu
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
@@ -11,7 +14,7 @@ PROJECT=$(sed -n 's/^project:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p' "$P/.mm-ans
 PASEO=${PASEO_BIN:-paseo}
 # Leads are always top-level agents in their own folder. Run from inside an agent (e.g. the setup agent), paseo would
 # otherwise make the lead that agent's sub-agent and use the caller's folder, brief and permissions.
-unset PASEO_AGENT_ID PASEO_AGENT_CWD
+unset PASEO_AGENT_ID PASEO_AGENT_CWD PASEO_WORKSPACE_ID
 ids() { "$PASEO" ls -g --label "project=$PROJECT" --label "role=$1" -q 2>/dev/null || true; }
 # Archive every lead of a role, and say so when one stays (sy-8n1: a silent failure left two leads of one role).
 # A lead in the middle of a turn refuses a plain archive: wait for it up to LEAD_ARCHIVE_WAIT seconds (default 30),
@@ -38,6 +41,7 @@ open_items() {
 }
 case "${1:-}" in
   ls) "$PASEO" ls -g --label "project=$PROJECT" ;;
+  tidy) node "$P/bin/lib/lead-workspace.mjs" --tidy "$P" ;;
   stop) [ -n "${2:-}" ] || { echo "usage: bin/lead stop <role>" >&2; exit 2; }
         archive_role "$2" "" || exit 1 ;;
   start)
@@ -64,8 +68,10 @@ $items"
     # (and the project root: Claude Code runs an MCP headersHelper, e.g. the design lead's Doop key, only when the
     # workspace root, the git root, is trusted; plans/doop.md)
     CDIR=$(MM_PROJECT="$PROJECT" node "$P/bin/lib/claude.mjs" trust "$DIR" "$P") || { echo "lead: could not prepare the Claude folder" >&2; exit 1; }
+    # its place in Paseo: the role's workspace in the project's one Paseo project (empty: Paseo picks, as before)
+    WS=$(node "$P/bin/lib/lead-workspace.mjs" "$P" "$DIR" "$role lead" "$PROJECT" || true)
     "$PASEO" run --no-wait -q --title "$PROJECT · $role lead" --provider "$model" --mode auto --env "CLAUDE_CONFIG_DIR=$CDIR" \
-      --cwd "$DIR" --label "project=$PROJECT" --label "role=$role" \
+      ${WS:+--workspace "$WS"} --cwd "$DIR" --label "project=$PROJECT" --label "role=$role" \
       --env "BEADS_ACTOR=$role" \
       --env "GIT_AUTHOR_NAME=$role" --env "GIT_COMMITTER_NAME=$role" \
       --env "GIT_AUTHOR_EMAIL=$role@$PROJECT.local" --env "GIT_COMMITTER_EMAIL=$role@$PROJECT.local" --env "PATH=$P/bin:$PATH" "$prompt"
