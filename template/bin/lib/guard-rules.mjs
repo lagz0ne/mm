@@ -17,7 +17,8 @@
 //   DUMP    a verb that reads a file out (cat, grep, cp, curl, python3, node, base64, <, …)
 //   WRITE   a verb that writes a file (sed -i, tee, >, cp, mv, rm, install, ln, truncate, open(…), …)
 //   APPROVAL the approval path's files: Claude settings (not the .tmpl.json the setup agent edits) and hooks, this
-//           guard (the board's own bin/guard, not a template copy elsewhere), the bridge, mm's process definitions
+//           guard (the board's own bin/guard, not a template copy elsewhere), the bridge, mm's process definitions, and
+//           the board's .run/endpoints.json (mm writes it: the gateway's key the board checks, the owner's name)
 //   APPROVER an actor whose `approved` counts (bin/supervisor, bin/flow): the bridge's (`bridge`) and the owner's name
 //   BD      bd as a command word (bd, bin/bd, ~/.mm/…/bin/bd, "bd"), then a space
 // rules, checked in order; the first that matches denies with its reason:
@@ -43,7 +44,7 @@ export const RULES = // BEGIN RULES
     "WRITE": "(?:\\bsed\\s+(?:-\\w+\\s+)*-i|\\bperl\\s+(?:-\\w+\\s+)*-\\w*i|\\btee\\b|>>?|\\b(?:cp|mv|rm|install|ln|truncate|chmod|chown|touch|patch|dd|rsync|unlink)\\b|\\b(?:open|write\\w*|append\\w*)\\(\\s*['\"]?)",
     "APPROVER": "(?:[bB][rR][iI][dD][gG][eE]|{{OWNER}})",
     "BD": "(?:^|[\\s;&|(){}`'\"/])bd['\"]?(?=\\s)",
-    "APPROVAL": "(?:\\.claude/settings(?!\\.tmpl)[\\w.-]*\\.json|\\.claude/hooks/|\\.local/lib/(?:paseo-telegram|brain)/|{{MMDIR}}/(?:claude/(?:[\\w.-]+/)?settings[\\w.-]*\\.json|pc/[\\w.-]+\\.ya?ml)|(?:^|[\\s'\"=])(?:\\.\\./)*bin/(?:guard|lib/guard-rules\\.mjs)(?![\\w.-])|{{ROOT}}/bin/(?:guard|lib/guard-rules\\.mjs)(?![\\w.-]))"
+    "APPROVAL": "(?:\\.claude/settings(?!\\.tmpl)[\\w.-]*\\.json|\\.claude/hooks/|\\.local/lib/(?:paseo-telegram|brain)/|{{MMDIR}}/(?:claude/(?:[\\w.-]+/)?settings[\\w.-]*\\.json|pc/[\\w.-]+\\.ya?ml)|(?:^|[\\s'\"=])(?:\\.\\./)*bin/(?:guard|lib/guard-rules\\.mjs)(?![\\w.-])|{{ROOT}}/bin/(?:guard|lib/guard-rules\\.mjs)(?![\\w.-])|(?:^|[\\s'\"=])(?:\\.\\./)*\\.run/endpoints\\.json(?![\\w.-])|{{ROOT}}/\\.run/endpoints\\.json(?![\\w.-]))"
   },
   "rules": [
     {
@@ -149,7 +150,7 @@ export const RULES = // BEGIN RULES
       "id": "approval-write",
       "on": "bash",
       "re": "{{WRITE}}[^;&|]*{{APPROVAL}}",
-      "why": "changes the approval path (Claude settings and hooks, this guard, the bridge, mm's process definitions): mm and the owner change it, never an agent."
+      "why": "changes the approval path (Claude settings and hooks, this guard, the bridge, mm's process definitions, the board's endpoints file): mm and the owner change it, never an agent."
     },
     {
       "id": "ssh-write",
@@ -167,7 +168,7 @@ export const RULES = // BEGIN RULES
       "id": "approval-file",
       "on": "file-write",
       "re": "{{APPROVAL}}",
-      "why": "the approval path (Claude settings and hooks, this guard, the bridge, mm's process definitions): mm and the owner change it, never an agent."
+      "why": "the approval path (Claude settings and hooks, this guard, the bridge, mm's process definitions, the board's endpoints file): mm and the owner change it, never an agent."
     }
   ]
 }
