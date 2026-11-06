@@ -281,7 +281,7 @@ export -f hp cardof cards nreq; export SA SB SYSB BOARD2
 check "GET / with no session: the sign-in page (302 to /s)" bash -c "gw -D - -o /dev/null $G/ | grep -qiE '^location: /s[[:space:]]*\$'"
 check "/s signed in, no board asked: to the home page" bash -c "gw -D - -o /dev/null -H 'cookie: $SA' $G/s | grep -qiE '^location: /[[:space:]]*\$'"
 N0=$(nreq); hp "$SA" >/dev/null
-check "a member of acme-shop sees one card: acme-shop, member, its board's counts and last activity" bash -c "[ \$(cards) = 1 ] && cardof acme-shop | grep -q 'You are <b>member</b>' && cardof acme-shop | grep -q '<b>4</b> open' && cardof acme-shop | grep -q '<b>1</b> need a human' && cardof acme-shop | grep -q '<b>2</b> assigned to you' && cardof acme-shop | grep -q 'Last activity: 2026-11-05 10:00 UTC'"
+check "a member of acme-shop sees one card: acme-shop, member, its board's counts and last activity" bash -c "[ \$(cards) = 1 ] && cardof acme-shop | grep -q 'You are <b>member</b>' && cardof acme-shop | grep -q '<dt>Open</dt><dd>4</dd>' && cardof acme-shop | grep -q '<dt>Needs you</dt><dd>1</dd>' && cardof acme-shop | grep -q '<dt>Mine</dt><dd>2</dd>' && cardof acme-shop | grep -q 'Last activity: 2026-11-05 10:00 UTC'"
 check "...not even the name of what alex isn't granted (acme-other, system), and those boards were never asked" bash -c "! grep -q -e acme-other -e '$BOARD2' -e system '$T/hp' && [ \$(nreq) = '$N0' ]"
 check "...no item text from the board (a title holds a script), no script on the page" bash -c "! grep -qi -e '<script' -e alert '$T/hp'"
 check "...the board link goes through the one-redirect flow (straight to the board's callback)" bash -c "cardof acme-shop | grep -qF 'href=\"/s?b=$BOARD&amp;r=%2F\"' && gw -D - -o /dev/null -H 'cookie: $SA' '$G/s?b=$BOARD&r=%2F' | grep -qi '^location: https://$BOARD/_mm/auth/callback?c='"
@@ -289,7 +289,7 @@ check "the page's headers: CSP default-src 'self' + frame-ancestors 'none', no-s
 check "/s/done (where a link lands) is the same home page" bash -c "gw -H 'cookie: $SA' $G/s/done | grep -q '<h2>acme-shop</h2>'"
 hp "$SB" >/dev/null
 check "the owner sees every project and the system board, as owner" bash -c "[ \$(cards) = 3 ] && for p in acme-other acme-shop system; do cardof \$p | grep -q 'You are <b>owner</b>' || exit 1; done"
-check "...each with its board's counts (the owner's needs-you counts the signed-off t2s)" bash -c "cardof acme-shop | grep -q '<b>2</b> need a human' && cardof acme-shop | grep -q '<b>0</b> assigned to you' && cardof acme-other | grep -q '<b>3</b> open' && cardof system | grep -q '<b>7</b> open'"
+check "...each with its board's counts (the owner's needs-you counts the signed-off t2s)" bash -c "cardof acme-shop | grep -q '<dt>Needs you</dt><dd>2</dd>' && cardof acme-shop | grep -q '<dt>Mine</dt><dd>0</dd>' && cardof acme-other | grep -q '<dt>Open</dt><dd>3</dd>' && cardof system | grep -q '<dt>Open</dt><dd>7</dd>'"
 check "...each board asked once, with its own fresh assertion: this person, this role, that board's host, 60 s" bash -c "[ \$(wc -l <'$T/fb2.jsonl') = 1 ] && [ \$(wc -l <'$T/sys.jsonl') = 1 ] && node '$T/verify.mjs' \"\$(jq -r .a '$T/fb2.jsonl')\" '$MM_HOME/auth/signing.key' '$BOARD2' boss owner && node '$T/verify.mjs' \"\$(jq -r .a '$T/sys.jsonl')\" '$MM_HOME/auth/signing.key' '$SYSB' boss owner && jq -e '.p == \"/api/summary\" and .h == \"$BOARD2\"' '$T/fb2.jsonl'"
 check "an assertion for one board (acme-other's) replayed to another (acme-shop's): 401" bash -c "[ \$(sm \"\$(tail -1 '$T/fb2.jsonl' | jq -r .a)\") = 401 ]"
 check "the projects' .run/services.json (above: claiming each other's hosts and the gateway's) moved no card or link" bash -c "cardof acme-shop | grep -qF 'b=$BOARD&amp;' && cardof acme-other | grep -qF 'b=$BOARD2&amp;' && ! grep -q '$AUTH' '$T/hp'"
@@ -298,19 +298,19 @@ check "alex granted acme-other too: two cards; that board asked as alex, member"
 mm revoke alex acme-other >/dev/null; N1=$(nreq); hp "$SA" >/dev/null
 check "a revoke removes the card on the next load (no cache), and that board is no longer asked" bash -c "[ \$(cards) = 1 ] && ! grep -q acme-other '$T/hp' && [ \$(nreq) = \$(( $N1 + 0 )) ]"
 mm user add vic >/dev/null; mm grant vic acme-shop --as viewer >/dev/null; LV=$(link_of vic); open_link "$LV" "$T/hv"; SV=$(sess "$T/hv"); hp "$SV" >/dev/null
-check "a viewer: the card says read-only, shows the counts, and has no write link (only the read-only view)" bash -c "cardof acme-shop | grep -q 'You are <b>viewer</b> (read-only)' && cardof acme-shop | grep -q '<b>4</b> open' && cardof acme-shop | grep -q 'View the board (read-only)' && ! grep -q -e 'class=\"open\"' -e 'Open the board' '$T/hp'"
+check "a viewer: the card says read-only, shows the counts, and has no write link (only the read-only view)" bash -c "cardof acme-shop | grep -q 'You are <b>viewer</b> (read-only)' && cardof acme-shop | grep -q '<dt>Open</dt><dd>4</dd>' && cardof acme-shop | grep -q 'View the board (read-only)' && ! grep -q -e 'class=\"open\"' -e 'Open the board' '$T/hp'"
 echo script >"$T/fb2.mode"; hp "$SB" >/dev/null
-check "a board's answer with <script> in it fails the schema: its card is unavailable, nothing of it on the page" bash -c "cardof acme-other | grep -q 'Summary unavailable' && ! grep -qi -e '<script' -e alert '$T/hp' && cardof acme-shop | grep -q '<b>4</b> open'"
+check "a board's answer with <script> in it fails the schema: its card is unavailable, nothing of it on the page" bash -c "cardof acme-other | grep -q 'Summary unavailable' && ! grep -qi -e '<script' -e alert '$T/hp' && cardof acme-shop | grep -q '<dt>Open</dt><dd>4</dd>'"
 echo extra >"$T/fb2.mode"; hp "$SB" >/dev/null
 check "...a field the schema doesn't know (an item title): unavailable, nothing of it on the page" bash -c "cardof acme-other | grep -q 'Summary unavailable' && ! grep -qi -e '<script' -e alert '$T/hp'"
 echo badnum >"$T/fb2.mode"; hp "$SB" >/dev/null
 check "...a count that isn't a whole number 0..1e6: unavailable" bash -c "cardof acme-other | grep -q 'Summary unavailable' && ! grep -q 10000000 '$T/hp'"
 echo hang >"$T/fb2.mode"; TH=$(hp "$SB")
-check "a board that hangs: only its own card fails; the page comes in about 3 s (took ${TH}s)" bash -c "cardof acme-other | grep -q 'Summary unavailable' && cardof acme-shop | grep -q '<b>4</b> open' && cardof system | grep -q '<b>7</b> open' && awk 'BEGIN{exit !($TH < 5)}'"
+check "a board that hangs: only its own card fails; the page comes in about 3 s (took ${TH}s)" bash -c "cardof acme-other | grep -q 'Summary unavailable' && cardof acme-shop | grep -q '<dt>Open</dt><dd>4</dd>' && cardof system | grep -q '<dt>Open</dt><dd>7</dd>' && awk 'BEGIN{exit !($TH < 5)}'"
 echo big >"$T/fb2.mode"; TB=$(hp "$SB")
-check "a board that sends 10 MB: only its own card fails, cut at 16 KB (took ${TB}s)" bash -c "cardof acme-other | grep -q 'Summary unavailable' && cardof acme-shop | grep -q '<b>4</b> open' && cardof system | grep -q '<b>7</b> open' && awk 'BEGIN{exit !($TB < 2.5)}'"
+check "a board that sends 10 MB: only its own card fails, cut at 16 KB (took ${TB}s)" bash -c "cardof acme-other | grep -q 'Summary unavailable' && cardof acme-shop | grep -q '<dt>Open</dt><dd>4</dd>' && cardof system | grep -q '<dt>Open</dt><dd>7</dd>' && awk 'BEGIN{exit !($TB < 2.5)}'"
 echo redirect >"$T/fb2.mode"; hp "$SB" >/dev/null
-check "a board that redirects: not followed; only its card fails" bash -c "sleep 0.3; cardof acme-other | grep -q 'Summary unavailable' && cardof system | grep -q '<b>7</b> open' && ! grep -q followed '$T/fb2.jsonl'"
+check "a board that redirects: not followed; only its card fails" bash -c "sleep 0.3; cardof acme-other | grep -q 'Summary unavailable' && cardof system | grep -q '<dt>Open</dt><dd>7</dd>' && ! grep -q followed '$T/fb2.jsonl'"
 check "the gateway logs each failed card, with no assertion in the log" bash -c "grep 'board summary unavailable' '$T/gw.log' | grep -q timeout && grep 'board summary unavailable' '$T/gw.log' | grep -q 'too big' && grep 'board summary unavailable' '$T/gw.log' | grep -q 'not a summary' && ! grep -qF \"\$(tail -1 '$T/fb2.jsonl' | jq -r .a | cut -d. -f2)\" '$T/gw.log'"
 echo good >"$T/fb2.mode"
 # a box (in its own services.yaml) claims acme-other's board host: the host is refused for both
@@ -318,7 +318,22 @@ fakeproj "$T/proj4" acme-fourth board-other-acme; echo "# from $T/proj4/services
 N2=$(nreq); hp "$SB" >/dev/null
 check "a box claiming another board's host: no card for either, and no assertion goes to that host" bash -c "! grep -q -e acme-other -e acme-fourth -e '$BOARD2' '$T/hp' && [ \$(nreq) = \$(( $N2 + 1 )) ] && [ \"\$(tail -1 '$T/sys.jsonl' | jq -r .h)\" = '$SYSB' ]"
 rm -f "$MM_HOME/pc/boxes/acme-fourth.yaml"; sleep 0.5; hp "$SB" >/dev/null
-check "...the claim gone: acme-other's card is back" bash -c "cardof acme-other | grep -q '<b>3</b> open'"
+check "...the claim gone: acme-other's card is back" bash -c "cardof acme-other | grep -q '<dt>Open</dt><dd>3</dd>'"
+
+echo "== the gateway's pages: one stylesheet, no inline style (the CSP blocks it; sy-vey6)"
+pg() { gw -D "$T/pg-$1.h" -o "$T/pg-$1.html" "${@:2}"; }
+pg code "$G/s?b=$BOARD&r=/items"; pg continue "$G/api/auth/magic-link/verify?token=x&callbackURL=/s/done"; pg expired "$G/s/done"
+pg noaccess -H "cookie: $SA" "$G/s?b=$BOARD2"; pg home -H "cookie: $SA" "$G/"; pg owner -H "cookie: $SB" "$G/"
+PAGES="code continue expired noaccess home owner"; export PAGES
+check "the pages are what they should be (code, Continue, expired, no access, home, the owner's home)" bash -c "grep -q 'id=\"code\"' '$T/pg-code.html' && grep -q 'action=\"/s/l\"' '$T/pg-continue.html' && grep -q expired '$T/pg-expired.html' && grep -q 'no access' '$T/pg-noaccess.html' && grep -q '<h2>acme-shop</h2>' '$T/pg-home.html' && grep -q '<h2>system</h2>' '$T/pg-owner.html'"
+check "no page has a style= attribute or a <style> tag" bash -c "for p in \$PAGES; do ! grep -qiE 'style=|<style' '$T'/pg-\$p.html || exit 1; done"
+check "each page links the one stylesheet, /s/app.css, and nothing else" bash -c "for p in \$PAGES; do [ \$(grep -o '<link[^>]*>' '$T'/pg-\$p.html | wc -l) = 1 ] && grep -q '<link rel=\"stylesheet\" href=\"/s/app.css\">' '$T'/pg-\$p.html || exit 1; done"
+check "no inline script anywhere; only the code page loads a script, /s/app.js (same origin)" bash -c "for p in \$PAGES; do n=\$(grep -o '<script[^>]*>' '$T'/pg-\$p.html | wc -l); if [ \$p = code ]; then [ \$n = 1 ] && grep -q '<script src=\"/s/app.js\"></script>' '$T'/pg-code.html || exit 1; else [ \$n = 0 ] || exit 1; fi; done"
+check "every page keeps the CSP (default-src 'self'; frame-ancestors 'none'), no-store and no-referrer" bash -c "for p in \$PAGES; do grep -qi \"^content-security-policy: default-src 'self'; frame-ancestors 'none'\" '$T'/pg-\$p.h && grep -qi '^cache-control: no-store' '$T'/pg-\$p.h && grep -qi '^referrer-policy: no-referrer' '$T'/pg-\$p.h || exit 1; done"
+check "each page has the board's header line and a phone viewport" bash -c "for p in \$PAGES; do grep -q '<header class=\"top\"><h1>' '$T'/pg-\$p.html && grep -q 'name=\"viewport\" content=\"width=device-width,initial-scale=1\"' '$T'/pg-\$p.html || exit 1; done"
+gw -D "$T/css.h" -o "$T/app.css" "$G/s/app.css"
+check "/s/app.css: 200, text/css, the same CSP, nosniff, no-referrer, cacheable" bash -c "head -1 '$T/css.h' | grep -q 200 && grep -qi '^content-type: text/css' '$T/css.h' && grep -qi \"^content-security-policy: default-src 'self'; frame-ancestors 'none'\" '$T/css.h' && grep -qi '^x-content-type-options: nosniff' '$T/css.h' && grep -qi '^referrer-policy: no-referrer' '$T/css.h' && grep -qi '^cache-control: public, max-age=' '$T/css.h'"
+check "...the boards' style: their font stack, no rounded corners, no shadows, no font or file from elsewhere" bash -c "grep -qF \"font-family:'Inter Variable','Helvetica Neue',Helvetica,Arial\" '$T/app.css' && grep -q 'border-radius:0' '$T/app.css' && ! grep -qiE 'border-radius:[^0]|box-shadow|@import|url\\(|https?:' '$T/app.css'"
 kill $BS $FB $FB2 $FS 2>/dev/null
 
 LF=$(link_of alex); gw -o /dev/null -H 'cf-connecting-ip: 6.6.6.6' -H "origin: https://$AUTH" -d "t=$(qs "$LF" token)&c=$(qs "$LF" callbackURL)" "$G/s/l"

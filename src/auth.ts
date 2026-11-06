@@ -364,7 +364,7 @@ export async function gateway() {
       const p = await personOf(req)
       return p ? home(p) : new Response(null, { status: 302, headers: { location: '/s', ...headers } })
     }
-    if (path === '/s/home.css') return new Response(HOME_CSS, { headers: { 'content-type': 'text/css', ...headers } })
+    if (path === '/s/app.css') return new Response(APP_CSS, { headers: { 'content-type': 'text/css; charset=utf-8', ...headers, 'cache-control': 'public, max-age=3600' } }) // the one file that may be cached
     if (path === '/s/out' && req.method === 'POST') {
       const p = await personOf(req)
       if (p) { db.run('DELETE FROM mm_board_session WHERE parent = ?', [p.token]); db.run('DELETE FROM session WHERE token = ?', [p.token]); log('info', 'signed out', { user: p.name }) }
@@ -527,33 +527,72 @@ export function summaryOf(o: unknown): Summary | null {
   const n = (k: typeof COUNTS[number]) => x[k] as number
   return { open: n('open'), p0: n('p0'), blocked: n('blocked'), needs_you: n('needs_you'), mine: n('mine'), ...(x.last ? { last: new Date(x.last as string).toISOString() } : {}) }
 }
+// ---------- the gateway's pages (sy-vey6): the boards' Swiss style, one stylesheet, no inline style ----------
+// The CSP (default-src 'self') blocks style="" and <style>, so every page links /s/app.css, served from here. The same
+// header line as a board: the page's name large and bold, a small nav, a solid rule under it.
+function shell(title: string, nav: string, body: string, tail = '') {
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${esc(title)}</title>
+<link rel="stylesheet" href="/s/app.css">
+<body><header class="top"><h1>${esc(title)}</h1><nav>${nav}</nav></header>
+<main class="wrap">${body}</main>${tail}`
+}
+const SIGN_IN_NAV = '<span class="here">Sign in</span>'
 /** Made on the server, no script; every value escaped; the name and link from the gateway's own data, never a board's. */
 function homePage(name: string, cards: { project: string; host: string; role: string; s: Summary | null }[]) {
-  const count = (label: string, v: number, cls = '') => `<li${cls && v ? ` class="${cls}"` : ''}><b>${v}</b> ${label}</li>`
+  const count = (label: string, hint: string, v: number, hot = false) => `<div${hot && v ? ' class="hot"' : ''} title="${hint}"><dt>${label}</dt><dd>${v}</dd></div>`
   const card = (c: typeof cards[number]) => `<section class="card"><h2>${esc(c.project)}</h2>
 <p class="role">You are <b>${esc(c.role)}</b>${c.role === 'viewer' ? ' (read-only)' : ''}</p>
-${c.s ? `<ul class="counts">${count('open', c.s.open)}${count('P0', c.s.p0, 'hot')}${count('blocked', c.s.blocked)}${count('need a human', c.s.needs_you, 'hot')}${count('assigned to you', c.s.mine)}</ul>
+${c.s ? `<dl class="counts">${count('Open', 'open items', c.s.open)}${count('P0', 'open P0 items', c.s.p0, true)}${count('Blocked', 'blocked items', c.s.blocked)}${count('Needs you', 'items that need a human', c.s.needs_you, true)}${count('Mine', 'open items assigned to you', c.s.mine)}</dl>
 ${c.s.last ? `<p class="last">Last activity: ${esc(c.s.last.slice(0, 16).replace('T', ' '))} UTC</p>` : ''}` : '<p class="na">Summary unavailable right now.</p>'}
-<p><a class="${c.role === 'viewer' ? 'view' : 'open'}" href="/s?b=${encodeURIComponent(c.host)}&amp;r=%2F">${c.role === 'viewer' ? 'View the board (read-only)' : 'Open the board'}</a></p></section>`
-  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Your boards</title>
-<link rel="stylesheet" href="/s/home.css"><body><header><h1>Your boards</h1><p>Signed in as <b>${esc(name)}</b>.</p>
-<form method="post" action="/s/out"><button type="submit">Sign out</button></form></header>
-${cards.length ? `<main>${cards.map(card).join('\n')}</main>` : '<p>You have no board yet; the owner can grant you one.</p>'}`
+<p class="go"><a class="${c.role === 'viewer' ? 'view' : 'open'}" href="/s?b=${encodeURIComponent(c.host)}&amp;r=%2F">${c.role === 'viewer' ? 'View the board (read-only)' : 'Open the board'}</a></p></section>`
+  const nav = `<span class="here">Boards</span><span class="who">Signed in as <b>${esc(name)}</b></span><form method="post" action="/s/out"><button type="submit" class="quiet">Sign out</button></form>`
+  return shell('Your boards', nav, cards.length ? `<div class="cards">${cards.map(card).join('\n')}</div>` : '<p>You have no board yet; the owner can grant you one.</p>')
 }
-const HOME_CSS = `body{font-family:system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem;line-height:1.5;color:#222}
-header{display:flex;gap:1rem;align-items:baseline;flex-wrap:wrap}h1{font-size:1.4rem;margin:0}header form{margin-left:auto}
-main{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:1rem;margin-top:1rem}
-.card{border:1px solid #ccc;border-radius:.5rem;padding:.8rem 1rem}.card h2{font-size:1.1rem;margin:0 0 .2rem}
-.role,.last,.na{color:#555;margin:.2rem 0}.counts{list-style:none;padding:0;margin:.5rem 0;display:flex;flex-wrap:wrap;gap:.3rem 1rem}
-.counts .hot b{color:#b00}a.open,a.view{font-weight:600}`
+// the boards' tokens (template/site/src/index.css): near-black on near-white, hairline rules, one red, no radius
+const APP_CSS = `:root{--fg:oklch(0.16 0 0);--bg:oklch(0.995 0 0);--muted:oklch(0.48 0 0);--rule:oklch(0.88 0 0);--swiss:oklch(0.58 0.235 27)}
+*,*::before,*::after{box-sizing:border-box}
+html{font-family:'Inter Variable','Helvetica Neue',Helvetica,Arial,sans-serif;font-feature-settings:'cv11','ss01';-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%;color:var(--fg);background:var(--bg)}
+body{margin:0;font-size:15px;line-height:1.45}
+a{color:inherit;text-underline-offset:3px}
+b{font-weight:600}
+:focus-visible{outline:2px solid var(--swiss);outline-offset:2px}
+.top{display:flex;flex-wrap:wrap;align-items:flex-end;gap:.75rem 1.5rem;padding:1rem 1rem .75rem;border-bottom:1px solid var(--fg)}
+.top h1{margin:0;font-size:2.25rem;line-height:1;font-weight:700;letter-spacing:-.025em}
+.top nav{display:flex;flex-wrap:wrap;align-items:flex-end;gap:.25rem 1rem;font-size:13px;font-weight:600;padding-bottom:2px}
+.top nav .here{border-bottom:2px solid var(--fg);padding-bottom:2px}
+.top nav .who{color:var(--muted);font-weight:500;padding-bottom:4px}
+.top nav form{margin:0}
+.wrap{padding:1.5rem 1rem 3rem;max-width:72rem}
+.wrap>p,.wrap>form{max-width:34rem}
+p{margin:0 0 .75rem;overflow-wrap:anywhere}
+.muted,.note{color:var(--muted)}
+.note{font-size:13px;border-top:1px solid var(--rule);padding-top:.75rem;margin-top:1.5rem}
+.label{margin:0;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.code{margin:.25rem 0 1rem;padding:.75rem 0;border-top:1px solid var(--fg);border-bottom:1px solid var(--fg);font:700 2.5rem/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.12em;font-variant-numeric:tabular-nums}
+button{font:inherit;font-size:14px;font-weight:600;min-height:44px;padding:.6rem 1.5rem;border:1px solid var(--fg);border-radius:0;background:var(--fg);color:var(--bg);cursor:pointer}
+button:hover{background:var(--swiss);border-color:var(--swiss)}
+button.quiet{min-height:0;padding:0 0 2px;border:0;border-bottom:2px solid transparent;background:none;color:var(--fg);font-size:13px}
+button.quiet:hover{border-bottom-color:var(--swiss);color:var(--swiss)}
+.cards{display:grid;grid-template-columns:1fr;column-gap:2rem;border-top:1px solid var(--fg)}
+.card{padding:1rem 0 1.25rem;border-bottom:1px solid var(--rule)}
+.card h2{margin:0 0 .15rem;font-size:1.25rem;line-height:1.2;font-weight:700;letter-spacing:-.01em;overflow-wrap:anywhere}
+.card .role,.card .last,.card .na{margin:0;font-size:13px;color:var(--muted)}
+.card .role b{color:var(--fg)}
+.counts{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0 .75rem;margin:.9rem 0 .6rem}
+.counts dt{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.counts dd{margin:.2rem 0 0;font-size:1.75rem;line-height:1;font-weight:700;font-variant-numeric:tabular-nums}
+.counts .hot dt,.counts .hot dd{color:var(--swiss)}
+.card .go{margin:.9rem 0 0}
+.card .go a{font-size:14px;font-weight:600;text-decoration:none;border-bottom:2px solid var(--fg);padding-bottom:1px}
+.card .go a:hover{color:var(--swiss);border-bottom-color:var(--swiss)}
+@media (min-width:40rem){.top{padding:1rem 1.5rem .75rem}.wrap{padding:2rem 1.5rem 3rem}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (min-width:64rem){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}`
 function codePage(code: string, board: string) {
-  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in</title>
-<body style="font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;line-height:1.5"><h1 style="font-size:1.4rem">Sign in${board ? ` to ${esc(board)}` : ''}</h1>
+  return shell('Sign in', SIGN_IN_NAV, `${board ? `<p class="label">Board</p><p>${esc(board)}</p>` : ''}
 <p>Give this code to the owner to approve, or open the sign-in link they sent you:</p>
-<p id="code" style="font:700 2.4rem ui-monospace,monospace;letter-spacing:.15em">${esc(code)}</p>
-<p id="state" style="color:#555">Waiting for approval… (valid ${Math.round(CODE_MS / 60e3)} minutes)</p>
-<p style="color:#555;font-size:.9rem">The code does nothing by itself. Only the owner can approve it.</p>
-<script src="/s/app.js"></script>`
+<p id="code" class="code">${esc(code)}</p>
+<p id="state" class="muted">Waiting for approval… (valid ${Math.round(CODE_MS / 60e3)} minutes)</p>
+<p class="note">The code does nothing by itself. Only the owner can approve it.</p>`, '\n<script src="/s/app.js"></script>')
 }
 const CODE_JS = `(function poll(){fetch('/s/poll',{credentials:'same-origin'}).then(function(r){return r.json().then(function(j){
 if(j.state==='approved'){document.getElementById('state').textContent='Approved. Signing you in…';var u=new URL(j.next,location.href),f=document.createElement('form');f.method='post';f.action='/s/l';
@@ -562,13 +601,11 @@ if(j.state==='expired'){document.getElementById('state').textContent='This code 
 setTimeout(poll,2000)})}).catch(function(){setTimeout(poll,4000)})})()`
 /** What a sign-in link opens: a button. Its POST signs in (a preview or a scanner only sees this page). No script. */
 function continuePage(token: string, callbackURL: string) {
-  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Sign in</title>
-<body style="font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;line-height:1.5"><h1 style="font-size:1.4rem">Sign in</h1>
-<p>This link signs you in once. Press Continue to use it.</p>
+  return shell('Sign in', SIGN_IN_NAV, `<p>This link signs you in once. Press Continue to use it.</p>
 <form method="post" action="/s/l"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="c" value="${esc(callbackURL)}">
-<button type="submit" style="font-size:1.1rem;padding:.5rem 1.4rem">Continue</button></form>`
+<button type="submit">Continue</button></form>`)
 }
+/** A short message (expired link, refused, no access): `text` is the caller's, with any value in it escaped. */
 function page(text: string) {
-  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in</title>
-<body style="font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;line-height:1.5"><h1 style="font-size:1.4rem">Sign in</h1><p>${text}</p>`
+  return shell('Sign in', SIGN_IN_NAV, `<p>${text}</p>`)
 }

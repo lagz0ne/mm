@@ -34,6 +34,11 @@ Status: **built** (`src/auth.ts`; `test/auth.sh`, `test/auth-e2e.sh`, `test/box-
   host, then goes back to the page. The person sees one redirect, never a new link. The same works on `*.localhost`.
 - The page loads no third-party script and is served with `Content-Security-Policy: default-src 'self'`,
   `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+- **Every gateway page** (the code page, the link's Continue page, the home page, the short messages) is in the
+  boards' Swiss style, with the same header line as a board. That CSP blocks `style=""` and `<style>`, so the pages
+  carry no inline style: they link one stylesheet, `/s/app.css`, served by the gateway (same headers, but cacheable
+  for an hour). Fonts: the boards' stack (`'Inter Variable', 'Helvetica Neue', Helvetica, Arial`), from the device;
+  nothing is loaded from elsewhere. The only script is the code page's `/s/app.js` (same origin, so the CSP allows it).
 
 ## Home
 `https://auth.<domain>/` (and `/s/done`, where a link lands) is the signed-in person's home page: one card per board
@@ -56,7 +61,7 @@ they hold a role on. No session: `/` goes to the sign-in page.
   board this way.
 - **The page** is made on the server, has no script, escapes every value, and carries the gateway's headers
   (`Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`, `no-store`, `no-referrer`, `nosniff`); its
-  stylesheet is `/s/home.css` on the same host.
+  stylesheet is `/s/app.css` (below).
 
 ## Hosts and cookies
 - The session cookie (Better Auth's, `__Secure-` prefixed) is **host-only** on `auth.<domain>`, `HttpOnly; Secure`,
