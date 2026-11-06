@@ -1,0 +1,49 @@
+#!/usr/bin/env node
+// dolt-ready <socket> — does this project's Dolt answer a query? Exit 0 when `SELECT 1` over its Unix socket returns a
+// result; 1 (and why, on stderr) otherwise. The process manager's readiness probe for dolt (services.yaml), so bd-serve
+// starts once Dolt really answers, not when its socket file exists (sy-5ku). It speaks just enough of the MySQL protocol:
+// the server's greeting, a login as root without a password (Dolt's local default, what bd uses), one query, quit.
+// No dependency and no Dolt CLI (that would start a full Dolt, with its own config and metrics, every few seconds).
+import net from 'node:net'
+
+const sock = process.argv[2], ms = Number(process.env.DOLT_READY_TIMEOUT_MS || 3000)
+if (!sock) { console.error('usage: dolt-ready <socket>'); process.exit(2) }
+const fail = (why) => { console.error(`dolt-ready: ${why}`); process.exit(1) }
+setTimeout(() => fail(`no answer in ${ms} ms`), ms)
+
+const c = net.connect({ path: sock })
+c.on('error', (e) => fail(e.code || e.message))
+const send = (seq, payload) => { const h = Buffer.alloc(4); h.writeUIntLE(payload.length, 0, 3); h[3] = seq & 0xff; c.write(Buffer.concat([h, payload])) }
+let buf = Buffer.alloc(0), step = 'greeting'
+c.on('data', (d) => {
+  buf = Buffer.concat([buf, d])
+  while (buf.length >= 4) {
+    const len = buf.readUIntLE(0, 3)
+    if (buf.length < 4 + len) return
+    const seq = buf[3], p = buf.subarray(4, 4 + len)
+    buf = buf.subarray(4 + len)
+    packet(seq, p)
+  }
+})
+
+function packet(seq, p) {
+  if (p[0] === 0xff) fail(`${step}: error ${p.readUInt16LE(1)}: ${p.subarray(p[3] === 0x23 ? 9 : 3).toString()}`) // ERR packet
+  if (step === 'greeting') {
+    if (p[0] !== 10) fail(`greeting: protocol ${p[0]}, not 10`)
+    // CLIENT_LONG_PASSWORD | CLIENT_PROTOCOL_41 | CLIENT_SECURE_CONNECTION | CLIENT_PLUGIN_AUTH
+    const head = Buffer.alloc(32)
+    head.writeUInt32LE(0x1 | 0x200 | 0x8000 | 0x80000, 0); head.writeUInt32LE(1 << 24, 4); head[8] = 33 // max packet, utf8
+    send(seq + 1, Buffer.concat([head, Buffer.from('root\0'), Buffer.from([0]), Buffer.from('mysql_native_password\0')]))
+    step = 'login'
+  } else if (step === 'login') {
+    if (p[0] === 0xfe) { send(seq + 1, Buffer.alloc(0)); return } // switch to another method: still no password
+    if (p[0] !== 0x00) fail(`login: answer 0x${p[0].toString(16)}`)
+    step = 'query'
+    send(0, Buffer.concat([Buffer.from([0x03]), Buffer.from('SELECT 1')])) // COM_QUERY
+  } else if (step === 'query') {
+    if (p[0] === 0x00 || p[0] === 0xfe) fail('query: no result set')
+    step = 'done' // the result set's column count: Dolt ran it
+    send(0, Buffer.from([0x01])) // COM_QUIT: a clean goodbye, no "client hung up" line in Dolt's log
+    c.end(() => process.exit(0))
+  }
+}

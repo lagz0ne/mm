@@ -169,7 +169,7 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
 
 // ---------- services.yaml -> process-compose project file + .run/ ----------
 type Svc = { about?: string; command: string; secrets?: string[]; workdir?: string; env?: Record<string, string>; port?: 'http' | 'internal' | 'none'
-  public?: { name: string; auth: string }; depends_on?: Record<string, string>; ready?: { http?: string; socket?: string }; restart?: string; optional?: boolean; outward?: boolean }
+  public?: { name: string; auth: string }; depends_on?: Record<string, string>; ready?: { http?: string; socket?: string; exec?: string }; restart?: string; optional?: boolean; outward?: boolean }
 
 /** Does this board's server have the gateway-checked public side (BOARD_PUBLIC_PORT)? Older templates don't. */
 function boardHasPublicSide(root: string) {
@@ -208,7 +208,7 @@ export function resolve(root: string) {
       Object.assign(env, gated ? { BOARD_PUBLIC_PORT: String(port) } : { PORTLESS_APP_PORT: String(port) })
       pub = { public_url: `https://${fill(s.public.name)}.${domain}`, public_port: port, public_bind: bindHost }
     }
-    services[n] = { ...s, command: fill(s.command), workdir: s.workdir && fill(s.workdir), env, ...(s.port === 'http' ? { url: url(n) } : {}), ...pub,
+    services[n] = { ...s, command: fill(s.command), workdir: s.workdir && fill(s.workdir), env, ...(s.ready?.exec ? { ready: { ...s.ready, exec: fill(s.ready.exec) } } : {}), ...(s.port === 'http' ? { url: url(n) } : {}), ...pub,
       ...(s.public ? { public: { ...s.public, name: fill(s.public.name) } } : {}) }
   }
   const schedules = Object.fromEntries(Object.entries(spec.schedules || {}).map(([k, v]) => [k, { ...v, command: fill(v.command) }]))
@@ -228,9 +228,14 @@ export function serviceProcess(root: string, project: string, n: string, s: SvcR
   // secrets the service declares: opened at every start (the runtime folder is memory-backed: gone after a reboot)
   if (s.secrets?.length && o.secretsDir) for (const x of s.secrets) files[`${x.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_FILE`] = join(o.secretsDir, `${project}.${x.toLowerCase()}`)
   else if (s.secrets?.length) cmd = `${which('mm') || join(DIRS.bin, 'mm')} vault run ${project} ${s.secrets.join(',')} -- sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
-  // the service dies with its wrapper (portless): no orphan keeps the port after a crash or kill
-  if (s.port === 'http') cmd = `portless ${n}.${project} ${o.pdeath}sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
+  // the service dies with its wrapper (portless): no orphan keeps the port after a crash or kill. --force: a restart
+  // takes over its own name from the previous wrapper, which process-compose may still be stopping (sy-5ku 2); the
+  // name is this project's service, so nothing else holds it
+  if (s.port === 'http') cmd = `portless ${n}.${project} --force ${o.pdeath}sh -c '${cmd.replaceAll("'", `'"'"'`)}'`
+  // ready.exec: a command that says the service answers (dolt: bin/dolt-ready runs a query, sy-5ku 1), not that its
+  // socket file exists; a dependent with `ready` waits for it
   const probe = s.ready?.http ? { exec: { command: `curl -sf -o /dev/null --max-time 3 ${s.url}${s.ready.http}` } }
+    : s.ready?.exec ? { exec: { command: s.ready.exec } }
     : s.ready?.socket ? { exec: { command: `test -S ${o.socket}` } } : undefined
   return {
     namespace: project, command: cmd, working_dir: s.workdir || root,
@@ -528,7 +533,7 @@ export function up(root: string): Step[] {
   if (hold) steps.push({ step: 'held', status: 'skip', detail: `restore hold: not started: ${held_back.join(', ') || 'nothing'}; no public routes (mm restore --release)` })
   if (!pcRunning()) { steps.push({ step: 'process manager', status: 'fail', detail: 'not running and could not be started: run `mm onboard`' }); return steps }
   const r = loadAll()
-  steps.push({ step: 'process manager', status: r.ok ? 'ok' : 'fail', detail: r.ok ? 'loaded (project update)' : r.err.trim().slice(0, 200) })
+  steps.push({ step: 'process manager', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `loaded (project update)${r.started.length ? `; started again what process-compose had skipped: ${r.started.join(', ')}` : ''}` : r.err.trim().slice(0, 200) })
   run(['process-compose', '-U', '-u', DIRS.socket, 'namespace', 'start', a.project])
   // public routes (domain mode): the machine's `expose` tool writes the router entry
   for (const [, s] of Object.entries(services)) {
@@ -585,13 +590,63 @@ export function loadAll() {
   const files = [join(DIRS.pc, 'base.yaml'), ...dirFiles(PROJECTS_PC), ...dirFiles(join(DIRS.pc, 'box-public'))]
   const r = run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'update', ...files.flatMap((f) => ['-f', f])], { timeoutMs: 60_000 })
   // nothing to change (e.g. the last project was just removed) is not a failure
-  if (/No processes were updated/i.test(r.out + r.err)) return { ...r, ok: true }
-  // what the update restarted can leave a dependent "Skipped" for good: process-compose gives up on a process whose
-  // dependency stopped while it waited (mm.ship on mm.logs; sy-heeh, sy-5ku 3). Start those again: each waits for its
-  // dependency once more
-  Bun.sleepSync(1500)
-  for (const p of processes()) if (p.status === 'Skipped') run(['process-compose', '-U', '-u', DIRS.socket, 'process', 'start', p.name], { timeoutMs: 15_000 })
-  return r
+  if (/No processes were updated/i.test(r.out + r.err)) return { ...r, ok: true, started: [] as string[] }
+  return { ...r, started: startSkipped(dependsOn(files)) }
+}
+
+/** Each process's dependencies in these process files: name -> dependency -> condition. */
+export function dependsOn(files: string[]): Record<string, Record<string, string>> {
+  const out: Record<string, Record<string, string>> = {}
+  for (const f of files) {
+    let y: { processes?: Record<string, { depends_on?: Record<string, { condition?: string }> }> } = {}
+    try { y = Bun.YAML.parse(readFileSync(f, 'utf8')) as typeof y } catch { continue }
+    for (const [n, p] of Object.entries(y?.processes || {})) if (p?.depends_on) out[n] = Object.fromEntries(Object.entries(p.depends_on).map(([d, c]) => [d, c?.condition || 'process_started']))
+  }
+  return out
+}
+
+const COMING = ['Running', 'Pending', 'Restarting', 'Launching', 'Launched']
+const DEAD_GRACE_MS = 5000 // a restart shows its process as stopped for its backoff: down for good only after this
+/**
+ * After a load: start what process-compose left Skipped, once its dependencies are up (sy-5ku 3, sy-heeh). A process
+ * that waits for a dependency holds that dependency's instance; when the instance goes away before it is ready (a
+ * restart or an update of the dependency, or the instance left over from the same project loaded before), the waiter
+ * is Skipped for good and never retried. So: poll until nothing is Skipped or Pending that can still come up (its
+ * dependencies are running, on their way, or Skipped themselves with dependencies that can), at most `ms`. Returns
+ * what it started.
+ */
+export function startSkipped(deps: Record<string, Record<string, string>>, ms = Number(process.env.MM_START_SKIPPED_MS || 90_000)): string[] {
+  const end = Date.now() + ms, started: string[] = [], downSince = new Map<string, number>()
+  for (;;) {
+    const ps = processes(), by = new Map(ps.map((p) => [p.name, p])), now = Date.now()
+    for (const p of ps) if (COMING.includes(p.status)) downSince.delete(p.name); else if (!downSince.has(p.name)) downSince.set(p.name, now)
+    const met = (d: string, cond: string) => {
+      const x = by.get(d)
+      if (!x) return false
+      if (cond === 'process_started') return x.status === 'Running'
+      if (cond.startsWith('process_completed')) return x.status === 'Completed'
+      return x.is_ready === 'Ready' // process_healthy, process_log_ready
+    }
+    const canCome = (n: string, seen: Set<string> = new Set()): boolean => {
+      const x = by.get(n)
+      if (!x || seen.has(n)) return false
+      if (COMING.includes(x.status) || now - (downSince.get(n) ?? now) < DEAD_GRACE_MS) return true
+      seen.add(n)
+      return x.status === 'Skipped' && Object.keys(deps[n] || {}).every((d) => canCome(d, seen))
+    }
+    let waiting = false
+    for (const p of ps) {
+      if (p.status !== 'Skipped' && p.status !== 'Pending') continue
+      const d = deps[p.name] || {}
+      if (!Object.keys(d).every((x) => canCome(x))) continue // a dependency that is down for good: nothing to wait for
+      waiting = true
+      if (p.status === 'Skipped' && Object.entries(d).every(([x, c]) => met(x, c))) {
+        if (run(['process-compose', '-U', '-u', DIRS.socket, 'process', 'start', p.name], { timeoutMs: 15_000 }).ok) started.push(p.name)
+      }
+    }
+    if (!waiting || Date.now() >= end) return started
+    Bun.sleepSync(1000)
+  }
 }
 
 export function namespaceOp(ref: string, op: 'start' | 'stop' | 'restart') {
