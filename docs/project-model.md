@@ -61,6 +61,39 @@ One process-compose per machine runs each project in its own namespace. HTTP ser
 `<service>.<project>.localhost`, from portless; in domain mode, public services also get `<name>.<domain>`. The
 process manager restarts crashed or hung services (liveness probes); `health` only reports.
 
+## Public names
+In domain mode, the machine setting `names` (in `~/.mm/config.yaml`) decides the name of each public service:
+
+| `names` | the board | another public service (e.g. the app slot, `app`) |
+|---|---|---|
+| `legacy` (the default; unset is the same) | its `public.name`: `board-<name>-<client>.<domain>` | its `public.name`: `<name>-<client>.<domain>` |
+| `project` | `<project>.<domain>` | `<service>.<project>.<domain>` |
+
+- The system board keeps its own name under both.
+- A route the owner grants a box (mm.api) is `<name>.<project>.<domain>` under both.
+- One function makes the name (`src/names.ts`, used by `resolve()`). The web proxy's routes, the gateway's host
+  registry and forward-auth gate, the board's own URL (`.run/endpoints.json`) and mm.api's checks all take it from
+  there.
+- A name must be a valid set of DNS labels. Two projects never get the same host: `mm new` and `mm up` refuse a
+  project whose host is the gateway's (`auth.<domain>`), another project's, a route granted to a box, or used twice
+  in the project. The project id must be its own folder's too. A box can not ask for a route that is a public
+  service's host.
+- `mm names` changes nothing. It shows each project's hosts under both rules, what each rule would refuse, the
+  routes a switch adds and leaves behind, and the DNS names two labels deep.
+
+**A switch is the owner's call.** It changes public routes and DNS, and every board's address (people's bookmarks,
+the sign-in links). The steps:
+1. `mm names`: check that nothing is refused under the new rule.
+2. DNS and TLS: names two labels deep (`<service>.<project>.<domain>`) need DNS for `*.<project>.<domain>` and a
+   certificate that covers them. A one-level wildcard (`*.<domain>`) does not. The web proxy's route tool must take a
+   name with a dot in it.
+3. `mm config set names project`, then `mm up <project>` for each project: mm writes the new routes, and the gateway
+   takes the new hosts within 30 s.
+4. Remove the old routes that `mm names` listed (mm up leaves them). A board's old address stops working at once
+   (the gateway knows only the new hosts, so it refuses the old one); an open route (the app) still serves at its old
+   address until it is removed.
+5. Rollback: `mm config set names legacy`, `mm up` each project, and remove the new routes.
+
 ## Observability
 Every kernel operation is a trace in the machine's VictoriaTraces, and every log line is in VictoriaLogs, tagged
 with `project` and `service`. That covers board requests, calls to the board API, paseo, git and other commands,

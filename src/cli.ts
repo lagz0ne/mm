@@ -14,7 +14,7 @@ import { cron, runOnce } from './cron'
 import * as vaultMod from './vault'
 import * as syncMod from './sync'
 import { release, restoreMachine } from './restore'
-import { AUTH_SOCK, callApi, serve as authServe } from './auth'
+import { AUTH_SOCK, callApi, namesPlan, serve as authServe } from './auth'
 import { health, logsql, mmSpan, obsEndpoints, ship, tracesql } from './obs'
 import { exportFlow, flowRows, itemPath, tableRow } from './flow'
 import { findRoot, listProjects, namespaceOp, newProject, parseRef, processes, readAnswers, resolve, rootOf, setOptional, up } from './project'
@@ -130,6 +130,23 @@ program.command('new <project>').description('stamp a project from the template:
       try { const { client, name } = parseRef(ref), r = rootOf(client, name); if (!/already exists/.test(msg) && existsSync(join(r, '.mm-answers.yaml'))) console.error(`the half-made project is at ${tilde(r)}: mm archive ${ref} removes it (then try again)`) } catch {}
       process.exit(1)
     }
+  })
+program.command('names').description("each project's public hosts under both naming rules (config names: legacy|project), and the routes a switch would add and remove (changes nothing)")
+  .action(() => {
+    const o = fmt(), p = namesPlan()
+    if (o.format !== 'table') return console.log(o.format === 'json' ? JSON.stringify(p, null, 2) : Bun.YAML.stringify(p, null, 2))
+    if (!p.domain) { console.log('this machine has no domain (access: domain): no public names'); return }
+    console.log(`names: ${p.names}${p.invalid ? ` (${p.invalid})` : p.names === 'legacy' ? ' (the default)' : ''}; domain ${p.domain}\n`)
+    print(p.rows.map((r) => ({ project: r.project, service: r.service, legacy: r.legacy, project_names: r.project_mode, gate: r.gate, note: r.note })), o)
+    if (!p.rows.length) console.log('no project has a public service')
+    if (o.quiet) return
+    console.log(`\na switch to names: ${p.switch_to} (the owner's call: it changes public routes and DNS; docs/project-model.md "Public names"):`)
+    console.log(p.add.length ? '  routes mm up would add:' : '  no route to add')
+    for (const r of p.add) console.log(`    + ${r.name}${r.port ? ` -> :${r.port}` : ''}  ${r.gate}`)
+    console.log(p.remove.length ? '  routes left behind, to remove (mm up does not):' : '  no route to remove')
+    for (const n of p.remove) console.log(`    - ${n}`)
+    if (p.nested.length) console.log(`  names two labels deep: DNS and the certificate must cover ${p.nested.map((x) => `*.${x}.${p.domain}`).join(', ')}`)
+    if (p.rows.some((r) => r.note.includes(`${p.switch_to}:`))) console.log(`  refused under ${p.switch_to}: see the notes above`)
   })
 program.command('ls').description('list projects').action(() => { const o = fmt(); print(listProjects(), o, 'project') })
 program.command('inspect <project>').description('a project: answers, services, URLs').action((ref: string) => {

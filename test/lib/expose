@@ -4,7 +4,9 @@
 #   expose <name> <port> [--auth|--sso] | expose rm <name> | expose ls      (--sso: the sign-in gateway, `[sso]` in ls)
 set -euo pipefail
 DIR=${MM_EXPOSE_DIR:?MM_EXPOSE_DIR is not set}; mkdir -p "$DIR"
-valid() { [[ $1 =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || { echo "expose: bad name '$1'" >&2; exit 2; }; }
+# a name is one DNS label, or several (<service>.<project>, under names: project; a box's granted route): the
+# machine's tool must take those too before a switch (docs/project-model.md "Public names")
+valid() { [[ $1 =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$ ]] || { echo "expose: bad name '$1'" >&2; exit 2; }; }
 case "${1:-}" in
   ls)
     for f in "$DIR"/expose-*.yml; do

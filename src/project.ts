@@ -9,7 +9,8 @@ import { getPath, held, loadConfig } from './config'
 import { DIRS, engineDirs, HOME, run, servicePath, toolPath, which, within } from './env'
 import { obsEndpoints } from './obs'
 import { writeSecretPaths } from './inputs'
-import { publicKeyPem } from './auth'
+import { nameClash, publicKeyPem } from './auth'
+import { type NamesMode, namesMode, routeName } from './names'
 import { pcRunning, writeBase } from './pc'
 import { rendered, renderTo, template, templateCommit } from './template'
 import pkg from '../package.json'
@@ -104,6 +105,7 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
   const profile = o.profile || 'project', product = profile === 'project'
   const root = o.root || rootOf(client, name)
   if (existsSync(join(root, '.mm-answers.yaml')) || (existsSync(root) && readdirSync(root).length)) throw new Error(`${root.replace(HOME, '~')} already exists`)
+  const existed = existsSync(root)
   const short = o.short
   const steps: Step[] = []
   const step = (s: string, detail: string) => steps.push({ step: s, status: 'ok', detail })
@@ -121,6 +123,10 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
   renderTo(root, vars, t)
   writeFileSync(join(root, '.mm-answers.yaml'), `# Answers mm new used for this project (mm update renders the template again with these).\n${Bun.YAML.stringify(answers, null, 2)}\n`)
   step('template', `${t.files.length} files, version ${answers.template_version}`)
+  // its public hosts are free (sy-b15.3): else nothing of it stays (the folder was empty or not there)
+  let clash: string | null = null
+  try { clash = nameClash(root) } catch (e) { clash = (e as Error).message }
+  if (clash) { rmSync(root, { recursive: true, force: true }); if (existed) mkdirSync(root); throw new Error(`refused: ${clash}`) }
 
   // 2. repos: config (the project root) and product (code/)
   const git = (args: string[], cwd = root) => run(['git', ...args], { cwd })
@@ -176,7 +182,9 @@ type Svc = { about?: string; command: string; secrets?: string[]; workdir?: stri
 function boardHasPublicSide(root: string) {
   try { return readFileSync(join(root, 'site', 'server.mjs'), 'utf8').includes('BOARD_PUBLIC_PORT') } catch { return false }
 }
-export function resolve(root: string) {
+/** A project's services as mm runs them. `o.names`: the naming rule to use instead of the machine's (mm names shows
+ *  both; nothing else passes it). */
+export function resolve(root: string, o: { names?: NamesMode } = {}) {
   const a = readAnswers(root)
   const spec = Bun.YAML.parse(readFileSync(join(root, 'services.yaml'), 'utf8')) as { services: Record<string, Svc>; schedules?: Record<string, { every: string; command: string }> }
   // ports already given out stay put across reloads (the old process may still hold them while we decide)
@@ -189,7 +197,7 @@ export function resolve(root: string) {
   const fill = (v: string) => v.replaceAll('{root}', root).replaceAll('{home}', HOME).replaceAll('{project}', a.project)
     .replaceAll('{socket}', socket).replaceAll('{dolt_port}', String(dport)).replaceAll('{portless_port}', String(pp)).replace(/\{url:([\w-]+)\}/g, (_m, s) => url(s))
   const c = loadConfig(), access = String(getPath(c, 'access') ?? ''), domain = String(getPath(c, 'domain') ?? '')
-  const bindHost = String(getPath(c, 'bind_host') ?? '127.0.0.1')
+  const bindHost = String(getPath(c, 'bind_host') ?? '127.0.0.1'), mode = o.names ?? namesMode(c)
   const services: Record<string, Svc & { url?: string; public_url?: string; public_port?: number; public_bind?: string }> = {}
   // a box with the project API on (src/api.ts): its app slot runs only the build the owner approved (release/<build>),
   // from the host's record of the grant, never from what the box put in release/ by itself
@@ -201,6 +209,8 @@ export function resolve(root: string) {
     // any other optional service (e.g. doop) runs only when the project's answers turn it on: `mm doop on <project>`
     if (s.optional && n !== 'app' && !(a.services_on || []).includes(n)) continue
     const env = Object.fromEntries(Object.entries(s.env || {}).map(([k, v]) => [k, fill(String(v))]))
+    // its public name: the machine's rule (src/names.ts), the one place a service's host is made
+    const pname = s.public ? (access === 'domain' && domain ? routeName(a, n, fill(s.public.name), mode) : fill(s.public.name)) : ''
     // domain mode: a public service gets a stable port. The service itself stays on loopback (portless and the health
     // checks reach it there); the web proxy reaches it through mm's forwarder on bind_host (up(): <service>-public),
     // so nothing listens on every interface. bind_host on loopback (a proxy on the host itself): no forwarder needed.
@@ -212,10 +222,10 @@ export function resolve(root: string) {
       // `mm update` brings the listener, so its route never goes dark); an open one (the app slot) serves it itself
       const gated = s.public.auth === 'required' && boardHasPublicSide(root)
       Object.assign(env, gated ? { BOARD_PUBLIC_PORT: String(port) } : { PORTLESS_APP_PORT: String(port) })
-      pub = { public_url: `https://${fill(s.public.name)}.${domain}`, public_port: port, public_bind: bindHost }
+      pub = { public_url: `https://${pname}.${domain}`, public_port: port, public_bind: bindHost }
     }
     services[n] = { ...s, command: fill(s.command), workdir: s.workdir && fill(s.workdir), env, ...(s.ready?.exec ? { ready: { ...s.ready, exec: fill(s.ready.exec) } } : {}), ...(s.port === 'http' ? { url: url(n) } : {}), ...pub,
-      ...(s.public ? { public: { ...s.public, name: fill(s.public.name) } } : {}) }
+      ...(s.public ? { public: { ...s.public, name: pname } } : {}) }
   }
   const schedules = Object.fromEntries(Object.entries(spec.schedules || {}).map(([k, v]) => [k, { ...v, command: fill(v.command) }]))
   return { answers: a, services, schedules, socket, url, pp, dport }
@@ -507,6 +517,8 @@ export function setOptional(root: string, service: string, on: boolean): Step[] 
 export function up(root: string): Step[] {
   if (boxHook.up && readAnswers(root).box) return boxHook.up(root)
   const { answers: a, services, schedules, socket, pp, dport } = resolve(root)
+  // its public hosts are its own, before it is registered (sy-b15.3: two projects never get one host)
+  const clash = nameClash(root); if (clash) return [{ step: 'public names', status: 'fail', detail: `refused: ${clash}` }]
   const steps: Step[] = []
   mkdirSync(join(root, '.run', 'logs'), { recursive: true }); mkdirSync(join(root, '.dolt'), { recursive: true }); mkdirSync(PROJECTS_PC, { recursive: true })
   const obs = obsEndpoints() as { traces?: string; metrics?: string }
@@ -545,11 +557,13 @@ export function up(root: string): Step[] {
   steps.push({ step: 'process manager', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `loaded (project update)${r.started.length ? `; started again what process-compose had skipped: ${r.started.join(', ')}` : ''}` : r.err.trim().slice(0, 200) })
   run(['process-compose', '-U', '-u', DIRS.socket, 'namespace', 'start', a.project])
   // public routes (domain mode): the machine's `expose` tool writes the router entry
-  for (const [, s] of Object.entries(services)) {
-    if (!s.public_port || !s.public || hold) continue
-    steps.push(routeUp(a, s.public.name, s.public_port, s.public.auth === 'required', `${s.public_url}`))
-  }
+  if (!hold) steps.push(...serviceRoutes(a, services))
   return steps
+}
+/** The routes of a project's public services, by the names resolve() gave them (src/names.ts): mm up writes them,
+ *  for the host's projects and a box's (src/box.ts). */
+export function serviceRoutes(a: Answers, services: Record<string, SvcResolved>): Step[] {
+  return Object.values(services).filter((s) => s.public_port && s.public).map((s) => routeUp(a, s.public!.name, s.public_port!, s.public!.auth === 'required', `${s.public_url}`))
 }
 
 // ---------- public routes (review sy-uzh) ----------

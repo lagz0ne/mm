@@ -5,6 +5,7 @@ import { forgetGranted, granted } from './apistate'
 import { canon, DIRS, HOME, run, within } from './env'
 import { BOXES, boxHook, boxish, engineRefusal, gitRefusal, headDrift, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, resolve, routeRm, sealEngine, templateRecFile, templateVars, up, writeRunFiles } from './project'
 import { template, templateCommit } from './template'
+import { boxRoute } from './names'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
 const pc = (...a: string[]) => run(['process-compose', '-U', '-u', DIRS.socket, ...a], { timeoutMs: 120_000 })
@@ -294,7 +295,7 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   }
   // ...and those the owner granted the box through the project API (src/api.ts); its grants go with it (its requests
   // stay in mm.api's store, for the audit)
-  for (const g of granted(a.project).routes) steps.push(routeRm(a, `${g.name}.${a.project}`))
+  for (const g of granted(a.project).routes) steps.push(routeRm(a, boxRoute(a.project, g.name)))
   forgetGranted(a.project)
   // 3. agents (soft-delete in Paseo; their history stays recoverable there)
   let n = 0

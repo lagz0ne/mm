@@ -26,6 +26,7 @@ import { granted, grantedProjects } from './apistate'
 import { getPath, loadConfig } from './config'
 import { expand, machineInputs } from './inputs'
 import { DIRS } from './env'
+import { boxRoute, NAMES_MODES, type NamesMode, namesMode } from './names'
 import { resolve } from './project'
 
 export const AUTH_DIR = join(DIRS.mm, 'auth')
@@ -112,34 +113,102 @@ const upstreamOf = (bind: string | undefined, port: number | undefined) => {
  * come from resolve() (services.yaml and .mm-answers.yaml, read-only in a box), as mm cron takes a box's jobs; a box's
  * routes from the host's own record of what the owner granted (never the box's files).
  */
-export function hostClaims(): { claims: Record<string, Map<string, string>>; routes: Record<string, Set<string>>; odd: string[]; roots: Record<string, string> } {
+export function hostClaims(names?: NamesMode): { claims: Record<string, Map<string, string>>; routes: Record<string, Set<string>>; odd: string[]; roots: Record<string, string>; hosts: Record<string, Set<string>> } {
   const claims: Record<string, Map<string, string>> = {}, routes: Record<string, Set<string>> = {}, odd: string[] = [], roots: Record<string, string> = {}
+  const hosts: Record<string, Set<string>> = {} // every public host (a board's or an open one, e.g. the app slot) -> its projects
   const boxes = new Set<string>()
   for (const pdir of [join(DIRS.pc, 'projects'), join(DIRS.pc, 'boxes')]) for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
     const project = f.slice(0, -'.yaml'.length)
     if (pdir.endsWith('boxes')) boxes.add(project)
     const m = /from (.+)\/services\.yaml/.exec(readFileSync(join(pdir, f), 'utf8')); if (!m) continue
     try {
-      const root = m[1].replace(/^~(?=\/)/, process.env.HOME || ''), r = resolve(root)
+      const root = m[1].replace(/^~(?=\/)/, process.env.HOME || ''), r = resolve(root, { names })
       if (r.answers.project !== project) { odd.push(`${f}: the project's answers name ${r.answers.project}`); continue }
       roots[project] = root
-      for (const sv of Object.values(r.services))
+      for (const sv of Object.values(r.services)) {
+        if (sv.public_url) (hosts[new URL(sv.public_url).host] ||= new Set()).add(project)
         if (sv.public_url && sv.public?.auth === 'required') (claims[new URL(sv.public_url).host] ||= new Map()).set(project, upstreamOf(sv.public_bind, sv.public_port))
-    } catch {}
+      }
+    } catch (e) { if (/names: project|config names/.test((e as Error).message)) odd.push(`${f}: ${(e as Error).message}`) }
   }
   for (const p of grantedProjects()) {
     if (!boxes.has(p)) continue // a project that is no box (any more) has no box routes
     for (const r of granted(p).routes) if (!r.open) (routes[r.host] ||= new Set()).add(p)
   }
-  return { claims, routes, odd, roots }
+  return { claims, routes, odd, roots, hosts }
+}
+/**
+ * `mm names` (read-only, sy-b15.3): each registered project's public hosts under both rules, what is wrong under each
+ * (nameClash), and the routes a switch from the machine's rule to the other adds and leaves behind. A box's granted
+ * routes (<name>.<project>) are the same under both. Changes nothing.
+ */
+export function namesPlan() {
+  const cfg = loadConfig(), domain = String(getPath(cfg, 'access') ?? '') === 'domain' ? String(getPath(cfg, 'domain') ?? '') : ''
+  let now: NamesMode | 'invalid' = 'legacy', why = ''
+  try { now = namesMode(cfg) } catch (e) { now = 'invalid'; why = (e as Error).message }
+  const to: NamesMode = now === 'project' ? 'legacy' : 'project', from: NamesMode = now === 'project' ? 'project' : 'legacy'
+  type Row = { project: string; service: string; legacy: string; project_mode: string; gate: string; port: number | null; note: string }
+  const rows: Row[] = [], route: Record<NamesMode, Map<string, { port: number | null; gate: string }>> = { legacy: new Map(), project: new Map() }
+  const { roots } = hostClaims('legacy')
+  for (const [project, root] of Object.entries(roots).sort(([a], [b]) => a.localeCompare(b))) {
+    const by: Partial<Record<NamesMode, ReturnType<typeof resolve>>> = {}, err: Partial<Record<NamesMode, string>> = {}, clash: Partial<Record<NamesMode, string>> = {}
+    for (const m of NAMES_MODES) {
+      try { by[m] = resolve(root, { names: m }) } catch (e) { err[m] = (e as Error).message; continue }
+      try { const c = nameClash(root, m); if (c) clash[m] = c } catch (e) { clash[m] = (e as Error).message }
+    }
+    const services = new Set(NAMES_MODES.flatMap((m) => Object.entries(by[m]?.services || {}).filter(([, s]) => s.public_url).map(([n]) => n)))
+    for (const n of [...services].sort()) {
+      const host = (m: NamesMode) => { const u = by[m]?.services[n]?.public_url; return u ? new URL(u).host : err[m] ? '(refused)' : '-' }
+      const s = (by.legacy || by.project)!.services[n], gate = s.public?.auth === 'required' ? 'sign-in' : 'open'
+      for (const m of NAMES_MODES) { const x = by[m]?.services[n]; if (x?.public?.name) route[m].set(x.public.name, { port: x.public_port ?? null, gate }) }
+      rows.push({ project, service: n, legacy: host('legacy'), project_mode: host('project'), gate, port: s.public_port ?? null,
+        note: NAMES_MODES.flatMap((m) => (err[m] || clash[m] ? [`${m}: ${err[m] || clash[m]}`] : [])).join('; ') })
+    }
+    for (const g of granted(project).routes) {
+      for (const m of NAMES_MODES) route[m].set(boxRoute(project, g.name), { port: null, gate: g.open ? 'open' : 'sign-in' })
+      rows.push({ project, service: `route ${g.name}`, legacy: g.host, project_mode: g.host, gate: g.open ? 'open' : 'sign-in', port: null, note: 'granted to the box (the same under both)' })
+    }
+  }
+  const add = [...route[to]].filter(([n]) => !route[from].has(n)).map(([name, r]) => ({ name, ...r }))
+  const remove = [...route[from].keys()].filter((n) => !route[to].has(n))
+  // a name two labels deep (<service>.<project>): the domain's DNS and certificate must cover *.<project>.<domain>
+  const nested = [...new Set([...route[to].keys()].filter((n) => n.includes('.')).map((n) => n.slice(n.indexOf('.') + 1)))].sort()
+  return { names: now, ...(why ? { invalid: why } : {}), domain, switch_to: to, rows, add, remove, nested }
+}
+/** The gateway's own sign-in host: never a project's. */
+export const gatewayHost = (cfg = loadConfig()) => { const domain = String(getPath(cfg, 'domain') ?? ''); return String(getPath(cfg, 'auth_host') ?? (domain ? `auth.${domain}` : 'auth.localhost')) }
+const sameDir = (a: string, b: string) => { try { return realpathSync(a) === realpathSync(b) } catch { return a === b } }
+/**
+ * Why this project's public hosts can't be its own, or null (sy-b15.3): two projects never get one host. A host is
+ * refused when it is the gateway's, another project's (any public service, open or behind the sign-in), a route the
+ * owner granted a box (src/api.ts), or one of its own services' twice; and a project id that another folder holds.
+ * mm up and mm new ask before the project is registered, so a refused project never takes a board's host from the
+ * gateway (which gives a host two projects claim to neither). `names`: under that rule instead of the machine's.
+ */
+export function nameClash(root: string, names?: NamesMode): string | null {
+  const r = resolve(root, { names }), project = r.answers.project
+  const mine = Object.entries(r.services).flatMap(([n, s]) => (s.public_url ? [[n, new URL(s.public_url).host] as const] : []))
+  const { hosts, roots } = hostClaims(names)
+  if (roots[project] && !sameDir(roots[project], root)) return `the project id ${project} is already ${roots[project]}'s`
+  if (!mine.length) return null
+  const gw = gatewayHost(), seen = new Map<string, string>()
+  for (const [n, h] of mine) {
+    if (seen.has(h)) return `${h} is both its ${seen.get(h)} and its ${n}`
+    seen.set(h, n)
+    if (h === gw) return `${h} (its ${n}) is the sign-in gateway's host`
+    const others = [...(hosts[h] || [])].filter((p) => p !== project).sort()
+    if (others.length) return `${h} (its ${n}) is ${others.join(', ')}'s already`
+    for (const p of grantedProjects()) if (granted(p).routes.some((g) => g.host === h)) return `${h} (its ${n}) is a route the owner granted ${p === project ? 'its box' : `the box ${p}`}`
+  }
+  return null
 }
 
 // ---------- the gateway ----------
 export async function gateway() {
   ensureStore()
   const key = createPrivateKey(readFileSync(join(AUTH_DIR, 'signing.key'), 'utf8'))
-  const cfg = loadConfig(), domain = String(getPath(cfg, 'domain') ?? '')
-  const authHost = String(getPath(cfg, 'auth_host') ?? (domain ? `auth.${domain}` : 'auth.localhost'))
+  const cfg = loadConfig()
+  const authHost = gatewayHost(cfg)
   const ownerName = String(getPath(cfg, 'owner_name') ?? 'owner')
   // the owner hears every access change, on Telegram, in fixed text with the undo (review sy-b15.13 4): the same-user
   // limit stays (a process can still reach the socket), so this is the control that catches a change nobody asked for.
