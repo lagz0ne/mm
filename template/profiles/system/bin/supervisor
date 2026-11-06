@@ -26,6 +26,7 @@ import path from 'node:path'
 import { ROOT, dirs, projectName, requireUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
 import * as paseo from './lib/paseo.mjs'
+import { parseSignal } from './lib/signals.mjs'
 
 cli('supervisor')
 const E = process.env
@@ -40,7 +41,6 @@ const BD = requireUrl('bd-serve')
 const ACTOR = 'watchdog' // a system author for wake and the lead briefs (not a human, not a lead)
 const SYSTEM = new Set(['wake', 'watchdog', 'ui', 'smoke', 'beads'])
 const KEY_LINE = /^supervisor key: `([^`]+)`$/m
-const HANDOFF = /^HANDOFF ([a-z][\w-]*)(?:\s|$)/gm
 const NOW = Number(E.SUPERVISOR_NOW) || Date.now(), now = new Date(NOW).toISOString()
 const SELF = projectName()
 
@@ -97,7 +97,9 @@ const journal = once(async () => {
       const role = roleOf(who)
       if (role) s.re[role] = e.seq
       if (e.op === 'comment' && e.comment?.text) {
-        for (const [, to] of String(e.comment.text).matchAll(HANDOFF)) if (ROLES.includes(to) && to !== role) s.ho[to] = { seq: e.seq, at: t }
+        // wake's own parser (bin/lib/signals.mjs): the comment's last real signal line; not in a code fence, not quoted
+        const sig = parseSignal(e.comment.text), to = sig?.kind === 'HANDOFF' ? sig.role : ''
+        if (to && ROLES.includes(to) && to !== role) s.ho[to] = { seq: e.seq, at: t }
       }
     }
     if (recs.length < 500) break

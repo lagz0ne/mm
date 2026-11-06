@@ -129,6 +129,8 @@ item('sy-4', { title: 'handed over', status: 'in_progress', priority: 2, assigne
 item('sy-5', { title: 'ready P0 for review', priority: 0, assignee: 'review' })
 item('sy-7', { title: 'waits for the owner', priority: 2, assignee: 'platform' }); comment('sy-7', 'platform', 'HANDOFF owner approve the plan')
 item('sy-8', { title: 'P2 in progress, quiet', status: 'in_progress', priority: 2, assignee: 'platform' })
+// not real signals (bin/lib/signals.mjs): a HANDOFF inside a code fence, and one quoted with >
+item('sy-9', { title: 'quotes a handoff', priority: 2, assignee: 'platform' }); comment('sy-9', 'platform', 'The log said:\n```\nHANDOFF review 1a2b3c4\n```\n> HANDOFF review 5d6e7f8\nNothing to hand over.')
 
 step('run 1 (+0 min): only the old uncommitted worktree')
 ok('exit 0', (await supervise()) === 0)
@@ -145,6 +147,7 @@ git(P1, ['add', 'fresh']); git(P1, ['commit', '-qm', 'fresh']) // p1's work got 
 ok('exit 0', (await supervise()) === 0)
 ok('open: dirty, handoff:sy-4, idle:review (HANDOFF owner and P2 in progress are not watched)', openKeys() === `${DIRTY} handoff:sy-4 idle:review`)
 ok('handoff item names the role', openOf('handoff:sy-4')?.title.includes('review'))
+ok('a HANDOFF inside a code fence or quoted with > is not a real one: no handoff:sy-9 (one parser with wake)', !openOf('handoff:sy-9'))
 ok('idle item names the P0 item and the lead state', /sy-5/.test(openOf('idle:review')?.description) && /idle/.test(openOf('idle:review')?.description))
 
 step('run 3 (+17 min): nothing changed: no duplicate, no comment')
