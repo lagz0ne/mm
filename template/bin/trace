@@ -19,8 +19,14 @@ child.stderr.on('data', (d) => { process.stderr.write(d); tail = (tail + d).slic
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => child.kill(sig))
 child.on('error', (e) => { span.set('error', e.message); process.exit(127) })
 // bd's answers to its caller, not failures of the board: a guarded update that lost (exit 13), an item that can't be
-// claimed or closed, an id that isn't there. Anything else (Dolt down, a crash) stays a failure.
-const BD_REFUSED = /issue not claimable|already claimed|cannot close blocked issue|no issues found matching|issue [a-z]+-[a-z0-9.]+ not found|precondition failed/i
+// claimed or closed, an id that isn't there, an item another role holds (a close or reassign of it: sy-936h) or one
+// with open children. Anything else (Dolt down, a crash, a busy lock "held by another process") stays a failure.
+const BD_REFUSED = new RegExp([
+  /issue not claimable|already claimed|issue (is )?claimed by (another|a different) actor|issue is not in a claimable state/,
+  /cannot close blocked issue|cannot close \S+: assignee is "[^"]*", actor is|cannot reassign \S+: held by "[^"]*"/,
+  /\S+ is held by \S+(; coordinate with the holder|, expected )|cannot close \S+: \d+ open child issue|cannot close issue with open children/,
+  /no issues found matching|issue [a-z]+-[a-z0-9.]+ not found|precondition failed/,
+].map((r) => r.source).join('|'), 'i')
 // land's answers to its caller (sy-4dg8): a branch it won't take (uncommitted changes, a conflict with main, its check
 // said no, a bad or missing worktree). A busy lock or anything else stays a failure.
 const LAND_REFUSED = /^land: (bad name|no worktree |.+ has uncommitted changes|code\/ has local edits|.+ conflicts with main|.+ refused by ops\/land-check)/m
