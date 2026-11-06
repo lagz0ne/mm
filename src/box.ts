@@ -4,7 +4,7 @@
 // project folder is mounted at the same path (so every generated path stays right); the kernel and every file that
 // decides what the box may do are mounted read-only on top (review sy-b15.6). The box's network is `internal`: the
 // only way out is the project's own egress proxy, with its allowlist (the base list + the project's `egress:`).
-import { type Stats, chmodSync, constants as fsc, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { type Stats, chmodSync, closeSync, constants as fsc, copyFileSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -12,10 +12,10 @@ import { AI_PORT, aiEnabled, aiSocket, mintKey, revokeKeys, store as aiStore } f
 import { mkdtempSync, rmSync } from 'node:fs'
 import { apiEnabled, apiSocketDir, boxApi, granted, noteBoxApi, saveGranted } from './apistate'
 import { getPath, held, loadConfig } from './config'
-import { DIRS, HOME, run, which, within } from './env'
+import { DIRS, HOME, run, servicePath, which, within } from './env'
 import { MM_LOG_CONFIG } from './obs'
 import { hasRuns, MODEL_HOST, personRunsOn } from './personruns'
-import { BOX_READONLY, BOXES, boxHook, dependsOn, gitRefusal, hostGitEnv, leaveHost, loadAll, processes as pcProcesses, PROJECT_LOG_CONFIG, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, serviceRoutes, startSkipped, up as projectUp, writePortlessClaim, writeRunFiles } from './project'
+import { BOX_READONLY, BOXES, boxHook, containersCfg, dependsOn, engineRefusal, gitRefusal, hashPort, hostGitEnv, leaveHost, loadAll, processes as pcProcesses, PROJECT_LOG_CONFIG, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, serviceRoutes, startSkipped, up as projectUp, writePortlessClaim, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
 import egressMain from '../box/egress/main.go' with { type: 'text' }
@@ -27,7 +27,7 @@ import npmLock from '../box/npm/package-lock.json' with { type: 'text' }
 import pkg from '../package.json'
 import * as vault from './vault'
 import { boxRoute } from './names'
-import { nameClash } from './auth'
+import { nameClash, publicKeyPem } from './auth'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
 const short = (r: { out: string; err: string }) => (r.err || r.out).trim().split('\n').slice(-3).join(' ').slice(0, 240)
@@ -127,6 +127,122 @@ export function dockerSubnets(): string[] {
  */
 export const hostDir = (project: string) => join(DIRS.mm, 'box', project)
 
+// ---------- a box project's Doop (sy-wo7y) ----------
+// The box can't run containers, so its Doop runs on the host, next to it: bin/doop-run (the sealed engine, read-only in
+// the box) as a host process of the box's (<project>-public.doop), with DOOP_HOME. Its data, secrets and endpoints are in
+// doopHome, a host folder the box never mounts: the box can plant a link anywhere in the project, and Docker follows a
+// link in a mount's source; a check before the mount would race the box, a folder it never sees can't. The box reaches
+// Doop only through one unix socket (doopSockDir, read-only at /run/mm/doop in that box only), to Doop's own listener;
+// the board's public side reaches Doop's gated listener on the host, as for a host project.
+/** A box project's Doop on the host: data/ (what data/doop/ holds for a host project), secrets/, endpoints.json. */
+export const doopHome = (project: string) => join(hostDir(project), 'doop')
+/** The folder of the box's way in to its Doop: doop.sock, made by doop-run (0660, the owner's group). */
+export const doopSockDir = (project: string) => join(hostDir(project), 'doop-sock')
+const DOOP_BOX_SOCK = '/run/mm/doop/doop.sock'
+/** The box's copy of the design lead's agent key, in its read-only secrets (a path only: vault.runtimeDir narrows it). */
+const doopKeyTo = (project: string) => join(vault.secretsBase(), project, 'doop-agent-key')
+const isLoopback = (h: string) => /^(127\.|localhost$|::1$)/.test(h)
+/** The two account secrets a Doop of this project made (designer@<domain>, its password), as files may be read from the
+ *  project: what each must look like (the box could have written anything there). The auth secret is never taken: the
+ *  box may have read it, and with it make anyone's session; Doop on the host makes a new one. */
+const DOOP_ACCOUNT: Record<string, RegExp> = { 'doop-signup-domain': /^[a-z0-9-]{1,63}\.doop\.invalid$/, 'doop-password': /^[A-Za-z0-9_-]{16,128}$/ }
+/** A small plain file of the project, never through a link (O_NOFOLLOW; the folder itself checked by realpath), or null. */
+function readPlain(dir: string, name: string): string | null {
+  let fd = -1
+  try {
+    if (realpathSync(dir) !== dir) return null
+    fd = openSync(join(dir, name), fsc.O_RDONLY | fsc.O_NOFOLLOW | fsc.O_NONBLOCK)
+    const st = fstatSync(fd); if (!st.isFile() || st.nlink !== 1 || st.size > 1024) return null
+    return readFileSync(fd, 'utf8').trim()
+  } catch { return null } finally { if (fd >= 0) closeSync(fd) }
+}
+/** The host process that runs the box's Doop, or why not. Writes doopHome's endpoints.json (and its port file). */
+function doopProcess(root: string): { process: Record<string, unknown> } | { refused: string } {
+  const { answers: a, services } = resolve(root), s = services.doop
+  if (!s) return { refused: 'doop is not on' }
+  // the host runs this script: only as mm put it there (the template's render, or the engine's seal; review sy-b15.6)
+  const why = engineRefusal(root); if (why) return { refused: why }
+  const home = doopHome(a.project), sd = doopSockDir(a.project)
+  // its data not moved (doopIn refused or failed): no Doop, rather than a new empty one the old data never reaches
+  const there = (p: string) => { try { lstatSync(p); return true } catch { return false } }
+  if (there(join(root, 'data', 'doop')) && !there(join(home, 'data'))) return { refused: 'its data is still in data/doop/ (see the doop data step)' }
+  for (const d of [home, sd]) { mkdirSync(d, { recursive: true, mode: 0o750 }); chmodSync(d, 0o750) }
+  writeDoopEndpoints(root)
+  // the host's loopback port for doop-run's health check and first start: the same one each time (its file)
+  let port = 0; try { port = Number(readFileSync(join(home, 'port'), 'utf8')) } catch {}
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) { port = hashPort(`${a.project}/doop-host`); writeFileSync(join(home, 'port'), String(port)) }
+  const env: Record<string, string> = { PATH: servicePath(), PORT: String(port), DOOP_URL: String(s.env?.DOOP_URL || s.url || ''),
+    DOOP_HOME: home, DOOP_PROJECT: a.project, DOOP_BOX_SOCKET: join(sd, 'doop.sock'), DOOP_AGENT_KEY_TO: doopKeyTo(a.project),
+    ...(s.env?.DOOP_PUBLIC_PORT ? { DOOP_PUBLIC_PORT: String(s.env.DOOP_PUBLIC_PORT) } : {}) }
+  return { process: { namespace: `${a.project}-public`, command: join(realpathSync(root), 'bin', 'doop-run'), working_dir: home,
+    environment: Object.entries(env).map(([k, v]) => `${k}=${v}`), log_location: join(hostDir(a.project), 'doop.log'), log_configuration: MM_LOG_CONFIG,
+    availability: { restart: 'always', backoff_seconds: 3 }, shutdown: { timeout_seconds: 30 } } }
+}
+/** What doop-run reads in DOOP_HOME (never the project's .run/, which the box can write). */
+function writeDoopEndpoints(root: string) {
+  const { answers: a, services } = resolve(root), home = doopHome(a.project), pub = services.doop?.public_url
+  mkdirSync(home, { recursive: true, mode: 0o750 })
+  writeFileSync(join(home, 'endpoints.json'), JSON.stringify({ containers: containersCfg(), ...(publicKeyPem() ? { auth: { public_key: publicKeyPem() } } : {}),
+    services: { doop: pub ? { public: pub } : {} } }, null, 2), { mode: 0o644 })
+}
+/**
+ * Once, with the box stopped (mm up, before the box starts): the Doop data the project has (data/doop/: from when it
+ * ran on the host, kept there by the box go) moves to doopHome, with its account (domain and password, if they look
+ * as Doop's do; a new auth secret is made). Never through a link: data/doop must be a folder of the project itself,
+ * and what arrives is checked again (a link is removed, never followed). Null: nothing to move.
+ */
+export function doopIn(root: string): Step | null {
+  const a = readAnswers(root), rootReal = realpathSync(root), src = join(rootReal, 'data', 'doop'), home = doopHome(a.project), dst = join(home, 'data')
+  const step = 'doop data'
+  let st: Stats; try { st = lstatSync(src) } catch { return null }
+  try { lstatSync(dst); return { step, status: 'skip', detail: `data/doop/ stays in the project: Doop's data is in ${home.replace(HOME, '~')} already` } } catch {}
+  if (!st.isDirectory() || realpathSync(join(rootReal, 'data')) !== join(rootReal, 'data')) return { step, status: 'fail', detail: 'refused: data/doop is not a folder of the project (a link on the way): its Doop was not moved' }
+  mkdirSync(home, { recursive: true, mode: 0o750 })
+  try { renameSync(src, dst) } catch (e) { return { step, status: 'fail', detail: `could not move data/doop/ to ${home.replace(HOME, '~')}: ${(e as Error).message}` } }
+  try { if (!lstatSync(dst).isDirectory()) { rmSync(dst, { force: true }); return { step, status: 'fail', detail: 'refused: data/doop was swapped for a link while it moved; the link was removed' } } } catch {}
+  const S = join(home, 'secrets'); mkdirSync(S, { recursive: true, mode: 0o700 }); chmodSync(S, 0o700)
+  const took: string[] = []
+  for (const [f, re] of Object.entries(DOOP_ACCOUNT)) {
+    const v = readPlain(join(rootReal, 'secrets'), f)
+    if (v && re.test(v)) { writeFileSync(join(S, f), v, { mode: 0o600 }); took.push(f) }
+  }
+  return { step, status: 'ok', detail: `data/doop/ moved to ${home.replace(HOME, '~')} (the box doesn't see it)${took.length === 2 ? '; its account kept' : '; no account found: Doop makes a new one'}` }
+}
+/**
+ * The other way, with the box stopped (mm box off, mm archive, through reclaim): Doop's data back into data/doop/ and
+ * its secrets into secrets/, where the host's Doop (and mm archive's pack) find them; doopHome goes. Something the box
+ * left at data/doop is moved aside (data/doop.box-<time>), never mixed in; a link in secrets/ is removed, never written
+ * through.
+ */
+export function doopOut(root: string): Step[] {
+  const a = readAnswers(root), home = doopHome(a.project), from = join(home, 'data'), step = 'doop data'
+  if (!existsSync(home)) return []
+  // a Doop container its wrapper left (it was killed): stopped the clean way, so its database closes
+  const c = `mm-doop-${a.project}`
+  if (exists('container', c)) { docker('stop', '-t', '20', c); docker('rm', '-f', c) }
+  if (exists('network', `mm-doop-net-${a.project}`)) docker('network', 'rm', `mm-doop-net-${a.project}`)
+  const rootReal = realpathSync(root), data = join(rootReal, 'data'), to = join(data, 'doop')
+  let moved = ''
+  if (existsSync(from)) {
+    try { if (!lstatSync(data).isDirectory()) return [{ step, status: 'fail', detail: `data/ is not a folder: Doop's data stays in ${home.replace(HOME, '~')}` }] } catch {}
+    mkdirSync(data, { recursive: true })
+    try { lstatSync(to); const aside = `${to}.box-${new Date().toISOString().replace(/[:.]/g, '')}`; renameSync(to, aside); moved = `; what was at data/doop is at ${aside.slice(rootReal.length + 1)}` } catch {}
+    try { renameSync(from, to) } catch {
+      const r = run(['cp', '-a', from, to], { timeoutMs: 900_000 })
+      if (!r.ok) return [{ step, status: 'fail', detail: `could not move Doop's data back to data/doop/: ${short(r)}; it stays in ${home.replace(HOME, '~')}` }]
+    }
+  }
+  const S = join(home, 'secrets'), PS = join(rootReal, 'secrets')
+  try { if (!lstatSync(PS).isDirectory()) return [{ step, status: 'fail', detail: `secrets/ is not a folder: Doop's secrets stay in ${home.replace(HOME, '~')}` }] } catch {}
+  mkdirSync(PS, { recursive: true, mode: 0o700 })
+  for (const f of existsSync(S) ? readdirSync(S).filter((x) => /^doop-[a-z-]+$/.test(x)) : []) {
+    rmSync(join(PS, f), { force: true }) // a link the box left is removed, not followed; then a new file (wx: never through one)
+    try { writeFileSync(join(PS, f), readFileSync(join(S, f)), { mode: 0o600, flag: 'wx' }) } catch (e) { return [{ step, status: 'fail', detail: `secrets/${f}: ${(e as Error).message}; Doop's folder kept in ${home.replace(HOME, '~')}` }] }
+  }
+  rmSync(home, { recursive: true, force: true }); rmSync(doopSockDir(a.project), { recursive: true, force: true })
+  return [{ step, status: 'ok', detail: `Doop's data back in data/doop/, its secrets in secrets/${moved}` }]
+}
+
 const running = (name: string) => docker('inspect', '-f', '{{.State.Running}}', name).out.trim() === 'true'
 /** The project's box is running (its container, as docker says). */
 export const boxRunning = (project: string) => running(names(project).box)
@@ -186,7 +302,11 @@ function boxProcesses(root: string, proxy: string, ip = '') {
       log_location: join(root, '.run', 'logs', 'paseo.log'), log_configuration: PROJECT_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${PASEO_PORT}/` }, period_seconds: 3, failure_threshold: 40 } },
   }
-  for (const [n, s] of Object.entries(services)) {
+  for (const [n, s0] of Object.entries(services)) {
+    // its Doop runs on the host (sy-wo7y): in the box only its name (portless), to the box's socket to it; no public
+    // side in the box (the host's doop-run has it)
+    const s = n !== 'doop' ? s0 : { ...s0, command: `exec socat TCP-LISTEN:$PORT,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:${DOOP_BOX_SOCK}`,
+      env: { DOOP_URL: String(s0.env?.DOOP_URL || '') }, secrets: undefined, public_port: undefined, public_bind: undefined }
     const p = serviceProcess(root, a.project, n, s, services, { env, socket, pdeath: 'setpriv --pdeathsig TERM ', secretsDir: '/run/mm/secrets', claim: BOX_CLAIM }) as Record<string, unknown>
     if (s.port === 'http') p.depends_on = { ...(p.depends_on as object || {}), [`${a.project}.portless`]: { condition: 'process_healthy' } }
     processes[`${a.project}.${n}`] = p
@@ -230,18 +350,25 @@ function publicUp(root: string, ip: string): Step[] {
   const { answers: a, services } = resolve(root), steps: Step[] = [], processes: Record<string, unknown> = {}
   const pub = Object.entries(services).filter(([, s]) => s.public_port && s.public)
   const f = join(BOX_PUBLIC, `${a.project}.yaml`)
-  if (held()) { rmSync(f, { force: true }); return pub.length ? [{ step: 'public', status: 'skip', detail: 'restore hold: no public routes' }] : [] }
+  // (a restored box on hold: its Doop waits too, as a host project's does: it is not inward)
+  if (held()) { rmSync(f, { force: true }); return pub.length || services.doop ? [{ step: 'public', status: 'skip', detail: 'restore hold: no public routes, no Doop' }] : [] }
   for (const [n, s] of pub) {
     const bind = s.public_bind || '127.0.0.1'
+    // Doop's public side listens on the host itself (doop-run, below): only a forwarder from a bind_host off loopback
+    if (n === 'doop' && isLoopback(bind)) continue
     // named for its own namespace (<project>-public), so nothing on the host's process manager looks like the box's own
-    processes[`${a.project}-public.${n}`] = { namespace: `${a.project}-public`, command: `socat TCP-LISTEN:${s.public_port},bind=${bind},reuseaddr,fork TCP:${ip}:${s.public_port}`,
+    processes[`${a.project}-public.${n}`] = { namespace: `${a.project}-public`, command: `socat TCP-LISTEN:${s.public_port},bind=${bind},reuseaddr,fork TCP:${n === 'doop' ? '127.0.0.1' : ip}:${s.public_port}`,
       log_location: join(hostDir(a.project), `${n}-public.log`), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 } }
   }
+  // its Doop (sy-wo7y), on the host next to the box
+  const doop = services.doop ? doopProcess(root) : null
+  if (doop && 'refused' in doop) steps.push({ step: 'doop', status: 'fail', detail: `not started on the host: ${doop.refused}` })
+  else if (doop) processes[`${a.project}-public.doop`] = doop.process
   mkdirSync(BOX_PUBLIC, { recursive: true })
-  if (!pub.length) { rmSync(f, { force: true }); return [] }
-  writeFileSync(f, `# Generated by mm for the box ${names(a.project).box}: its public services, forwarded from the host. Do not edit.\nversion: "0.5"\n${Bun.YAML.stringify({ processes }, null, 2)}\n`)
+  if (!Object.keys(processes).length) return [...steps, ...(existsSync(f) ? publicDown(a.project) : [])]
+  writeFileSync(f, `# Generated by mm for the box ${names(a.project).box}: its public services, forwarded from the host, and its Doop. Do not edit.\nversion: "0.5"\n${Bun.YAML.stringify({ processes }, null, 2)}\n`)
   const r = loadAll(); run(['process-compose', '-U', '-u', DIRS.socket, 'namespace', 'start', `${a.project}-public`])
-  steps.push({ step: 'public forwarders', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `${pub.length} on the host, to ${ip}` : short(r) })
+  steps.push({ step: 'public forwarders', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `${pub.length} on the host, to ${ip}${doop && 'process' in doop ? `; its Doop on the host (${doopHome(a.project).replace(HOME, '~')})` : ''}` : short(r) })
   steps.push(...serviceRoutes(a, Object.fromEntries(pub)))
   // the routes the owner granted through the project API: to the app slot, behind the sign-in unless the owner chose
   // no login (src/api.ts)
@@ -355,6 +482,13 @@ export function up(root: string): Step[] {
   writeFileSync(join(acct, 'group'), `root:x:0:\nbox:x:${gid}:\n`, { mode: 0o644 })
   // 5. the box
   if (exists('container', n.box)) docker('rm', '-f', n.box)
+  // its Doop (sy-wo7y) runs on the host: its data moves out of the project once, now that no box runs; the box gets
+  // only the folder of its socket to it, read-only. Off: neither, and its agent key goes from the box's secrets
+  const doopOn = !!resolve(root).services.doop, dsd = doopSockDir(a.project)
+  if (doopOn) {
+    const moved = doopIn(root); if (moved) steps.push(moved)
+    mkdirSync(dsd, { recursive: true, mode: 0o750 }); chmodSync(dsd, 0o750)
+  } else rmSync(join(sec, 'doop-agent-key'), { force: true })
   // each one only if it is really there, inside the project: no symlink on the way (Docker would follow it on the host)
   // (.git/info and .git/objects/info too: grafts, alternates and the like would choose what the host's git sees; review
   // sy-b15.6 2a)
@@ -377,6 +511,7 @@ export function up(root: string): Step[] {
     // the kernel and what decides what the box may do: read-only on top (they change only through mm)
     ...roMounts, '-v', `${cfg}:/run/mm/cfg:ro`, '-v', `${sock}:/run/mm/sock`, '-v', `${stage}:/run/mm/backup`,
     '-v', `${claude}:${claude}`, '-v', `${paseoHome}:${paseoHome}`, '-v', `${sec}:/run/mm/secrets:ro`, ...(apiOn ? ['-v', `${apiDir}:/run/mm/api:ro`] : []),
+    ...(doopOn ? ['-v', `${dsd}:/run/mm/doop:ro`] : []),
     '-w', root, IMAGE(), 'sh', '-c', `umask 002 && exec process-compose up -t=false --keep-project -U -u /run/mm/sock/pc.sock -L '${join(root, '.run', 'logs', 'process-compose.log')}' -f /run/mm/cfg/pc.yaml`)
   if (!r.ok) return fail('box', short(r))
   steps.push({ step: 'box', status: 'ok', detail: `${n.box} (read-only root, cap-drop ALL, no-new-privileges)` })
@@ -505,7 +640,9 @@ export function reclaim(root: string, own = false): Step[] {
   const a = readAnswers(root)
   const dirs = [root, join(DIRS.mm, 'paseo', a.project), join(DIRS.mm, 'claude', a.project), hostDir(a.project)].filter(existsSync)
   const r = giveBack(dirs)
-  const steps: Step[] = [{ step: 'reclaim', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `the box's files group-writable for the host's owner (${dirs.length} folder(s), ${r.uids.length ? `as uid ${r.uids.join(', ')}` : 'nothing to change'}; no root)${r.other.length ? `; left alone: files of uid ${r.other.join(', ')} (not mm's)` : ''}` : short(r) }]
+  // its Doop's data back in the project (sy-wo7y), after the regroup (Doop's uid made many of its files 0600)
+  const doop = r.ok ? doopOut(root) : existsSync(doopHome(a.project)) ? [{ step: 'doop data', status: 'fail' as const, detail: `not moved back: the regroup failed; it stays in ${doopHome(a.project).replace(HOME, '~')}` }] : []
+  const steps: Step[] = [...doop, { step: 'reclaim', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `the box's files group-writable for the host's owner (${dirs.length} folder(s), ${r.uids.length ? `as uid ${r.uids.join(', ')}` : 'nothing to change'}; no root)${r.other.length ? `; left alone: files of uid ${r.other.join(', ')} (not mm's)` : ''}` : short(r) }]
   if (own) {
     const t = take(dirs)
     steps.push({ step: 'take', status: t.left.length ? 'fail' : 'ok', detail: t.left.length ? `${t.taken} taken; not taken: ${t.left.slice(0, 3).join(', ')}${t.left.length > 3 ? ` and ${t.left.length - 3} more` : ''}` : `${t.taken} file(s) and folder(s) the host owner's again` })
@@ -542,8 +679,21 @@ export function landBackup(root: string): string {
       rmSync(join(stage, d), { recursive: true, force: true })
     }
   }
+  // its Doop (sy-wo7y) runs on the host, and its data is out of the box's sight: the host's doop-run backs it up into the
+  // newest folder (Doop's own tar while it runs, as bin/backup does for a host project). Away ~30 s: "doop skipped"
+  let doop = ''
+  const home = doopHome(readAnswers(root).project)
+  if (existsSync(join(home, 'data'))) {
+    const out = join(dest, got.sort().at(-1)!, 'doop.tar.gz'), why = engineRefusal(root)
+    if (why) throw new Error(`doop not backed up: ${why}`)
+    writeDoopEndpoints(root)
+    const b = run([join(realpathSync(root), 'bin', 'doop-run'), 'backup', out], { cwd: home, timeoutMs: 900_000, env: { DOOP_HOME: home, DOOP_PROJECT: readAnswers(root).project } })
+    if (b.code === 75) { rmSync(out, { force: true }); doop = `, doop skipped: ${b.out.trim().replace(/^skipped: /, '') || 'its container did not answer'}` }
+    else if (!b.ok) throw new Error(`doop not backed up: ${short(b)}`)
+    else { chmodSync(out, 0o600); doop = ', doop' }
+  }
   for (const d of readdirSync(dest).filter((x) => STAMP.test(x)).sort().slice(0, -14)) rmSync(join(dest, d), { recursive: true, force: true })
-  return `${got.join(', ')} -> ${dest}`
+  return `${got.join(', ')} -> ${dest}${doop}`
 }
 boxHook.reclaim = reclaim
 /** mm archive, after down and reclaim: the box's network goes too (its subnet is free again). */

@@ -72,7 +72,7 @@ export function readAnswers(root: string): Answers {
 }
 const portlessPort = () => Number(getPath(loadConfig(), 'portless_port') ?? 1355)
 /** A stable port for <key>: hash in 38100-38999, stepping past ports already in use (Dolt's TCP, public services). */
-function hashPort(key: string): number {
+export function hashPort(key: string): number {
   let p = 38100 + (parseInt(createHash('sha256').update(key).digest('hex').slice(0, 8), 16) % 900)
   const used = run(['ss', '-Hltn']).out
   while (new RegExp(`:${p}\\b`).test(used)) p = p === 38999 ? 38100 : p + 1
@@ -325,6 +325,15 @@ function prevPortsFile(root: string, a: Answers) {
   const copy = join(DIRS.mm, 'box', a.project, 'ports.json')
   return a.box || existsSync(copy) ? copy : join(root, '.run', 'services.json')
 }
+/** How this machine runs a container, and the pinned images of optional services (bin/doop-run; plans/doop.md): Doop's
+ *  by digest only (bin/doop-run refuses a tag: sy-7452). In a project's endpoints.json, and in a box project's Doop
+ *  folder on the host (src/box.ts doopHome). */
+export function containersCfg() {
+  return { docker: String(process.env.MM_DOCKER || getPath(loadConfig(), 'box.docker') || 'docker'),
+    // the mm fork of Doop (box/doop: one sign-in with the boards), v0.12.0-mm.1, pinned by digest (sy-3yz); a machine
+    // that builds it again (box/doop/build.sh) gets the same id only from the same base, so it sets doop.image itself
+    doop_image: String(process.env.MM_DOOP_IMAGE || getPath(loadConfig(), 'doop.image') || DOOP_IMAGE) }
+}
 export function writeRunFiles(root: string, pcSocket: string) {
   const { answers: a, services, schedules, dport } = resolve(root)
   writeInProject(root, '.run/services.json', JSON.stringify({ project: a.project, dolt_port: dport, services, schedules }, null, 2))
@@ -340,12 +349,7 @@ export function writeRunFiles(root: string, pcSocket: string) {
     // the owner's name (mm's config owner_name; absent when unset): with the bridge, the only actor whose `approved`
     // counts (bin/supervisor, bin/flow), and a name the guard keeps agents from writing as (sy-h2yt)
     ...(owner ? { owner_name: owner } : {}),
-    // how this machine runs a container, and the pinned images of optional services (bin/doop-run; plans/doop.md): Doop's
-    // by digest only (bin/doop-run refuses a tag: sy-7452)
-    containers: { docker: String(process.env.MM_DOCKER || getPath(loadConfig(), 'box.docker') || 'docker'),
-      // the mm fork of Doop (box/doop: one sign-in with the boards), v0.12.0-mm.1, pinned by digest (sy-3yz); a machine
-      // that builds it again (box/doop/build.sh) gets the same id only from the same base, so it sets doop.image itself
-      doop_image: String(process.env.MM_DOOP_IMAGE || getPath(loadConfig(), 'doop.image') || DOOP_IMAGE) },
+    containers: containersCfg(),
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
   writeInProject(root, '.run/endpoints.json', JSON.stringify(ep, null, 2))
   // where the machine's secrets are (paths only), for config-check to deny to every role (sy-5ag): in mm's folder, never

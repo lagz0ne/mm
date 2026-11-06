@@ -286,6 +286,9 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   // 0. a project box: its containers go first (the box and its egress proxy)
   if (a.box && boxHook.down) steps.push(...boxHook.down(root))
   if (a.box && boxHook.reclaim) steps.push(...boxHook.reclaim(root)) // the box's 0600 files back to the host's owner, before the pack
+  // ...and its Doop's data, from mm's folder for the box back into the project (sy-wo7y): if it could not come back, that
+  // folder is not removed and nothing is packed
+  if (steps.some((x) => x.step === 'doop data' && x.status === 'fail')) return { steps, tarball, ok: false }
   if (a.box && boxHook.forget) steps.push(...boxHook.forget(root)) // and its network
   // 1. processes: stop, then reload process-compose without the project file (removes its processes)
   const s = pc('namespace', 'stop', a.project)
@@ -322,7 +325,7 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   const swept = sweep(root)
   steps.push({ step: 'sweep', status: 'ok', detail: swept.length ? `stopped ${swept.length} leftover process(es): ${swept.join(', ').slice(0, 160)}` : 'nothing left running' })
   // 4b. the project's Doop runs as its own uid (bin/doop-run; review sy-d2t): a container its wrapper left goes, and
-  // what a killed one left 0600 goes back into the host owner's group, so the pack reads all of it
+  // what a killed one left 0600 goes back into the host owner's group, so the pack reads all of it (a box's: reclaim)
   const doopRun = join(root, 'bin', 'doop-run')
   if (!a.box && existsSync(join(root, 'data', 'doop')) && existsSync(doopRun)) {
     const r = run([doopRun, 'release'], { cwd: root, timeoutMs: 120_000 })

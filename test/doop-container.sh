@@ -2,7 +2,8 @@
 # A project's Doop container on its own (review sy-d2t #8): bin/doop-run straight from this checkout, in a throwaway
 # project folder, without mm or the process manager. Its own uid (not the host owner's, not root); no way out (no
 # address, no name, none of the host's ports); the board reaches it on loopback; data an older Doop wrote as the host
-# owner still opens, and the host owner can still back it up and remove it. Throwaway containers and networks only.
+# owner still opens, and the host owner can still back it up and remove it. And a box project's Doop as mm runs it on
+# the host (sy-wo7y: DOOP_HOME, the box's socket, the key's copy). Throwaway containers and networks only.
 # Through mm's Docker wrapper (test/lib/docker.sh: the installed one; MM_DOCKER_BIN for this checkout's copy). The older
 # Doop (as the host owner's own uid, which the wrapper refuses) needs plain docker: MM_DOCKER_RAW, else it is skipped.
 #   MM_DOOP_IMAGE=<name@sha256:… or sha256:…> [MM_DOCKER_RAW="sudo -n docker"] test/doop-container.sh
@@ -21,7 +22,7 @@ PORT=$(free_port); URL="http://doop.$PROJECT.localhost:1355"; B="http://127.0.0.
 RUN=""
 cleanup() { [ -n "$RUN" ] && kill "$RUN" 2>/dev/null; sleep 1; D rm -f "$C" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1
   [ -z "$RAW" ] || { R rm -f "$OLDC" >/dev/null 2>&1; R network rm "$OLDNET" >/dev/null 2>&1; }
-  kill "${OLDFWD:-}" 2>/dev/null; rm -rf "$T"; }
+  kill "${OLDFWD:-}" "${BOXFWD:-}" 2>/dev/null; rm -rf "$T"; }
 trap cleanup EXIT
 up() { for _ in $(seq 1 "${2:-150}"); do curl -sf -o /dev/null "$1/healthz" && return 0; sleep 1; done; return 1; }
 
@@ -133,4 +134,26 @@ check "killed: its forwarder went with it (the port is free)" bash -c "! /usr/sb
 check "...and it left files only its uid can read" bash -c "[ -n \"\$(find '$P/data/doop' -user ${DU%%:*} ! -perm -040 -print -quit)\" ]"
 check "doop-run release: they are back in the host owner's group, its network is gone" bash -c "'$P/bin/doop-run' release && [ -z \"\$(find '$P/data/doop' ! -type l ! -perm -060 -print -quit)\" ] && ! D network inspect '$NET' >/dev/null 2>&1"
 check "the host owner can pack and remove all of it (as mm archive does)" bash -c "tar -czf '$T/all.tar.gz' -C '$P' data && rm -rf '$P/data/doop'"
+
+echo "== a box project's Doop, on the host (sy-wo7y): DOOP_HOME, the box's socket, the key's copy for the box"
+DH="$T/boxdoop"; SD="$T/boxsock"; KT="$T/boxsecrets"; mkdir -p "$DH" "$SD" "$KT"; chmod 750 "$SD"
+printf '{"containers":{"docker":"%s","doop_image":"%s"}}\n' "$DOCKER" "$IMAGE" >"$DH/endpoints.json"
+printf '{"containers":{"docker":"/bin/false","doop_image":"sha256:%064d"}}\n' 0 >"$P/.run/endpoints.json" # what a box could write: never read
+HP=$(free_port); B3="http://127.0.0.1:$HP"; BP=$(free_port); B4="http://127.0.0.1:$BP"
+hostrun() { DOOP_HOME="$DH" DOOP_PROJECT="$PROJECT" DOOP_BOX_SOCKET="$SD/doop.sock" DOOP_AGENT_KEY_TO="$KT/doop-agent-key" PORT=$HP DOOP_URL=$URL "$P/bin/doop-run" "$@"; }
+hostrun >"$T/run3.log" 2>&1 & RUN=$!
+check "it answers on the host's loopback, with what DOOP_HOME names (the project's .run/ names /bin/false)" up "$B3"
+check "...through the box's socket (0660, the owner's group), to Doop's own listener" bash -c "for i in \$(seq 1 30); do [ -S '$SD/doop.sock' ] && break; sleep 1; done; [ \"\$(stat -c '%a %g' '$SD/doop.sock')\" = '660 $(id -g)' ] && curl -sf --unix-socket '$SD/doop.sock' -o /dev/null 'http://doop.$PROJECT.localhost/healthz'"
+# the box's side: its portless name to the socket (src/box.ts), here a loopback port
+socat "TCP-LISTEN:$BP,bind=127.0.0.1,fork,reuseaddr" "UNIX-CONNECT:$SD/doop.sock" 2>/dev/null & BOXFWD=$!
+check "...its data and secrets in DOOP_HOME, a new auth secret (never the project's)" bash -c "for i in \$(seq 1 60); do [ -s '$DH/secrets/doop-agent-key' ] && break; sleep 1; done; [ -d '$DH/data/pg' ] && [ -s '$DH/secrets/doop-auth-secret' ] && ! cmp -s '$DH/secrets/doop-auth-secret' '$P/secrets/doop-auth-secret'"
+check "...the agent key copied for the box (0640), as Doop's own" bash -c "for i in \$(seq 1 30); do [ -s '$KT/doop-agent-key' ] && break; sleep 1; done; [ \"\$(stat -c %a '$KT/doop-agent-key')\" = 640 ] && cmp -s '$KT/doop-agent-key' '$DH/secrets/doop-agent-key'"
+check "the design lead's MCP through the box's way in, with the box's copy of the key" node "$T/mcp-tools.mjs" "$B4/mcp" "$KT/doop-agent-key"
+DU3=$(D inspect -f '{{.Config.User}}' "$C" 2>/dev/null)
+check "its own uid ($DU3): 210000 + n, never the host owner's; its only network internal" bash -c "u=\${1%%:*}; [ \"\$u\" -ge 210010 ] && [ \"\$u\" -le 210249 ] && [ \"\$(D inspect -f '{{range \$k, \$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' '$C')\" = '$NET ' ] && [ \"\$(D network inspect -f '{{.Internal}}' '$NET')\" = true ]" _ "$DU3"
+check "its data mount is DOOP_HOME/data, nothing of the project" bash -c "[ \"\$(D inspect -f '{{range .Mounts}}{{.Source}} {{end}}' '$C')\" = '$DH/data ' ]"
+check "the backup while it runs (doop-run backup with DOOP_HOME, as mm's landBackup)" bash -c "DOOP_HOME='$DH' DOOP_PROJECT='$PROJECT' '$P/bin/doop-run' backup '$T/doop3.tar.gz' && tar -tzf '$T/doop3.tar.gz' | grep -qx 'doop/pg/global/pg_control'"
+kill -TERM "$RUN"; for _ in $(seq 1 200); do [ -d "/proc/$RUN" ] || break; sleep 0.2; done; RUN=""; kill "$BOXFWD" 2>/dev/null
+check "TERM: its container and network go, the box's socket goes" bash -c "! D inspect '$C' >/dev/null 2>&1 && ! D network inspect '$NET' >/dev/null 2>&1 && ! [ -e '$SD/doop.sock' ]"
+check "the backup while it is stopped: the host owner's tar of DOOP_HOME/data, as doop/" bash -c "DOOP_HOME='$DH' DOOP_PROJECT='$PROJECT' '$P/bin/doop-run' backup '$T/doop4.tar.gz' && tar -tzf '$T/doop4.tar.gz' | grep -qx 'doop/pg/global/pg_control' && ! tar -tzf '$T/doop4.tar.gz' | grep -qv '^doop'"
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]

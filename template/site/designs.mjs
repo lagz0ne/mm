@@ -168,7 +168,8 @@ export function doopClient({ url, keyFile, timeoutMs = 20000 }) {
 /** The designs API: GET /api/designs/<item> and GET /api/designs/<item>/image/<frame>?v=<version>. */
 export function designsApi({ ROOT, send, me: meOf, getItem, allItems, svcUrl, svcPublic, cacheBytes = (Number(process.env.BOARD_DESIGNS_CACHE_MB) || 64) << 20,
   indexMs = Number(process.env.BOARD_DESIGNS_INDEX_MS) || 30000 }) {
-  const keyFile = path.join(ROOT, 'secrets', 'doop-agent-key')
+  // in a project box, Doop runs on the host and its key is in the box's read-only secrets (sy-wo7y)
+  const keyFile = fs.existsSync('/run/mm/secrets') ? '/run/mm/secrets/doop-agent-key' : path.join(ROOT, 'secrets', 'doop-agent-key')
   const cache = imageCache(path.join(ROOT, '.cache', 'designs'), cacheBytes)
   let client = null, clientUrl = null
   const doop = () => {
