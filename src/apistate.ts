@@ -4,12 +4,13 @@
 // imports, so each of them can read it.
 //   $MM_HOME/api/ (0700): api.db (the requests), approve.sock (the owner's socket), granted/<project>.json (0600)
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { getPath, loadConfig } from './config'
 import { DIRS } from './env'
 
 // MM_API_DIR is for tests (a throwaway store; the machine's is untouched)
-export const API_DIR = process.env.MM_API_DIR || join(DIRS.mm, 'api')
+const MACHINE_API_DIR = join(DIRS.mm, 'api')
+export const API_DIR = process.env.MM_API_DIR || MACHINE_API_DIR
 /** The project API on for this machine (`mm config set api.enabled true`; t2: it changes the approval path). While it
  *  is off, nothing changes for a box: no socket, and its app slot runs from release/ as before. While it is on, a box's
  *  app slot runs only a build the owner approved. MM_API_ENABLED=1 is for tests on a live machine (test/box.sh: a
@@ -46,13 +47,13 @@ export type Granted = {
   secrets: { name: string; id: string }[]
 }
 const empty = (): Granted => ({ routes: [], egress: [], release: null, secrets: [] })
-const file = (project: string) => join(API_DIR, 'granted', `${project}.json`)
+const file = (project: string, dir = API_DIR) => join(dir, 'granted', `${project}.json`)
 
 /** The project's grants, each checked against its format again (a value that doesn't pass is dropped). */
-export function granted(project: string): Granted {
+export function granted(project: string, dir = API_DIR): Granted {
   if (!PROJECT_ID.test(project)) return empty()
   let j: Partial<Granted> = {}
-  try { j = JSON.parse(readFileSync(file(project), 'utf8')) } catch { return empty() }
+  try { j = JSON.parse(readFileSync(file(project, dir), 'utf8')) } catch { return empty() }
   const s = (v: unknown) => (typeof v === 'string' ? v : '')
   const arr = <T>(v: unknown) => (Array.isArray(v) ? v as T[] : [])
   return {
@@ -71,6 +72,30 @@ export function saveGranted(project: string, g: Granted) {
 }
 /** mm archive: the project's grants go (its requests stay in api.db, for the audit). */
 export function forgetGranted(project: string) { if (PROJECT_ID.test(project) && existsSync(file(project))) rmSync(file(project), { force: true }) }
+
+// ---------- the API that governs one box, whoever writes for it (sy-jm5) ----------
+// mm writes a box's process file, egress list and secrets from many commands (mm up, mm update, box on, mm.api's
+// apply). An mm with the API on notes which store's grants it used, in the host's folder for the box (no box mounts
+// it); an mm that doesn't see that API (the API on through a test's environment only, MM_API_ENABLED + MM_API_DIR, and
+// another mm on the machine without them) then still keeps the box on what that store granted, never on release/.
+const storeNote = (project: string) => join(DIRS.mm, 'box', project, 'api-store.json')
+/** mm wrote a box's process file with the API on: note the store it read (src/box.ts writePc). */
+export function noteBoxApi(project: string) {
+  if (!apiEnabled() || !PROJECT_ID.test(project)) return
+  mkdirSync(join(DIRS.mm, 'box', project), { recursive: true })
+  writeFileSync(storeNote(project), JSON.stringify({ dir: resolvePath(API_DIR) }) + '\n')
+}
+/** The project API as it governs one box, for everything mm writes for it: on, with its grants, when this mm has the
+ *  API on; else on with the noted store's grants when that is another store (a test's) that is still there. The
+ *  machine's own store noted, and the API off now: off (the owner turned it off; the app slot runs release/ again). */
+export function boxApi(project: string): { on: boolean; granted: Granted } {
+  if (apiEnabled()) return { on: true, granted: granted(project) }
+  let dir: unknown
+  try { dir = (JSON.parse(readFileSync(storeNote(project), 'utf8')) as { dir?: unknown }).dir } catch {}
+  if (typeof dir !== 'string' || !isAbsolute(dir) || resolvePath(dir) === resolvePath(MACHINE_API_DIR) || !existsSync(dir)) return { on: false, granted: empty() }
+  return { on: true, granted: granted(project, dir) }
+}
+
 /** Every project with grants (the gateway's host map reads their routes). */
 export function grantedProjects(): string[] {
   const d = join(API_DIR, 'granted')

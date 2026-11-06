@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
-import { apiEnabled, granted } from './apistate'
+import { boxApi } from './apistate'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, engineDirs, HOME, run, servicePath, toolPath, which, within } from './env'
 import { obsEndpoints } from './obs'
@@ -201,8 +201,10 @@ export function resolve(root: string, o: { names?: NamesMode } = {}) {
   const bindHost = String(getPath(c, 'bind_host') ?? '127.0.0.1'), mode = o.names ?? namesMode(c)
   const services: Record<string, Svc & { url?: string; public_url?: string; public_port?: number; public_bind?: string }> = {}
   // a box with the project API on (src/api.ts): its app slot runs only the build the owner approved (release/<build>),
-  // from the host's record of the grant, never from what the box put in release/ by itself
-  const boxRelease = a.box && apiEnabled() ? granted(a.project).release : undefined
+  // from the host's record of the grant, never from what the box put in release/ by itself; the same whoever writes
+  // the box's file (boxApi: an mm without a test's API env still sees the store that governs the box, sy-jm5)
+  const api = a.box ? boxApi(a.project) : null
+  const boxRelease = api?.on ? api.granted.release : undefined
   for (const [n, s0] of Object.entries(spec.services)) {
     let s = s0
     if (n === 'app' && boxRelease !== undefined) { if (!boxRelease) continue; s = { ...s0, workdir: `{root}/release/${boxRelease.build}` } }
