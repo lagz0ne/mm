@@ -297,8 +297,10 @@ check "...its id and hash without the one-time code: nothing applied (the code w
 check "the owner approves (review signed off), with the code: example.com goes through the box's proxy" sh -c "CODE '$QE' | mm api approve '$QE' --hash ${QH:0:12} >/dev/null && for i in \$(seq 1 20); do IN 'curl -s -o /dev/null --max-time 10 -x http://$PX:8888 https://example.com/' && exit 0; sleep 1; done; exit 1"
 check "...the box's AI gateway port still answers after the proxy's restart" sh -c "for i in \$(seq 1 20); do [ \"\$(IN \"curl -s -o /dev/null -w '%{http_code}' --noproxy '*' http://$PX:4000/v1/messages -H 'x-api-key: mmk_nope' -d '{}'\")\" = 401 ] && exit 0; sleep 1; done; exit 1"
 check "...mm api undo: example.com is refused again" sh -c "mm api undo '$QE' >/dev/null && sleep 3 && ! IN 'curl -s -o /dev/null --max-time 20 -x http://$PX:8888 https://example.com/'"
-# a build the box made in release/ (the host made release/ for it): it runs nowhere until the owner approves it
-D exec "$BOX" sh -c 'umask 002 && mkdir -p "$1/release/qa1" && echo "require(\"http\").createServer((q, s) => s.end(\"QA-APP-OK\")).listen(process.env.PORT)" > "$1/release/qa1/server.js"' sh "$ROOT"
+# a build the box made in release/ (the host made release/ for it): it runs nowhere until the owner approves it. As the
+# template's app slot asks (services.yaml: HOST, loopback), it listens on $HOST: the box's forwarder of its public
+# port holds that port on the box's own address, so a build on every address gets EADDRINUSE (sy-jm5)
+D exec "$BOX" sh -c 'umask 002 && mkdir -p "$1/release/qa1" && echo "require(\"http\").createServer((q, s) => s.end(\"QA-APP-OK\")).listen(process.env.PORT, process.env.HOST)" > "$1/release/qa1/server.js"' sh "$ROOT"
 check "a build in release/qa1 runs nowhere by itself (no app slot)" sh -c "! mm inspect '$REF' | grep -q '^app '"
 OUT=$(APICALL release '{"build":"qa1"}'); QR=$(echo "$OUT" | jq -r .id); QRH=$(mm api show "$QR" -o json | jq -r .hash)
 check "release qa1: pending" sh -c "echo '$OUT' | jq -e '.status == \"pending\"'"
