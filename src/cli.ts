@@ -58,14 +58,10 @@ program.command('doctor').description('check this machine against the manifest (
   const checks = doctor(), s = summary(checks)
   print(checks as unknown as Record<string, unknown>[], o, 'item')
   if (o.format === 'table' && !o.quiet) console.log(`\n${s.fail ? `${s.fail} failing, ` : ''}${s.warn} warning(s), ${s.ok} ok${s.fail ? ': run `mm onboard`' : ''}`)
-<<<<<<< HEAD
-  process.exit(s.fail || process.exitCode ? 1 : 0)
-=======
   // every failing check names a throwaway project (a test planted the fault): the span is marked as theirs (sy-ha9x)
   const t = s.fail ? throwawayOnly(checks) : ''
   if (t) spanNote.attrs.mm_throwaway = t
-  process.exit(s.fail ? 1 : 0)
->>>>>>> f5ff400 (mm's spans: an answer is not a fault (mm config get not set; mm doctor failing only on a throwaway project))
+  process.exit(s.fail || process.exitCode ? 1 : 0)
 })
 
 program.command('onboard').description('install and configure what this machine is missing, then run doctor')
