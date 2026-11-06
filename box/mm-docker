@@ -381,8 +381,13 @@ def check_run(args, c, sub='run'):
     for so in every(opts, '--security-opt'):
         if so not in ('no-new-privileges', 'no-new-privileges=true', 'no-new-privileges:true'):
             refuse(f'--security-opt {show(so)}: only no-new-privileges (seccomp, apparmor, label stay docker\'s)')
-    # the network: none, or the project's own
+    # the network: none, or the project's own. None given: docker would put the container on its default bridge (a way
+    # out to the internet), so the wrapper adds --network none (sy-rjwg 4), and a call that left it out by mistake still
+    # gets no way out (refusing would break nothing safer, and would stop an older mm's one-shot helpers). The one
+    # container that keeps docker's default when it gives none is mm's egress proxy (mm-egress-<p>, mm's own image):
+    # it is a box's only way out, by design, and its own checks (names, addresses) are the egress list
     net = one(opts, '--network')
+    default_none = net is None and kind != 'egress'
     if net is not None and (net in ('host', 'bridge', 'default') or net.startswith('container:') or net.startswith('ns:')):
         refuse(f'--network {show(net)}: it would share the host\'s (or another container\'s) network')
     if net is not None and net != 'none':
@@ -483,7 +488,7 @@ def check_run(args, c, sub='run'):
                     refuse('chown helper: its mounts are read-write')
         else:
             refuse('run: as root, or with capabilities, only mm\'s egress proxy and chown helper (exactly)')
-    out = [sub, '--pull=never', '--security-opt=no-new-privileges']
+    out = [sub, '--pull=never', '--security-opt=no-new-privileges'] + (['--network=none'] if default_none else [])
     for n, val in opts:
         if n in ('--security-opt', '--volume', '--env-file'):
             continue

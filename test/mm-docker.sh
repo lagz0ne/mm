@@ -11,6 +11,7 @@ W="$HERE/box/mm-docker"
 T=$(mktemp -d); trap 'chmod -R u+w "$T" 2>/dev/null; rm -rf "$T"' EXIT
 pass=0; fail=0
 ok() { pass=$((pass+1)); echo "  ok   $*"; }; bad() { fail=$((fail+1)); echo "  FAIL $*"; }
+check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 U=$(id -u); G=$(id -g); H=$(getent passwd "$U" | cut -d: -f6)
 
 # the stand-in docker: one line per call (each word %q-quoted); the wrapper's own label check answers from $T/labels
@@ -175,6 +176,18 @@ no "--net=host (the alias)" run --net=host --rm --user 200040:"$G" --cap-drop AL
 no "--network container:dokploy" run --network container:dokploy --rm --user 200040:"$G" --cap-drop ALL "$IMG"
 no "--network dokploy-network" run --network dokploy-network --rm --user 200040:"$G" --cap-drop ALL "$IMG"
 no "another project's network" run -d --name mm-box-acme-shop --label mm.project=acme-shop --network mm-net-acme-other --user 200040:"$G" --cap-drop ALL "$IMG"
+# no --network at all: docker would use its default bridge (a way out); the wrapper adds --network none (sy-rjwg 4)
+yes "no --network (a nameless --rm run): --network none added" "run --pull=never --security-opt=no-new-privileges --network=none" run --rm --user 200040:"$G" --cap-drop ALL "$IMG"
+yes "...a box with no --network: none too" "--network=none" run -d --name mm-box-acme-shop --label mm.project=acme-shop --user 200040:"$G" --cap-drop ALL "$IMG"
+yes "...create with no --network: none too" "create --pull=never --security-opt=no-new-privileges --network=none" create --name mm-box-acme-shop --label mm.project=acme-shop --user 200040:"$G" --cap-drop ALL "$IMG"
+yes "...doop with no --network: none too" "--network=none" run --rm --name mm-doop-acme-shop --label mm.project=acme-shop --label mm.service=doop --user 210040:"$G" --cap-drop ALL "$DIG"
+yes "...a given --network none is passed once, not twice" - "${GIVEBACK[@]}"
+check "...(once)" bash -c "[ \$(grep -o -- '--network' '$T/calls' | wc -l) = 1 ]"
+yes "...the project's own network stays as given (no none added)" "--network=mm-net-acme-shop" "${BOXRUN[@]}"
+check "...(and no none)" bash -c "! grep -qF -- '--network=none' '$T/calls'"
+yes "...mm's egress proxy keeps docker's default (its way out, by design)" - "${EGRUN[@]}"
+check "...(no --network on its line)" bash -c "! grep -qF -- '--network' '$T/calls'"
+no "--network bridge, given: still refused" run --network bridge --rm --user 200040:"$G" --cap-drop ALL "$IMG"
 no "--cap-add SYS_ADMIN (box)" run --cap-add SYS_ADMIN "${BOXRUN[@]:1}"
 no "--cap-add=ALL (egress)" run --cap-add=ALL "${EGRUN[@]:1}"
 no "--cap-add NET_ADMIN on the egress proxy" run --cap-add NET_ADMIN "${EGRUN[@]:1}"
