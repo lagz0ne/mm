@@ -236,7 +236,12 @@ function share(b, role) {
   const used = inProgress(b, role).length, cap = role === 'setup' ? Infinity : CAPACITY[role] || 1, pcap = role === 'setup' ? 0 : projectCap()
   const total = b.all.filter((i) => i.status === 'in_progress' && leadOf(i.assignee)).length
   const free = Math.max(0, Math.min(cap - used, pcap ? pcap - total : Infinity))
-  return { queue, used, cap, free, pcap, total }
+  // A P0 may go past capacity by one (the owner, 2026-11-06): the first P0 in the queue that the free capacity doesn't
+  // reach is handed too, while the role then holds at most cap+1 (and the project at most its cap+1). So an incident
+  // never waits behind a full lead, and a second P0 still waits for a free place. `hand` = the items to hand out now.
+  const head = queue.slice(0, free), extra = queue.find((i) => i.priority === 0 && !head.includes(i))
+  const over = extra && used + head.length < cap + 1 && (!pcap || total + head.length < pcap + 1) ? [extra] : []
+  return { queue, used, cap, free, pcap, total, hand: [...head, ...over] }
 }
 // The pull model's capacity gate: a reason about an item in the role's queue that is not among its next `free` items
 // waits (stays pending, unsent) until capacity frees. Talk (a comment, a handoff, blocked, a dependency, a reopen) is
@@ -245,15 +250,16 @@ function share(b, role) {
 function sendable(role, b) {
   const reasons = pending[role]
   if (!b) return new Map(reasons)
-  const { queue, free } = share(b, role), next = new Set(queue.slice(0, free).map((i) => i.id)), inQueue = new Set(queue.map((i) => i.id))
+  const { queue, hand } = share(b, role), next = new Set(hand.map((i) => i.id)), inQueue = new Set(queue.map((i) => i.id))
   const known = new Set(b.all.map((i) => i.id))
   return new Map([...reasons].filter(([id, r]) => r.kind !== 'work' || (known.has(id) ? !inQueue.has(id) || next.has(id) : r.at <= b.at)))
 }
 const queueLine = (role, b) => {
   if (!b) return null
-  const { queue, used, cap, free } = share(b, role), head = queue[0]
+  const { queue, used, cap, free, hand } = share(b, role), head = queue[0], p0 = !free && hand.find((i) => i.priority === 0)
   return `Your queue (bd ready --assignee ${role}): ${queue.length ? `${queue.length} item(s), next ${head.id} "${clip(head.title, 60)}"` : 'empty'}. ` +
-    `In progress: ${used}${Number.isFinite(cap) ? ` of your capacity ${cap}` : ''}${free ? '.' : ' (at capacity: finish, hand over or block one before you claim the next).'}`
+    `In progress: ${used}${Number.isFinite(cap) ? ` of your capacity ${cap}` : ''}` +
+    (free ? '.' : p0 ? ` (at capacity, but a P0 may go past it by one: claim ${p0.id} now; the rest wait).` : ' (at capacity: finish, hand over or block one before you claim the next).')
 }
 
 async function tick() {
@@ -484,14 +490,14 @@ async function reconcile1() {
   if (Object.keys(readState()._expiries || {}).some((id) => closed.has(id))) editState((s) => { for (const id of Object.keys(s._expiries || {})) if (closed.has(id)) delete s._expiries[id] })
   for (const role of ROLES) {
     // the queue: hand the next item(s), as many as its free capacity; the rest wait
-    const { queue, used, cap, free, pcap, total } = share(b, role), h = (handed[role] ||= new Map())
+    const { queue, used, cap, pcap, total, hand } = share(b, role), h = (handed[role] ||= new Map())
     for (const id of h.keys()) if (!queue.some((i) => i.id === id)) h.delete(id) // claimed, moved or closed
-    for (const i of queue.slice(0, free)) {
+    for (const i of hand) {
       if (pending[role].has(i.id) || (h.has(i.id) && Date.now() - h.get(i.id) < LEASE)) continue
       h.set(i.id, Date.now())
       note(role, i.id, `${i.id} "${clip(i.title, 80)}" (P${i.priority ?? '?'}) is next in your queue: claim it with bd update ${i.id} --claim, then do it or give it to a worker.`, false, 'work')
     }
-    const waiting = queue.slice(free).map((i) => i.id).join(' ')
+    const waiting = queue.filter((i) => !hand.includes(i)).map((i) => i.id).join(' ')
     const said = waiting ? `${role} has ${used} of ${cap} in progress${pcap ? ` (the project ${total} of its cap ${pcap})` : ''}: waiting in its queue ${waiting}` : ''
     if (said !== (atCapSaid[role] || '')) { if (said) log(said); atCapSaid[role] = said }
     // its lead
@@ -502,7 +508,7 @@ async function reconcile1() {
     const now = sendable(role, b)
     const mine = (await own()).filter((i) => i.status === 'in_progress' || i.status === 'blocked')
     if (!now.size && !mine.length) continue
-    const next = queue.slice(0, free).filter((i) => now.get(i.id)?.kind === 'work')
+    const next = hand.filter((i) => now.get(i.id)?.kind === 'work')
     await startLead(role, { was: a, items: [...now.keys(), ...mine.map((i) => i.id)], next,
       why: `${now.size} reason(s) wait for it, ${mine.length} item(s) in its handover` })
   }

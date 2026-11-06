@@ -152,6 +152,20 @@ try {
   ok('dev closes d-1: d-2 is handed to it ("next in your queue: claim it")', await until(() => /d-2 "title of d-2" \(P2\) is next in your queue: claim it with bd update d-2 --claim/.test(to('dev'))))
   ok('...with its queue and capacity in the update', /Your queue \(bd ready --assignee dev\): 1 item\(s\), next d-2[^\n]*In progress: 0 of your capacity 1\./.test(to('dev')))
 
+  console.log('== a P0 may go past capacity by one (the owner, 2026-11-06)')
+  change('d-2', 'dev', { status: 'in_progress' }) // dev claims d-2: at its capacity 1
+  add('d-3', 'dev', { priority: 0 }); emit('create', 'd-3', 'ops')
+  add('d-4', 'dev', { priority: 2 }); emit('create', 'd-4', 'ops')
+  ok('a P0 (d-3) is handed although dev is at its capacity 1 (its own event, or the queue head)', await until(() => /d-3 "title of d-3"/.test(to('dev'))))
+  ok('...and the update says a P0 may go past capacity by one, naming it', /a P0 may go past it by one: claim d-3 now/.test(to('dev')))
+  ok('...a P2 (d-4) still waits', await until(() => /waiting in its queue d-4/.test(log())) && !/d-4 "title of d-4"/.test(to('dev')))
+  change('d-3', 'dev', { status: 'in_progress' }) // dev claims the P0: 2 in progress, capacity 1
+  add('d-5', 'dev', { priority: 0 }); emit('create', 'd-5', 'ops')
+  ok('...but only one past: a second P0 (d-5) waits while dev holds 2 of 1', await until(() => /dev has 2 of 1 in progress: waiting in its queue (d-5 d-4|d-4 d-5)/.test(log())))
+  await sleep(1500)
+  ok('...and dev is not told of d-5', !/d-5 "title of d-5"/.test(to('dev')))
+  for (const id of ['d-2', 'd-3', 'd-4', 'd-5']) change(id, 'dev', { status: 'closed' }, 'close') // out of the way of the project cap below
+
   console.log('== an expired claim goes back to the queue')
   ok('q-1 (in progress, no update for 2 h): requeued through the guard', await until(() => /update q-1 -s open -a qa --if-assignee qa --if-status in_progress --actor wake/.test(bdlog()) && I('q-1').status === 'open' && I('q-1').assignee === 'qa'))
   ok('...said on the item, and counted (expiry 1)', await until(() => (I('q-1').comments || []).some((c) => c.author === 'wake' && /Requeued: .*expiry 1 of 3/.test(c.text))) && wstate()._expiries?.['q-1'] === 1)
