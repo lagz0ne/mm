@@ -13,6 +13,24 @@ export type Status = 'ok' | 'warn' | 'fail' | 'skip'
 export interface Check { layer: string; item: string; status: Status; detail: string; fix?: string }
 
 const expand = (p: string) => p.replace(/^~(?=\/|$)/, HOME)
+/** A board's name in doctor's items (`bd quiet <id>`): system, or <client>/<name>. */
+const boardId = (root: string) => basename(root) === 'system' || root === DIRS.system ? 'system' : basename(dirname(root)) + '/' + basename(root)
+
+/** The throwaway project(s) the failing checks name, when every failing check names one (a test planted the fault on
+ *  purpose, e.g. a bd hook: mm doctor's span is then marked mm_throwaway and stays out of mm obs errors, sy-ha9x);
+ *  '' when nothing fails or any failure is the machine's or a real project's. Warnings never fail doctor, so they
+ *  don't count. Throwaway comes from the project's answers (mm writes them; no lead or box can), as in cli.ts. */
+export function throwawayOnly(checks: Check[]): string {
+  const failing = checks.filter((c) => c.status === 'fail')
+  if (!failing.length) return ''
+  const owner = new Map<string, string>()   // item -> throwaway project, for the items doctor makes per project
+  for (const p of listProjects()) {
+    if (!p.throwaway || p.root === '?') continue
+    owner.set(`engine ${p.project}`, p.project); owner.set(`bd quiet ${boardId(expand(p.root))}`, p.project)
+  }
+  const named = failing.map((c) => owner.get(c.item))
+  return named.every(Boolean) ? [...new Set(named)].join(',') : ''
+}
 
 /** First x.y[.z] in a version string. */
 export function parseVersion(s: string): string | null {
@@ -102,7 +120,7 @@ export function doctor(): Check[] {
   // git really uses, core.hooksPath included), bd's metrics off and no-hooks set on every board
   const boardRoots = [...new Set([DIRS.system, ...listProjects().map((p) => expand(p.root))])].filter((r) => existsSync(join(r, '.mm-answers.yaml')))
   for (const root of boardRoots) {
-    const id = basename(root) === 'system' || root === DIRS.system ? 'system' : basename(dirname(root)) + '/' + basename(root)
+    const id = boardId(root)
     const hooks: string[] = []
     for (const repo of [root, join(root, 'control'), join(root, 'code')]) {
       if (!existsSync(join(repo, '.git'))) continue

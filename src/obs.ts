@@ -186,14 +186,19 @@ export async function health() {
 }
 
 // ---------- mm's own operations ----------
+/** What the running command says about its own span before it exits (sy-ha9x): `attrs` join the span (mm doctor's
+ *  mm_throwaway when only a throwaway project fails); `answer` = this exit code is an answer to the caller, not a fault
+ *  (mm config get on an unset key exits 1: the span is not failed, its outcome says why). cli.ts reads it at exit. */
+export const spanNote: { attrs: Record<string, unknown>; answer?: { code: number; outcome: string } } = { attrs: {} }
+
 /** A root span for one mm command, sent to VictoriaTraces; also a line in ~/.mm/pc/mm.log (shipped). */
 export function mmSpan(name: string, attrs: Record<string, unknown>) {
   const traceId = randomBytes(16).toString('hex'), spanId = randomBytes(8).toString('hex'), start = Date.now()
   process.env.TRACEPARENT = `00-${traceId}-${spanId}-01` // children (bin/init, config-check, npm build, ...) join this trace
   return (ok: boolean, extra: Record<string, unknown> = {}) => {
     // (a command on a throwaway project carries attrs.mm_throwaway, set by mm itself from the project's answers: cli.ts)
-    const end = Date.now(), all = { ...attrs, ...extra, ok }
-    try { appendFileSync(join(DIRS.pc, 'mm.log'), JSON.stringify({ time: new Date(end).toISOString(), level: ok ? 'info' : 'error', msg: `${name} ${ok ? 'ok' : 'failed'}`, project: 'mm', service: 'mm', op: name, duration_ms: end - start, trace_id: traceId, ...all }) + '\n') } catch {}
+    const end = Date.now(), all: Record<string, unknown> = { ...attrs, ...extra, ok }
+    try { appendFileSync(join(DIRS.pc, 'mm.log'), JSON.stringify({ time: new Date(end).toISOString(), level: ok ? 'info' : 'error', msg: `${name} ${all.outcome ?? (ok ? 'ok' : 'failed')}`, project: 'mm', service: 'mm', op: name, duration_ms: end - start, trace_id: traceId, ...all }) + '\n') } catch {}
     // MM_OBS_TRACES as in the engine (bin/lib/obs.mjs): unset = the stack's endpoint, empty = off (tests, throwaway homes)
     const ep = { traces: process.env.MM_OBS_TRACES ?? (obsEndpoints() as { traces?: string }).traces }
     if (!ep.traces) return
