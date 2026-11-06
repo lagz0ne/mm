@@ -137,11 +137,13 @@ export function doctor(): Check[] {
     // a box project's bin/: the host runs it only if it is mm's engine (review sy-b15.6 follow-up 2)
     const no = engineRefusal(root)
     if (no) { out.push({ layer: 'board', item: `bd quiet ${id}`, status: 'fail', detail: `not checked: ${no}`, fix: 'see what changed bin/ (git -C <project> log -- bin), then mm update' }); continue }
-    const get = (k: string) => run([join(root, 'bin', 'bd'), 'config', 'get', k], { cwd: join(root, 'control'), timeoutMs: 15_000 }).out.trim().split('\n').pop()
-    const metrics = get('metrics.disabled'), noHooks = get('no-hooks')
-    const bad = [...(hooks.length ? [`bd hook(s): ${hooks.join(', ')}`] : []), ...(metrics !== 'true' ? [`metrics.disabled is ${metrics || 'unreadable'}`] : [])]
+    const bd = (...a: string[]) => run([join(root, 'bin', 'bd'), ...a], { cwd: join(root, 'control'), timeoutMs: 15_000 }).out.trim()
+    const noHooks = bd('config', 'get', 'no-hooks').split('\n').pop()
+    // metrics as bd resolves them for this board's calls (bin/bd's env first, then the user-global config; sy-nsnp)
+    const metrics = /^Anonymous usage metrics: (\w+)/m.exec(bd('metrics'))?.[1]
+    const bad = [...(hooks.length ? [`bd hook(s): ${hooks.join(', ')}`] : []), ...(metrics !== 'OFF' ? [`bd metrics are ${metrics?.toLowerCase() || 'unreadable'}`] : [])]
     out.push(bad.length
-      ? { layer: 'board', item: `bd quiet ${id}`, status: 'fail', detail: bad.join('; '), fix: `remove the hook(s); then ${root.replace(HOME, '~')}/bin/bd-quiet` }
+      ? { layer: 'board', item: `bd quiet ${id}`, status: 'fail', detail: bad.join('; '), fix: [...(hooks.length ? [`remove the hook(s); then ${root.replace(HOME, '~')}/bin/bd-quiet`] : []), ...(metrics !== 'OFF' ? ['mm update (bin/bd turns metrics off)'] : [])].join('; ') }
       : noHooks !== 'true'
         ? { layer: 'board', item: `bd quiet ${id}`, status: 'warn', detail: 'no bd hook, metrics off, but no-hooks is not set (bd could install hooks)', fix: `${root.replace(HOME, '~')}/bin/bd-quiet (or mm update)` }
         : { layer: 'board', item: `bd quiet ${id}`, status: 'ok', detail: 'no bd hook; no-hooks set; metrics off' })

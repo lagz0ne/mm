@@ -6,4 +6,9 @@ export BEADS_DIR="$P/control/.beads" XDG_CONFIG_HOME="$P/.config" DOLT_ROOT_PATH
 # Talk to Dolt through its Unix socket when it runs with one (services.json); otherwise the TCP port in metadata.
 [ -S "$P/.dolt/mysql.sock" ] && export BEADS_DOLT_SERVER_SOCKET="$P/.dolt/mysql.sock"
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=beads.role GIT_CONFIG_VALUE_0=maintainer
+# Metrics off for every call (sy-8s1, sy-nsnp). bd keeps metrics state per HOME, not under XDG_CONFIG_HOME: while they
+# are on, each call writes ~/.beads/eventsData and ~/.beads/machine-id and bootstraps ~/.config/bd/config.yaml (bd
+# prefers that path to $XDG_CONFIG_HOME/bd). The env turns them off without a config write; metrics.* in `bd config`
+# are user-global keys, so setting them would write ~/.config/bd too.
+export BD_DISABLE_METRICS=1 BD_DISABLE_EVENT_FLUSH=1
 exec "$P/tools/bd" "$@"

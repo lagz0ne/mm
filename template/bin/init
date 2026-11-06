@@ -5,7 +5,7 @@
 #   1. tools/bd and tools/dolt must match tools.json (installed_sha256)
 #   2. control/ = a git repo (repo-local identity), with project-local config dirs (.config, .dolt-root, .dolt, .run)
 #   3. bd init --server: Beads in Dolt server mode (database = <prefix>), stealth, no git hooks and no agent files
-#      (--skip-hooks --skip-agents), maintainer role; then bin/bd-quiet: no-hooks, metrics off, no-git-ops (sy-8s1)
+#      (--skip-hooks --skip-agents), maintainer role; then bin/bd-quiet: no-hooks, no-git-ops (sy-8s1; metrics are off in bin/bd)
 #   4. events-journal on: the board's live stream and wake read /v0/beads/events
 #   5. stop the Dolt server bd started for init; from now on the process manager runs it (services.json: dolt, which
 #      listens on {root}/.dolt/mysql.sock, so bd clients use the socket)
@@ -34,12 +34,14 @@ git -C "$P/control" config user.email "board@$(basename "$P").local"
 
 # 3. Beads, server mode (bd starts a temporary Dolt server for this)
 cd "$P/control"
-"$P/bin/bd" init --quiet --stealth --skip-hooks --skip-agents --server --prefix "$PREFIX" --non-interactive --role maintainer
+# HOME is the project's own here (sy-nsnp): before control/.beads/config.yaml exists, bd init saves what --stealth sets
+# (no-git-ops) into the user's ~/.config/bd/config.yaml when there is one; with this HOME there is none to find
+HOME="$P/.config" "$P/bin/bd" init --quiet --stealth --skip-hooks --skip-agents --server --prefix "$PREFIX" --non-interactive --role maintainer
 
 # 4. live event stream for the board and wake
 "$P/bin/bd" config set events-journal true >/dev/null
 
-# 4b. bd stays quiet: no git hooks, no metrics, no git operations of its own (the owner, sy-8s1)
+# 4b. bd stays quiet: no git hooks, no git operations of its own (the owner, sy-8s1); metrics are off in bin/bd
 "$P/bin/bd-quiet" >/dev/null
 
 # 5. hand Dolt over to the process manager

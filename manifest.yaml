@@ -187,6 +187,8 @@ project:
     BEADS_DOLT_SERVER_SOCKET: "{{project}}/.dolt/mysql.sock   # when the socket exists"
     PATH_prepend: "{{project}}/tools"
     git_config: { beads.role: maintainer }
+    BD_DISABLE_METRICS: "1"                   # and BD_DISABLE_EVENT_FLUSH=1: bd's metrics state is per HOME (~/.beads,
+                                              # ~/.config/bd), so off by env, never by `bd config set metrics.*`
 
   services:                                   # declared in the project's services file
     names: [dolt, bd-serve, board, wake, app]  # app = optional slot
