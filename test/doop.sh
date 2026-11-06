@@ -74,7 +74,8 @@ check "a lead may not run the headers helper, nor name the project's secrets in 
 
 echo "== backup, off, on again"
 check "the backup has the project's Doop, its 0600 database files too (doop.tar.gz, by Doop's own tar while it runs)" sh -c "mm cron --run '$PROJECT/backup' && ls -1d \"\$(jq -r .dirs.backups '$ROOT/.run/endpoints.json')/$PROJECT\"/20*/ | tail -1 | xargs -I{} tar -tzf {}doop.tar.gz | grep -qx doop/pg/global/pg_control"
-check "mm doop off: the container and its network go, the design lead's MCP goes, the data stays" sh -c "mm doop off '$REF' >/dev/null && sleep 5 && ! D inspect '$C' >/dev/null 2>&1 && ! D network inspect '$NET' >/dev/null 2>&1 && ! test -e '$ROOT/leads/design/.mcp.json' && ! test -e '$ROOT/leads/design/.claude/settings.local.json' && test -d '$ROOT/data/doop/pg'"
+# Doop has up to 30 s to stop now (services.yaml stop_seconds; its database closes cleanly), so wait for it, up to 40 s
+check "mm doop off: the container and its network go, the design lead's MCP goes, the data stays" sh -c "mm doop off '$REF' >/dev/null && for i in \$(seq 1 40); do ! D inspect '$C' >/dev/null 2>&1 && ! D network inspect '$NET' >/dev/null 2>&1 && break; sleep 1; done; ! D inspect '$C' >/dev/null 2>&1 && ! D network inspect '$NET' >/dev/null 2>&1 && ! test -e '$ROOT/leads/design/.mcp.json' && ! test -e '$ROOT/leads/design/.claude/settings.local.json' && test -d '$ROOT/data/doop/pg'"
 check "mm doop on again: the same account (the key still works)" sh -c "mm doop on '$REF' >/dev/null && for i in \$(seq 1 120); do curl -sf -o /dev/null '$URL/healthz' && break; sleep 1; done; node '$T/mcp-tools.mjs' '$URL/mcp' '$ROOT/secrets/doop-agent-key'"
 
 echo "== archive"
