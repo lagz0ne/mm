@@ -2,8 +2,9 @@
 # The base of a box project's mm update (review sy-055t), hermetic: a throwaway HOME / MM_HOME and a box project laid
 # out as mm new --box lays it out (the template rendered, its config repo, mm-template, the engine's seal and the
 # template record on the host), but nothing started. A box can write its config repo's refs, so mm update merges only
-# from the mm-template commit mm recorded on the host. Only the paths that start nothing are run (--dry-run, and an
-# update that has nothing to merge); test/box.sh runs the same with a real box.
+# from the mm-template commit mm recorded on the host. Only the paths that start nothing are run (--dry-run, an
+# update that has nothing to merge, and one with an engine change whose box's up stops at a Docker stand-in: the
+# restart is the box's, never the host's process manager's, sy-jm5); test/box.sh runs the same with a real box.
 #   test/template-base.sh [mm command]       default: bun <repo>/src/cli.ts
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd); MMC=${1:-"bun $SRC/src/cli.ts"}
@@ -81,5 +82,15 @@ check "no record, and mm-template is not mm's render: refused, and it says what 
 G update-ref refs/heads/mm-template "$MT"
 check "no record, mm-template is exactly mm's render: --dry-run works and records nothing" sh -c "mm update acme/shop --dry-run >'$T/u.out' 2>&1 && grep -q 'would record' '$T/u.out' && ! test -e '$REC'"
 check "...an update records it" sh -c "mm update acme/shop >'$T/u.out' 2>&1 && grep -q '\"commit\": \"$MT\"' '$REC'"
+
+echo "== an update that changes the engine (bin/): the box's services restart in the box, never on the host's process manager (sy-jm5)"
+# stand-ins that record every call: the host's process manager, and Docker (no box image: the box's up stops there)
+printf '#!/bin/sh\necho "$*" >>"%s/pc.calls"\necho "no such process" >&2; exit 1\n' "$T" >"$T/bin/process-compose"
+printf '#!/bin/sh\necho "$*" >>"%s/docker.calls"\nexit 1\n' "$T" >"$T/bin/fakedocker"; chmod +x "$T/bin/process-compose" "$T/bin/fakedocker"
+cp -r "$SRC/template" "$T/tpl"; echo '// a change in the engine (test/template-base.sh)' >>"$T/tpl/bin/health"
+MM_TEMPLATE_DIR="$T/tpl" MM_DOCKER="$T/bin/fakedocker" mm update acme/shop -o json >"$T/u.json" 2>"$T/u.err"
+check "the update merged it (bin/health changed) and went on to the box's up (Docker asked for its image)" sh -c "jq -e '.. | objects | select(.step == \"merge\" and .status == \"ok\")' '$T/u.json' >/dev/null && git -C '$ROOT' show --stat HEAD | grep -q 'bin/health' && grep -q '^image inspect' '$T/docker.calls'"
+check "...no restart on the host's process manager (the box's processes aren't there)" sh -c "! grep -q 'process restart' '$T/pc.calls' 2>/dev/null && ! jq -e '.. | objects | select((.step // \"\") | startswith(\"restart \"))' '$T/u.json' >/dev/null"
+check "...the update says the box started its services again itself" sh -c "jq -e '.. | objects | select(.step == \"restart\" and .status == \"skip\" and (.detail | test(\"in the box\")))' '$T/u.json' >/dev/null"
 
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]

@@ -226,7 +226,10 @@ function finish(root: string, res: UpdateResult): UpdateResult {
     steps.push({ step: 'bd quiet', status: q.ok ? 'ok' : 'fail', detail: q.ok ? (q.out.trim().split('\n').join('; ') || 'already') : short(q) })
   }
   const engine = changed.some((f) => f.startsWith('site/') || f.startsWith('bin/'))
-  if (engine) {
+  // a box project: up() made its box again, so every service in it started with the new engine; its processes are on
+  // the box's own process manager, never on the host's (sy-jm5: a restart there finds no such process)
+  if (engine && a.box) steps.push({ step: 'restart', status: 'skip', detail: 'a box: up() started its services again in the box, with the new engine' })
+  else if (engine) {
     const { services } = resolve(root)
     const which = Object.keys(services).filter((n) => n !== 'dolt' && n !== 'bd-serve' && n !== 'app')
     for (const n of which) {
