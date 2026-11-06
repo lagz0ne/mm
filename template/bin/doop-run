@@ -46,7 +46,6 @@ pinned() {
 # what a Doop's uid runs over its data, inside a container (only the owner may change a file's mode): its own files
 # group-readable and -writable, its folders setgid. Never follows a symlink (find without -L; they are neither d nor f)
 REGROUP='find /app/data -user "$(id -u)" \( \( -type d -exec chmod g+rwxs {} + \) -o \( -type f -exec chmod g+rw {} + \) \) 2>/dev/null'
-running() { [ "$($DOCKER inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = true ]; }
 release() {
   [ -d "$D" ] || return 0
   # the uids of what the host owner can't read or change there, of Doops only (210010-210249)
@@ -59,8 +58,38 @@ release() {
 case "${1:-}" in
   backup)
     out=${2:?doop-run backup <file>}
-    # running: its files are its own (many 0600), so its own tar reads them, inside its container (its uid, no network)
-    if running; then exec $DOCKER exec "$NAME" tar -czf - -C /app --transform 's,^data,doop,S' data >"$out"; fi
+    # running: its files are its own (many 0600), so its own tar reads them, inside its container (its uid, no network).
+    # A Doop between two runs (a rollout restarts it), or docker failing, is waited for: a few tries over ~30 s
+    # (DOOP_BACKUP_WAIT seconds). Still not there: exit 75 and "skipped: <why>" on stdout, so bin/backup backs up the
+    # rest and says doop skipped (sy-bey8). Doop's own tar failing in a steady container is a real error.
+    on=""; grep -Eq '^services_on:.*[^a-z0-9_-]doop([^a-z0-9_-]|$)' "$P/.mm-answers.yaml" 2>/dev/null && on=1
+    lim=${DOOP_BACKUP_WAIT:-30}; step=5; [ "$lim" -ge 10 ] || step=1; t=0
+    state() { $DOCKER container inspect -f '{{.State.Status}} {{.State.StartedAt}}' "$NAME" 2>&1; }
+    while :; do
+      why=""
+      if ! st=$(state); then
+        case "$st" in *"No such"*|*"no such"*) st=none ;; *) why="docker: $(printf '%s' "$st" | tail -1)"; st=error ;; esac
+      fi
+      case "$st" in
+        running\ *)
+          if err=$($DOCKER exec "$NAME" tar -czf - -C /app --transform 's,^data,doop,S' data 2>&1 >"$out"); then exit 0; else rc=$?; fi
+          now=$(state) || now=gone
+          if [ "$now" = "$st" ] && [ "$rc" != 125 ] && ! printf '%s' "$err" | grep -Eqi 'error response from daemon|cannot connect to the docker daemon|is not running|is restarting|is paused'; then
+            printf '%s\n' "$err" >&2; exit "$rc"
+          fi
+          why="the exec into its container failed: $(printf '%s' "$err" | tail -1 | cut -c1-160)" ;;
+        none) [ -z "$on" ] || why="it is on, but its container is not there" ;;
+        exited\ *|dead\ *|created\ *) [ -z "$on" ] || why="its container is ${st%% *}" ;;
+        error) ;;
+        *) why="its container is ${st%% *}" ;; # restarting, removing, paused
+      esac
+      [ -n "$why" ] || break # no Doop runs: the host's tar, below
+      if [ "$t" -ge "$lim" ]; then
+        [ "$st" != none ] || break # on, but gone for good (it stopped and was not started again): the host's tar
+        rm -f "$out"; echo "skipped: $why"; echo "doop-run: doop skipped after $lim s: $why" >&2; exit 75
+      fi
+      sleep "$step"; t=$((t + step))
+    done
     # stopped: it made them group-readable when it stopped (release, if it was killed before)
     release; exec tar -czf "$out" -C "$P/data" doop ;;
   release)

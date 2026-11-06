@@ -6,7 +6,8 @@
 #     code.bundle        git bundle of the product repo (all branches)
 #     config.bundle      git bundle of the project config repo (briefs, skills, permissions, scripts)
 #     releases           the release log
-#     doop.tar.gz        the project's Doop: canvases and assets (data/doop/), when it has one
+#     doop.tar.gz        the project's Doop: canvases and assets (data/doop/), when it has one (not when its container
+#                        stays away ~30 s: "doop skipped" in the summary, exit 0)
 #     data/              the app's data (release/data/: what the app slot keeps, e.g. accounts and sessions), when it has one
 # Everything is user-only (dirs 0700, files 0600): data/ can hold password and session hashes.
 # Keeps the newest 14. Same disk (RAID1): protects against mistakes and corruption, not disk loss; off-site is separate.
@@ -40,6 +41,16 @@ if [ -d "$P/release/data" ]; then
 fi
 # the project's Doop (plans/doop.md): its canvases and assets. Its secrets stay out (they are re-made at the next start).
 # (bin/doop-run backup: Doop runs as its own uid, and its database files are 0600, so while it runs its own tar reads them)
-[ ! -d "$P/data/doop" ] || "$P/bin/doop-run" backup "$D/doop.tar.gz"
+# A Doop that stays away (restarting, docker failing; doop-run waits ~30 s, then exits 75 with "skipped: <why>"): the
+# rest is backed up, with a warn line and "doop skipped" in the summary (sy-bey8). Any other failure of it fails.
+SKIP=""
+if [ -d "$P/data/doop" ]; then
+  rc=0; why=$("$P/bin/doop-run" backup "$D/doop.tar.gz") || rc=$?
+  case $rc in
+    0) ;;
+    75) why=${why#skipped: }; rm -f "$D/doop.tar.gz"; SKIP=", doop skipped: ${why:-its container did not answer}"; echo "backup: warn: doop skipped: ${why:-its container did not answer}" >&2 ;;
+    *) exit "$rc" ;;
+  esac
+fi
 ls -1d "$ROOT"/20*/ 2>/dev/null | head -n -14 | xargs -r rm -rf
-echo "backup $D: $(du -sh "$D" | cut -f1), $(wc -l < "$D/board.jsonl") items, $(find "$D/data" -type f 2>/dev/null | wc -l) data files"
+echo "backup $D: $(du -sh "$D" | cut -f1), $(wc -l < "$D/board.jsonl") items, $(find "$D/data" -type f 2>/dev/null | wc -l) data files$SKIP"
