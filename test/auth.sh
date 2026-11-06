@@ -259,6 +259,23 @@ check "the owner changes a tier" test "$(w PATCH "$OA" /it-1 '{"patch":{"labels"
 check "not even the owner signs off for review (403)" test "$(w PATCH "$OA" /it-1 '{"patch":{"add_labels":["signed-off"]}}')" = 403
 check "a comment carries its author's role" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"looks good\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.text == \"[member] looks good\" and .b.author == \"alex\"'"
 check "...and its author is the signed-in person, whatever the body says" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"x\",\"author\":\"owner\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.author == \"alex\"'"
+check "the owner's approved on the public side goes to the board as the owner's signed name (what the Supervisor counts)" bash -c "[ \$(w PATCH '$OA' /it-1 '{\"patch\":{\"add_labels\":[\"approved\"]},\"actor\":\"bridge\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.actor == \"boss\" and .b.patch.add_labels == [\"approved\"]'"
+
+echo "== the local side never changes approved (sy-h2yt: a self-chosen name says nothing signed)"
+lw() { curl -s -o "$T/wb" -w '%{http_code}' -X "$1" -H 'content-type: application/json' -H "cookie: board_user=${4:-boss}" -d "$3" "http://127.0.0.1:$BL/api/v0/beads/issues$2"; }
+export -f lw; export BL T
+n0=$(wc -l <"$T/bd.jsonl")
+check "local side: adding approved is refused (403), even under the owner's name" test "$(lw PATCH /it-1 '{"patch":{"add_labels":["approved"]}}')" = 403
+check "...and it says where the owner approves" grep -q 'public address, or with the bridge' "$T/wb"
+check "...by a full label set (403)" test "$(lw PATCH /it-1 '{"patch":{"labels":["t2","bug","approved"]}}')" = 403
+check "...removing it (403)" test "$(lw PATCH /it-1 '{"patch":{"remove_labels":["approved"]}}')" = 403
+check "...on a new item (403)" test "$(lw POST '' '{"title":"x","labels":["t2","approved"]}')" = 403
+check "...through a label field it does not know (403)" test "$(lw PATCH /it-1 '{"patch":{"set_labels":["approved"]}}')" = 403
+check "...nothing of it reached bd (only reads)" bash -c "tail -n +$((n0 + 1)) '$T/bd.jsonl' | jq -e -s 'length > 0 and all(.m == \"GET\")'"
+check "...each refusal is logged" bash -c "grep -c 'refused on the local side' '$T/board/.run/logs/ops.log' | grep -qx 5"
+check "local side: other labels as before (200, no author role label)" bash -c "[ \$(lw PATCH /it-1 '{\"patch\":{\"add_labels\":[\"urgent\"]}}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.patch.add_labels == [\"urgent\"] and .b.actor == \"boss\"'"
+check "...a new item with a tier, a full label set without approved (200)" bash -c "[ \$(lw POST '' '{\"title\":\"x\",\"labels\":[\"t2\"]}') = 200 ] && [ \$(lw PATCH /it-1 '{\"patch\":{\"labels\":[\"t2\",\"bug\",\"urgent\"]}}') = 200 ]"
+check "a self-chosen name can't be the bridge's (400)" test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{"name":"bridge"}' "http://127.0.0.1:$BL/api/whoami")" = 400
 
 echo "== the board's summary for the home page (/api/summary: counts only, read-only; sy-ukbz)"
 sm() { curl -s -o "$T/sm" -w '%{http_code}' -H "x-forwarded-host: ${2:-$BOARD}" ${1:+-H "x-mm-assertion: $1"} "http://127.0.0.1:$BP/api/summary${3-?signal=1}"; }
