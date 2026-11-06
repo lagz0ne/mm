@@ -225,6 +225,19 @@ check "mm up joined the box to the machine's Paseo (one host entry, labelled $PR
 for _ in $(seq 1 30); do joined | grep -qiE 'connect|online|ready|ok' && ! joined | grep -qi 'connecting' && break; sleep 1; done
 check "...and the machine's Paseo reaches it (status: $(joined))" sh -c "joined | grep -qiE 'connected|online|ready|^ok'"
 check "...the box's password went through no command line (mm runs Paseo's client library with the file's path only)" sh -c "! grep -rq \"\$(cat '$PW')\" /proc/[0-9]*/cmdline 2>/dev/null"
+# ...and the join goes one way (review sy-jm5 3): the machine's Paseo reaches the box's, never the other way round, so
+# a box can't start agents on the machine's Paseo or act on its agents. A terminal on the machine's Paseo stands in for
+# its work (as above: an agent's tools start the same way, and no model is needed)
+MTID=$(SP terminal create --cwd "$AIT" --name qa-machine --json 2>/dev/null | jq -r '.id // .terminalId // .terminal.id // empty')
+mterms() { SP terminal ls --json 2>/dev/null | jq -c '[.[] | .name // empty] | sort'; }
+magents() { SP ls -a --json 2>/dev/null | jq -c '[.[] | .id] | sort'; }
+export -f BP mterms magents; export PW BIP
+MT0=$(mterms); MA0=$(magents)
+check "the box's Paseo has no host of its own: the join gave it no way to the machine's" sh -c "[ -n '$MTID' ] && BP host ls --json | jq -e 'length == 0'"
+check "...and doesn't see the machine's work (its terminal qa-machine)" sh -c "BP terminal ls --json >/dev/null && ! BP terminal ls --json | grep -q qa-machine"
+check "the box holds nothing of the machine's Paseo (its home: keypair, credential)" sh -c "! IN 'test -e $MM_PASEO_JOIN_HOME' && ! IN 'ls -A \$HOME/.paseo 2>/dev/null | grep -q .'"
+check "from inside the box, the machine's Paseo takes no terminal and no agent (by the gateway, by the host's name)" sh -c "! IN 'paseo --host tcp://$GW:6767 terminal create --cwd /tmp --name qa-evil' && ! IN 'paseo --host tcp://host.docker.internal:6767 run --no-wait qa-evil' && [ \"\$(mterms)\" = '$MT0' ] && [ \"\$(magents)\" = '$MA0' ]"
+[ -n "$MTID" ] && SP terminal kill "$MTID" >/dev/null 2>&1
 
 echo "== models only through mm's AI gateway (sy-b15.10)"
 AIS="$MM_HOME_DIR/box/$PROJECT/ai/ai.sock"
