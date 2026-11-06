@@ -32,7 +32,7 @@ mkdir -p "$PR"/{bin,secrets,data/doop,.git/hooks,.run/logs} "$MM/projects/acme/o
   "$MM/paseo/acme-shop" "$MM/claude/acme-shop" "$MM/egress/acme-shop" "$SEC/acme-shop" "$T/outside"
 printf 'client: acme\nname: shop\nproject: acme-shop\n' >"$PR/.mm-answers.yaml"
 printf 'project: "acme-other"\n' >"$MM/projects/acme/other/.mm-answers.yaml"
-echo '[core]' >"$PR/.git/config"; echo 'NODE_ENV=production' >"$PR/secrets/doop.env"; chmod 600 "$PR/secrets/doop.env"
+echo '[core]' >"$PR/.git/config"; printf 'a public key\n' >"$PR/.run/doop-gateway.pem"; echo 'NODE_ENV=production' >"$PR/secrets/doop.env"; chmod 600 "$PR/secrets/doop.env"
 echo x >"$MM/egress/acme-shop/allow"; echo 'box:x' >"$MM/box/acme-shop/passwd"; echo 'box:x' >"$MM/box/acme-shop/group"
 echo s >"$T/outside/secret"
 ln -s "$T/outside" "$PR/evil"; ln -s / "$PR/rootlink"; ln -s "$T/outside/secret" "$PR/secrets/linked.env"
@@ -84,6 +84,10 @@ CHOWN=(run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-a
 DOOP=(run --rm --name mm-doop-acme-shop --label mm.project=acme-shop --label mm.service=doop --network mm-doop-net-acme-shop --ip 10.232.40.10 --dns 127.0.0.1
   --user 210040:"$G" --read-only --tmpfs /tmp:rw,nosuid,nodev,size=512m --cap-drop ALL --security-opt no-new-privileges --memory 2g --pids-limit 1024
   -v "$PR/data/doop:/app/data" --env-file "$PR/secrets/doop.env" --entrypoint sh "$DIG" -c 'umask 002; "$@"' sh node server.js)
+# with its public side behind the sign-in gateway (sy-3yz): the gateway's public key, a file of the project's, read-only
+DOOPGW=(run --rm --name mm-doop-acme-shop --label mm.project=acme-shop --label mm.service=doop --network mm-doop-net-acme-shop --ip 10.232.40.10 --dns 127.0.0.1
+  --user 210040:"$G" --read-only --tmpfs /tmp:rw,nosuid,nodev,size=512m --cap-drop ALL --security-opt no-new-privileges --memory 2g --pids-limit 1024
+  -v "$PR/data/doop:/app/data" -v "$PR/.run/doop-gateway.pem:/run/mm-gateway.pem:ro" --env-file "$PR/secrets/doop.env" --entrypoint sh "$DIG" -c 'umask 002; "$@"' sh node server.js)
 REGROUP=(run --rm --network none --user 210040:"$G" --read-only --cap-drop ALL --security-opt no-new-privileges -v "$PR/data/doop:/app/data" --entrypoint sh "$DIG" -c 'exit 0')
 printf 'mm-box-acme-shop %s acme-shop\nmm-doop-acme-shop %s acme-shop\nmm-box-nolabel %s\nmm-box-other %s acme-other\nmm-box-shortid %s acme-shortid\n' \
   "$(printf 'b%.0s' $(seq 64))" "$(printf 'd%.0s' $(seq 64))" "$(printf 'c%.0s' $(seq 64))" "$(printf 'e%.0s' $(seq 64))" "abc" >"$T/labels"
@@ -94,6 +98,7 @@ yes "box: no-new-privileges and never a pull, always" "run --pull=never --securi
 yes "egress proxy: run (its own uid, no capabilities)" "--user=190040:$G --cap-drop=ALL" "${EGRUN[@]}"
 yes "giveBack: the regroup as the box's uid (no root)" "--user=200040:$G" "${GIVEBACK[@]}"
 yes "doop: run (env file passed as an open file)" "--env-file=/dev/fd/" "${DOOP[@]}"
+yes "doop: run with the gateway's key (read-only, the project's own file)" "--volume=$PR/.run/doop-gateway.pem:/run/mm-gateway.pem:ro" "${DOOPGW[@]}"
 yes "doop: release regroup" "--user=210040:$G" "${REGROUP[@]}"
 yes "network create (box)" - network create --internal --subnet 10.231.40.0/24 --gateway 10.231.40.1 --label mm.project=acme-shop mm-net-acme-shop
 yes "network create (doop)" - network create --internal --subnet 10.232.40.0/24 --gateway 10.232.40.1 --label mm.project=acme-shop --label mm.service=doop mm-doop-net-acme-shop

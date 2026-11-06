@@ -199,9 +199,13 @@ type Svc = { about?: string; command: string; secrets?: string[]; workdir?: stri
   public?: { name: string; auth: string }; depends_on?: Record<string, string>; ready?: { http?: string; socket?: string; exec?: string }; restart?: string; optional?: boolean; outward?: boolean
   stop_seconds?: number } // how long the manager waits after TERM before it kills (process-compose's default: 10)
 
-/** Does this board's server have the gateway-checked public side (BOARD_PUBLIC_PORT)? Older templates don't. */
-function boardHasPublicSide(root: string) {
-  try { return readFileSync(join(root, 'site', 'server.mjs'), 'utf8').includes('BOARD_PUBLIC_PORT') } catch { return false }
+/** The services with their own gateway-checked public listener (the port in this env var; it takes only requests with
+ *  the gateway's signed assertion): the board (site/server.mjs) and Doop (bin/doop-run, the mm fork; sy-3yz). */
+const PUBLIC_SIDES: Record<string, [file: string, env: string]> = { board: ['site/server.mjs', 'BOARD_PUBLIC_PORT'], doop: ['bin/doop-run', 'DOOP_PUBLIC_PORT'] }
+/** The env var of this service's public side, if its code has one (older templates don't). */
+function publicSide(root: string, service: string): string | null {
+  const side = PUBLIC_SIDES[service]; if (!side) return null
+  try { return readFileSync(join(root, side[0]), 'utf8').includes(side[1]) ? side[1] : null } catch { return null }
 }
 /** A project's services as mm runs them. `o.names`: the naming rule to use instead of the machine's (mm names shows
  *  both; nothing else passes it). */
@@ -238,13 +242,14 @@ export function resolve(root: string, o: { names?: NamesMode } = {}) {
     // checks reach it there); the web proxy reaches it through mm's forwarder on bind_host (up(): <service>-public),
     // so nothing listens on every interface. bind_host on loopback (a proxy on the host itself): no forwarder needed.
     let pub: { public_url?: string; public_port?: number; public_bind?: string } = {}
-    if (s.public && access === 'domain' && domain) {
+    // a service behind the gateway (auth: required) gets its own public listener on that port, if its code has one. A
+    // board still on an older template doesn't: it keeps serving the public port itself until `mm update` brings the
+    // listener, so its route never goes dark. Any other (Doop) without one gets no public side at all: its own login
+    // would be on the public port. An open one (the app slot) serves the port itself.
+    const side = s.public?.auth === 'required' ? publicSide(root, n) : null
+    if (s.public && access === 'domain' && domain && (side || s.public.auth !== 'required' || n === 'board')) {
       const port = okPort(prev.services?.[n]?.public_port) ?? hashPort(`${a.project}/${n}`)
-      // a service behind the gateway (auth: required, the boards) gets its own public listener on that port, if its
-      // server has one (a board still on an older template doesn't: it keeps serving the public port itself until
-      // `mm update` brings the listener, so its route never goes dark); an open one (the app slot) serves it itself
-      const gated = s.public.auth === 'required' && boardHasPublicSide(root)
-      Object.assign(env, gated ? { BOARD_PUBLIC_PORT: String(port) } : { PORTLESS_APP_PORT: String(port) })
+      Object.assign(env, side ? { [side]: String(port) } : { PORTLESS_APP_PORT: String(port) })
       pub = { public_url: `https://${pname}.${domain}`, public_port: port, public_bind: bindHost }
     }
     services[n] = { ...s, command: fill(s.command), workdir: s.workdir && fill(s.workdir), env, ...(s.ready?.exec ? { ready: { ...s.ready, exec: fill(s.ready.exec) } } : {}), ...(s.port === 'http' ? { url: url(n) } : {}), ...pub,
@@ -529,6 +534,9 @@ export function setOptional(root: string, service: string, on: boolean): Step[] 
   const s = spec.services?.[service]
   if (!s || !s.optional || service === 'app') return [{ step: service, status: 'fail', detail: `${service} is not an optional service of this project's template (mm update first?)` }]
   const f = join(root, '.mm-answers.yaml'), text = readFileSync(f, 'utf8'), a = readAnswers(root)
+  // its public route (Doop behind the gateway, sy-3yz), named while it is still on: off takes the route away too
+  let was: SvcResolved | undefined
+  if (!on) try { was = resolve(root).services[service] } catch {}
   const list = new Set(a.services_on || []); if (on) list.add(service); else list.delete(service)
   const body = text.replace(/^services_on:.*\n?/m, '').trimEnd() + (list.size ? `\nservices_on: [${[...list].sort().join(', ')}]\n` : '\n')
   const steps: Step[] = []
@@ -539,6 +547,7 @@ export function setOptional(root: string, service: string, on: boolean): Step[] 
     steps.push({ step: 'answers', status: c.ok ? 'ok' : 'fail', detail: c.ok ? `services_on: [${[...list].join(', ')}]` : (c.err || c.out).trim().slice(0, 160) })
   } else steps.push({ step: 'answers', status: 'skip', detail: `${service} already ${on ? 'on' : 'off'}` })
   steps.push(...up(root))
+  if (was?.public_port && was.public) steps.push(routeRm(a, was.public.name))
   const no = engineRefusal(root); if (no) return [...steps, { step: 'governance check', status: 'fail', detail: `refused: ${no}` }]
   const cc = run([join(root, 'bin', 'config-check'), '--render'], { cwd: root })
   steps.push({ step: 'governance check', status: cc.ok ? 'ok' : 'fail', detail: (cc.out || cc.err).trim().split('\n').pop() || '' })

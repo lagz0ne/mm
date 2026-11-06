@@ -16,7 +16,12 @@
 #     group-writable (no chown, no sudo);
 #   - a read-only root, no capabilities, no new privileges, limits;
 #   - its secrets in secrets/ (0600, never on a command line): its auth secret, a random sign-up domain (only who knows
-#     it can make an account), and, after the first start, its own account and the design lead's agent key.
+#     it can make an account), and, after the first start, its own account and the design lead's agent key;
+#   - its public side, behind the sign-in gateway (sy-3yz), when mm gives DOOP_PUBLIC_PORT (domain mode) and the
+#     gateway's public key is in endpoints.json: a second forwarder on 127.0.0.1:$DOOP_PUBLIC_PORT to Doop's gateway
+#     listener (4401; the mm fork of Doop, box/doop/ in mm). Doop takes a request there only with the gateway's signed
+#     assertion for its public host, makes that person's account on their first visit, and has its own login off
+#     there. The key goes in read-only (.run/doop-gateway.pem). No key or no public name: no public side.
 # The design lead reaches it by MCP (leads/design/.mcp.json, rendered while it runs), with bin/doop-mcp-headers.
 #   doop-run                  the service (PORT and DOOP_URL from the process manager)
 #   doop-run backup <file>    data/doop/ as a tarball (doop/...), for bin/backup
@@ -73,10 +78,21 @@ umask 077; mkdir -p "$S" "$D"; chmod 700 "$S"
 rnd() { node -e "process.stdout.write(require('crypto').randomBytes($1).toString('hex'))"; }
 [ -s "$S/doop-auth-secret" ] || rnd 32 >"$S/doop-auth-secret"
 [ -s "$S/doop-signup-domain" ] || printf '%s.doop.invalid' "$(rnd 12)" >"$S/doop-signup-domain"
+# its public side (sy-3yz): the gateway's public key and Doop's public host, both from what mm wrote in endpoints.json
+GWKEY="$P/.run/doop-gateway.pem"; GWHOST=""
+rm -f "$GWKEY"
+if [ -n "${DOOP_PUBLIC_PORT:-}" ]; then
+  GWHOST=$(node -e "try{const e=require('$EP'),k=e.auth&&e.auth.public_key,u=e.services&&e.services.doop&&e.services.doop.public;if(k&&u){require('fs').writeFileSync(process.argv[1],k,{mode:0o644});process.stdout.write(new URL(u).host)}}catch{}" "$GWKEY")
+  case "$GWHOST" in
+    ""|*[!a-z0-9.:-]*) echo "doop-run: no public side: no gateway key or no public name for doop in $EP" >&2; GWHOST=""; rm -f "$GWKEY" ;;
+    *) chmod 644 "$GWKEY" ;; # a public key: Doop's uid reads it through the read-only mount
+  esac
+fi
 # the container's env, in a file only docker reads (never on a command line)
 { echo "NODE_ENV=production"; echo "PORT=4400"; echo "HOME=/tmp"
-  echo "BETTER_AUTH_URL=$DOOP_URL"; echo "TRUSTED_ORIGINS=$DOOP_URL"
+  echo "BETTER_AUTH_URL=$DOOP_URL"; echo "TRUSTED_ORIGINS=$DOOP_URL${GWHOST:+,https://$GWHOST}"
   echo "BETTER_AUTH_SECRET=$(cat "$S/doop-auth-secret")"; echo "SIGNUP_EMAIL_DOMAINS=$(cat "$S/doop-signup-domain")"
+  [ -z "$GWHOST" ] || { echo "MM_GATEWAY_PUBLIC_KEY_FILE=/run/mm-gateway.pem"; echo "MM_GATEWAY_HOST=$GWHOST"; echo "MM_GATEWAY_PORT=4401"; }
 } >"$S/doop.env"
 # a Doop left over (its wrapper was killed): stopped the clean way first, so its database closes and its files regroup
 $DOCKER stop -t 20 "$NAME" >/dev/null 2>&1 || true; $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
@@ -126,24 +142,29 @@ $DOCKER run --rm --name "$NAME" --label "mm.project=$PROJECT" --label mm.service
   --network "$NET" --ip "$IP" --dns 127.0.0.1 \
   --user "$DUID:$GID" --read-only --tmpfs /tmp:rw,nosuid,nodev,size=512m \
   --cap-drop ALL --security-opt no-new-privileges --memory 2g --pids-limit 1024 \
-  -v "$D:/app/data" --env-file "$S/doop.env" --entrypoint sh "$IMAGE" -c "$WRAP" sh $CMD &
+  -v "$D:/app/data" ${GWHOST:+-v} ${GWHOST:+"$GWKEY:/run/mm-gateway.pem:ro"} \
+  --env-file "$S/doop.env" --entrypoint sh "$IMAGE" -c "$WRAP" sh $CMD &
 pid=$!
 # the board's way in: loopback only, to Doop's address on its network (nothing else listens there). It dies with this
 # script (pdeathsig), so a killed doop-run leaves no forwarder holding the port
 PD=""; command -v setpriv >/dev/null && PD="setpriv --pdeathsig TERM"
 $PD socat "TCP-LISTEN:$PORT,bind=127.0.0.1,fork,reuseaddr" "TCP:$IP:4400" 2>/dev/null &
 fwd=$!
-stop() { kill $fwd 2>/dev/null || true; $DOCKER stop -t 20 "$NAME" >/dev/null 2>&1 || true; wait $pid 2>/dev/null || true
+# the public side's way in (sy-3yz): loopback too (mm's <service>-public forwarder takes it to bind_host), to Doop's
+# gateway listener only, where every request needs the gateway's assertion
+pfwd=""
+if [ -n "$GWHOST" ]; then $PD socat "TCP-LISTEN:$DOOP_PUBLIC_PORT,bind=127.0.0.1,fork,reuseaddr" "TCP:$IP:4401" 2>/dev/null & pfwd=$!; fi
+stop() { kill $fwd $pfwd 2>/dev/null || true; $DOCKER stop -t 20 "$NAME" >/dev/null 2>&1 || true; wait $pid 2>/dev/null || true
   $DOCKER network rm "$NET" >/dev/null 2>&1 || true; }
 trap 'stop; exit 0' TERM INT
 # alive? /proc, not kill -0: with `sudo docker`, $pid is root's and can't be signalled by the owner
-alive() { [ -d "/proc/$pid" ] && [ -d "/proc/$fwd" ]; }
+alive() { [ -d "/proc/$pid" ] && [ -d "/proc/$fwd" ] && { [ -z "$pfwd" ] || [ -d "/proc/$pfwd" ]; }; }
 # first start: Doop's own account for the project, and the design lead's agent key (bin/lib/doop-init.mjs)
 n=0; until curl -sf -o /dev/null "http://127.0.0.1:$PORT/healthz"; do
   alive || { echo "doop-run: Doop or its loopback forwarder stopped" >&2; stop; exit 1; }
   n=$((n + 1)); [ $n -lt 180 ] || { echo "doop-run: Doop did not answer in 3 min" >&2; break; }; sleep 1
 done
 [ -s "$S/doop-agent-key" ] || node "$P/bin/lib/doop-init.mjs" "http://127.0.0.1:$PORT" "$DOOP_URL" "$S" || echo "doop-run: first-start setup failed (it is tried again at the next start)" >&2
-# both must stay up: if one stops, the service stops (the process manager starts it again)
+# all must stay up: if one stops, the service stops (the process manager starts it again)
 while alive; do sleep 5 & wait $! || true; done
 echo "doop-run: Doop or its loopback forwarder stopped" >&2; stop; exit 1

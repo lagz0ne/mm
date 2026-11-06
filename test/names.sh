@@ -107,4 +107,21 @@ is "on project: the other way (legacy is the switch), the same rows" bash -c "mm
 printf 'access: tailscale\n' >"$MM_HOME/config.yaml"
 is "no domain: says so" bash -c "mm names | grep -q 'no domain'"
 
+echo '== Doop behind the sign-in gateway (sy-3yz)'
+# a project with its Doop on (an optional service behind the gateway); its bin/doop-run has the public side or not
+fakeproj "$T/d1" acme studio
+printf '  doop:\n    optional: true\n    command: "true"\n    port: http\n    public: { name: "doop-studio-acme", auth: required }\n' >>"$T/d1/services.yaml"
+echo 'services_on: [doop]' >>"$T/d1/.mm-answers.yaml"; mkdir -p "$T/d1/bin"; echo ': "${DOOP_PUBLIC_PORT:-}"' >"$T/d1/bin/doop-run"
+denv() { js "const s = P.resolve('$T/d1').services.doop; console.log((s.public_url || '-') + ' ' + (s.env.DOOP_PUBLIC_PORT === String(s.public_port) ? 'side' : 'no-side') + ' ' + (s.env.PORTLESS_APP_PORT ? 'portless' : '-'))"; }
+export -f denv
+conf
+is "legacy: doop-studio-acme, on its own public side (DOOP_PUBLIC_PORT = its public port), never portless's" test "$(denv)" = "https://doop-studio-acme.example.org side -"
+conf 'names: project\n'; rm -rf "$T/routes"
+is "names: project: doop.acme-studio" test "$(denv)" = "https://doop.acme-studio.example.org side -"
+is "...its route is gated like the board's" bash -c "js \"const x = P.resolve('$T/d1'); for (const s of P.serviceRoutes(x.answers, x.services)) console.log(s.status)\" >/dev/null; '$MM_EXPOSE' ls | awk '{print \$1, \$NF}' | grep -qx 'https://doop.acme-studio.test \[auth\]'"
+is "the gateway takes its host for the project (forward-auth), next to the board" bash -c "js \"const c = A.hostClaims(); console.log([...(c.claims['doop.acme-studio.example.org'] || new Map()).keys()].join(' ') + ' ' + c.boards.has('doop.acme-studio.example.org') + ' ' + c.boards.has('acme-studio.example.org'))\" | grep -qx 'acme-studio false true'"
+echo ': an older doop-run' >"$T/d1/bin/doop-run"
+is "an older doop-run (no public side): no public name at all (its own login is never on a public port)" test "$(denv)" = "- no-side -"
+is "...and no host for the gateway" bash -c "! js \"console.log(Object.keys(A.hostClaims().claims).join(' '))\" | grep -q 'doop.acme-studio'"
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]

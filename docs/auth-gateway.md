@@ -143,6 +143,15 @@ subscription, never on the owner's (sy-8n4w).
   `[sso]`), and rewrite an `[auth]` route they find. Turning the gateway off writes the password back on the next
   `mm up` (the rollback). A route that is right already is left alone; an open route (`auth: none`) gets neither.
 
+## A project's Doop: the same sign-in (sy-3yz)
+- A project's Doop (`mm doop on`) is the other service with `public.auth: required`: its own host
+  (`doop.<project>` under `names: project`), routed and gated like the board. Forward-auth gives it the same assertion
+  (this person, their role on the project, the Doop host, 60 s); the one-redirect flow gives it its own `mm_board`
+  cookie. It never has a card on the home page: a project's card is its board's.
+- Doop checks the assertion itself (the mm fork, `box/doop/`): on its public side every request needs one, the
+  person's Doop account is made on the first visit, and Doop's own login is off there. Owner and designer edit,
+  member and viewer only look. Its public side exists only with the fork's `bin/doop-run` and the gateway's key.
+
 ## Tools: bearer tokens
 - `mm token <name> <project> [--days n]` prints a token (`mmt_…`, shown once, stored as a hash), bound to **one
   project**, 30 days by default, at most 365. `/verify` takes `Authorization: Bearer <token>` and gives the same

@@ -68,6 +68,11 @@ machine:
     github:    { kind: account, check: ["gh", "auth", "status"],
                  for: "pushes and releases (mm, mastermind) and the gh CLI",
                  how: "a GitHub account; `gh auth login` on this machine" }
+    # TODO(sy-3yz): pin the mm fork of Doop here once ops has published it (box/doop/README.md "Publish"): its image
+    # by digest only (bin/doop-run refuses a tag), e.g.
+    #   doop_image: { kind: var, config: doop.image, default: "<registry>/doop@sha256:<64 hex>",
+    #                 for: "the image every project's Doop runs (bin/doop-run): the mm fork, one sign-in with the boards" }
+    # Until then each machine sets doop.image itself (mm config set doop.image sha256:<the built image's id>).
 
   tools:   # doctor: present (+ version >= min); onboard: installs what is missing, into ~/.mm (never system-wide
            # except `system` packages). `tested` = the version on the first machine, 2026-11-03.
