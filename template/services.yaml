@@ -5,7 +5,8 @@ version: 1
 services:
   dolt:
     about: Dolt SQL server with the Beads database. Clients use the Unix socket; the TCP port is loopback-only.
-    command: "{root}/tools/dolt sql-server --host 127.0.0.1 --port {dolt_port} --socket {socket} --loglevel warning"
+    # bin/dolt-run clears a socket file nothing answers on (a dead Dolt, or one from the other side of a box move)
+    command: "node {root}/bin/dolt-run {socket} {root}/tools/dolt sql-server --host 127.0.0.1 --port {dolt_port} --socket {socket} --loglevel warning"
     workdir: "{root}/control/.beads/dolt"
     env: { DOLT_ROOT_PATH: "{root}/.dolt-root", XDG_CONFIG_HOME: "{root}/.config" }
     port: internal
