@@ -48,7 +48,10 @@ const OWNER_ONLY = ['Bash(mm user*)', 'Bash(mm grant*)', 'Bash(mm token*)', 'Bas
   // the vault's opener and its key maker (review sy-uvgq): `vault run` opens any project's secrets and runs any command
   // without naming a path; `vault init` would replace the machine's key. The leading * catches ~/.mm/bin/mm, env … mm,
   // timeout … mm. `mm vault ls|check` stay free.
-  'Bash(*mm vault run*)', 'Bash(*mm vault init*)']
+  'Bash(*mm vault run*)', 'Bash(*mm vault init*)',
+  // each person's own Claude token (sy-8n4w): no agent starts a run on one, or sets or removes one (the vault folder and
+  // the opened-secrets folder are in the fixed list below, with the Bash forms)
+  'Bash(*mm run-as*)', 'Bash(*mm user claude-token*)', 'Bash(*lead start*--as*)']
 // The machine's secrets (review sy-5ag): every path mm lists in <mm>/secret-paths.json (each secret input's file and
 // folder in the manifest, Paseo's home, Claude's login), so a new input is covered without a template change. That
 // file is the host's: mm writes it outside every project, a box never sees it, and no role may change it (review
@@ -67,7 +70,7 @@ const MM_PASEO = [...new Set([...MMS.map((m) => `${m}/paseo`), `${HOME}/.mm/pase
 const MS_FIXED = { files: [`${HOME}/.claude/.credentials.json`],
   dirs: [`${HOME}/.mm/brain/.keys`, `${HOME}/brain/.keys`, `${HOME}/.config/secrets`, `${HOME}/.paseo`, `${HOME}/.ssh`, ...VAULTS, ...OPENED, ...MM_PASEO] }
 // spellings the absolute, ~ and $HOME forms don't catch: the variable forms of the tmpfs, and the key by its own name
-const VAULT_BASH = ['Bash(*vault/key*)', 'Bash(*$XDG_RUNTIME_DIR/mm/secrets*)', 'Bash(*${XDG_RUNTIME_DIR}/mm/secrets*)', 'Bash(*$MM_HOME/vault*)', 'Bash(*${MM_HOME}/vault*)']
+const VAULT_BASH = ['Bash(*vault/key*)', 'Bash(*claude_token.*)', 'Bash(*secrets/_run*)', 'Bash(*$XDG_RUNTIME_DIR/mm/secrets*)', 'Bash(*${XDG_RUNTIME_DIR}/mm/secrets*)', 'Bash(*$MM_HOME/vault*)', 'Bash(*${MM_HOME}/vault*)']
 const MS_FILES = MMS.map((m) => `${m}/secret-paths.json`)
 const MS_HOST = MS_FILES.map((f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) || {} } catch { return {} } })
 const strs = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.startsWith('/')) : [])

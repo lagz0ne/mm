@@ -3,8 +3,8 @@
 //   $MM_HOME/vault/ (0700): key (the machine's age identity, 0600), recipients.txt (machine + the human's recovery
 //   public key), <name>.age (0600), digests.txt (sha256 of each sealed file: the drill's integrity check).
 import { spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { DIRS, run } from './env'
 
@@ -113,6 +113,30 @@ export function openFor(project: string, names: string[]): Record<string, string
   const out: Record<string, string> = {}
   for (const n of names) { const f = join(d, n); writeAtomic(f, decrypt(n)); out[n] = f }
   return out
+}
+
+/** Remove a sealed value and its digest (a person removes their own Claude token). Nothing sealed: false. */
+export function drop(name: string): boolean {
+  vaultName(name)
+  const f = join(VAULT, `${name}.age`)
+  if (!existsSync(f)) return false
+  rmSync(f, { force: true })
+  const d = digests(); delete d[name]; saveDigests(d)
+  return true
+}
+
+/** Open one sealed value for one run (sy-8n4w): a new file, 0600, in `<secrets base>/_run/` (0700; `_run` is never a
+ *  project's name, so no box mounts it), only on a memory-backed folder. The caller hands it on and removes it at once. */
+export function openForRun(name: string): string {
+  const base = secretsBase(), d = join(base, '_run')
+  mkdirSync(d, { recursive: true, mode: 0o700 })
+  if (!process.env.MM_SECRETS_DIR) chmodSync(dirname(base), 0o700)
+  chmodSync(base, 0o700); chmodSync(d, 0o700)
+  if (!isTmpfs(d)) throw new Error(`${d} is not memory-backed (tmpfs): refusing to open a secret there`)
+  const f = join(d, `${randomBytes(12).toString('hex')}`)
+  const v = decrypt(name)
+  try { writeFileSync(f, v, { mode: 0o600, flag: 'wx' }) } finally { v.fill(0) }
+  return f
 }
 
 /** Names, sizes and whether each sealed file still matches its digest. Never a value. */
