@@ -14,6 +14,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Server } from 'bun'
+import { servedBoxes } from './boxreg'
 import { getPath, loadConfig } from './config'
 import { DIRS } from './env'
 import { expand, machineInputs } from './inputs'
@@ -339,11 +340,11 @@ export async function serve() {
     return new Response(stream, { status: up.status, headers: out })
   }
 
-  // one socket per box (pc/boxes), kept in step with the registry
+  // one socket per box (pc/boxes), kept in step with the registry; MM_AI_ONLY: a test's mm.ai serves its own box only
+  // (test/box.sh), and the machine's serves no throwaway (test) box (sy-bpgq)
   const servers = new Map<string, Server<undefined>>()
   const sync = () => {
-    const dir = join(DIRS.pc, 'boxes')
-    const want = new Set(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.yaml')).map((f) => f.slice(0, -5)).filter((p) => NAME.test(p)) : [])
+    const want = new Set(servedBoxes(NAME, process.env.MM_AI_ONLY))
     for (const [p, s] of servers) if (!want.has(p)) { s.stop(true); servers.delete(p); rmSync(aiSocket(p), { force: true }); log('info', 'socket closed', { box: p }) }
     for (const p of want) {
       if (servers.has(p)) continue

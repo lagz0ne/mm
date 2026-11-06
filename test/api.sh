@@ -72,6 +72,8 @@ mkbox() { local c=$1 n=$2 board=$3 r="$HOME/projects/$1/$2"; mkdir -p "$r/releas
   ln -s /etc "$r/release/out"
   echo "# from $r/services.yaml" >"$MM_HOME/pc/boxes/$c-$n.yaml"; }
 mkbox acme shop board-shop-acme; mkbox acme other web.acme-shop; mkbox acme spare board-spare-acme
+# this test's mm.api serves its own (throwaway) boxes: a machine's mm.api would skip them (src/boxreg.ts, sy-bpgq)
+export MM_API_ONLY=acme-shop,acme-other,acme-spare
 printf '#!/bin/sh\necho "[]"\n' >"$T/bin/process-compose"; chmod +x "$T/bin/process-compose"   # the host's process manager: a stand-in
 mkdir -p "$MM_HOME/box/acme-shop"; printf '{"services":{"app":{"public_port":38555}}}\n' >"$MM_HOME/box/acme-shop/ports.json"
 mkdir -p "$MM_HOME/vault"; : >"$MM_HOME/vault/acme-shop.old-key.age"   # a sealed name (an empty stand-in, no value)

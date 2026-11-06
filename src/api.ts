@@ -33,6 +33,7 @@ import { join } from 'node:path'
 import type { Server } from 'bun'
 import { API_DIR, APPROVE_SOCK, apiEnabled, apiSocket, apiSocketDir, type Call, CALLS, FIELD, formatOk, granted, grantedProjects, PROJECT_ID, saveGranted } from './apistate'
 import * as boxRuns from './boxruns'
+import { servedBoxes } from './boxreg'
 import { gatewayHost, hostClaims } from './auth'
 import { boxRoute } from './names'
 import { appReload, egressList, egressReload } from './box'
@@ -452,10 +453,9 @@ export async function serve() {
   // one socket per box (pc/boxes), kept in step with the registry; and items the board didn't take yet
   const servers = new Map<string, Server<undefined>>()
   const sync = async () => {
-    const dir = join(DIRS.pc, 'boxes')
-    // MM_API_ONLY: a test's mm.api on a live machine serves its own box only (test/box.sh), never the others' sockets
-    const only = process.env.MM_API_ONLY
-    const want = new Set(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.yaml')).map((f) => f.slice(0, -5)).filter((p) => PROJECT_ID.test(p) && (!only || p === only)) : [])
+    // MM_API_ONLY: a test's mm.api on a live machine serves its own box only (test/box.sh), never the others' sockets;
+    // the machine's serves no throwaway (test) box (sy-bpgq)
+    const want = new Set(servedBoxes(PROJECT_ID, process.env.MM_API_ONLY))
     for (const [p, s] of servers) if (!want.has(p)) { s.stop(true); servers.delete(p); rmSync(apiSocket(p), { force: true }); log('info', 'socket closed', { box: p }) }
     for (const p of want) {
       if (servers.has(p)) continue

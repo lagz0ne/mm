@@ -51,7 +51,8 @@ http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); r
 }) }).listen(Number(port), '127.0.0.1')
 EOF
 node "$AIT/up.mjs" $AIUPP "$AIT/up.jsonl" & AIUP=$!
-mm ai serve >"$AIT/ai.log" 2>&1 & AIGW=$!
+# this test's own mm.ai serves this test's box only; the machine's skips a throwaway box (sy-bpgq)
+MM_AI_ONLY="$PROJECT" mm ai serve >"$AIT/ai.log" 2>&1 & AIGW=$!
 # mm's project API for this test only (sy-b15.8): its own store and owner socket, a stand-in for the system board (no
 # item on the live one), the owner's notices to a Telegram stand-in that keeps only the message bodies (each request's
 # one-time code, sy-35f2: this test approves with it), and this test's box only (MM_API_*: src/api.ts).
