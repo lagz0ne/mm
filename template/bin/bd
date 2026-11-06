@@ -5,5 +5,10 @@ P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 export BEADS_DIR="$P/control/.beads" XDG_CONFIG_HOME="$P/.config" DOLT_ROOT_PATH="$P/.dolt-root" PATH="$P/tools:$PATH"
 # Talk to Dolt through its Unix socket when it runs with one (services.json); otherwise the TCP port in metadata.
 [ -S "$P/.dolt/mysql.sock" ] && export BEADS_DOLT_SERVER_SOCKET="$P/.dolt/mysql.sock"
+# bd never starts a Dolt of its own (sy-a0ac): the process manager runs this board's Dolt. With it down, bd fails fast
+# ("auto-start is disabled") instead of starting a server that outlives the call and locks mm's Dolt out of the
+# database. Only bin/init, which has no Dolt yet, asks for one (BEADS_DOLT_AUTO_START=1); bd-quiet then sets
+# dolt.auto-start: false in .beads/config.yaml, which wins over the env.
+export BEADS_DOLT_AUTO_START="${BEADS_DOLT_AUTO_START:-0}"
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=beads.role GIT_CONFIG_VALUE_0=maintainer
 exec "$P/tools/bd" "$@"

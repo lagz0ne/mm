@@ -138,13 +138,16 @@ export function doctor(): Check[] {
     const no = engineRefusal(root)
     if (no) { out.push({ layer: 'board', item: `bd quiet ${id}`, status: 'fail', detail: `not checked: ${no}`, fix: 'see what changed bin/ (git -C <project> log -- bin), then mm update' }); continue }
     const get = (k: string) => run([join(root, 'bin', 'bd'), 'config', 'get', k], { cwd: join(root, 'control'), timeoutMs: 15_000 }).out.trim().split('\n').pop()
-    const metrics = get('metrics.disabled'), noHooks = get('no-hooks')
-    const bad = [...(hooks.length ? [`bd hook(s): ${hooks.join(', ')}`] : []), ...(metrics !== 'true' ? [`metrics.disabled is ${metrics || 'unreadable'}`] : [])]
+    const metrics = get('metrics.disabled'), noHooks = get('no-hooks'), autoStart = get('dolt.auto-start')
+    // dolt.auto-start on: a bd call while the board's Dolt is down starts a Dolt of bd's own, which then locks the
+    // process manager's Dolt out of the database (sy-a0ac)
+    const bad = [...(hooks.length ? [`bd hook(s): ${hooks.join(', ')}`] : []), ...(metrics !== 'true' ? [`metrics.disabled is ${metrics || 'unreadable'}`] : []),
+      ...(autoStart !== 'false' ? [`dolt.auto-start is ${autoStart || 'unreadable'} (bd could start a Dolt of its own)`] : [])]
     out.push(bad.length
-      ? { layer: 'board', item: `bd quiet ${id}`, status: 'fail', detail: bad.join('; '), fix: `remove the hook(s); then ${root.replace(HOME, '~')}/bin/bd-quiet` }
+      ? { layer: 'board', item: `bd quiet ${id}`, status: 'fail', detail: bad.join('; '), fix: `remove the hook(s); then ${root.replace(HOME, '~')}/bin/bd-quiet (or mm update)` }
       : noHooks !== 'true'
-        ? { layer: 'board', item: `bd quiet ${id}`, status: 'warn', detail: 'no bd hook, metrics off, but no-hooks is not set (bd could install hooks)', fix: `${root.replace(HOME, '~')}/bin/bd-quiet (or mm update)` }
-        : { layer: 'board', item: `bd quiet ${id}`, status: 'ok', detail: 'no bd hook; no-hooks set; metrics off' })
+        ? { layer: 'board', item: `bd quiet ${id}`, status: 'warn', detail: 'no bd hook, metrics off, no Dolt auto-start, but no-hooks is not set (bd could install hooks)', fix: `${root.replace(HOME, '~')}/bin/bd-quiet (or mm update)` }
+        : { layer: 'board', item: `bd quiet ${id}`, status: 'ok', detail: 'no bd hook; no-hooks set; metrics off; no Dolt auto-start' })
   }
 
   // the wall the boxes' shared group relies on (review sy-b15.16): a box's uid has the host owner's group, so the owner's

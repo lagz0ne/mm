@@ -25,7 +25,7 @@ const HOME = process.env.HOME || os.homedir()
 // no filling machine or project inputs (a human's step: it never shows a value, but it can replace one).
 // bd stays quiet (the owner, sy-8s1): no agent installs bd's git hooks, runs its setup or init, or turns hooks, metrics
 // or its git operations back on, whichever way it calls bd.
-const BD_QUIET = ['bd', 'bin/bd', 'tools/bd'].flatMap((b) => ['hooks', 'setup', 'init', 'config set no-hooks', 'config set metrics', 'config set no-git-ops'].map((c) => `Bash(${b} ${c}*)`))
+const BD_QUIET = ['bd', 'bin/bd', 'tools/bd'].flatMap((b) => ['hooks', 'setup', 'init', 'config set no-hooks', 'config set metrics', 'config set no-git-ops', 'config set dolt.auto-start'].map((c) => `Bash(${b} ${c}*)`))
 // The pull model (plans/slp): a lead claims with `bd update <id> --claim` (atomic) and hands over with the compare-and-set
 // guards (--if-assignee/--if-status), never by a raw edit. Refused: setting in_progress by hand, and `bd assign` (a
 // reassign with no guard). `-a` without a guard cannot be told apart by a rule; the brief and bd's guard cover it.

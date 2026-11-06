@@ -66,7 +66,7 @@ check "with the board running: no ~/.npm (board build), ~/.portless, ~/.config/p
 echo "     outside ~/.mm with the board running: $(cd ~ && find . -path ./.mm -prune -o ! -type d -print | sed 's|^\./||' | sed 's|^\(\.beads\)/.*|\1/...|' | sort -u | tr '\n' ' ')"
 check "item on the board" sh -c 'cd ~/.mm/projects/acme/shop && bin/bd create "hello from a clean box" --json | grep -q "\"id\""'
 check "item through the board API" sh -c 'curl -sf http://board.acme-shop.localhost:1355/api/v0/beads/issues?limit=10 | grep -q "hello from a clean box"'
-check "bd stays quiet on a fresh board: no-hooks, metrics off, no hook (sy-8s1)" sh -c 'cd ~/.mm/projects/acme/shop/control && [ "$(../bin/bd config get no-hooks | tail -1)" = true ] && [ "$(../bin/bd config get metrics.disabled | tail -1)" = true ] && mm doctor -o json | jq -e ".[] | select(.item == \"bd quiet acme/shop\") | .status == \"ok\""'
+check "bd stays quiet on a fresh board: no-hooks, metrics off, no Dolt auto-start, no hook (sy-8s1, sy-a0ac)" sh -c 'cd ~/.mm/projects/acme/shop/control && [ "$(../bin/bd config get no-hooks | tail -1)" = true ] && [ "$(../bin/bd config get metrics.disabled | tail -1)" = true ] && [ "$(../bin/bd config get dolt.auto-start | tail -1)" = false ] && mm doctor -o json | jq -e ".[] | select(.item == \"bd quiet acme/shop\") | .status == \"ok\""'
 check "update is a no-op" sh -c 'mm update acme/shop | grep -q "already at"'
 check "backup lands in ~/.mm/backups" sh -c 'cd ~/.mm/projects/acme/shop && timeout 300 bin/backup >/dev/null 2>&1; ls -d ~/.mm/backups/acme-shop/*/ >/dev/null'
 check "logs reach VictoriaLogs" sh -c 'mm obs status | grep -q acme-shop'
