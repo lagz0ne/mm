@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # mm's own spans (sy-ha9x), hermetic: an answer is not a fault. `mm config get` on an unset key exits 1 but its span is
 # not failed; `mm doctor` failing only on a throwaway project (a test planted the fault) marks its span mm_throwaway,
-# so neither raises an mm/mm incident. A throwaway HOME / MM_HOME with a throwaway project and a real one (nothing
+# so neither raises an mm/mm incident; nor does a project API decision refused on a throwaway project's request
+# (sy-qsif: the request's project, from the store, then its answers). A throwaway HOME / MM_HOME with a throwaway project and a real one (nothing
 # started), a stand-in trace collector on loopback.
 #   test/span-answers.sh [mm command]       default: bun <repo>/src/cli.ts
 set -uo pipefail
@@ -14,7 +15,7 @@ T=$(mktemp -d); trap 'kill $COL 2>/dev/null; rm -rf "$T"' EXIT
 export HOME="$T/home" MM_HOME="$T/home/.mm" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 mkdir -p "$MM_HOME/pc/projects" "$T/bin"
 printf '#!/bin/sh\nexec %s "$@"\n' "$MMC" >"$T/bin/mm"; chmod +x "$T/bin/mm"; export PATH="$T/bin:$PATH"
-printf 'access: tailscale\nhost: qa-host\n' >"$MM_HOME/config.yaml"
+printf 'layout: one-root\naccess: tailscale\nhost: qa-host\n' >"$MM_HOME/config.yaml"
 
 cat > "$T/col.mjs" <<'EOF'
 import http from 'node:http'; import fs from 'node:fs'
@@ -77,5 +78,37 @@ for (const [d, checks, want] of cases) { const got = throwawayOnly(checks as nev
 EOF
 bun "$T/only.ts" "$T/doc.json" >"$T/only.out" 2>&1 || cat "$T/only.out"
 while IFS=$'\t' read -r st d; do [ "$st" = ok ] && ok "throwawayOnly: $d" || bad "throwawayOnly: $d"; done <"$T/only.out"
+
+echo "== mm api <verb> <id>: the request's project decides, from its answers (sy-qsif)"
+# this test's own API store (MM_API_DIR, as test/box.sh and test/api.sh use one), a request of each project; no mm.api
+# runs, so every decision is refused (it does not answer): the refusals the tests expect
+export MM_API_DIR="$T/api"; unset CLAUDECODE PASEO_AGENT_ID
+cat >"$T/reqs.ts" <<EOF
+import { store } from '$SRC/src/api'
+const d = store(), add = d.query("INSERT INTO request (id, project, call, value, hash, status, item, created) VALUES (?, ?, 'egress', 'example.com', 'ab', 'pending', ?, 0)")
+add.run('rq-qa', 'acme-qa', 'qa-1'); add.run('rq-shop', 'acme-shop', 'qa-2')
+EOF
+bun "$T/reqs.ts" || bad "make the API store"
+api_case() {  # <description> <want: project or ''> <mm api args...>
+  local d=$1 want=$2; shift 2
+  : >"$T/spans"; mm api "$@" </dev/null >/dev/null 2>&1; local rc=$?
+  if [ -n "$want" ]; then
+    check "$d: refused, its record marked mm_throwaway $want, and its trace span too" sh -c "[ $rc != 0 ] && tail -1 '$LOG' | jq -e '.op == \"mm api $1\" and .level == \"error\" and .mm_throwaway == \"$want\"' && grep -q '\"key\":\"mm_throwaway\",\"value\":{\"stringValue\":\"$want\"}' '$T/spans'"
+  else
+    check "$d: refused, and NOT marked" sh -c "[ $rc != 0 ] && tail -1 '$LOG' | jq -e '.op == \"mm api $1\" and .level == \"error\" and (has(\"mm_throwaway\") | not)' && grep -q '\"mm api $1\"' '$T/spans' && ! grep -q mm_throwaway '$T/spans'"
+  fi
+}
+api_case "approve a throwaway project's request" acme-qa approve rq-qa --hash 000000000000
+api_case "...the same by its item's id (deny qa-1)" acme-qa deny qa-1
+api_case "...undo" acme-qa undo rq-qa
+api_case "...code" acme-qa code rq-qa
+api_case "...show" acme-qa show rq-qa
+api_case "approve a real project's request" '' approve rq-shop --hash 000000000000
+api_case "...deny it by its item's id (qa-2)" '' deny qa-2
+api_case "a request id that is not in the store" '' approve rq-none --hash 000000000000
+# the request id read as a project ref would be wrong: a request named as a throwaway project is still the real one's
+bun -e "import { Database } from 'bun:sqlite'; new Database('$T/api/api.db').run(\"UPDATE request SET id = 'acme-qa' WHERE id = 'rq-shop'\")"
+api_case "a real project's request whose id is a throwaway project's name: NOT marked" '' approve acme-qa --hash 000000000000
+check "the store was only read: no store made where there was none" sh -c "MM_API_DIR='$T/none' mm api show rq-qa >/dev/null 2>&1; [ ! -e '$T/none' ]"
 
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]

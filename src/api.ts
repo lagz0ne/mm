@@ -99,6 +99,20 @@ export function store(): Database {
   return d
 }
 
+/** The project a request (its id or its item's id, as /show finds it) belongs to, read from the store the owner's
+ *  commands act on; '' when there is no store or no such request. Read-only: it makes no store. (cli.ts marks the span
+ *  of `mm api <verb> <id>` on a throwaway project's request from that project's answers, sy-qsif.) */
+export function requestProject(id: string): string {
+  const f = join(API_DIR, 'api.db')
+  if (!id || !existsSync(f)) return ''
+  let d: Database | undefined
+  try {
+    d = new Database(f, { readonly: true })
+    const r = d.query('SELECT project FROM request WHERE id = ? OR (item != \'\' AND item = ?)').get(id, id) as { project: string } | null
+    return r && PROJECT_ID.test(r.project) ? r.project : ''
+  } catch { return '' } finally { d?.close() }
+}
+
 // ---------- the box's project, from the host's own registry (pc/boxes, which the host writes) ----------
 export function boxRoot(project: string): string | null {
   if (!PROJECT_ID.test(project)) return null

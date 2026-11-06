@@ -546,6 +546,7 @@ obs.command('ui').description('where the UIs are (loopback: open them through an
 })
 
 // Every mm command is one trace (children such as bin/init and npm join it); the long-running shipper is not.
+const API_BY_ID = new Set(['api show', 'api approve', 'api code', 'api deny', 'api undo'])   // their argument is a request's id
 program.hook('preAction', (_p, cmd) => {
   const name = [cmd.parent?.name() !== 'mm' ? cmd.parent?.name() : '', cmd.name()].filter(Boolean).join(' ')
   if (name === 'ship' || name === 'cron' || name.startsWith('obs')) return
@@ -555,9 +556,12 @@ program.hook('preAction', (_p, cmd) => {
   // a command on a throwaway project (what the tests make) is marked by mm itself, from the project's answers (which no
   // lead or box can write) or mm new's own --throwaway: its expected failures stay out of mm obs errors. Never from an
   // environment variable a lead or a box could set (review sy-cwh).
+  // `mm api <verb> <id>`: the id is a request's, and the request names its project in the API store (sy-qsif); the same
+  // answers decide. A request whose project's folder is gone is not marked (nothing left says it was a throwaway's).
   let throwaway = ''
-  if (cmd.opts().throwaway && name === 'new') throwaway = String(cmd.args[0] ?? '').replace('/', '-')
-  else if (cmd.args[0]) { try { const a = readAnswers(findRoot(String(cmd.args[0]))); if (a.throwaway) throwaway = a.project } catch {} }
+  const ref = API_BY_ID.has(name) ? apiMod.requestProject(String(cmd.args[0] ?? '')) : String(cmd.args[0] ?? '')
+  if (cmd.opts().throwaway && name === 'new') throwaway = ref.replace('/', '-')
+  else if (ref) { try { const a = readAnswers(findRoot(ref)); if (a.throwaway) throwaway = a.project } catch {} }
   const done = mmSpan(`mm ${name}`, { args, ...(throwaway ? { mm_throwaway: throwaway } : {}) })
   process.on('exit', (code) => {
     const a = spanNote.answer, answered = !!a && code === a.code   // an answer the command named, not a fault (obs.ts)
