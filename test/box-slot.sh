@@ -63,6 +63,17 @@ check "...and its file keeps the slot on release/v1" sh -c "OTHER reload && [ \"
 check "...and the granted site stays on the box's egress list" sh -c "OTHER egress | grep -qx api.example.org"
 check "undone (no build granted) by the test's mm: no app slot in the file, from either mm" sh -c "TESTAPI grant - && TESTAPI reload && [ -z \"\$(appdir)\" ] && [ \"\$(OTHER slot)\" = none ] && OTHER reload && [ -z \"\$(appdir)\" ]"
 
+echo "== a note only for a store as mm makes one (review sy-rjwg 2)"
+NOTE="$MM_HOME/box/acme-shop/api-store.json"; export NOTE
+check "the note is a file only its user may read and write (0600)" sh -c "TESTAPI grant v1 && TESTAPI reload && [ \"\$(stat -c %a '$NOTE')\" = 600 ] && [ \"\$(OTHER slot)\" = '$R/release/v1' ]"
+check "the noted store open to others (0755): ignored, it warns, the slot runs release/" sh -c "chmod 755 '$T/store' && OTHER slot >'$T/o' 2>'$T/e'; chmod 700 '$T/store'; [ \"\$(cat '$T/o')\" = '$R/release' ] && grep -q 'is ignored' '$T/e'"
+check "...its granted/ open to others: ignored" sh -c "chmod 755 '$T/store/granted' && r=\$(OTHER slot 2>/dev/null); chmod 700 '$T/store/granted'; [ \"\$r\" = '$R/release' ]"
+check "...the project's grants a file others may read: ignored" sh -c "chmod 644 '$T/store/granted/acme-shop.json' && r=\$(OTHER slot 2>/dev/null); chmod 600 '$T/store/granted/acme-shop.json'; [ \"\$r\" = '$R/release' ]"
+check "...a note that names the store through a link: ignored" sh -c "ln -s '$T/store' '$T/link' && cp '$NOTE' '$T/note.keep' && printf '{\"dir\":\"%s\"}\n' '$T/link' >'$NOTE' && r=\$(OTHER slot 2>/dev/null); cp '$T/note.keep' '$NOTE'; [ \"\$r\" = '$R/release' ]"
+check "...a note others may write: ignored" sh -c "chmod 664 '$NOTE' && r=\$(OTHER slot 2>/dev/null); chmod 600 '$NOTE'; [ \"\$r\" = '$R/release' ]"
+check "...a note to some other folder (not a store): ignored" sh -c "mkdir -p '$T/other' && cp '$NOTE' '$T/note.keep' && printf '{\"dir\":\"%s\"}\n' '$T/other' >'$NOTE' && r=\$(OTHER slot 2>/dev/null); cp '$T/note.keep' '$NOTE'; [ \"\$r\" = '$R/release' ]"
+check "all back as mm made it: release/v1 again from the other mm; undone again" sh -c "[ \"\$(OTHER slot)\" = '$R/release/v1' ] && TESTAPI grant - && TESTAPI reload && [ \"\$(OTHER slot)\" = none ]"
+
 echo "== when that API is gone"
 check "the test's store removed: the app slot runs release/ again (as before the API)" sh -c "rm -rf '$T/store' && [ \"\$(OTHER slot)\" = '$R/release' ]"
 check "the machine's own store noted (its config had the API on), the API off now: release/ again (the owner turned it off)" sh -c "MM_API_ENABLED=1 bun '$T/w.ts' reload && jq -e --arg d '$MM_HOME/api' '.dir == \$d' '$MM_HOME/box/acme-shop/api-store.json' && [ \"\$(OTHER slot)\" = '$R/release' ]"

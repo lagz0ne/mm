@@ -3,7 +3,7 @@
 // app slot, its secrets), mm fill / mm needs and the sign-in gateway's host map read it. A small module with no heavy
 // imports, so each of them can read it.
 //   $MM_HOME/api/ (0700): api.db (the requests), approve.sock (the owner's socket), granted/<project>.json (0600)
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { getPath, loadConfig } from './config'
 import { DIRS } from './env'
@@ -83,16 +83,46 @@ const storeNote = (project: string) => join(DIRS.mm, 'box', project, 'api-store.
 export function noteBoxApi(project: string) {
   if (!apiEnabled() || !PROJECT_ID.test(project)) return
   mkdirSync(join(DIRS.mm, 'box', project), { recursive: true })
-  writeFileSync(storeNote(project), JSON.stringify({ dir: resolvePath(API_DIR) }) + '\n')
+  let dir = resolvePath(API_DIR)
+  try { dir = realpathSync(dir) } catch {}
+  const f = storeNote(project), t = `${f}.tmp-${process.pid}`
+  writeFileSync(t, JSON.stringify({ dir }) + '\n', { mode: 0o600 }); renameSync(t, f)
 }
+// A note steers a box's grants on every mm up, so it is honoured only for a store as mm makes one (review sy-rjwg 2):
+// the note a file of this user's that nobody else may write; the store a real folder (no link on its way), this user's,
+// 0700, with granted/ the same and the project's grants a file of this user's, 0600. Anything else is ignored, with a
+// warning (once per project and process).
+const mine = (p: string, kind: 'dir' | 'file') => {
+  const st = lstatSync(p), uid = process.getuid?.()
+  return (kind === 'dir' ? st.isDirectory() : st.isFile()) && (uid === undefined || st.uid === uid) && (st.mode & 0o077) === 0
+}
+export function storeShapeRefusal(project: string, dir: string, note = storeNote(project)): string | null {
+  try {
+    const n = lstatSync(note), uid = process.getuid?.()
+    if (!n.isFile() || (uid !== undefined && n.uid !== uid) || (n.mode & 0o022) !== 0) return 'the note is not a file of this user\'s that only it may write'
+    if (realpathSync(dir) !== resolvePath(dir)) return 'the store\'s path goes through a link'
+    if (!mine(dir, 'dir')) return 'the store is not a folder of this user\'s, 0700'
+    if (!mine(join(dir, 'granted'), 'dir')) return 'its granted/ is not a folder of this user\'s, 0700'
+    const g = file(project, dir)
+    if (existsSync(g) && !mine(g, 'file')) return `its grants for ${project} are not a file of this user's, 0600`
+  } catch { return 'the store or the note could not be checked' }
+  return null
+}
+const warned = new Set<string>()
 /** The project API as it governs one box, for everything mm writes for it: on, with its grants, when this mm has the
- *  API on; else on with the noted store's grants when that is another store (a test's) that is still there. The
- *  machine's own store noted, and the API off now: off (the owner turned it off; the app slot runs release/ again). */
+ *  API on; else on with the noted store's grants when that is another store (a test's) that is still there and has the
+ *  shape mm gives a store. The machine's own store noted, and the API off now: off (the owner turned it off; the app
+ *  slot runs release/ again). */
 export function boxApi(project: string): { on: boolean; granted: Granted } {
   if (apiEnabled()) return { on: true, granted: granted(project) }
   let dir: unknown
   try { dir = (JSON.parse(readFileSync(storeNote(project), 'utf8')) as { dir?: unknown }).dir } catch {}
   if (typeof dir !== 'string' || !isAbsolute(dir) || resolvePath(dir) === resolvePath(MACHINE_API_DIR) || !existsSync(dir)) return { on: false, granted: empty() }
+  const why = storeShapeRefusal(project, dir)
+  if (why) {
+    if (!warned.has(project)) { warned.add(project); console.error(`mm: ${storeNote(project)} is ignored (${why}); ${project} gets no grants from it`) }
+    return { on: false, granted: empty() }
+  }
   return { on: true, granted: granted(project, dir) }
 }
 
