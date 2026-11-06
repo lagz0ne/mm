@@ -21,6 +21,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const MIN = 60e3, NOW = Date.now(), ago = (m) => new Date(NOW - m * MIN).toISOString()
 
 const { pullState, foldRequeues, leaseOf } = await import(path.join(SRC, 'template', 'site', 'pull-state.mjs'))
+const { waitingFor, plainTitle, MAX_BYTES } = await import(path.join(SRC, 'template', 'site', 'waiting.mjs'))
 
 // ---------- the fixture board ----------
 const PROJECT = 'pb'
@@ -78,6 +79,35 @@ ok('claims: oldest first, each with its age and lease', P.code.claims.map((c) =>
 ok('...the lease time left (negative once over: 0)', P.code.claims.find((c) => c.id === 'pb-1').left_s === 360 && P.code.claims.find((c) => c.id === 'pb-3').left_s === 0)
 ok('a requeued item: in the queue, marked, counted (ops 1)', P.ops.queue.find((q) => q.id === 'pb-7')?.requeued?.n === 2 && P.ops.requeued === 1 && !P.ops.queue.find((q) => q.id === 'pb-8').requeued)
 ok('setup: no capacity, no lease', P.setup.capacity === null && P.setup.claims[0]?.lease === 'ok' && P.setup.claims[0]?.left_s === null)
+
+step('site/waiting.mjs (the gateway\'s "Waiting for you" list, sy-vdi8)')
+{
+  const W = [
+    it('pb-20', 'review', 'open', 90, { labels: ['needs-you'], title: 'owner needed' }),
+    it('pb-21', 'ops', 'open', 30, { labels: ['t2', 'signed-off'], title: 'approve me' }),
+    it('pb-22', 'ops', 'open', 20, { labels: ['t2', 'signed-off', 'approved'], title: 'approved already' }),
+    it('pb-23', 'alex', 'in_progress', 10, { title: 'alex\'s own', labels: ['needs-you', 'bug'] }),
+    it('pb-24', 'alex', 'closed', 5, { title: 'alex closed' }),
+    it('pb-25', 'bob', 'open', 5, { title: 'bob\'s' }),
+    it('pb-26', 'ops', 'open', 40, { labels: ['needs-you', 't2', 'signed-off'], title: 'both' }),
+    it('PB-27', 'alex', 'open', 1, { title: 'odd id' }),
+    it('pb-28', 'alex', 'blocked', 3, { title: 'a\u0007b\u202eevil\ncd' }),
+  ]
+  const o = waitingFor({ items: W, me: 'boss', owner: true, now: NOW })
+  ok('the owner: needs-you items and the signed-off t2s without approved, oldest first', o.items.map((x) => x.id).join() === 'pb-20,pb-26,pb-21,pb-23' && o.more === 0, JSON.stringify(o))
+  ok('...each with only the labels its ask needs (no bug, no approved), age in whole minutes', JSON.stringify(o.items.find((x) => x.id === 'pb-26').labels) === '["needs-you","t2","signed-off"]'
+    && JSON.stringify(o.items.find((x) => x.id === 'pb-23').labels) === '["needs-you"]' && o.items[0].age_min === 90 && o.items.every((x) => Object.keys(x).join() === 'id,title,age_min,labels'))
+  const m = waitingFor({ items: W, me: 'alex', owner: false, now: NOW })
+  ok('a member: only the open items assigned to them (not closed, not the owner\'s needs-you, not a bad id)', m.items.map((x) => x.id).join() === 'pb-23,pb-28', JSON.stringify(m))
+  ok('...with no labels at all (needs-you is the owner\'s ask)', m.items.every((x) => x.labels.length === 0))
+  ok('...a title\'s control and bidi characters become spaces', m.items.find((x) => x.id === 'pb-28').title === 'a b evil cd')
+  ok('no name (a viewer with none, the local side): nothing', waitingFor({ items: W, me: '', owner: false, now: NOW }).items.length === 0)
+  const long = plainTitle('x'.repeat(500)), astral = plainTitle('\u{1F600}'.repeat(300))
+  ok('a title over 200 characters is cut to 200 (with an ellipsis), counted in characters; an empty one says so', Array.from(long).length === 200 && long.endsWith('…') && Array.from(astral).length === 200 && plainTitle('  ') === '(no title)')
+  const many = Array.from({ length: 400 }, (_, k) => it(`pb-${1000 + k}`, 'alex', 'open', k, { title: '\u00e9'.repeat(200) }))
+  const big = waitingFor({ items: many, me: 'alex', owner: false, now: NOW })
+  ok(`a long list stays under 32 KB: what doesn't fit is counted in more (${big.items.length} kept, ${big.more} more)`, Buffer.byteLength(JSON.stringify(big)) <= MAX_BYTES && big.more > 0 && big.items.length + big.more === 400 && big.items[0].id === 'pb-1399')
+}
 
 // ---------- a fake VictoriaMetrics export: flow series of this project and another, duplicates kept ----------
 const FNOW = Date.parse('2026-11-05T12:00:00Z'), H = 3600e3
@@ -206,6 +236,10 @@ try {
   ok('the worst queue: ops, 2 items, its head waits 50 min (review\'s waits 40)', sm.queue_role === 'ops' && sm.queue === 2 && sm.queue_min === 50, JSON.stringify(sm))
   ok('needs-you: the oldest waits 90 min; no approvals (not the owner)', sm.needs_you_min === 90 && sm.approvals === 0)
   ok('only whole numbers, one time and one role id: no title, no text', Object.entries(sm).every(([k, v]) => (k === 'last' ? typeof v === 'string' : k === 'queue_role' ? /^[a-z][a-z0-9-]{0,30}$/.test(v) : Number.isInteger(v))) && !/title/.test(JSON.stringify(sm)))
+
+  step('the board: /api/waiting (the gateway\'s list; the roles are checked in test/auth.sh on the public side)')
+  const wt = await get('/api/waiting')
+  ok('the local side (a guest, not the owner): only its own items (none), the answer\'s shape', Array.isArray(wt.items) && wt.items.length === 0 && wt.more === 0 && Object.keys(wt).join() === 'items,more', JSON.stringify(wt))
 } finally {
   s.kill(); bdSrv.close(); vmSrv.close()
   if (fail) console.log(`--- board output\n${out.slice(-2000)}`)
