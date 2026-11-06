@@ -45,7 +45,9 @@ sess() { sed -n 's/^set-cookie: \(__Secure-better-auth\.session_token=[^;]*\).*/
 link_of() { mm user link "$1" -o json | jq -r .link; }
 # a link opens a Continue page; its button POSTs the link's token from the gateway's own page (review sy-g8v 2)
 qs() { printf '%s' "${1#*\?}" | tr '&' '\n' | sed -n "s/^$2=//p"; }
-open_link() { gw -D "$2" -o /dev/null -H "origin: https://$AUTH" -d "t=$(qs "$1" token)&c=$(qs "$1" callbackURL)" "$G/s/l"; }
+# what a real browser sends with the Continue form's POST: our pages are no-referrer, so Origin is null, and the
+# browser says same-origin in Sec-Fetch-Site (sy-9tbm)
+open_link() { gw -D "$2" -o /dev/null -H 'origin: null' -H 'sec-fetch-site: same-origin' -d "t=$(qs "$1" token)&c=$(qs "$1" callbackURL)" "$G/s/l"; }
 export -f gw sess; export G AUTH BOARD BOARD2 T MM_HOME
 
 echo '== people (no password)'
@@ -65,6 +67,7 @@ check "mm user link alex: a single-use link on the gateway's host" bash -c "echo
 LP=${L#https://$AUTH}
 check "opening the link (as a chat preview or a mail scanner does): a Continue page, no session, nothing used" bash -c "gw -D '$T/pv' -o '$T/pvb' '$G$LP'; head -1 '$T/pv' | grep -q 200 && ! grep -qi 'set-cookie' '$T/pv' && grep -q 'action=\"/s/l\"' '$T/pvb' && gw -o /dev/null -w '%{http_code}' '$G$LP' | grep -q 200"
 check "...its POST from another site (no Origin, or a foreign one): refused, and the link stays unused" bash -c "[ \"\$(gw -o /dev/null -w '%{http_code}' -d 't=$(qs "$L" token)&c=/s/done' $G/s/l)\" = 403 ] && [ \"\$(gw -o /dev/null -w '%{http_code}' -H 'origin: https://evil.example' -d 't=$(qs "$L" token)&c=/s/done' $G/s/l)\" = 403 ]"
+check "...Origin null with no Sec-Fetch-Site, or a cross-site or same-site one (even with this host's Origin): refused, the link stays unused (sy-9tbm)" bash -c "p='t=$(qs "$L" token)&c=/s/done'; [ \"\$(gw -o /dev/null -w '%{http_code}' -H 'origin: null' -d \"\$p\" $G/s/l)\" = 403 ] && [ \"\$(gw -o /dev/null -w '%{http_code}' -H 'origin: null' -H 'sec-fetch-site: cross-site' -d \"\$p\" $G/s/l)\" = 403 ] && [ \"\$(gw -o /dev/null -w '%{http_code}' -H 'origin: https://$AUTH' -H 'sec-fetch-site: same-site' -d \"\$p\" $G/s/l)\" = 403 ]"
 open_link "$L" "$T/h1"; S1=$(sess "$T/h1")
 check "opening it: a session (Secure, HttpOnly, host-only: no Domain=) and on to /s/done" bash -c "[ -n '$S1' ] && grep -i 'set-cookie: __Secure-better-auth.session_token' '$T/h1' | grep -qi httponly && ! grep -i 'set-cookie: __Secure-better-auth.session_token' '$T/h1' | grep -qi 'domain=' && grep -qi '^location: .*/s/done' '$T/h1'"
 open_link "$L" "$T/h1b"

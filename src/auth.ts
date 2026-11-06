@@ -270,8 +270,12 @@ export async function gateway() {
       if (req.method !== 'POST') return new Response(null, { status: 302, headers: { location: '/s/done', ...headers } })
       const ip = clientIp(req, srv)
       if (limited(`ba:${ip}`, 60, 60e3)) return json({ error: 'too many requests' }, 429)
+      // only the Continue page's own form (CSRF). Our pages are served with Referrer-Policy: no-referrer, so a browser
+      // sends `Origin: null` on that form's POST (sy-9tbm). So the browser's Sec-Fetch-Site decides when it is there (a
+      // page can't set it): same-origin only. Without it (an older browser), Origin must be this host.
+      const site = req.headers.get('sec-fetch-site')
       let from = ''; try { from = new URL(req.headers.get('origin') || '').host } catch {}
-      if (from !== authHost) { log('warn', 'link post refused (not from the link page)', { ip, origin: req.headers.get('origin') || undefined }); return html(page('Open the sign-in link itself, then press Continue.'), 403) }
+      if (site ? site !== 'same-origin' : from !== authHost) { log('warn', 'link post refused (not from the link page)', { ip, origin: req.headers.get('origin') || undefined, site: site || undefined }); return html(page('Open the sign-in link itself, then press Continue.'), 403) }
       const f = await req.formData().catch(() => null), t = String(f?.get('t') || ''), c = String(f?.get('c') || '/s/done')
       const hdrs = new Headers(req.headers); hdrs.delete('cf-connecting-ip'); hdrs.delete('content-type'); hdrs.delete('content-length'); hdrs.set('x-mm-client-ip', ip)
       const r = await auth.handler(new Request(`https://${authHost}/api/auth/magic-link/verify?${new URLSearchParams({ token: t, callbackURL: c })}`, { method: 'GET', headers: hdrs }))
