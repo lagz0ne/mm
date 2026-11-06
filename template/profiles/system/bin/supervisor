@@ -7,6 +7,10 @@
 //     handoff:<item>     an item reassigned to a role (`bd update -a <role>`) with no act from that role after 10 min P1
 //     idle:<role>        a lead not working (idle, closed, gone) for 10 min while ready P0 work waits for it   P1
 //     dirty:<worktree>   uncommitted files, none touched for 30 min (git worktrees of the mm repo and of each project) P2
+//     t2-unapproved:<item> an item labelled t2 in progress, or one a brain migration names in its summary and that is
+//                        applied (since this check first ran, when the item is closed), with no `approved` from an
+//                        approver: read from the event journal with its actor, never from the label alone. Clears when
+//                        an approver sets approved, or the item leaves in progress with no applied migration    P1
 //     supervisor:<check> the supervisor could not read a source (that check's items are left as they are)     P2
 // Sources, all read-only: the board (bd serve: items, ready, the event journal), Paseo (leads by label project/role),
 // `mm ls` (project roots), git (log, status, worktree list). A reply, a comment or a change means one by a lead, its
@@ -14,18 +18,23 @@
 // when its message names the item id (any branch). An agent turn is the assignee's lead running (now, or seen running
 // by an earlier check within the window). A reassign to a person (the owner, a human) is left to needs-you, not watched
 // here. A requeue is wake's own change (in progress -> open, by `wake`): the one system change read here.
+// The approvers (sy-44xa): the bridge's actor (`bridge`) and the owner's name (`owner_name` in .run/endpoints.json, when
+// mm writes it), else config `approvers`; env SUPERVISOR_APPROVERS (comma list) overrides both. `approved` counts only
+// from the journal record that added it, with an approver as its actor. A migration is applied when the brain's state
+// has its name (BRAIN_STATE, else $XDG_STATE_HOME/brain, else ~/.local/state/brain: <state>/migrations/<name>).
 // An item someone closes while its finding is still there mutes that finding until it clears.
 // The board is the truth for which items are open (label `supervisor`, line "supervisor key: `<key>`"); .supervisor.json
 // keeps the journal position and a summary per item, notes, mutes, and when leads were seen running or idle.
 // Optional config supervisor.json (this board's root):
 //   { "assignee": "ops", "ignore": ["<regex on a key>"], "minutes": { "stall": 30, "handoff": 10, "idle": 10, "dirty": 30 },
-//     "repos": ["<more git repos to watch; the mm repo is ~/mm, the template's place for it>"] }
-// Env (tests): SUPERVISOR_STATE, SUPERVISOR_CONFIG, SUPERVISOR_NOW (ms), MM_BIN, SVC_URL_BD_SERVE, PASEO_BIN, PASEO_NO_SDK.
+//     "repos": ["<more git repos to watch; the mm repo is ~/mm, the template's place for it>"], "approvers": ["bridge"] }
+// Env (tests): SUPERVISOR_STATE, SUPERVISOR_CONFIG, SUPERVISOR_NOW (ms), SUPERVISOR_APPROVERS, BRAIN_STATE, MM_BIN,
+// SVC_URL_BD_SERVE, PASEO_BIN, PASEO_NO_SDK.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { ROOT, dirs, projectName, requireUrl } from './lib/svc.mjs'
+import { ROOT, dirs, endpoints, projectName, requireUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
 import * as paseo from './lib/paseo.mjs'
 
@@ -44,6 +53,9 @@ const SYSTEM = new Set(['wake', 'watchdog', 'ui', 'smoke', 'beads'])
 const KEY_LINE = /^supervisor key: `([^`]+)`$/m
 const NOW = Number(E.SUPERVISOR_NOW) || Date.now(), now = new Date(NOW).toISOString()
 const SELF = projectName()
+const APPROVERS = new Set((E.SUPERVISOR_APPROVERS !== undefined ? E.SUPERVISOR_APPROVERS.split(',') : [...(CONF.approvers || ['bridge']), endpoints().owner_name])
+  .map((a) => String(a || '').trim()).filter(Boolean))
+const BRAIN_STATE = E.BRAIN_STATE || path.join(E.XDG_STATE_HOME || path.join(HOME, '.local', 'state'), 'brain')
 
 const run = (cmd, args, t = 60000) => execFileSync(cmd, args, { encoding: 'utf8', timeout: t, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 << 20 })
 // host git, never steered by what a repo's own config or a box chose (review sy-futg): no fsmonitor command, no hooks,
@@ -66,6 +78,7 @@ async function bd(method, p, body) {
 const state = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } })()
 for (const k of ['muted', 'notes', 'items', 'running', 'idle']) state[k] ||= {}
 state.seq ||= 0
+state.t2since ||= NOW // closed items: only migrations applied since this check first ran (no flood from older ones)
 
 const ROLES = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'leads', 'roles.json'), 'utf8')).roles.map((r) => r.id) } catch { return [] } })()
 if (!ROLES.includes('setup')) ROLES.push('setup')
@@ -95,7 +108,15 @@ const journal = once(async () => {
       const who = e.comment?.author || e.actor, t = ms(e.comment?.created_at) || ms(e.ts)
       if (!e.issue_id) continue
       const s = (state.items[e.issue_id] ||= { act: 0, ho: {}, re: {} }), was = { as: s.as, st: s.st }
-      if (e.issue) { s.as = e.issue.assignee || ''; s.st = e.issue.status }
+      if (e.issue) {
+        s.as = e.issue.assignee || ''; s.st = e.issue.status
+        // `approved` through the record that added it, with its actor (a label first seen mid-life, not at its
+        // creation, has no known setter: it counts as not approved)
+        const labels = e.issue.labels || [], had = s.lb ? s.lb.includes('approved') : e.op !== 'create' && labels.includes('approved')
+        if (labels.includes('approved') && !had) s.ap = { ok: APPROVERS.has(String(e.actor || '')), by: String(e.actor || ''), at: t }
+        if (!labels.includes('approved')) delete s.ap
+        s.lb = labels
+      }
       if (who === 'wake' && was.st === 'in_progress' && e.issue?.status === 'open') s.rq = { seq: e.seq, at: t } // a requeue
       if (!who || SYSTEM.has(who)) continue
       s.act = Math.max(s.act, t)
@@ -245,6 +266,40 @@ async function dirty() {
   return { prefix: 'dirty:', problems }
 }
 
+/** The brain's applied migrations, by the item ids their summary names: { id: [{ name, at }] }. No brain: none. */
+function migrations() {
+  const dir = path.join(dirs().brain, 'migrations'), done = path.join(BRAIN_STATE, 'migrations'), out = {}
+  let names; try { names = fs.readdirSync(dir) } catch (e) { if (e.code === 'ENOENT') return out; throw e }
+  for (const name of names.filter((n) => n.endsWith('.sh') && !n.endsWith('.rollback.sh')).sort()) {
+    let mark; try { mark = fs.readFileSync(path.join(done, name), 'utf8') } catch (e) { if (e.code === 'ENOENT') continue; throw e } // not applied
+    const summary = /^# brain:summary=(.*)$/m.exec(fs.readFileSync(path.join(dir, name), 'utf8'))?.[1] || ''
+    const at = Date.parse(mark.trim().split(/\s+/)[0]) || fs.statSync(path.join(done, name)).mtimeMs
+    for (const [id] of summary.matchAll(/\b[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*\b/g)) (out[id] ||= []).push({ name, at })
+  }
+  return out
+}
+async function t2() {
+  const [all, sum] = await Promise.all([issues(), journal()])
+  const mig = migrations(), problems = []
+  for (const i of all) {
+    if (mine(i) || !(i.labels || []).includes('t2')) continue
+    const ap = sum[i.id]?.ap
+    if (ap?.ok) continue
+    const applied = (mig[i.id] || []).filter((m) => i.status !== 'closed' || m.at >= state.t2since)
+    const going = i.status === 'in_progress'
+    if (!going && !applied.length) continue
+    const what = [...(going ? ['it is in progress'] : []), ...applied.map((m) => `its migration ${m.name} is applied (${at(m.at)})`)]
+    const label = ap ? `approved was added by ${ap.by || 'an unknown actor'} at ${at(ap.at)}, who is not an approver` : 'no approved from an approver'
+    problems.push({ key: `t2-unapproved:${i.id}`, priority: 1, title: `Unapproved t2: ${i.id} (${i.assignee || 'nobody'}) ${applied.length ? 'has an applied migration' : 'is in progress'} without the owner's approval`,
+      note: `${i.status}; ${what.join('; ')}; ${label}`,
+      body: `**${i.id}** "${i.title}" is labelled t2, and ${what.join(', and ')}. The board's journal has ${label} on it ` +
+        `(approvers: ${[...APPROVERS].join(', ') || 'none'}; a label added by anyone else does not count).\n\n` +
+        `A t2 change runs only after the owner's approval. Find out what ran without it, and stop or roll it back, or get the owner's approval. ` +
+        `This item closes itself when an approver sets approved on ${i.id}, or ${i.id} leaves in progress with no applied migration.` })
+  }
+  return { prefix: 't2-unapproved:', problems }
+}
+
 // ---------- reconcile with the board (as the sentinel does) ----------
 const open = {} // key -> item
 for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')).items || []) {
@@ -252,7 +307,7 @@ for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')
   if (k && it.status !== 'closed') open[k] = it
 }
 const results = [], failed = []
-for (const [name, fn] of Object.entries({ stall, handoff, idle, dirty })) {
+for (const [name, fn] of Object.entries({ stall, handoff, idle, dirty, t2 })) {
   try { results.push(await fn()) } catch (e) { failed.push({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) }) }
 }
 await paseo.close()
@@ -292,7 +347,8 @@ for (const src of results) {
 
 // forget what can no longer matter: items closed on the board, lead sightings older than any window
 const known = new Map((await issues().catch(() => [])).map((i) => [i.id, i.status]))
-if (known.size) for (const id of Object.keys(state.items)) if (!known.has(id) || known.get(id) === 'closed') delete state.items[id]
+// (a closed t2 item keeps its summary: who set approved still matters for its migrations)
+if (known.size) for (const id of Object.keys(state.items)) if (!known.has(id) || (known.get(id) === 'closed' && !(state.items[id].lb || []).includes('t2'))) delete state.items[id]
 for (const [r, t] of Object.entries(state.running)) if (NOW - t > 24 * 3600e3) delete state.running[r]
 fs.writeFileSync(STATE, JSON.stringify(state, null, 1))
 // a failed check is on the board (supervisor:<check>); exit 0 so it is not reported twice

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // bin/supervisor (profile system) against a fake bd-serve, a stub paseo, a stub mm and throwaway git repos, step by step
-// on a fake clock (SUPERVISOR_NOW): each finding opens (stall, handoff, idle, dirty), a change becomes a comment, nothing
+// on a fake clock (SUPERVISOR_NOW): each finding opens (stall, handoff, idle, dirty, t2-unapproved), a change becomes a comment, nothing
 // is opened twice, each clears and closes; a comment, a commit or an agent turn each keeps an item from stalling; a
 // failing source, a lost state file and an item closed by someone. Hermetic: temp folder only; nothing live is touched.
 //   node test/supervisor.mjs            exit 0 = every check passed
@@ -105,7 +105,7 @@ await new Promise((r) => srv.listen(0, '127.0.0.1', r))
 const BD = `http://127.0.0.1:${srv.address().port}`
 
 const STATE = path.join(SYS, '.supervisor.json'), LOG = path.join(T, 'run.log')
-const ENV = { PATH: process.env.PATH, HOME, MM_PROJECT: 'sysqa', MM_OBS_TRACES: '', MM_OBS_METRICS: '', MM_BIN: path.join(T, 'mm'), MM_BRAIN: path.join(T, 'brain'),
+const ENV = { PATH: process.env.PATH, HOME, MM_PROJECT: 'sysqa', MM_OBS_TRACES: '', MM_OBS_METRICS: '', MM_BIN: path.join(T, 'mm'), MM_BRAIN: path.join(T, 'brain'), BRAIN_STATE: path.join(T, 'brain-state'),
   SVC_URL_BD_SERVE: BD, PASEO_BIN: path.join(T, 'paseo'), PASEO_NO_SDK: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
 /** One supervisor run at `clock`; resolves with its exit code (its output goes to run.log). */
 const supervise = () => new Promise((resolve) => {
@@ -233,6 +233,55 @@ clock = T0 + 81 * MIN
 comment('sy-9', 'platform', 'Taking it again.')
 ok('exit 0', (await supervise()) === 0)
 ok('its role acted on it: cleared', openKeys() === DIRTY)
+
+step('run 9c (+86 min): t2 items that go ahead without the approver\'s approved (sy-6v8p)')
+// the approvers: the bridge's actor (default `bridge`) and the owner's name, from the board's run files
+fs.mkdirSync(path.join(SYS, '.run'), { recursive: true }); fs.writeFileSync(path.join(SYS, '.run/endpoints.json'), JSON.stringify({ owner_name: 'alex', services: {} }))
+const BRAIN = ENV.MM_BRAIN, MIGS = path.join(BRAIN, 'migrations'), DONE = path.join(ENV.BRAIN_STATE, 'migrations')
+fs.mkdirSync(MIGS, { recursive: true }); fs.mkdirSync(DONE, { recursive: true })
+const migration = (name, summary, applied) => {
+  fs.writeFileSync(path.join(MIGS, `${name}.sh`), `# brain:summary=${summary}\n# brain:tier=2\ntrue\n`)
+  fs.writeFileSync(path.join(MIGS, `${name}.rollback.sh`), `# brain:summary=undo (${summary})\ntrue\n`)
+  if (applied) fs.writeFileSync(path.join(DONE, `${name}.sh`), `${iso(clock)} abc1234\n`)
+}
+clock = T0 + 86 * MIN
+item('sy-11', { title: 't2 claimed, no approval', priority: 2, assignee: 'ops', labels: ['t2', 'signed-off'] })
+update('sy-11', { status: 'in_progress' }, 'ops')
+item('sy-12', { title: 't2, approved by a lead', priority: 2, assignee: 'ops', labels: ['t2'] })
+update('sy-12', { labels: ['t2', 'approved'] }, 'platform'); update('sy-12', { status: 'in_progress' }, 'ops')
+item('sy-13', { title: 't2, approved by the bridge', priority: 2, assignee: 'ops', labels: ['t2'] })
+update('sy-13', { labels: ['t2', 'approved'] }, 'bridge'); update('sy-13', { status: 'in_progress' }, 'ops')
+item('sy-14', { title: 't2, its migration applied while open', priority: 2, assignee: 'ops', labels: ['t2'] })
+migration('1800000001-fw', 'open a port (sy-14)', true)
+item('sy-15', { title: 't2, its migration not applied', priority: 2, assignee: 'ops', labels: ['t2'] })
+migration('1800000002-fw', 'close a port (sy-15)', false)
+item('sy-16', { title: 't1 in progress', status: 'in_progress', priority: 2, assignee: 'ops', labels: ['t1'] })
+item('sy-17', { title: 't2, applied then closed', priority: 2, assignee: 'ops', labels: ['t2'] })
+migration('1800000003-ssh', 'sshd change (sy-17)', true); update('sy-17', { status: 'closed' }, 'ops')
+item('sy-18', { title: 'created with approved by a lead, then claimed', status: 'open', priority: 2, assignee: 'ops', labels: ['t2', 'approved'] }, 'platform')
+update('sy-18', { status: 'in_progress' }, 'ops')
+ok('exit 0', (await supervise()) === 0)
+const T2 = (id) => `t2-unapproved:${id}`
+ok('open: t2-unapproved for sy-11 (claimed), sy-12 and sy-18 (approved by a lead), sy-14 (migration applied), sy-17 (applied, then closed); not sy-13 (bridge), sy-15 (not applied), sy-16 (t1)',
+  openKeys() === `${DIRTY} ${T2('sy-11')} ${T2('sy-12')} ${T2('sy-14')} ${T2('sy-17')} ${T2('sy-18')}`)
+const U = openOf(T2('sy-12'))
+ok('the item is for ops, P1, and says a lead\'s approved does not count', U?.assignee === 'ops' && U.priority === 1 && /added by platform/.test(U.description) && /not an approver/.test(U.description))
+ok('the migration finding names the migration', /1800000001-fw\.sh/.test(openOf(T2('sy-14'))?.description || ''))
+
+step('run 9d (+91 min): approved by the bridge or the owner clears it; leaving in progress clears it; a lead\'s still does not')
+clock = T0 + 91 * MIN
+update('sy-11', { labels: ['t2', 'signed-off', 'approved'] }, 'bridge')
+update('sy-14', { labels: ['t2', 'approved'] }, 'alex') // the owner's name (endpoints.json owner_name)
+update('sy-17', { labels: ['t2', 'approved'] }, 'bridge') // after the fact, on a closed item
+update('sy-12', { status: 'blocked' }, 'ops') // no longer in progress, no migration
+update('sy-18', { labels: ['t2', 'approved', 'signed-off'] }, 'review') // approved was already there (a lead's): still not the approver's
+ok('exit 0', (await supervise()) === 0)
+ok('only sy-18 stays (its approved came from a lead)', openKeys() === `${DIRTY} ${T2('sy-18')}`)
+ok('each cleared one is closed with "Cleared"', ['sy-11', 'sy-12', 'sy-14', 'sy-17'].every((id) => byKey(T2(id)).every((i) => i.status === 'closed' && /Cleared/.test(i.comments.at(-1).text))))
+update('sy-18', { labels: ['t2', 'signed-off'] }, 'ops'); update('sy-18', { labels: ['t2', 'signed-off', 'approved'] }, 'bridge')
+clock = T0 + 96 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('approved removed, then set by the bridge: cleared', openKeys() === DIRTY)
 
 step('run 10: the board is down: exit non-zero, nothing written')
 fs.writeFileSync(path.join(T, 'bd.fail'), '')
