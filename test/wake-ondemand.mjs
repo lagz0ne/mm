@@ -54,7 +54,7 @@ esac
 const items = [
   { id: 'd-1', assignee: 'dev', status: 'in_progress', title: 'dev is on it', labels: [] },
   { id: 'o-1', assignee: 'ops', status: 'open', title: 'waits for the human', labels: ['needs-you'] },
-  { id: 'c-1', assignee: 'chat', status: 'in_progress', title: 'the owner asked the contact', labels: [] },
+  { id: 'c-1', assignee: 'chat', status: 'in_progress', priority: 1, title: 'the owner asked the contact', labels: [] },
 ]
 const records = [], streams = []
 const srv = http.createServer((req, res) => {
@@ -82,7 +82,7 @@ const to = (role) => sent().split('----\n').filter((b) => b.startsWith(`TO agent
 const starts = (r) => (read(STARTED).match(new RegExp(`^START ${r}$`, 'gm')) || []).length
 let seq = 0
 const emit = (e) => { e.seq = ++seq; records.push(e); for (const s of streams) s.write(`data: ${JSON.stringify(e)}\n\n`) }
-const create = (id, role, title) => { items.push({ id, assignee: role, status: 'open', title, labels: [] }); emit({ op: 'create', issue_id: id, actor: 'alex', issue: { assignee: role, status: 'open', title } }) }
+const create = (id, role, title, priority = 2) => { items.push({ id, assignee: role, status: 'open', priority, title, labels: [] }); emit({ op: 'create', issue_id: id, actor: 'alex', issue: { assignee: role, status: 'open', priority, title } }) }
 
 try {
   await until(() => /watching/.test(opsLog()))
@@ -112,12 +112,15 @@ try {
 
   console.log('== a kept role is never started: the human is asked')
   ok('chat (kept) is closed with an item in progress: not started', starts('chat') === 0)
-  ok('...its item gets needs-you instead, and it is logged', await until(() => /label add c-1 needs-you --actor wake/.test(bdlog()) && /chat is kept \(the owner's contact\): its agent is closed/.test(opsLog())))
+  ok('...its P1 item gets needs-you instead, and it is logged', await until(() => /label add c-1 needs-you --actor wake/.test(bdlog()) && /chat is kept \(the owner's contact\): its agent is closed/.test(opsLog())))
   ok('...once, not on every check', (bdlog().match(/label add c-1 needs-you/g) || []).length === 1)
+  ok('...and one note for the owner (needs-you, kept:chat), made once', /^create The chat lead's agent can't be found: 1 item\(s\) wait for it [\s\S]*?-l needs-you,kept:chat/m.test(bdlog()) && (bdlog().match(/^create /gm) || []).length === 1)
   create('c-2', 'chat', 'a new request for the contact')
-  ok('a new item for it: labelled needs-you too, still not started', await until(() => /label add c-2 needs-you/.test(bdlog())) && starts('chat') === 0)
-  st('chat', 'none'); create('c-3', 'chat', 'the contact is gone')
-  ok('its agent gone (none) and work waits: still not started, needs-you', await until(() => /label add c-3 needs-you/.test(bdlog())) && starts('chat') === 0)
+  await sleep(1500)
+  ok('a new P2 item for it: not labelled (only P0/P1 are), still not started', !/label add c-2 needs-you/.test(bdlog()) && starts('chat') === 0)
+  st('chat', 'none'); create('c-3', 'chat', 'the contact is gone', 0)
+  ok('its agent gone (none) and a P0 waits: still not started, needs-you', await until(() => /label add c-3 needs-you/.test(bdlog())) && starts('chat') === 0)
+  ok('...still one note', (bdlog().match(/^create /gm) || []).length === 1)
 
   console.log('== the next request starts it again')
   create('r-1', 'rev', 'a review for rev')

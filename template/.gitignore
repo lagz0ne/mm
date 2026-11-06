@@ -36,4 +36,5 @@ secrets/
 .sentinel.json
 .releases
 .wake-state.json
+.wake-state.json.tmp
 .deploy.lock

@@ -128,6 +128,7 @@ node test/wake-stall.mjs     # bin/wake recovers from an event stream that hangs
 node test/wake-signals.mjs   # bin/wake: bd state changes (reassign, blocked, dep add, reopen, close) wake who acts next
 node test/wake-ondemand.mjs  # bin/wake starts a lead with no agent on demand, closes idle ones, honours the restore hold
 node test/wake-reconcile.mjs # bin/wake's reconcile loop: queue heads within capacity, expired claims requeued, restarts lose nothing
+node test/wake-kept.mjs      # bin/wake, a kept role's agent gone and back: one note, needs-you on P0/P1 only, its own labels removed
 node test/lead-state.mjs     # the board's lead states (ready / working on / waiting for you / blocked / start failed)
 test/machine-panel.sh        # the system board's machine panel (SITE_NODE_MODULES=<a site's node_modules>)
 ```

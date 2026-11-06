@@ -34,7 +34,8 @@ import fs from 'node:fs'
 // Roles come from leads/roles.json (re-read on change); setup = the governance agent. RACI from leads/raci.json.
 // roles.json `lead`: the board's Lead (the role a BLOCKED goes to when the item's activity names no Accountable role).
 // A role with `"keep": true` is the owner's contact (e.g. the system board's ops agent: the owner's chat bridge points at
-// its agent id): wake never closes it and never starts one (a new start is a new id), it asks the human instead.
+// its agent id): wake never closes it and never starts one (a new start is a new id), it tells the owner instead (one
+// note item; see keptWaits()).
 const ROLES = []
 const KEEP = new Set()
 const CAPACITY = {} // role -> roles.json `capacity`: the most items it holds in progress at once (default 1)
@@ -76,8 +77,7 @@ const isHuman = (actor) => !!actor && !leadOf(actor) && !SYSTEM.includes(actor)
 
 function stopLoop(id) {
   log(`hop limit: ${id} had ${MAX_HOPS} lead-to-lead wakes; labelling needs-you, not waking`)
-  execFile(path.join(P, 'bin/bd'), ['label', 'add', id, 'needs-you', '--actor', 'wake'], { cwd: path.join(P, 'control'), timeout: 20000 },
-    (err) => err && log(`label ${id} failed:`, clip(err.message, 200)))
+  labelQ(['label', 'add', id, 'needs-you'], `label ${id}`)
   execFile(path.join(P, 'bin/bd'), ['comments', 'add', id, `Paused: ${MAX_HOPS} lead-to-lead wakes on this item without a human in between. A human comment or change resumes it.`, '--actor', 'wake'],
     { cwd: path.join(P, 'control'), timeout: 20000 }, () => {})
 }
@@ -128,7 +128,7 @@ function transition(e, byLead) {
   const needsYou = (kind, why) => {
     count('mm_wake_signals_total', { kind: KINDS[kind] })
     log(`${KINDS[kind]} on ${id} by ${writer}: ${why}; labelling needs-you`)
-    if (!labels.includes('needs-you')) bdRun(['label', 'add', id, 'needs-you'], `label ${id}`)
+    if (!labels.includes('needs-you')) labelQ(['label', 'add', id, 'needs-you'], `label ${id}`)
   }
   if (e.op === 'dep_add') { // `bd dep add <id> <target>`: <id> now waits on <target>
     const ref = e.dep?.target
@@ -166,7 +166,7 @@ function transition(e, byLead) {
 
 function onEvent(e) {
   return span('wake event', { op: e.op, issue: e.issue_id, actor: e.actor }, () => {
-    try { onEvent1(e) } finally { if (e.issue) seen.set(e.issue_id, { assignee: e.issue.assignee || '', status: e.issue.status }); soon() }
+    try { keptSeen(e); onEvent1(e) } finally { if (e.issue) seen.set(e.issue_id, { assignee: e.issue.assignee || '', status: e.issue.status }); soon() }
   }, { minMs: 1000 })
 }
 function onEvent1(e) {
@@ -228,8 +228,9 @@ async function lead(role) {
 let snap = null
 async function board(fresh = false) {
   if (!fresh && snap && Date.now() - snap.at < 1000) return snap
+  const from = Date.now() // `from`: the read began (what was written before it shows in it)
   const [all, ready] = await Promise.all([allIssues(), bd('/v0/beads/ready?limit=500')])
-  return (snap = { at: Date.now(), all, ready: ready.items || [] })
+  return (snap = { from, at: Date.now(), all, ready: ready.items || [] })
 }
 // A role's share of the board: its queue (ready items assigned to it; one waiting for the human, `needs-you`, is not
 // work it can do), what it holds in progress (claimed by it or a worker, `<role>/...`), and its free capacity within the
@@ -317,7 +318,8 @@ async function tick() {
 // once the new lead is idle.
 // A lead idle for WAKE_IDLE_CLOSE_MS (default 30 min; 0 = never) with nothing of its own open is closed (archived, as
 // bin/lead stop does, but never mid-turn), and the next request starts it again here. A kept role (roles.json `keep`)
-// is neither closed nor started: when its agent is closed or gone and work waits, the human is asked (needs-you).
+// is neither closed nor started: when its agent is closed or gone and work waits, the owner is told (keptWaits(): one note
+// item, needs-you on the P0/P1 items only), and when its agent is back wake undoes that (keptBack()).
 // Retries: a failed start is tried again after WAKE_RESUME_CHECK_MS, then twice that, and so on (at most 16 times);
 // after WAKE_TRIES (3) failures in a row the waiting items get needs-you. The same for a lead wake cannot reach, and for
 // a board change wake makes (bdStep()).
@@ -329,7 +331,6 @@ const startFailed = {} // role -> { n, next }: failed starts in a row, and when 
 const sendFails = {} // role -> failed sends in a row
 const idleFrom = {} // role -> { id, at }: since when wake has seen that agent idle
 let heldSaid = false
-const keptSaid = {} // kept role -> the items already labelled needs-you for it (until its agent is up again)
 const askedHuman = new Set() // items wake labelled needs-you after failed tries (once each, until it works again)
 
 // The project's restore hold (mm restore, until `mm restore --release`): no lead starts. mm doesn't run wake while it
@@ -347,7 +348,8 @@ function projectCap() {
 }
 function editState(fn) {
   const f = path.join(P, '.wake-state.json')
-  try { const st = (() => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return {} } })(); fn(st); fs.writeFileSync(f, JSON.stringify(st)) } catch {}
+  // written whole and renamed into place: a reader (the board's Leads page) never sees half a file
+  try { const st = (() => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return {} } })(); fn(st); fs.writeFileSync(`${f}.tmp`, JSON.stringify(st)); fs.renameSync(`${f}.tmp`, f) } catch {}
 }
 const readState = () => { try { return JSON.parse(fs.readFileSync(path.join(P, '.wake-state.json'), 'utf8')) } catch { return {} } }
 const leadStart = (role, next) => new Promise((ok, no) => execFile(path.join(P, 'bin', 'lead'), ['start', role],
@@ -355,42 +357,166 @@ const leadStart = (role, next) => new Promise((ok, no) => execFile(path.join(P, 
   (e, out, err) => (e ? no(new Error(String(err || e.message).trim().slice(0, 300))) : ok(out))))
 
 /** A board change wake makes (bin/bd ... --actor wake), tried up to TRIES times with backoff (WAKE_RETRY_MS, doubling).
- *  Resolves to { ok: true } or { ok: false, code, error }; exit code 13 (a compare-and-set guard that no longer held:
- *  someone else changed the item first) is final at once and not a failure. */
+ *  A Dolt serialization failure (Error 1213: two writes at once; "try restarting transaction") gets two more tries.
+ *  Resolves to { ok: true, out } or { ok: false, code, error }; exit code 13 (a compare-and-set guard that no longer
+ *  held: someone else changed the item first) is final at once and not a failure. */
 const RETRY = Number(process.env.WAKE_RETRY_MS || 2000)
+const BUSY = /\b1213\b|serializ|deadlock|try restarting transaction/i
 async function bdStep(args, what) {
   for (let n = 1; ; n++) {
     const r = await new Promise((ok) => execFile(path.join(P, 'bin/bd'), [...args, '--actor', 'wake'], { cwd: path.join(P, 'control'), timeout: 20000 },
-      (err, out, errOut) => ok(err ? { ok: false, code: err.code, error: String(errOut || err.message).trim().slice(0, 300) } : { ok: true })))
+      (err, out, errOut) => ok(err ? { ok: false, code: err.code, error: String(errOut || err.message).trim().slice(0, 300) } : { ok: true, out: String(out || '') })))
     if (r.ok || r.code === 13) return r
-    if (n >= TRIES) { log(`${what} failed ${n} times:`, r.error); count('mm_wake_step_failed_total', {}); return r }
+    const busy = BUSY.test(r.error)
+    if (busy) { count('mm_wake_step_busy_total', {}); log(`${what}: the board was busy (${clip(r.error, 120)}); trying again (try ${n})`) }
+    if (n >= TRIES + (busy ? 2 : 0)) { log(`${what} failed ${n} times:`, r.error); count('mm_wake_step_failed_total', {}); return r }
     await new Promise((s) => setTimeout(s, RETRY * 2 ** (n - 1)))
   }
+}
+/** wake's label writes go one at a time, WAKE_LABEL_GAP_MS (250) apart, each through bdStep (so a 1213 is tried again):
+ *  50 labels written at once made Dolt refuse some of them (sy-ujtp). `skip()`, checked right before the write, drops
+ *  one that no longer applies. Resolves to bdStep's result, or { ok: false, skipped: true }. */
+const LABEL_GAP = Number(process.env.WAKE_LABEL_GAP_MS ?? 250)
+let labelChain = Promise.resolve()
+function labelQ(args, what, skip = () => false) {
+  const run = labelChain.then(async () => {
+    if (skip()) return { ok: false, skipped: true }
+    const r = await bdStep(args, what)
+    await new Promise((s) => setTimeout(s, LABEL_GAP))
+    return r
+  })
+  labelChain = run.catch(() => {})
+  return run
 }
 /** After failed tries: the human is asked on each item (needs-you and one comment), once until it works again. */
 function askHuman(items, why) {
   for (const id of [...new Set(items)].filter((x) => !askedHuman.has(x)).slice(0, 5)) {
     askedHuman.add(id)
     log(`${id}: ${why}; labelling needs-you`)
-    bdRun(['label', 'add', id, 'needs-you'], `label ${id}`)
+    labelQ(['label', 'add', id, 'needs-you'], `label ${id}`)
     bdRun(['comments', 'add', id, `Error: ${why}. Labelled needs-you; remove the label once it is fixed.`], `comment ${id}`)
   }
+}
+
+// A kept role whose agent can't be found (sy-809m, sy-ujtp). wake never starts one (a new start is a new id, and the
+// owner's chat points at the old one): it tells the owner once, with one note item for the whole board ("the ops lead's
+// agent can't be found: N item(s) wait for it"; assigned to the owner, mm's `owner_name`, labelled needs-you and
+// kept:<role>; its title follows N), and labels needs-you only the P0/P1 items that wait. It remembers each label it
+// added, in .wake-state.json `_kept.<role>.labelled` (item id -> when). When the role's agent is found again, it
+// closes the note and removes those labels, and only those: a needs-you a person or a lead set is never touched. A label
+// of wake's that someone removes (an event, or a later read of the board, without it) is forgotten, so if they set it
+// again, it is theirs. A note the owner closes stays closed until the agent is back (and gone again).
+const kept = (() => { try { return readState()._kept || {} } catch { return {} } })() // role -> { note, n, labelled }
+const keptGone = new Set() // kept roles whose agent this wake sees gone (a queued label checks it before it writes)
+const inFlight = new Set() // `add|remove <id>` queued, not written yet
+let keptSaved = JSON.stringify(kept)
+const saveKept = () => { const j = JSON.stringify(kept); if (j !== keptSaved) { keptSaved = j; editState((s) => { s._kept = kept }) } }
+const ownerName = () => (/^owner_name:[ \t]*["']?([A-Za-z0-9._-]+)/m.exec(machineConfig())?.[1]) || 'owner'
+function keptSeen(e) {
+  const labels = e.issue?.labels, t = Date.parse(e.ts || '')
+  if (!Array.isArray(labels) || labels.includes('needs-you') || !t) return
+  let changed = false
+  for (const st of Object.values(kept)) {
+    const at = st?.labelled?.[e.issue_id]
+    if (at && t > Date.parse(at)) { delete st.labelled[e.issue_id]; changed = true; log(`${e.issue_id}: the needs-you wake added is gone (by ${e.actor || 'someone'}): no longer wake's`) }
+  }
+  if (changed) saveKept()
+}
+const noteText = (role, was, waits, b) => {
+  const byId = new Map(b.all.map((i) => [i.id, i])), st = kept[role]
+  const lines = waits.slice(0, 40).map((id) => { const i = byId.get(id); return `- ${id} (P${i.priority ?? '?'}, ${i.status}${st.labelled[id] || inFlight.has(`add ${id}`) ? ', labelled needs-you by wake' : ''}): ${clip(i.title, 100)}` })
+  return [`wake can't find the agent of the **${role}** lead (${was ? `its agent ${was.shortId || was.id} is closed` : 'no agent has its labels'}), and ${waits.length} item(s) wait for it.`,
+    '', `${role} is a kept role (roles.json \`keep\`: the owner's contact), so wake does not start a new agent: a new one has a new id, and your chat points at the old one.`,
+    '', '**What to do:** give the agent the role\'s labels in Paseo (`project=' + PROJECT + ' role=' + role + '`), or start the lead again (`bin/lead start ' + role + '`) and point your chat at the new agent.',
+    '', 'wake labelled `needs-you` only the P0 and P1 items below, not all of them. When the agent is found again, wake removes the labels it added (and only those) and closes this item.',
+    '', ...lines, ...(waits.length > 40 ? [`- ... and ${waits.length - 40} more`] : [])].join('\n')
+}
+async function keptWaits(role, was, items, b) {
+  keptGone.add(role)
+  // labelled: the labels wake added and still owns; done: every item it labelled while this agent is gone (never twice:
+  // a label someone removed stays removed)
+  const st = (kept[role] ||= { note: null, n: 0, labelled: {}, done: {} }); st.labelled ||= {}; st.done ||= {}
+  const byId = new Map(b.all.map((i) => [i.id, i])), open = (id) => byId.has(id) && byId.get(id).status !== 'closed'
+  // what waits: the items it was started for, its ready items (also those labelled needs-you), and its own in progress
+  // or blocked ones
+  const waits = [...new Set([...items, ...b.ready.filter((i) => i.assignee === role && i.status === 'open').map((i) => i.id),
+    ...inProgress(b, role).map((i) => i.id), ...b.all.filter((i) => i.status === 'blocked' && mineOf(role, i)).map((i) => i.id)])].filter(open)
+  // a label of wake's gone from the board, as read after wake wrote it: someone removed it
+  for (const [id, at] of Object.entries(st.labelled)) if (open(id) && !(byId.get(id).labels || []).includes('needs-you') && Date.parse(at) < b.from) delete st.labelled[id]
+  const fresh = waits.filter((id) => { const i = byId.get(id); return i.priority <= 1 && !(i.labels || []).includes('needs-you') && !st.done[id] && !inFlight.has(`add ${id}`) })
+  if (fresh.length) {
+    log(`${role} is kept (the owner's contact): its agent is ${was ? `closed (${was.shortId || was.id})` : 'gone'} and ${waits.length} item(s) wait; not starting a new one, labelling needs-you the P0/P1 ones: ${fresh.join(' ')}`)
+    count('mm_wake_kept_waits_total', { role })
+  }
+  for (const id of fresh) {
+    inFlight.add(`add ${id}`)
+    labelQ(['label', 'add', id, 'needs-you'], `label ${id}`, () => !keptGone.has(role)).then((r) => {
+      inFlight.delete(`add ${id}`)
+      // recorded even when the agent came back during the write: the next keptBack() removes it then
+      if (r.ok) { const at = new Date().toISOString(), s = (kept[role] ||= { note: null, n: 0, labelled: {}, done: {} }); s.labelled[id] = at; (s.done ||= {})[id] = at; saveKept() }
+    })
+  }
+  // the one note
+  const title = `The ${role} lead's agent can't be found: ${waits.length} item(s) wait for it`
+  if (!st.note || st.note === '?') {
+    const found = b.all.find((i) => i.status !== 'closed' && (i.labels || []).includes(`kept:${role}`))
+    if (found) st.note = found.id
+    else if (!st.note) {
+      const r = await bdStep(['create', title, '-d', noteText(role, was, waits, b), '-t', 'task', '-p', '1', '-a', ownerName(), '-l', `needs-you,kept:${role}`, '--json'], `note for ${role}`)
+      if (r.ok) {
+        let id = null; try { const j = JSON.parse(r.out); id = (Array.isArray(j) ? j[0] : j)?.id || null } catch {}
+        st.note = id || '?' // '?': made, its id unread; the next read of the board finds it by its label
+        st.n = waits.length
+        log(`${role} is kept and its agent can't be found: opened ${id || 'a note'} for the owner (${waits.length} item(s) wait)`)
+      }
+    }
+  } else if (st.n !== waits.length && open(st.note)) {
+    const r = await bdStep(['update', st.note, '--title', title, '-d', noteText(role, was, waits, b)], `note ${st.note}`)
+    if (r.ok) { log(`${st.note}: now ${waits.length} item(s) wait for ${role}`); st.n = waits.length }
+  }
+  saveKept()
+}
+/** The kept role's agent is found again: close the note, and remove the needs-you wake added (only those). */
+async function keptBack(role, a, b) {
+  keptGone.delete(role)
+  const st = kept[role]
+  if (!st) return
+  st.labelled ||= {}; st.done = {}
+  const byId = new Map(b.all.map((i) => [i.id, i]))
+  const notes = new Set([st.note, ...b.all.filter((i) => (i.labels || []).includes(`kept:${role}`)).map((i) => i.id)]
+    .filter((id) => id && byId.has(id) && byId.get(id).status !== 'closed'))
+  const ids = Object.keys(st.labelled)
+  for (const id of notes) {
+    const r = await bdStep(['close', id, '--reason', `the ${role} lead's agent is found again (${a.shortId || a.id}); wake removes the needs-you it added on ${ids.length} item(s)`], `close ${id}`)
+    if (r.ok) log(`${role}'s agent is back (${a.shortId || a.id}): closed ${id}`)
+    else return // tried again on the next pass
+  }
+  st.note = null; st.n = 0
+  const queued = []
+  for (const id of ids) {
+    const i = byId.get(id)
+    if (!i || i.status === 'closed' || !(i.labels || []).includes('needs-you')) { delete st.labelled[id]; continue } // nothing to remove
+    if (inFlight.has(`remove ${id}`)) continue
+    inFlight.add(`remove ${id}`); queued.push(id)
+    labelQ(['label', 'remove', id, 'needs-you'], `unlabel ${id}`, () => keptGone.has(role)).then((r) => {
+      inFlight.delete(`remove ${id}`)
+      if (r.ok && kept[role]) { delete kept[role].labelled[id]; if (!Object.keys(kept[role].labelled).length && !kept[role].note) delete kept[role]; saveKept() }
+    })
+  }
+  if (queued.length) log(`${role}'s agent is back (${a.shortId || a.id}): removing the needs-you wake added on ${queued.join(' ')}`)
+  if (!Object.keys(st.labelled).length) delete kept[role]
+  saveKept()
 }
 
 /** The one way wake starts a lead (the reconcile loop calls it): for `role`, because of `items` (ids) and `why`, with
  *  `next` (the queue items it may pull now, for its first prompt); `was` = the closed agent it replaces, if any. Checks
  *  the restore hold, the rate limit (once per WAKE_RESUME_MS per role) and the backoff after failures; counts and logs;
  *  a failed start is kept for the board's Leads page and said once on the waiting items, and after TRIES failures in a
- *  row they get needs-you. A kept role (roles.json `keep`) is never started: its waiting items get needs-you (once each).
+ *  row they get needs-you. A kept role (roles.json `keep`) is never started: keptWaits() tells the owner (`board`: the reconcile's read).
  *  Resolves to { started: true } or { started: false, why: 'kept' | 'held' | 'rate' | 'backoff' | 'failed', error? }. */
-async function startLead(role, { was = null, items = [], why = '', next = [] } = {}) {
+async function startLead(role, { was = null, items = [], why = '', next = [], board: b = null } = {}) {
   if (KEEP.has(role)) {
-    const said = (keptSaid[role] ||= new Set()), fresh = [...new Set(items)].filter((id) => !said.has(id))
-    if (fresh.length) {
-      log(`${role} is kept (the owner's contact): its agent is ${was ? `closed (${was.shortId || was.id})` : 'gone'} and work waits (${why}); not starting a new one, labelling needs-you: ${fresh.join(' ')}`)
-      count('mm_wake_kept_waits_total', { role })
-      for (const id of fresh) { said.add(id); bdRun(['label', 'add', id, 'needs-you'], `label ${id}`) }
-    }
+    if (b) await keptWaits(role, was, items, b) // one note for the owner, needs-you on the P0/P1 items only
     return { started: false, why: 'kept' }
   }
   if (held()) {
@@ -509,13 +635,13 @@ async function reconcile1() {
     // its lead
     const a = agents[role]
     const own = async () => b.all.filter((i) => i.assignee === role && i.status !== 'closed')
-    if (a && a.status !== 'closed') { delete keptSaid[role]; await closeIdle(role, a, own); continue }
+    if (a && a.status !== 'closed') { if (kept[role] || keptGone.has(role)) await keptBack(role, a, b); await closeIdle(role, a, own); continue }
     if (Date.now() - (startedAt[role] || 0) < RESUME_GAP) continue
     const now = sendable(role, b)
     const mine = (await own()).filter((i) => i.status === 'in_progress' || i.status === 'blocked')
     if (!now.size && !mine.length) continue
     const next = hand.filter((i) => now.get(i.id)?.kind === 'work')
-    await startLead(role, { was: a, items: [...now.keys(), ...mine.map((i) => i.id)], next,
+    await startLead(role, { was: a, items: [...now.keys(), ...mine.map((i) => i.id)], next, board: b,
       why: `${now.size} reason(s) wait for it, ${mine.length} item(s) in its handover` })
   }
 }
@@ -527,7 +653,7 @@ const STALL_MS = Number(process.env.WAKE_STALL_MS || 90000), CHECK_MS = Number(p
 let since = 0, stream = null, behind = 0
 const STATE = path.join(P, '.wake-state.json')
 let saveT = null
-const saveSeq = () => { saveT ||= setTimeout(() => { saveT = null; try { const st = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } })(); st._seq = since; fs.writeFileSync(STATE, JSON.stringify(st)) } catch {} }, 2000) }
+const saveSeq = () => { saveT ||= setTimeout(() => { saveT = null; editState((st) => { st._seq = since }) }, 2000) }
 const deliver = (e) => { if (!e || (e.seq || 0) <= since) return; since = e.seq; onEvent(e); saveSeq() } // each event once, in order
 
 async function check() {
