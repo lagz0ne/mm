@@ -34,7 +34,11 @@ export default function App() {
   const [links, setLinks] = useState<{ name: string; label: string; url: string }[]>([])
   const [role, setRole] = useState('all')
   const [q, setQ] = useState('')
-  const [openId, setOpenId] = useState<string | null>(null)
+  // ?item=<id> opens that item (the gateway's "Waiting for you" list links here, sy-vdi8); only an id of the board's pattern
+  const [openId, setOpenId] = useState<string | null>(() => {
+    const id = new URLSearchParams(window.location.search).get('item') || ''
+    return /^[a-z]+-[a-z0-9]+(\.[0-9]+)*$/.test(id) ? id : null
+  })
   const [creating, setCreating] = useState(false)
   const [meta, setMeta] = useState<Meta>(EMPTY_META)
   const presence = usePresenceFeed()
@@ -253,7 +257,7 @@ export default function App() {
       </div>
       </>)}
 
-      {openId && <Suspense fallback={null}><Detail id={openId} tick={tick} byId={byId} creator={meta.creators[openId]} onClose={() => setOpenId(null)} onOpen={setOpenId} onChanged={load} /></Suspense>}
+      {openId && <Suspense fallback={null}><Detail id={openId} tick={tick} byId={byId} creator={meta.creators[openId]} onClose={() => { setOpenId(null); if (window.location.search) window.history.replaceState(null, '', window.location.pathname + window.location.hash) }} onOpen={setOpenId} onChanged={load} /></Suspense>}
       <NewItem open={creating} onOpenChange={setCreating} epics={epics} defaultRole={role === 'all' ? '' : role}
         onCreated={(i) => { load(); toast.success(`Created ${i.id}`) }} />
       <Identify open={identifying} current={idSource === 'self' ? actor : ''} onOpenChange={setIdentifying}

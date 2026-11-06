@@ -12,6 +12,7 @@ import { configApi } from './config-api.mjs'
 import { leadState } from './lead-state.mjs'
 import { foldRequeues, pullState } from './pull-state.mjs'
 import { exportQuery, flowRows, parseExport, PAIRS } from './flow-rows.mjs'
+import { waitingFor } from './waiting.mjs'
 import * as P_ from '../bin/lib/paseo.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -368,6 +369,16 @@ async function sendSummary(req, res, signal = false) {
     queue_min: worst ? worst.min : 0,
     ...(worst ? { queue_role: worst.role } : {}) } : {}),
   })
+}
+
+// The "Waiting for you" list for the gateway's home page (sy-vdi8; waiting.mjs, review's rules in sy-6h43 #5): the items
+// that wait on the asking person (the owner: needs-you and the signed-off t2s without approved; anyone else: only the
+// open items assigned to them), each id, plain title, age in minutes and the labels the ask needs. Read-only, so a viewer
+// may read it; on the public side it is checked like every other request (handlePublic). No cache: a revoke, a new
+// label or a closed item shows on the next load. Under 32 KB.
+async function sendWaiting(req, res) {
+  const items = await allItems()
+  send(res, 200, waitingFor({ items, me: who(req), owner: req.gateway?.r === 'owner', now: Date.now() }))
 }
 
 // ---------- panels (off unless the board's env turns them on: BOARD_PANELS=machine; the system profile does) ----------
@@ -770,6 +781,7 @@ async function handle(req, res) {
   }
   if (url.pathname === '/api/meta' && req.method === 'GET') return sendMeta(res)
   if (url.pathname === '/api/summary' && req.method === 'GET') return sendSummary(req, res, url.searchParams.get('signal') === '1').catch(() => send(res, 502, { title: 'summary failed' }))
+  if (url.pathname === '/api/waiting' && req.method === 'GET') return sendWaiting(req, res).catch(() => send(res, 502, { title: 'waiting list failed' }))
   if (url.pathname === '/api/pull' && req.method === 'GET') return pull().then((d) => send(res, 200, d), (e) => send(res, 502, { title: `pull failed: ${e.message}` }))
   if (url.pathname === '/api/flow' && req.method === 'GET') return sendFlow(res)
   if (url.pathname === '/api/links' && req.method === 'GET') return sendLinks(res)
