@@ -7,6 +7,8 @@
 //     (throwaway test projects, `mm new --throwaway`, and projects mm no longer lists raise nothing)
 //     errors:<project>/<service>  new error logs or failed spans on N checks in a row (`mm obs errors`)       P2
 //     obs:stack                   the observability stores are down (`mm obs status`)                         P1
+//     assist:<user>               an assistant's chat session has a tool beyond Skill (`bin/assist tools <user>
+//                                 --chat`; assistants whose mode is off are skipped)                             P1
 //     sentinel:<source>           the sentinel could not read a source (that source's items are left as they are)
 //   events (stay open until someone closes them; later events become comments on the open one):
 //     drift                       a new drift block in `bin/brain status` (the first run only records it)      P2
@@ -140,6 +142,26 @@ function obs() {
   }
 }
 
+/** Each assistant's chat session, as `paseo run` starts it (sy-6dk: Paseo has no per-run tool kill), audited by
+ *  bin/assist itself; exit 5 = a tool beyond Skill (or an MCP server). Any other failure fails the source. */
+function assistants() {
+  const dir = path.join(ROOT, 'assistants'), problems = [], errs = []
+  const users = fs.existsSync(dir) ? fs.readdirSync(dir).filter((u) => u !== '_template' && fs.existsSync(path.join(dir, u, 'CLAUDE.md'))).sort() : []
+  for (const user of users) {
+    let mode = 'always'; try { mode = fs.readFileSync(path.join(dir, user, 'mode'), 'utf8').trim() || mode } catch {}
+    if (mode === 'off') continue
+    let out = '', code = 0
+    try { out = run('node', [path.join(ROOT, 'bin', 'assist'), 'tools', user, '--chat'], 90000) } catch (e) { out = String(e.stdout || ''); code = typeof e.status === 'number' ? e.status : -1; if (code !== 5) { errs.push(`${user}: ${String(e.stderr || e.message || e).trim().split('\n').pop()}`); continue } }
+    if (code !== 5) continue
+    let r = {}; try { r = JSON.parse(out.trim().split('\n').pop()) } catch {}
+    const extra = String(r.error || '').replace(/^.*allowlist: /, '') || 'unknown'
+    problems.push({ key: `assist:${user}`, priority: 1, title: `Assistant for ${user}: its chat session has tools beyond Skill`, note: extra,
+      body: `\`bin/assist tools ${user} --chat\` (a session as its conversation agent starts it) offers more than Skill: **${extra}**.\n\nAll its tools: ${fence((r.tools || []).join(', ') || '?')}\nMCP servers: ${(r.mcp || []).join(', ') || 'none'}\n\n\`paseo run\` cannot stop a tool once the session has it: archive its agent now (\`bin/assist stop ${user}\`), then find what added the tool (its \`.claude/settings.json\`, \`bin/config-check --render\`, the Claude folder's MCP servers). \`bin/assist chat ${user}\` refuses to start it until this clears; this item closes itself when it does.` })
+  }
+  if (errs.length) throw new Error(`bin/assist tools --chat failed for ${errs.join('; ')}`)
+  return [{ prefix: 'assist:', problems }]
+}
+
 // ---------- reconcile with the board ----------
 const open = {} // key -> item (the board is the truth)
 for (const it of (await bd('GET', '/v0/beads/issues?label=sentinel&limit=500')).items || []) {
@@ -147,7 +169,7 @@ for (const it of (await bd('GET', '/v0/beads/issues?label=sentinel&limit=500')).
   if (k && it.status !== 'closed') open[k] = it
 }
 const results = [], failed = []
-for (const [name, fn] of Object.entries({ brain, cron, errors, obs })) {
+for (const [name, fn] of Object.entries({ brain, cron, errors, obs, assistants })) {
   try { results.push(...fn()) } catch (e) { failed.push({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) }) }
 }
 results.push({ prefix: 'sentinel:', problems: failed.map((f) => ({ key: `sentinel:${f.name}`, priority: 2, title: `Sentinel cannot read its ${f.name} source`, note: norm(f.err),

@@ -44,6 +44,10 @@ Modes per human (`always`, `on demand`: a `?` prefix or `/assist`, `off`) are st
   - `bin/assist` reads the session's tool list before the model's first turn and kills the run (exit 5) if it has
     any tool outside the allowlist, for example one a newer CLI adds. `bin/assist tools <user>` prints that list for
     an audit.
+  - the conversation agent (`bin/assist chat`) runs in Paseo, which can't kill a run by its tools, and without the
+    command-line flags: only its folder's settings. So `bin/assist tools <user> --chat` checks a session started that
+    way (stopped at its first line, no model turn). `chat` runs it first and starts nothing unless it shows Skill
+    only; the system board's sentinel runs it once per pass and opens `assist:<user>` (P1, for ops) when it doesn't.
 - **What it reads comes in the message.** The bridge passes the request, item, reply or incident. A scoped read tool
   (`mcp__mm_read`, served by the gateway or bridge, checking the human's focus on every call) is the only read tool an
   assistant may ever get; it's allowed by name and doesn't exist yet. File and Bash allowlists can't enforce scope,
