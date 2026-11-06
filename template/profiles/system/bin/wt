@@ -1,0 +1,104 @@
+#!/usr/bin/env node
+// wt — worker folders of this board (profile system; sy-asaw): worktrees/<role>-<name>/, one per worker, as the role's
+// `worker` spec in leads/roles.json says (bin/lib/workers.mjs). bin/lead worker start calls it; a lead may too.
+//   wt <role> <name> [<ref>]   make it (a no-op if it is there), render its permissions (config-check), print its path:
+//                              write: a worktree of the role's repo on branch <name> (new from main, or the branch)
+//                              read:  a detached, read-only checkout of the role's repo at <ref> (default main)
+//                              board: a plain folder (no repo)
+//   wt sync <role>-<name>      rebase a write worker's branch onto main (needs a clean tree); prints the new HEAD
+//   wt rm <role>-<name> [--force]   remove it (a write worker's branch too: refused while it has commits not on main)
+//   wt ls                      list them
+// Refused: a role whose workers are not switched on (roles.json "workers": true: setup, after the owner's yes), and
+// any repo that is the brain or holds it (only ops writes the brain, one run branch at a time), this board, or (to
+// write) a project. If its permissions can't be rendered, the folder is removed again: no worker runs unguarded.
+import { execFileSync, spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { cli } from './lib/obs.mjs'
+import { projectName } from './lib/svc.mjs'
+import { folders, spec, specProblem, validName } from './lib/workers.mjs'
+
+cli('wt')
+const P = path.resolve(path.dirname(fs.realpathSync(fileURLToPath(import.meta.url))), '..')
+const die = (m, code = 1) => { console.error(`wt: ${m}`); process.exit(code) }
+const git = (dir, args, o = {}) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...o }).trim()
+const tryGit = (dir, args) => { try { return git(dir, args) } catch { return null } }
+const render = () => spawnSync(path.join(P, 'bin', 'config-check'), ['--render'], { cwd: P, encoding: 'utf8' })
+const usage = () => { console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(3, 11).map((l) => l.replace(/^\/\/ ?/, '')).join('\n')); process.exit(2) }
+
+/** The worker folder named <role>-<name>, with its spec. */
+function folder(dir) {
+  const f = folders(P).find((x) => x.dir === dir)
+  if (!f) die(`no worker folder ${dir || '(none)'} (wt ls)`, 2)
+  return { ...f, s: spec(P, f.role) }
+}
+
+function make(role, name, ref) {
+  const s = spec(P, role)
+  if (!s) die(`${role || '(none)'}: no workers for this role on this board (roles.json has no worker spec for it)`, 2)
+  if (!s.on) die(`${role}: workers are not switched on (roles.json "workers": true is setup's step, after the owner's yes)`)
+  if (!validName(name)) die(`bad worker name '${name || ''}' (a-z 0-9 . -, up to 32; not main)`, 2)
+  const why = specProblem(P, s, { exists: true }); if (why) die(`${role}: ${why}`)
+  if (ref && s.kind !== 'read') die(`a ref is for a read worker only (${role} is ${s.kind})`, 2)
+  if (ref && !/^[\w./-]+$/.test(ref)) die(`bad ref '${ref}'`, 2)
+  const W = path.join(P, 'worktrees', `${role}-${name}`)
+  if (fs.existsSync(W)) { render(); return console.log(W) }
+  fs.mkdirSync(path.dirname(W), { recursive: true })
+  let made = null // how to undo it
+  try {
+    if (s.kind === 'board') { fs.mkdirSync(W); made = () => fs.rmSync(W, { recursive: true, force: true }) }
+    else {
+      const has = tryGit(s.repo, ['rev-parse', '--verify', '-q', `refs/heads/${name}`]) !== null
+      if (s.kind === 'write') git(s.repo, ['worktree', 'add', '-q', W, ...(has ? [name] : ['-b', name, 'main'])])
+      else git(s.repo, ['worktree', 'add', '-q', '--detach', W, ref || 'main'])
+      made = () => { tryGit(s.repo, ['worktree', 'remove', '--force', W]); if (s.kind === 'write' && !has) tryGit(s.repo, ['branch', '-D', '-q', name]) }
+      // its rendered permissions are never part of the repo
+      const ex = path.join(path.resolve(s.repo, git(s.repo, ['rev-parse', '--git-common-dir'])), 'info', 'exclude')
+      const cur = (() => { try { return fs.readFileSync(ex, 'utf8') } catch { return '' } })()
+      if (!cur.split('\n').includes('.claude/settings.local.json')) { fs.mkdirSync(path.dirname(ex), { recursive: true }); fs.appendFileSync(ex, `${cur && !cur.endsWith('\n') ? '\n' : ''}.claude/settings.local.json\n`) }
+    }
+    const r = render()
+    if (r.status !== 0 || !fs.existsSync(path.join(W, '.claude', 'settings.local.json'))) throw new Error(`its permissions could not be rendered, so it is not made:\n${(r.stderr || r.stdout || '').trim()}`)
+    try { execFileSync('node', [path.join(P, 'bin', 'lib', 'claude.mjs'), 'trust', W], { stdio: 'ignore', env: { ...process.env, MM_PROJECT: projectName() } }) } catch {}
+  } catch (e) {
+    try { made?.() } catch {}
+    die(String(e.stderr || e.message || e).trim())
+  }
+  console.log(W)
+}
+
+const [a, b, c] = process.argv.slice(2)
+switch (a) {
+  case undefined: case '-h': case '--help': usage(); break
+  case 'ls': {
+    const fs_ = folders(P)
+    if (!fs_.length) { console.log('no worker folders'); break }
+    for (const f of fs_) { const s = spec(P, f.role); console.log(`${f.dir.padEnd(28)} ${String(s?.kind).padEnd(6)} ${s?.kind === 'board' ? '-' : tryGit(f.path, ['rev-parse', '--abbrev-ref', 'HEAD']) || '?'}`) }
+    break
+  }
+  case 'sync': {
+    const f = folder(b)
+    if (f.s?.kind !== 'write') die(`${b} is not a write worker (nothing to rebase)`, 2)
+    if (git(f.path, ['status', '--porcelain'])) die(`${b} has uncommitted changes; commit first`)
+    try { git(f.path, ['rebase', '-q', 'main']) } catch { tryGit(f.path, ['rebase', '--abort']); die(`rebase of ${b} onto main conflicts; resolve by hand`) }
+    console.log(git(f.path, ['rev-parse', '--short', 'HEAD']))
+    break
+  }
+  case 'rm': {
+    const f = folder(b), force = c === '--force'
+    if (f.s?.kind === 'write' && f.s.repo) {
+      const branch = f.name
+      if (!force && tryGit(f.s.repo, ['merge-base', '--is-ancestor', branch, 'main']) === null) die(`branch ${branch} has commits not on main (land it, or: wt rm ${b} --force)`)
+      if (tryGit(f.s.repo, ['worktree', 'remove', ...(force ? ['--force'] : []), f.path]) === null && tryGit(f.s.repo, ['worktree', 'remove', '--force', f.path]) === null) die(`could not remove the worktree ${f.path}`)
+      tryGit(f.s.repo, ['branch', '-D', '-q', branch])
+    } else if (f.s?.kind === 'read' && f.s.repo) {
+      if (tryGit(f.s.repo, ['worktree', 'remove', '--force', f.path]) === null) fs.rmSync(f.path, { recursive: true, force: true })
+      tryGit(f.s.repo, ['worktree', 'prune'])
+    } else fs.rmSync(f.path, { recursive: true, force: true })
+    render() // the others' permissions no longer name it
+    console.log(`removed ${b}`)
+    break
+  }
+  default: make(a, b, c)
+}

@@ -64,7 +64,13 @@
       "Read(//etc/**)",
       "Edit({brain}/**)",
       "Write({brain}/**)",
-      "Write(//tmp/**)"
+      "Write(//tmp/**)",
+      "Bash(lead worker start ops *)",
+      "Bash(lead worker stop ops *)",
+      "Bash(lead worker report ops *)",
+      "Bash(lead worker ls*)",
+      "Bash(wt ls)",
+      "Bash(wt rm ops-*)"
     ],
     "deny": [
       "Read({root}/secrets/**)",

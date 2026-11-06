@@ -6,6 +6,8 @@
 #   bin/lead start <role> --as <person>             a run for one person, on their own Claude token: only from mm run-as
 #                                                   (the token on stdin; never in an agent's shell)
 #   bin/lead stop <role>                            archive the lead
+#   bin/lead worker start|stop|report|ls ...        a lead's workers, where roles.json says what they are (the system
+#                                                   board; bin/lib/workers.mjs): start one, stop it, read its report
 #   bin/lead ls                                     list leads
 #   bin/lead tidy                                   archive this project's old Paseo workspaces and empty projects
 # In Paseo, the project is one project (rooted here) and each role has one workspace in it, reused across restarts
@@ -46,6 +48,7 @@ open_items() {
 case "${1:-}" in
   ls) "$PASEO" ls -g --label "project=$PROJECT" ;;
   tidy) node "$P/bin/lib/lead-workspace.mjs" --tidy "$P" ;;
+  worker) shift; exec node "$P/bin/lib/workers.mjs" "$@" ;;
   stop) [ -n "${2:-}" ] || { echo "usage: bin/lead stop <role>" >&2; exit 2; }
         archive_role "$2" "" || exit 1 ;;
   start)
@@ -73,7 +76,7 @@ case "${1:-}" in
     archive_role "$role" "previous " || { echo "lead: not starting a second $role lead" >&2; exit 1; }
     # its own worktree for docs/tests, unless it is setup or a role that works through workers
     workers=$(node -e "try{const r=require('$P/leads/roles.json').roles.find(x=>x.id==='$role');process.stdout.write(r&&r.workers?'1':'')}catch{}" 2>/dev/null)
-    [ "$role" = setup ] || [ -n "$workers" ] || [ ! -x "$P/bin/wt" ] || "$P/bin/wt" "lead-$role" >/dev/null  # no wt: a board without worktrees (system)
+    [ "$role" = setup ] || [ -n "$workers" ] || [ ! -x "$P/bin/wt" ] || [ ! -e "$P/code/.git" ] || "$P/bin/wt" "lead-$role" >/dev/null  # no product repo: no lead worktree (system)
     "$P/bin/config-check" --render >/dev/null || { echo "lead: config-check failed; not starting $role" >&2; "$P/bin/config-check"; exit 1; }
     START=$P/leads/START.md; [ -f "$DIR/START.md" ] && START=$DIR/START.md
     name=$(node -e "try{process.stdout.write(require('$P/leads/personas.json').agents['$role'].name||'')}catch{}" 2>/dev/null)
@@ -105,5 +108,5 @@ $LEAD_NEXT"
     if [ -n "$as" ]; then exec node "$P/bin/lib/run-as.mjs" "$as" "$@" <&3 3<&-; fi
     "$PASEO" run "$@"
     ;;
-  *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
