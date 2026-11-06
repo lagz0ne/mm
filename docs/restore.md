@@ -114,7 +114,32 @@ So restore applies only what it can verify:
   key, fake secrets, a throwaway board) — no production key, nothing T3. A production drill (the real mastermind and the
   recovery key) is the human's step on a box elsewhere.
 
+### The drill's record (sy-3use)
+After every drill (`--drill`, with or without `--data-only`), passed or failed, restore writes
+`$MM_HOME/state/drill.json` **on the box the drill ran on**: mode 0600, in a 0700 folder, written whole (a temp file,
+then renamed over the old one). A drill refused before it began (the box is not blank, or no identity was given
+before that check) writes nothing: that box may be a real machine with a record of its own.
+
+| Key | What |
+|---|---|
+| `at` | when the drill ended (ISO 8601, UTC) |
+| `ok` | `true` only if every step passed; a failed drill writes `false` |
+| `data_only` | `true` for `--data-only` (the data laid out and checked; no board brought up) |
+| `mastermind` | the full commit hash it restored; `null` if it failed before trust chose one |
+| `report` | the steps' short lines (`<status> <step>: <detail>`, at most 300 characters each): names, counts and hashes, never a value |
+
+The drill is also one span: the `mm restore` command's own (VictoriaTraces, and a line in `$MM_HOME/pc/mm.log`), with
+`drill`, `drill_ok`, `data_only`, `mastermind`, `drill_record` and the outcome `drill passed` or `drill failed`.
+
+**The score term** (the brain's score): debt when the record is missing or not JSON, when `.ok` is not `true`, or when
+`.at` is more than 30 days old. A term that wants the boards up as well counts only `.data_only == false`. As a check:
+
+```sh
+jq -e '.ok == true and ((.at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) > now - 30*86400)' "$MM_HOME/state/drill.json"
+```
+
 ## Tests
 `mm sync`: the allowlist, the secret-key refusal (and its hook), a sealed MANIFEST matching the files, no plaintext in
 the checkout. Restore: an unsigned HEAD refused without the typed hash; a bad tag signature refused; the drill's report
-and suppression list; a synthetic restore with boards up and the same item counts.
+and suppression list; a synthetic restore with boards up and the same item counts; the drill's record (shape, mode,
+`ok: false` for a failed drill, untouched by a refused one, no value in it) and its span.

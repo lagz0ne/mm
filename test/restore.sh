@@ -120,5 +120,29 @@ echo '== a tampered mastermind'
 git clone -q -b main "$R" "$T/evil" && printf 'x' >>"$T/evil/brain/repo.bundle.age" && git -C "$T/evil" commit -qam evil --no-verify && E=$(git -C "$T/evil" rev-parse HEAD)
 box d
 check "a sealed file changed after MANIFEST: refused, even with the typed hash" bash -c "mm restore '$T/evil' --identity '$T/recovery.key' --accept '$E' 2>&1 | grep -q 'sha256 differs from MANIFEST' && ! test -e '$MM_HOME/config.yaml'"
+check "not a drill: no drill record" bash -c "! test -e '$MM_HOME/state/drill.json' && ! test -e '$T/c/.mm/state/drill.json'"
+
+echo "== the drill's record (sy-3use)"
+box j; D="$MM_HOME/state/drill.json"; mkdir -p "$MM_HOME/pc"   # pc/: where mm's span line goes (mm.log), as on a box with a process manager
+mm restore --data-only --drill "$R" --identity "$T/recovery.key" --accept "$C2" -o json >"$T/j.json" 2>>"$LOG" && ok "a passing drill" || { bad "drill (j)"; tail -5 "$T/j.json"; }
+check "...writes \$MM_HOME/state/drill.json: 0600, in a 0700 folder, no temp file left" bash -c "[ \$(stat -c %a '$D') = 600 ] && [ \$(stat -c %a '$MM_HOME/state') = 700 ] && ! ls '$MM_HOME'/state/drill.json.* 2>/dev/null"
+check "...keys at, ok, data_only, mastermind, report" jq -e 'keys == ["at","data_only","mastermind","ok","report"] and (.report | type == "array" and length > 0 and all(type == "string"))' "$D"
+check "...ok, the HEAD it restored, data-only, a recent ISO time" jq -e --arg c "$C2" '.ok == true and .mastermind == $c and .data_only == true and ((.at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) > (now - 600))' "$D"
+check "...the report is the steps' lines (trust, manifest, vault, boards)" jq -e '.report | (map(select(test("^ok (trust|manifest|vault|board acme-shop): "))) | length) >= 4' "$D"
+check "...and the command says where it is" jq -e '.[] | select(.step=="drill record") | .status=="ok" and (.detail | test("state/drill.json"))' "$T/j.json"
+check "...no value in it: not the secret, not the recovery identity" bash -c "! grep -qF '$V' '$D' && ! grep -qF \"\$(grep -v '^#' '$T/recovery.key')\" '$D' && ! grep -q AGE-SECRET-KEY '$D'"
+check "the drill is one span: mm restore's, with the drill's outcome and HEAD" bash -c "[ \$(grep -c '\"op\":\"mm restore\"' '$MM_HOME/pc/mm.log') = 1 ] && jq -e --arg c '$C2' 'select(.op == \"mm restore\") | .msg == \"mm restore drill passed\" and .level == \"info\" and .drill == true and .drill_ok == true and .mastermind == \$c and (.drill_record | endswith(\"state/drill.json\"))' '$MM_HOME/pc/mm.log'"
+AT=$(jq -r .at "$D")
+check "a drill refused on a box that is not blank: the record stays as it was" bash -c "! mm restore --drill '$R' --identity '$T/recovery.key' --accept '$C2' >>'$LOG' 2>&1 && [ \"\$(jq -r .at '$D')\" = '$AT' ] && jq -e .ok '$D'"
+box k; D="$MM_HOME/state/drill.json"; mkdir -p "$MM_HOME/pc"
+check "a failed drill (the wrong identity): exit 1" bash -c "! mm restore --drill '$R' --identity '$T/other.key' --accept '$C2' >>'$LOG' 2>&1"
+check "...writes ok: false, the HEAD it tried, and the failing step" jq -e --arg c "$C2" '.ok == false and .mastermind == $c and .data_only == false and (.report | any(test("^fail restore: .*not the recovery key")))' "$D"
+check "...its span failed: level error, drill_ok false" jq -e 'select(.op == "mm restore") | .msg == "mm restore drill failed" and .level == "error" and .drill_ok == false' "$MM_HOME/pc/mm.log"
+check "...0600, and no key in it" bash -c "[ \$(stat -c %a '$D') = 600 ] && ! grep -qF \"\$(grep -v '^#' '$T/other.key')\" '$D'"
+box l; D="$MM_HOME/state/drill.json"
+check "a drill refused at trust (no typed hash, no signed tag): ok false, no HEAD restored" bash -c "! mm restore --drill '$R' --identity '$T/recovery.key' >>'$LOG' 2>&1 && jq -e '.ok == false and .mastermind == null and (.report | any(test(\"^fail trust: \")))' '$D'"
+# the writer itself: a folder that was 0755 becomes 0700, an old 0644 record is replaced whole by a 0600 one
+U="$T/unit/state"; mkdir -p "$U" && chmod 755 "$U" && echo old >"$U/drill.json" && chmod 644 "$U/drill.json"
+check "unit: writeDrillRecord replaces the old record whole (0600 in 0700), the shape round-trips" bash -c "cd '$SRC' && umask 000 && bun -e \"import { writeDrillRecord } from './src/restore'; writeDrillRecord({ at: '2026-01-02T03:04:05.000Z', ok: true, data_only: false, mastermind: 'abc', report: ['ok x: y'] }, '$U/drill.json')\" && [ \$(stat -c %a '$U') = 700 ] && [ \$(stat -c %a '$U/drill.json') = 600 ] && [ \"\$(ls '$U')\" = drill.json ] && jq -e '. == {at: \"2026-01-02T03:04:05.000Z\", ok: true, data_only: false, mastermind: \"abc\", report: [\"ok x: y\"]}' '$U/drill.json'"
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
