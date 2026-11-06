@@ -424,8 +424,13 @@ program.command('run-as <person> <project> <role>').description('start a lead fo
 // ("Runs for you"); here the owner lists them and drops one (dropping only ever takes a run away)
 program.command('run-asks [project]').description('the asks for person runs (who asked for which item, until when); --drop <item> drops one')
   .option('--drop <item>', 'drop the ask for this item of <project>')
+  .option('--json', 'the live asks of <project> as {"asks": {"<item>": "<person>"}} (bin/wake on the host reads them so, sy-otxx)')
   .action(async (project: string | undefined, o) => {
     const asks = await import('./personasks')
+    if (o.json) {
+      if (!project) { console.error('mm run-asks: --json needs the project'); process.exit(2) }
+      console.log(JSON.stringify({ asks: Object.fromEntries(asks.asksOf(project).map((a) => [a.item, a.person])) })); return
+    }
     if (o.drop) {
       if (!project) { console.error('mm run-asks: --drop needs the project'); process.exit(2) }
       const was = asks.dropAsk(project, String(o.drop)); console.log(was ? `dropped: ${o.drop} on ${project}` : `no ask for ${o.drop} on ${project}`); return

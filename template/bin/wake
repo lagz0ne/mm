@@ -20,9 +20,9 @@
 // PASEO_NO_SDK=1).
 // Person runs (sy-q8fv; see personRuns() below): a run made for one person on their own Claude token (mm run-as) that
 // the Paseo daemon held before it restarted is archived, and wake, when `wake.person_runs` is on, starts each lead as one
-// person: item work as the item's requester, upkeep as the project's sponsor (WAKE_PERSON_RUNS=1|0 overrides; WAKE_MM:
-// the mm to run, default `mm`). In a box, the host decides and starts them (sy-9618): wake asks on the box's own mm.api
-// socket (WAKE_DISPATCH_SOCK, default /run/mm/api/api.sock).
+// person: item work as the person who asked for it on the host (mm's record of asks), anything else as a plain lead
+// (WAKE_PERSON_RUNS=1|0 overrides; WAKE_MM: the mm to run, default `mm`). In a box, the host decides and starts them
+// (sy-9618): wake asks on the box's own mm.api socket (WAKE_DISPATCH_SOCK, default /run/mm/api/api.sock).
 import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/obs.mjs'
 import * as P_ from './lib/paseo.mjs'
 import { places, total as placesTotal, workersOf } from './lib/places.mjs'
@@ -227,7 +227,7 @@ function upstreamWaits(b) {
 
 function onEvent(e) {
   return span('wake event', { op: e.op, issue: e.issue_id, actor: e.actor }, () => {
-    try { remember(e); keptSeen(e); upSeen(e); onEvent1(e) } finally { if (e.issue) seen.set(e.issue_id, { assignee: e.issue.assignee || '', status: e.issue.status }); soon() }
+    try { keptSeen(e); upSeen(e); onEvent1(e) } finally { if (e.issue) seen.set(e.issue_id, { assignee: e.issue.assignee || '', status: e.issue.status }); soon() }
   }, { minMs: 1000 })
 }
 function onEvent1(e) {
@@ -291,7 +291,6 @@ async function catchUp() {
   const last = {}
   for (const e of ev.records) if (e.op === 'comment' && e.comment) last[e.issue_id] = e.comment.author
   for (const e of ev.records) upSeen(e) // how long an upstream:* item has waited blocked on the system board
-  for (const e of ev.records) remember(e) // who asked for each item (its creator, else the first person who commented)
   for (const i of open) seen.set(i.id, { assignee: i.assignee || '', status: i.status })
   for (const i of open) {
     if (last[i.id] && isHuman(last[i.id])) note(i.assignee, i.id, `${i.id} has an unanswered comment from ${actorName(last[i.id])}`, false, 'talk', [boardLine(i.id, i.title)])
@@ -313,7 +312,6 @@ async function board(fresh = false) {
   const from = Date.now() // `from`: the read began (what was written before it shows in it)
   const [all, ready, workers] = await Promise.all([allIssues(), bd('/v0/beads/ready?limit=500'),
     WORKER_ROLES.length ? workersOf(P_, PROJECT, WORKER_ROLES).catch((e) => { log('paseo ls of workers failed (counted as none):', e.message); return [] }) : []])
-  for (const i of all) if (i.created_by && !creators.has(i.id)) creators.set(i.id, i.created_by) // when bd gives it
   return (snap = { from, at: Date.now(), all, ready: ready.items || [], workers })
 }
 // A role's share of the board: its queue (ready items assigned to it; one waiting for the human, `needs-you`, is not
@@ -345,10 +343,12 @@ function sendable(role, b) {
   const known = new Set(b.all.map((i) => i.id))
   return new Map([...reasons].filter(([id, r]) => r.kind !== 'work' || (known.has(id) ? !inQueue.has(id) || next.has(id) : r.at <= b.at)))
 }
-// the line on the role's queue, and the head's title for the board text block
-const queueLine = (role, b) => {
+// the line on the role's queue, and the head's title for the board text block. `whose` (person runs on): only the items
+// of that run's person (null: a plain lead, the items nobody asked for), so no run is pointed at another's work
+const queueLine = (role, b, whose) => {
   if (!b) return { line: null, text: [] }
-  const { queue, used, cap, free, hand } = share(b, role), head = queue[0], p0 = !free && hand.find((i) => i.priority === 0)
+  const s = share(b, role), { used, cap, free } = s, mine = (i) => whose === undefined || runnerOf(i.id) === whose
+  const queue = s.queue.filter(mine), hand = s.hand.filter(mine), head = queue[0], p0 = !free && hand.find((i) => i.priority === 0)
   const line = `Your queue (bd ready --assignee ${role}): ${queue.length ? `${queue.length} item(s), next ${head.id}` : 'empty'}. ` +
     `In progress: ${used}${Number.isFinite(cap) ? ` of your capacity ${cap}` : ''}` +
     (free ? '.' : p0 ? ` (at capacity, but a P0 may go past it by one: claim ${p0.id} now; the rest wait).` : ' (at capacity: finish, hand over or block one before you claim the next).')
@@ -375,17 +375,17 @@ async function tick1() {
     if (!steady) continue
     let b = null
     try { b = await board() } catch (e) { log('board read failed (nothing held back for capacity):', e.message) }
-    let batch = sendable(role, b)
+    let batch = sendable(role, b), whose
     // a person's run gets only that person's share; a run made before the daemon restarted gets nothing (sy-q8fv)
     if (batch.size && (personRuns() || a.labels?.person)) {
       let r
       try { r = await runOf(role, a, true) } catch (e) { log('paseo ls failed:', e.message); return }
       if (r.live !== true) { if (r.live === false) soon(); continue } // stale: the reconcile archives it and starts the right one
       batch = sendable(role, b) // again: a reason may have come (or changed) during the look
-      if (personRuns() && !KEEP.has(role)) { const p = r.person || sponsor(); batch = new Map([...batch].filter(([id]) => runnerOf(id) === p)) }
+      if (personRuns() && !KEEP.has(role)) { whose = r.person || sponsor(); batch = new Map([...batch].filter(([id]) => runnerOf(id) === whose)) }
     }
     if (!batch.size) continue // only queue items past its capacity, or another person's work: they wait
-    const q = queueLine(role, b), told = [...batch.values()].flatMap((r) => r.text || [])
+    const q = queueLine(role, b, whose), told = [...batch.values()].flatMap((r) => r.text || [])
     const msg = [`Board update for the ${role} lead (${PROJECT}):`, ...[...batch.values()].map((r) => `- ${r.reason}`),
       '', ...boardText([...told, ...q.text]), ...[q.line].filter(Boolean),
       'Follow your role brief: answer every human comment on the item, pull new work only within your capacity (bd update <id> --claim), end each unit of work with a board change, then end your turn.'].join('\n')
@@ -617,20 +617,22 @@ async function keptBack(role, a, b) {
 // this project's person runs whose worker is not the daemon's current one (tidyPersonRuns()), and wake never sends to
 // one. With `wake.person_runs` on (mm config set wake.person_runs true; WAKE_PERSON_RUNS=1|0 overrides), wake starts
 // each lead as one person, through mm run-as, and sends a lead only what is that person's:
-//   - work on an item: the item's requester, the person who created it, else the first person who commented on it (the
-//     human who asked, when a lead or the system filed it). The owner's chat bridge (actor `bridge`) is the owner.
-//   - upkeep and background (a worker's report, an item nobody asked for): the project's sponsor, its owner (owner_name).
+//   - work on an item: the person who asked for runs on it, from mm's own record of asks (src/personasks.ts: made only
+//     at the gateway, the person from their session; read here with `mm run-asks <project> --json` each reconcile
+//     pass, lookAsks()). Never the board's journal (who created or commented on an item): any agent of the machine can
+//     write that under another person's name (review sy-otxx, condition 2).
+//   - everything else (upkeep, a worker's report, an item nobody asked for): a plain lead, never the owner's person run.
 // A person with no Claude token gets no run (mm run-as refuses, and never uses the owner's token for them): wake says so
 // on the item once, tries again later (the backoff), and starts the other people's work meanwhile. A lead that holds one
 // person's run, idle, while only another person's work waits, is archived and the other one started (at most once per
-// WAKE_RESUME_MS per role). A plain lead (no person label: the daemon's token, the owner's) counts as the sponsor's. A
+// WAKE_RESUME_MS per role). A plain lead (no person label: the daemon's token) is for the work nobody asked for. A
 // kept role (the owner's contact) gets everything, as before: the owner chose it.
 // In a box (sy-9618): its wake can't reach mm or the vault, so it asks the host, on the box's own mm.api socket (the one
 // way a box has to the host; src/boxruns.ts). The host says whether person runs are on (wake.person_runs, the machine's)
 // and who asked for runs on which item there (lookHost(), each reconcile pass: the host's own record, sy-otxx 1; never
 // this box's journal, which the box writes itself), and starts each run (askHost(): item ids only, never a person) with
 // the same rules as mm run-as: a role on the project, the person's own token (none: no run, and the same words for the
-// item), never the owner's instead. A box has no sponsor: work nobody asked for on the host runs as a plain lead. The
+// item), never the owner's instead. Work nobody asked for on the host runs as a plain lead, as it does on the host. The
 // run gets an mm.ai key of its own that ends by the host's clock (its label run-expires: then wake deletes it). The host
 // unreachable: wake keeps what the host said last (no plain lead for a person's work).
 const BOXED = (() => { try { return /^box:[ \t]*true\b/m.test(fs.readFileSync(path.join(P, '.mm-answers.yaml'), 'utf8')) } catch { return false } })()
@@ -646,7 +648,7 @@ const hostCall = (method, body, timeout) => new Promise((ok, no) => {
   r.end(body ? JSON.stringify(body) : undefined)
 })
 async function lookHost() {
-  if (!BOXED) return
+  if (!BOXED) return lookAsks()
   let on = hostSays.on, said
   if (process.env.WAKE_PERSON_RUNS === '0') { on = false; said = 'off here (WAKE_PERSON_RUNS=0)' }
   else if (!fs.existsSync(HOST_SOCK)) { on = false; said = `off: no host socket (${HOST_SOCK})` }
@@ -674,34 +676,35 @@ async function askHost(role, own, next) {
   if (r.body.status === 'done' && r.body.agent) return String(r.body.agent)
   throw new Error(clip(String(r.body.message || r.body.why || `the host answered ${r.code}`), 400))
 }
+const ASK_ITEM = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, ASK_PERSON = /^[a-z][a-z0-9._-]{1,31}$/
+/** On the host: who asked for runs on which of this project's items, from mm's record (`mm run-asks <project> --json`).
+ *  Only while person runs are on. mm can't be read: wake keeps what it read last (said once). */
+async function lookAsks() {
+  if (!personRuns()) { hostSays.asks = new Map(); return }
+  let said
+  try {
+    const out = await new Promise((ok, no) => execFile(MM, ['run-asks', PROJECT, '--json'], { cwd: P, timeout: 20000 }, (e, o, err) => (e ? no(new Error(String(err || e.message).trim().slice(0, 300) || e.message)) : ok(o))))
+    const j = JSON.parse(String(out).trim().split('\n').pop() || '{}'), asks = j && j.asks && typeof j.asks === 'object' && !Array.isArray(j.asks) ? j.asks : null
+    if (!asks) throw new Error('no asks in its answer')
+    hostSays.asks = new Map(Object.entries(asks).filter(([i, p]) => ASK_ITEM.test(i) && ASK_PERSON.test(String(p))).map(([i, p]) => [i, String(p)]))
+    said = `on: for the items people asked for on the host (${hostSays.asks.size} now)`
+  } catch (e) { said = `mm's record of asks could not be read (kept: ${hostSays.asks.size}): ${e.message}` }
+  if (said !== hostSays.said) { hostSays.said = said; log(`person runs: ${said}`) }
+}
 function personRuns() {
   if (BOXED) return hostSays.on
   if (process.env.WAKE_PERSON_RUNS !== undefined) return process.env.WAKE_PERSON_RUNS === '1'
   return /^wake:[ \t]*\n(?:[ \t]+.*\n)*?[ \t]+person_runs:[ \t]*["']?(true|on|yes)\b/m.test(machineConfig())
 }
-const creators = new Map() // item id -> who created it (the journal's create event; bd serve leaves created_by empty)
-const askers = new Map() // item id -> the first person who commented on it
-function remember(e) {
-  if (!e?.issue_id) return
-  if (e.op === 'create' && e.actor && !creators.has(e.issue_id)) creators.set(e.issue_id, e.actor)
-  if (e.op === 'comment' && e.comment && isHuman(e.comment.author) && !askers.has(e.issue_id)) askers.set(e.issue_id, e.comment.author)
-}
-// a box has no sponsor (sy-otxx 1): work nobody asked for on the host runs as a plain lead there, never as the owner
-const sponsor = () => (BOXED ? null : ownerName())
-const asPerson = (actor) => (actor === 'bridge' ? sponsor() : actor)
-/** The person an item's work is for, or null (nobody asked: upkeep). */
-function requester(id) {
-  if (BOXED) return hostSays.asks.get(id) || null // the host's record only: the box's own journal is the box's to write
-  const c = creators.get(id)
-  if (isHuman(c)) return asPerson(c)
-  const a = askers.get(id)
-  return a ? asPerson(a) : null
-}
-/** Whose run a reason belongs in: the item's requester, else the sponsor (a key that is no item, e.g. worker:<name>). */
+// no sponsor (sy-otxx 1 and 2): work nobody asked for runs as a plain lead, on the host as in a box, never as the owner
+const sponsor = () => null
+/** The person an item's work is for, or null (nobody asked: a plain lead). mm's record only (the host's, in a box
+ *  through its socket): never the board's journal, which any agent here (or the box) can write under any name. */
+const requester = (id) => hostSays.asks.get(id) || null
+/** Whose run a reason belongs in: the item's requester, else nobody (a plain lead; also a key that is no item). */
 const runnerOf = (id) => requester(id) || sponsor()
 /** Everyone who may have a run here (the CLI's list has no labels, so wake asks for each by label). */
-const persons = () => BOXED ? [...new Set(hostSays.asks.values())]
-  : [...new Set([sponsor(), ...[...creators.values()].filter(isHuman).map(asPerson), ...[...askers.values()].map(asPerson)])]
+const persons = () => [...new Set(hostSays.asks.values())]
 const labelsKnown = (a) => P_.via() === 'sdk' || Object.keys(a?.labels || {}).some((k) => k !== 'project' && k !== 'role')
 /** What agent `a` of `role` is: { person (null: a plain lead), live: true, false (a person run made on a worker the
  *  daemon no longer has) or null (the daemon can't say which worker it has now: nothing is sent to a person run, and
@@ -796,7 +799,7 @@ async function startLead(role, { was = null, items = [], why = '', next = [], bo
     const noToken = person && /has no Claude token/.test(e.message)
     const url = /https:\/\/\S+\/s\/token/.exec(e.message)?.[0]
     if (n === 1) for (const id of [...new Set(items)].slice(0, 5)) bdRun(['comments', 'add', id, noToken
-      ? `No run yet: this item's work runs as ${person} (${requester(id) === person ? 'who asked for it' : "the project's sponsor"}), on ${person}'s own Claude token, and ${person} has no Claude token set. ${person}: set it on your home page${url ? ` (${url})` : ''}. wake does not use the owner's token for another person. It tries again later; nothing waiting is lost.`
+      ? `No run yet: this item's work runs as ${person} (who asked for it), on ${person}'s own Claude token, and ${person} has no Claude token set. ${person}: set it on your home page${url ? ` (${url})` : ''}. wake does not use the owner's token for another person. It tries again later; nothing waiting is lost.`
       : `Error: wake could not start the ${role} lead${as} for this item: ${clip(e.message, 300)}. It tries again (after ${Math.round(RESUME_CHECK / 1000)} s, then longer each time); nothing waiting is lost.`], `comment ${id}`)
     if (n === TRIES) askHuman(items, noToken ? `${person} still has no Claude token, so the ${role} lead for this item can't start (tried ${TRIES} times); it keeps trying` : `wake could not start the ${role} lead${as} ${TRIES} times in a row (${clip(e.message, 200)}); it keeps trying`)
     return { started: false, why: 'failed', error: e.message }
@@ -920,7 +923,7 @@ async function reconcile1() {
       if (r.live === false || swap) {
         try {
           await P_.remove(a.id) // a person run is deleted, never archived (sy-q8fv)
-          log(r.live === false ? `deleted ${role}'s run for ${p} (${a.shortId || a.id}): ${r.ended ? "its mm.ai key has ended (the host's clock)" : 'made before the Paseo daemon restarted'}` : `deleted ${role}'s run for ${p} (${a.shortId || a.id}), idle: only other people's work waits (${[...new Set(ids.map(runnerOf))].join(', ')})`)
+          log(r.live === false ? `deleted ${role}'s run for ${p} (${a.shortId || a.id}): ${r.ended ? "its mm.ai key has ended (the host's clock)" : 'made before the Paseo daemon restarted'}` : `deleted ${role}'s ${p ? `run for ${p}` : 'plain lead'} (${a.shortId || a.id}), idle: only other people's work waits (${[...new Set(ids.map(runnerOf))].join(', ')})`)
           delete idleFrom[role]; delete idleSeen[role]; a = null
         } catch (e) { log(`delete of ${role}'s run ${a.id} failed (left running):`, e.message) }
       }

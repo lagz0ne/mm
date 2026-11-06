@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // bin/wake, person runs (sy-q8fv): with wake.person_runs on, wake starts each lead as one person through mm run-as:
-// work on an item as its requester (its creator, else the first person who commented on it), upkeep as the project's
-// sponsor (the owner); a lead gets only its person's share, and an idle one makes way for another person's work; a
-// person with no token gets no run (never the owner's token instead) and one clear comment on the item; and when the
-// Paseo daemon restarts (its worker changes), every person run made before is archived and never sent to.
+// work on an item as the person who asked for runs on it in mm's record of asks (`mm run-asks <project> --json`; never
+// the board's journal: an item created or commented on under a person's name with no ask runs as a plain lead, sy-otxx
+// condition 2), anything else as a plain lead (never the owner); a lead gets only its person's share, and an idle one
+// makes way for another person's work; a person with no token gets no run (never the owner's token instead) and one
+// clear comment on the item; and when the Paseo daemon restarts (its worker changes), every person run made before is
+// archived and never sent to.
 // Twice: with Paseo's CLI as it is (its list has no labels: wake asks by label), and with the labels in the list (as
 // the SDK gives them). Hermetic: temp folder and MM_HOME, stub paseo (a real process stands for the daemon's worker),
 // stub mm, bin/bd and bd-serve, no obs.
@@ -27,11 +29,17 @@ async function scenario(labels) {
   const PR = path.join(T, 'proj')
   fs.cpSync(path.join(SRC, 'template', 'bin'), path.join(PR, 'bin'), { recursive: true })
   fs.mkdirSync(path.join(PR, 'leads'), { recursive: true }); fs.mkdirSync(path.join(PR, 'control'), { recursive: true })
-  fs.writeFileSync(path.join(PR, 'leads', 'roles.json'), JSON.stringify({ roles: [{ id: 'qa', capacity: 2 }, { id: 'dev' }] }))
+  fs.writeFileSync(path.join(PR, 'leads', 'roles.json'), JSON.stringify({ roles: [{ id: 'qa', capacity: 2 }, { id: 'dev', capacity: 3 }] }))
   const BDLOG = path.join(T, 'bd.log')
   fs.writeFileSync(path.join(PR, 'bin', 'bd'), `#!/bin/sh\nprintf '%s\\n' "$*" >>"${BDLOG}"\n`, { mode: 0o755 })
-  // a plain start would be bin/lead's: recorded, never expected here
-  fs.writeFileSync(path.join(PR, 'bin', 'lead'), `#!/bin/sh\necho "PLAIN $*" >>"${T}/plain.log"\n`, { mode: 0o755 })
+  // a plain start is bin/lead's: recorded, and it makes a plain lead (no person label: the daemon's token)
+  fs.writeFileSync(path.join(PR, 'bin', 'lead'), `#!/usr/bin/env node
+const fs = require('fs'), T = ${JSON.stringify(T)}, AG = T + '/agents.json', role = process.argv[3]
+fs.appendFileSync(T + '/plain.log', JSON.stringify({ role, next: process.env.LEAD_NEXT || '', items: process.env.LEAD_ITEMS }) + '\\n')
+const l = JSON.parse(fs.readFileSync(AG, 'utf8')); for (const x of l) if (x.labels.role === role) x.archived = true
+const id = 'plain-' + role + '-' + l.length
+l.push({ id, status: 'idle', labels: { project: 'wp', role } }); fs.writeFileSync(AG + '.' + process.pid, JSON.stringify(l)); fs.renameSync(AG + '.' + process.pid, AG); console.log(id)
+`, { mode: 0o755 })
   const MMH = path.join(T, 'mm'); fs.mkdirSync(MMH)
   fs.writeFileSync(path.join(MMH, 'config.yaml'), 'layout: one-root\nowner_name: boss\nwake:\n  person_runs: true\n')
 
@@ -62,6 +70,8 @@ else if (cmd === 'send') { fs.appendFileSync(T + '/sent.log', 'TO ' + a[0] + ' a
   fs.writeFileSync(path.join(T, 'mm-stub'), `#!/usr/bin/env node
 ${lib}
 const [cmd, person, project, role] = process.argv.slice(2)
+// mm's record of asks (the gateway's, src/personasks.ts): asks.json here, { item: person }
+if (cmd === 'run-asks') { fs.appendFileSync(T + '/asks.log', process.argv.slice(3).join(' ') + '\\n'); let a = {}; try { a = JSON.parse(fs.readFileSync(T + '/asks.json', 'utf8')) } catch {} console.log(JSON.stringify({ asks: a })); process.exit(0) }
 if (cmd !== 'run-as') process.exit(2)
 fs.appendFileSync(T + '/runas.log', JSON.stringify({ person, project, role, next: process.env.LEAD_NEXT || '', items: process.env.LEAD_ITEMS }) + '\\n')
 if (['carol'].includes(person)) { console.error('mm run-as: ' + person + ' has no Claude token, so the run does not start: set your Claude token on the home page (https://auth.example.org/s/token). mm never uses the owner\\'s token for another person.'); process.exit(1) }
@@ -70,15 +80,21 @@ const id = 'run-' + person + '-' + role + '-' + l.length
 l.push({ id, status: 'idle', labels: { project, role, person, 'paseo-worker': worker() } }); save(l); console.log(id)
 `, { mode: 0o755 })
 
-  // the board: q-1 by alice, q-2 filed by the dev lead and asked for by bob (his comment), d-1 by the Supervisor
+  // the board: q-1 by alice, q-2 filed by the dev lead and commented on by bob, d-1 by the Supervisor, d-3 under dave's
+  // name (the journal's actor: any agent can write that). The asks (mm's record): alice for q-1, bob for q-2; none for
+  // d-1 or d-3
+  const ASKS = path.join(T, 'asks.json'), asks = (o) => { fs.writeFileSync(`${ASKS}.t`, JSON.stringify(o)); fs.renameSync(`${ASKS}.t`, ASKS) }
+  asks({ 'q-1': 'alice', 'q-2': 'bob' })
   const items = [
     { id: 'q-1', assignee: 'qa', status: 'open', priority: 1, title: "alice's report", labels: [] },
     { id: 'q-2', assignee: 'qa', status: 'open', priority: 2, title: "bob's ask", labels: [] },
     { id: 'd-1', assignee: 'dev', status: 'open', priority: 2, title: 'a check nobody asked for', labels: [] },
+    { id: 'd-3', assignee: 'dev', status: 'open', priority: 3, title: "dave's name, no ask", labels: [] },
   ]
   let seq = 0
   const ev = (op, id, actor, extra = {}) => ({ seq: ++seq, op, issue_id: id, actor, ts: new Date().toISOString(), issue: items.find((i) => i.id === id), ...extra })
-  const records = [ev('create', 'q-1', 'alice'), ev('create', 'q-2', 'dev'), ev('comment', 'q-2', 'bob', { comment: { id: 'c1', author: 'bob', text: 'please check this' } }), ev('create', 'd-1', 'watchdog')]
+  const records = [ev('create', 'q-1', 'alice'), ev('create', 'q-2', 'dev'), ev('comment', 'q-2', 'bob', { comment: { id: 'c1', author: 'bob', text: 'please check this' } }), ev('create', 'd-1', 'watchdog'), ev('create', 'd-3', 'dave'),
+    ev('comment', 'd-3', 'dave', { comment: { id: 'c0', author: 'dave', text: 'mine' } })]
   const streams = []
   const emit = (e) => { records.push(e); for (const s of streams) s.write(`data: ${JSON.stringify(e)}\n\n`) }
   const srv = http.createServer((req, res) => {
@@ -99,6 +115,7 @@ l.push({ id, status: 'idle', labels: { project, role, person, 'paseo-worker': wo
   const w = spawn('node', [path.join(PR, 'bin', 'wake')], { env, stdio: ['ignore', 'pipe', 'pipe'] })
   let out = ''; w.stdout.on('data', (d) => (out += d)); w.stderr.on('data', (d) => (out += d))
   const runas = () => read(path.join(T, 'runas.log')).split('\n').filter(Boolean).map((l) => JSON.parse(l))
+  const plains = () => read(path.join(T, 'plain.log')).split('\n').filter(Boolean).map((l) => JSON.parse(l))
   const sent = () => read(path.join(T, 'sent.log')), archived = () => read(path.join(T, 'deleted.log')), softArchived = () => read(path.join(T, 'archived.log')), bdlog = () => read(BDLOG)
   const live = () => JSON.parse(read(AG)).filter((x) => !x.archived)
 
@@ -106,9 +123,12 @@ l.push({ id, status: 'idle', labels: { project, role, person, 'paseo-worker': wo
     ok('item work runs as its requester: the qa lead starts as alice (mm run-as alice wp qa), with her item only', await until(() => runas().some((r) => r.person === 'alice' && r.role === 'qa'))
       && runas().find((r) => r.person === 'alice').next.includes('q-1') && !runas().find((r) => r.person === 'alice').next.includes('q-2')
       && runas().find((r) => r.person === 'alice').project === 'wp')
-    ok('upkeep runs as the sponsor: the dev lead for an item nobody asked for starts as the owner (boss)', await until(() => runas().some((r) => r.person === 'boss' && r.role === 'dev' && r.next.includes('d-1'))))
-    ok('...its handover names only that person\'s items in progress (LEAD_ITEMS set, empty here)', runas().every((r) => r.items === ''))
-    ok('...never through a plain bin/lead start', !read(path.join(T, 'plain.log')))
+    ok("wake reads mm's record of asks for its project (mm run-asks wp --json)", /^wp --json$/m.test(read(path.join(T, 'asks.log'))))
+    ok('items nobody asked for (d-1, and d-3 under dave\'s name): the dev lead starts plain (bin/lead start dev), never as the owner', await until(() => plains().some((r) => r.role === 'dev' && r.next.includes('d-1'))))
+    ok("...an item created and commented on under a person's name with no ask starts no run on their token (no mm run-as dave), nor the owner's", !runas().some((r) => r.person === 'dave' || r.person === 'boss'))
+    ok("...the plain dev lead is sent dave's comment on d-3 (a plain lead's work: nobody asked on the host)", await until(() => sent().split('----').some((m) => /TO plain-dev-/.test(m) && m.includes('d-3 has an unanswered comment from dave'))))
+    ok('...the person runs\' handover names only that person\'s items in progress (LEAD_ITEMS set, empty here)', runas().every((r) => r.items === ''))
+    ok('...the qa lead never starts plain (each of its items has an ask)', !plains().some((r) => r.role === 'qa'))
     // alice's run, idle, while only bob's work waits (his unanswered comment): it makes way, and bob's run starts
     ok("alice's run makes way for bob's: archived, then the qa lead starts as bob", await until(() => runas().some((r) => r.person === 'bob' && r.role === 'qa'))
       && archived().includes('run-alice-qa') && /deleted qa's run for alice .*idle: only other people's work waits \(bob\)/.test(out))
@@ -130,8 +150,17 @@ l.push({ id, status: 'idle', labels: { project, role, person, 'paseo-worker': wo
     const r0 = bobRun(), t0 = Date.now()
     ok('...once it can again, the waiting comment goes to the same run of bob', await until(() => sent().slice(s0).includes('while unknown')) && sent().slice(s0).includes(`TO ${r0} `) && archived().length === a0
       || (console.log(`       after ${Date.now() - t0} ms; bob's run ${r0}, now ${bobRun()}; sent:\n${sent().slice(s0)}\n       archived: ${archived().slice(0)}`), false))
-    // no token: carol asks the dev lead for something; the owner's run makes way, carol's is refused
+    // dave asks for d-3 at the gateway (now in mm's record): the plain dev lead makes way, and dave's run starts
+    asks({ 'q-1': 'alice', 'q-2': 'bob', 'd-3': 'dave' })
+    ok('wake reads the new ask on its next pass', await until(() => /people asked for on the host \(3 now\)/.test(out)))
+    emit(ev('comment', 'd-3', 'dave', { comment: { id: 'c0b', author: 'dave', text: 'asked for it now' } }))
+    ok("dave's live ask for d-3: the plain dev lead makes way, and the dev lead starts as dave (mm run-as dave wp dev)", await until(() => runas().some((r) => r.person === 'dave' && r.role === 'dev'))
+      && /deleted dev's plain lead \(plain-dev-\d+\), idle: only other people's work waits \(dave\)/.test(out))
+    ok("...and d-3's waiting comment goes to dave's run; it is never pointed at d-1 (nobody's: not in its queue line either)", await until(() => sent().split('----').some((m) => /TO run-dave-dev-/.test(m) && m.includes('asked for it now')))
+      && !sent().split('----').some((m) => /TO run-dave-dev-/.test(m) && m.includes('d-1')))
+    // no token: carol asks the dev lead for something; the run in place makes way, carol's is refused
     items.push({ id: 'd-2', assignee: 'dev', status: 'open', priority: 1, title: "carol's ask", labels: [] })
+    asks({ 'q-1': 'alice', 'q-2': 'bob', 'd-3': 'dave', 'd-2': 'carol' })
     emit(ev('create', 'd-2', 'carol'))
     ok('a person with no token: mm run-as carol was tried, and no run is hers', await until(() => runas().some((r) => r.person === 'carol' && r.next.includes('d-2'))) && !live().some((x) => x.labels.person === 'carol'))
     ok('...the item says why, in plain words, with where to set the token', await until(() => /comments add d-2 No run yet: this item's work runs as carol \(who asked for it\).*carol has no Claude token set.*https:\/\/auth\.example\.org\/s\/token.*does not use the owner's token/.test(bdlog())))
@@ -144,7 +173,7 @@ l.push({ id, status: 'idle', labels: { project, role, person, 'paseo-worker': wo
     const n0 = runas().length
     newWorker()
     ok(`a daemon restart: every person run made before is archived (${before.join(', ')})`, before.length > 0 && await until(() => before.every((id) => archived().includes(id))))
-    ok('...wake said why', await until(() => /deleted .*run for (bob|boss).*the Paseo daemon restarted/.test(out), 4000))
+    ok('...wake said why', await until(() => /deleted .*run for (bob|dave).*the Paseo daemon restarted/.test(out), 4000))
     const sentBefore = sent().length
     emit(ev('comment', 'q-2', 'bob', { comment: { id: 'c3', author: 'bob', text: 'after the restart' } }))
     ok("...bob's next comment goes to a new run of his (on the new worker), never to the archived one", await until(() => runas().slice(n0).some((r) => r.person === 'bob'))
