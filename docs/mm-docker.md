@@ -116,9 +116,14 @@ Each test makes its folders in the area (`mm_test_dir`): `~/.cache/mm-docker-tes
 throwaway project. Through the wrapper: `test/mm-docker-container.sh`, `test/box-egress.sh`, `test/doop-gateway.sh`
 (with `box/doop/build.sh`), `test/doop-container.sh`, `test/doop-designs.sh`. What still needs plain docker (the wrapper
 refuses it on purpose): `test/doop-container.sh`'s older Doop, as the owner's own uid (`MM_DOCKER_RAW`, else skipped);
-`test/mm-docker-container.sh`'s unlabelled containers (`MM_DOCKER_RAW`, else skipped); and the tests that run a stock
-OS image as root with `exec -u dev` (`clean-box.sh`, `auth-e2e.sh`, `in-box.sh`, `restore-drill.sh`,
-`box-gateway.sh`): a machine without blanket sudo runs them elsewhere, or with a rootless docker or podman.
+`test/mm-docker-container.sh`'s unlabelled containers (`MM_DOCKER_RAW`, else skipped).
+
+The tests that run a stock OS image as root with `exec -u dev` (`clean-box.sh`, `auth-e2e.sh`, `in-box.sh`,
+`restore-drill.sh`, `box-gateway.sh`) never go through the wrapper. They use rootless podman by default
+(`test/lib/stock.sh`): root in the container is the owner's uid in a user namespace, so no sudo. Their images are
+fully qualified (`docker.io/library/ubuntu:24.04`). `DOCKER="sudo -n docker"` (or `DOCKER=docker`) runs them on docker
+as before. Rootless podman needs `newuidmap`/`newgidmap`, user namespaces on, and a subuid range for the owner that
+overlaps no uid mm gives its boxes and proxies.
 
 ## Install (ops; a t2 brain migration, the owner approves)
 

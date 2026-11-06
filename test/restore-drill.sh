@@ -8,12 +8,15 @@
 # services.yaml is the host's (mm sync's record of the box), its ops/ and setup/ are mm's, and no hook ran (sy-b15.19,
 # sy-atqr). Nothing on the host is touched.
 #
-#   test/restore-drill.sh --local dist/mm      [--image ubuntu:24.04] [--keep]      DOCKER="sudo -n docker" if needed
+#   test/restore-drill.sh --local dist/mm      [--image ubuntu:24.04] [--keep]
+#   rootless podman by default (test/lib/stock.sh); DOCKER="sudo -n docker" or DOCKER=docker for docker.
 set -uo pipefail
-IMAGE=ubuntu:24.04; LOCAL=""; KEEP=""; DOCKER=${DOCKER:-docker}
+. "$(dirname "$0")/lib/stock.sh"
+IMAGE=ubuntu:24.04; LOCAL=""; KEEP=""
 while [ $# -gt 0 ]; do case "$1" in
   --local) LOCAL=$(readlink -f "$2"); shift 2 ;; --image) IMAGE=$2; shift 2 ;; --keep) KEEP=1; shift ;;
   *) echo "usage: $0 --local <mm binary> [--image <image>] [--keep]"; exit 2 ;; esac; done
+IMAGE=$(stock_image "$IMAGE")
 [ -n "$LOCAL" ] || { echo "--local <mm binary> is required (the drill tests a build)"; exit 2; }
 A=mm-drill-a-$$; B=mm-drill-b-$$; C=mm-drill-c-$$
 SHIM=${MM_SHIM_URL:-https://raw.githubusercontent.com/lagz0ne/mm/main/bin/mm}
@@ -167,7 +170,7 @@ EOF
 chmod 644 "$WORK"/*.sh
 
 echo "== $IMAGE (local build): box A"
-for c in "$A" "$B" "$C"; do $DOCKER run -d --name "$c" -v "$WORK:/w:ro" "$IMAGE" sleep infinity >/dev/null || exit 1; $DOCKER exec "$c" sh /w/as-root.sh || { echo "container setup failed"; exit 1; }; done
+for c in "$A" "$B" "$C"; do $DOCKER run -d --name "$c" -v "$WORK:/w:$STOCK_RO" "$IMAGE" sleep infinity >/dev/null || exit 1; $DOCKER exec "$c" sh /w/as-root.sh || { echo "container setup failed"; exit 1; }; done
 $DOCKER exec -u dev -e SHIM="$SHIM" -w /home/dev "$A" bash /w/box-a.sh || { echo "box A failed"; exit 1; }
 for f in handoff handoff-box; do $DOCKER cp "$A:/tmp/$f.tar" "$WORK/$f.tar" >/dev/null && chmod 644 "$WORK/$f.tar"; done
 $DOCKER rm -f "$A" >/dev/null   # the old box is gone: B and C have only mastermind and the recovery key

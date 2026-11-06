@@ -4,12 +4,15 @@
 # `mm user link` (after `mm grant`) gives a session that reaches the real board's public side as that person; nothing
 # gets there without the gateway. A stub `expose` stands in for the machine's router tool. Nothing on the host is touched.
 #
-#   test/auth-e2e.sh --local dist/mm   [--image ubuntu:24.04] [--keep]      DOCKER="sudo -n docker" if needed
+#   test/auth-e2e.sh --local dist/mm   [--image ubuntu:24.04] [--keep]
+#   rootless podman by default (test/lib/stock.sh); DOCKER="sudo -n docker" or DOCKER=docker for docker.
 set -uo pipefail
-IMAGE=ubuntu:24.04; LOCAL=""; KEEP=""; DOCKER=${DOCKER:-docker}
+. "$(dirname "$0")/lib/stock.sh"
+IMAGE=ubuntu:24.04; LOCAL=""; KEEP=""
 while [ $# -gt 0 ]; do case "$1" in
   --local) LOCAL=$(readlink -f "$2"); shift 2 ;; --image) IMAGE=$2; shift 2 ;; --keep) KEEP=1; shift ;;
   *) echo "usage: $0 --local <mm binary> [--image <image>] [--keep]"; exit 2 ;; esac; done
+IMAGE=$(stock_image "$IMAGE")
 [ -n "$LOCAL" ] || { echo "--local <mm binary> is required"; exit 2; }
 NAME=mm-auth-e2e-$$
 SHIM=${MM_SHIM_URL:-https://raw.githubusercontent.com/lagz0ne/mm/main/bin/mm}
@@ -83,7 +86,7 @@ EOF
 chmod 644 "$WORK"/*.sh
 
 echo "== $IMAGE (local build)"
-$DOCKER run -d --name "$NAME" -v "$WORK:/w:ro" "$IMAGE" sleep infinity >/dev/null || exit 1
+$DOCKER run -d --name "$NAME" -v "$WORK:/w:$STOCK_RO" "$IMAGE" sleep infinity >/dev/null || exit 1
 $DOCKER exec "$NAME" sh /w/as-root.sh || { echo "container setup failed"; exit 1; }
 $DOCKER exec -u dev -e SHIM="$SHIM" -w /home/dev "$NAME" bash /w/as-dev.sh; rc=$?
 [ -n "$KEEP" ] && echo "kept: $DOCKER exec -it -u dev $NAME bash"

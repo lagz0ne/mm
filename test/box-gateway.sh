@@ -4,9 +4,11 @@
 # touched. curl is the browser and talks to Traefik only (https, Traefik's default certificate). Proves: no session
 # -> the sign-in page; a single-use link from `mm user link` (after `mm grant`) -> the board knows the person; a client's own
 # X-MM-Assertion or X-Board-* never gets through; revoke ends it.
-#   test/box-gateway.sh --local dist/mm   [--keep]        DOCKER="sudo -n docker" if needed
+#   test/box-gateway.sh --local dist/mm   [--keep]        IMAGE=ubuntu:24.04 TRAEFIK=traefik:v3.6.25 (the defaults)
+#   rootless podman by default (test/lib/stock.sh); DOCKER="sudo -n docker" or DOCKER=docker for docker.
 set -uo pipefail
-DOCKER=${DOCKER:-docker}; LOCAL=""; KEEP=""; IMAGE=${IMAGE:-ubuntu:24.04}; TRAEFIK=${TRAEFIK:-traefik:v3.6.25}
+. "$(dirname "$0")/lib/stock.sh"
+LOCAL=""; KEEP=""; IMAGE=$(stock_image "${IMAGE:-ubuntu:24.04}"); TRAEFIK=$(stock_image "${TRAEFIK:-traefik:v3.6.25}")
 while [ $# -gt 0 ]; do case "$1" in --local) LOCAL=$(readlink -f "$2"); shift 2 ;; --keep) KEEP=1; shift ;; *) echo "usage: $0 --local <mm> [--keep]"; exit 2 ;; esac; done
 [ -n "$LOCAL" ] || { echo "--local <mm binary> is required"; exit 2; }
 ID=$$; NET=mm-boxgw-$ID; BOX=mm-boxgw-box-$ID; TR=mm-boxgw-traefik-$ID
@@ -48,7 +50,7 @@ chmod 644 "$WORK"/*.sh
 
 echo "== the box (domain mode, the gateway on, a real project)"
 $DOCKER network create "$NET" >/dev/null || exit 1
-$DOCKER run -d --name "$BOX" --network "$NET" -v "$WORK:/w:ro" "$IMAGE" sleep infinity >/dev/null || exit 1
+$DOCKER run -d --name "$BOX" --network "$NET" -v "$WORK:/w:$STOCK_RO" "$IMAGE" sleep infinity >/dev/null || exit 1
 $DOCKER exec "$BOX" sh /w/as-root.sh || { echo "box setup failed"; exit 1; }
 OUT=$($DOCKER exec -u dev -e SHIM="$SHIM" -w /home/dev "$BOX" bash /w/box.sh) || { echo "box failed: $OUT"; exit 1; }
 eval "$(echo "$OUT" | tail -1)"; echo "  box $IP: gateway :$GP, board public side :$BP"
@@ -85,7 +87,7 @@ http:
     gateway: { loadBalancer: { servers: [ { url: "http://$IP:$GP" } ] } }
 EOF
 chmod -R a+rX "$WORK/traefik"
-$DOCKER run -d --name "$TR" --network "$NET" -v "$WORK/traefik:/etc/traefik/dyn:ro" "$TRAEFIK" \
+$DOCKER run -d --name "$TR" --network "$NET" -v "$WORK/traefik:/etc/traefik/dyn:$STOCK_RO" "$TRAEFIK" \
   --entrypoints.websecure.address=:443 --providers.file.directory=/etc/traefik/dyn --log.level=WARN >/dev/null || exit 1
 TIP=$($DOCKER inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$TR")
 sleep 3
