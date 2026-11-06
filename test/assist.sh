@@ -100,6 +100,22 @@ out=$(printf '{"text":"x"}' | STUB_MODE=fail FIXTURE='{}' run in alex); rc=$?
 expect "claude fails: exit 4" 4
 out=$(STUB_TOOLS='["Skill"]' FIXTURE='{}' run tools alex); rc=$?
 [ $rc = 0 ] && is '.tools == ["Skill"]' && ok "tools audit: Skill only" || bad "tools audit: exit $rc ${out:0:80}"
+
+echo '== the chat session (sy-6dk: paseo run has no per-run kill)'
+s=$(date +%s); out=$(STUB_TOOLS='["Skill"]' STUB_MODE=sleep FIXTURE='{}' run tools alex --chat); rc=$?
+[ $rc = 0 ] && is '.chat and .tools == ["Skill"]' && ok "tools --chat: Skill only, exit 0" || bad "tools --chat: exit $rc ${out:0:80}"
+[ $(( $(date +%s) - s )) -lt 4 ] && ok "...stopped at its first line (no model turn)" || bad "tools --chat waited for the model"
+check "...as paseo run starts it: dontAsk, its folder, no deny flags, no strict MCP" sh -c "grep -qx dontAsk '$T/stub.log' && ! grep -qx -- '--disallowedTools' '$T/stub.log' && ! grep -qx -- '--strict-mcp-config' '$T/stub.log' && grep -qx '$B/assistants/alex' '$T/stub.log.cwd'"
+out=$(STUB_TOOLS='["Skill","Bash"]' FIXTURE='{}' run tools alex --chat); rc=$?
+[ $rc = 5 ] && is '.ok == false and (.error | test("Bash"))' && ok "tools --chat: a session with Bash: exit 5, named" || bad "tools --chat Bash: exit $rc ${out:0:80}"
+out=$(STUB_MCP='[{"name":"gmail","status":"connected"}]' FIXTURE='{}' run tools alex --chat); rc=$?
+[ $rc = 5 ] && is '.mcp == ["gmail"]' && ok "tools --chat: an MCP server it would load: exit 5" || bad "tools --chat MCP: exit $rc ${out:0:80}"
+check "tools: an unknown flag is refused" sh -c "cd '$B' && ! node bin/assist tools alex --all"
+PSTUB="$T/paseo"; printf '#!/bin/sh\necho "$1" >>"%s"\nexit 0\n' "$T/paseo.log" >"$PSTUB"; chmod +x "$PSTUB"
+rm -f "$T/paseo.log"; out=$(STUB_TOOLS='["Skill","WebFetch"]' PASEO_BIN="$PSTUB" FIXTURE='{}' run chat alex 2>&1); rc=$?
+[ $rc = 5 ] && ! grep -qx run "$T/paseo.log" && ok "chat: a session with WebFetch is not started (exit 5, no paseo run)" || bad "chat with WebFetch: exit $rc, paseo: $(tr '\n' ' ' <"$T/paseo.log" 2>/dev/null)"
+rm -f "$T/paseo.log"; out=$(STUB_TOOLS='["Skill"]' STUB_MODE=sleep PASEO_BIN="$PSTUB" FIXTURE='{}' run chat alex 2>&1); rc=$?
+[ $rc = 0 ] && grep -qx run "$T/paseo.log" && ok "chat: Skill only: started (paseo run)" || bad "chat Skill only: exit $rc ${out:0:120}"
 check "no assistant: refused" sh -c "printf '{}' | (cd '$B' && ! node bin/assist in nobody)"
 check "_template is not a person" sh -c "printf '{}' | (cd '$B' && ! node bin/assist in _template)"
 

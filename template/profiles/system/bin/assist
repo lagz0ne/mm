@@ -84,15 +84,19 @@ async function analyse(kind) {
 /**
  * One locked-down run: prompt on stdin, stream-json out. The first line (init) lists the session's tools: anything
  * outside ALLOWED (a new built-in tool, an MCP server) kills the run before the model's first turn can use it.
+ * chat (sy-6dk): a session as the conversation agent gets it instead (chat() below: its folder's settings only, no deny
+ * flags, MCP as configured, PATH with this board's bin), stopped as soon as the init line is read: no model turn.
  */
-function runClaude(extra, prompt) {
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--strict-mcp-config', '--permission-mode', 'dontAsk',
-    ...(E.ASSIST_MODEL ? ['--model', E.ASSIST_MODEL] : []), ...extra, '--disallowedTools', TOOLS_DENIED.join(',')]
+function runClaude(extra, prompt, { chat = false } = {}) {
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', ...(chat ? [] : ['--strict-mcp-config']), '--permission-mode', 'dontAsk',
+    ...(E.ASSIST_MODEL ? ['--model', E.ASSIST_MODEL] : []), ...extra, ...(chat ? [] : ['--disallowedTools', TOOLS_DENIED.join(',')])]
   const t0 = Date.now()
   return new Promise((ok) => {
-    const p = spawn(CLAUDE, args, { cwd: DIR, env: { ...E, BEADS_ACTOR: `assistant-${user}`, CLAUDE_CONFIG_DIR: claudeTrust([DIR]) }, stdio: ['pipe', 'pipe', 'pipe'] })
-    let buf = '', done = false, tools = null, result = null
-    const finish = (r) => { if (done) return; done = true; clearTimeout(timer); ok({ t0, tools, result, ...r }) }
+    const env = { ...E, ...(chat ? { PATH: `${path.join(P, 'bin')}:${E.PATH}` } : {}), BEADS_ACTOR: `assistant-${user}`, CLAUDE_CONFIG_DIR: claudeTrust([DIR]) }
+    const p = spawn(CLAUDE, args, { cwd: DIR, env, stdio: ['pipe', 'pipe', 'pipe'] })
+    p.stdin.on('error', () => {}) // a run killed at its first line may not have read its prompt
+    let buf = '', done = false, tools = null, mcp = null, result = null
+    const finish = (r) => { if (done) return; done = true; clearTimeout(timer); ok({ t0, tools, mcp, result, ...r }) }
     const timer = setTimeout(() => { p.kill('SIGKILL'); finish({ err: `timeout after ${TIMEOUT}ms` }) }, TIMEOUT)
     p.stdout.on('data', (d) => {
       buf += d
@@ -101,23 +105,26 @@ function runClaude(extra, prompt) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1)
         let m; try { m = JSON.parse(line) } catch { continue }
         if (m.type === 'system' && m.subtype === 'init') {
-          tools = m.tools || []
-          const extraTools = [...tools.filter((t) => !toolAllowed(t)), ...(m.mcp_servers || []).map((x) => `mcp:${x.name || x}`)]
-          if (extraTools.length) { p.kill('SIGKILL'); log('error', `assist for ${user}: session offered tools outside the allowlist, killed: ${extraTools.join(', ')}`, { op: 'assist tools', user }); return finish({ err: `session offered tools outside the allowlist: ${extraTools.join(', ')}`, code: 5 }) }
+          tools = m.tools || []; mcp = (m.mcp_servers || []).map((x) => x.name || x)
+          const extraTools = [...tools.filter((t) => !toolAllowed(t)), ...mcp.map((x) => `mcp:${x}`)]
+          if (extraTools.length) { p.kill('SIGKILL'); log('error', `assist for ${user}: ${chat ? 'chat ' : ''}session offered tools outside the allowlist, killed: ${extraTools.join(', ')}`, { op: 'assist tools', user }); return finish({ err: `session offered tools outside the allowlist: ${extraTools.join(', ')}`, code: 5 }) }
+          if (chat) { p.kill('SIGKILL'); return finish({}) }
         }
         if (m.type === 'result') result = m
       }
     })
     p.on('error', (e) => finish({ err: e.message }))
-    p.on('close', (code) => finish(code ? { err: `exit ${code}` } : {}))
+    p.on('close', (code) => finish(code ? { err: `exit ${code}` } : chat && !tools ? { err: 'no init line: its tools are unknown' } : {}))
     p.stdin.end(prompt)
   })
 }
 
 async function tools() {
   if (!fs.existsSync(path.join(DIR, 'CLAUDE.md'))) die(`no assistant for ${user}`, 3)
-  const out = await runClaude([], 'Reply with the word: ok')
-  console.log(JSON.stringify({ user, tools: out.tools, ok: !out.err, ...(out.err ? { error: out.err } : {}) }))
+  if (arg && arg !== '--chat') die('usage: assist tools <user> [--chat]')
+  const chat = arg === '--chat'
+  const out = await runClaude([], 'Reply with the word: ok', { chat })
+  console.log(JSON.stringify({ user, ...(chat ? { chat } : {}), tools: out.tools, mcp: out.mcp, ok: !out.err, ...(out.err ? { error: out.err } : {}) }))
   process.exit(out.err ? (out.code || 4) : 0)
 }
 
@@ -147,13 +154,16 @@ function mode() {
   fs.writeFileSync(f, `${arg}\n`); console.log(`${user}: ${arg}`)
 }
 
-function chat() {
+async function chat() {
   if (!fs.existsSync(path.join(DIR, 'CLAUDE.md'))) die(`no assistant for ${user}`)
   const PASEO = E.PASEO_BIN || 'paseo', project = projectName(), env = { ...E }
   delete env.PASEO_AGENT_ID; delete env.PASEO_AGENT_CWD // its own top-level agent, in its own folder
   execFileSync(path.join(P, 'bin', 'config-check'), ['--render'], { cwd: P, stdio: 'ignore' })
   const labels = ['--label', `project=${project}`, '--label', 'kind=assistant', '--label', `user=${user}`]
   for (const id of execFileSync(PASEO, ['ls', '-g', ...labels, '-q'], { env, encoding: 'utf8' }).split('\n').filter(Boolean)) execFileSync(PASEO, ['archive', id], { env, stdio: 'ignore' })
+  // paseo run has no per-run kill (sy-6dk): the same session is checked first, and not started unless it has Skill only
+  const audit = await runClaude([], 'Reply with the word: ok', { chat: true })
+  if (audit.err) { log('error', `assist chat for ${user}: not started: ${audit.err}`, { op: 'assist chat', user }); die(`not started: ${audit.err}`, audit.code || 4) }
   const model = E.ASSIST_CHAT_MODEL || 'claude/claude-opus-5-5'
   execFileSync(PASEO, ['run', '--no-wait', '-q', '--title', `${project} · assistant for ${user}`, '--provider', model, '--mode', 'dontAsk', '--cwd', DIR, ...labels,
     '--env', `PATH=${path.join(P, 'bin')}:${E.PATH}`, '--env', `BEADS_ACTOR=assistant-${user}`, '--env', `CLAUDE_CONFIG_DIR=${claudeTrust([DIR])}`,
@@ -163,7 +173,7 @@ function chat() {
 if (['card', 'in', 'out'].includes(cmd)) await analyse(cmd)
 else if (cmd === 'new') make()
 else if (cmd === 'mode') mode()
-else if (cmd === 'chat') chat()
+else if (cmd === 'chat') await chat()
 else if (cmd === 'stop') stop()
 else if (cmd === 'tools') await tools()
 else die(`unknown command ${cmd}`)
