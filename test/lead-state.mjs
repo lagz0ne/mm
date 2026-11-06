@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // The board's lead states (sy-809m): leads are on demand, so a lead is "ready" unless a request is on it, "working on
-// <item>" in a turn, "waiting for you" on needs-you, "blocked" on a blocked item or a BLOCKED line, "start failed" when
+// <item>" in a turn, "waiting for you" on needs-you, "blocked" on a blocked item (the bd state; a comment is never a
+// state), "start failed" when
 // wake could not start it; never "offline". (1) site/lead-state.mjs on its own; (2) the board's server (site/server.mjs)
 // against a fake bd-serve and a stub paseo: /api/meta and /api/settings carry the states.
 // Hermetic: temp folder, no obs, no built site needed.
@@ -17,7 +18,7 @@ let pass = 0, fail = 0
 const ok = (d, c) => { c ? pass++ : fail++; console.log(`  ${c ? '\x1b[32mok\x1b[0m  ' : '\x1b[31mFAIL\x1b[0m'} ${d}`) }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-const { leadState, signalOf } = await import(path.join(SRC, 'template', 'site', 'lead-state.mjs'))
+const { leadState } = await import(path.join(SRC, 'template', 'site', 'lead-state.mjs'))
 console.log('== site/lead-state.mjs')
 const it = (id, assignee, status, labels = []) => ({ id, assignee, status, labels })
 ok('no agent, nothing open: ready (not offline)', leadState({ role: 'qa', agent: null }).label === 'ready')
@@ -29,12 +30,10 @@ ok('...or the item it touched last, when that is newer', leadState({ role: 'qa',
 ok('a needs-you item of its own: "waiting for you"', leadState({ role: 'qa', agent: { status: 'idle' }, items: [it('a-3', 'qa', 'in_progress', ['needs-you'])] }).label === 'waiting for you')
 ok('...not for someone else\'s item, nor a closed one', leadState({ role: 'qa', agent: null, items: [it('a-3', 'dev', 'open', ['needs-you']), it('a-4', 'qa', 'closed', ['needs-you'])] }).state === 'ready')
 ok('a blocked item of its own: "blocked"', leadState({ role: 'qa', agent: null, items: [it('a-5', 'qa', 'blocked')] }).label === 'blocked')
-ok('a BLOCKED line as its last comment: "blocked"', leadState({ role: 'qa', agent: null, items: [it('a-6', 'qa', 'in_progress')], last: { 'a-6': { author: 'qa', signal: 'BLOCKED' } } }).state === 'blocked')
+ok('an item in progress (whatever its comments say): not blocked', leadState({ role: 'qa', agent: null, items: [it('a-6', 'qa', 'in_progress')] }).state === 'ready')
 const e = leadState({ role: 'qa', agent: null, wake: { startError: { error: 'paseo refused', items: ['a-7'] } } })
 ok('a failed start: "start failed", with the item and the error', e.state === 'error' && e.label === 'start failed' && e.item === 'a-7' && e.error === 'paseo refused')
 ok('...but not once an agent runs again', leadState({ role: 'qa', agent: { status: 'idle' }, wake: { startError: { error: 'x', items: [] } } }).state === 'ready')
-ok('signalOf: not inside a code fence, not quoted', signalOf('```\nBLOCKED x\n```') === null && signalOf('> BLOCKED x') === null)
-ok('signalOf: the last typed line', signalOf('text\nBLOCKED no key') === 'BLOCKED' && signalOf('blocked, lower case') === null && signalOf('HANDOFF review a\nDONE ok') === 'DONE')
 
 console.log('== the board serves them')
 const B = path.join(T, 'board')
@@ -55,9 +54,10 @@ const items = [
   { id: 'i-1', assignee: 'qa', status: 'open', title: 'open, ready', labels: [] },
   { id: 'i-3', assignee: 'arch', status: 'in_progress', title: 'arch asked the human', labels: ['needs-you'] },
   { id: 'i-4', assignee: 'ops', status: 'open', title: 'ops could not start', labels: [] },
-  { id: 'i-5', assignee: 'setup', status: 'in_progress', title: 'setup is stuck', labels: [] },
+  { id: 'i-5', assignee: 'setup', status: 'blocked', title: 'setup is stuck', labels: [] },
+  { id: 'i-6', assignee: 'qa', status: 'in_progress', title: 'qa wrote an old signal line', labels: [] },
 ]
-const records = [{ seq: 1, op: 'comment', issue_id: 'i-5', actor: 'setup', ts: '2026-01-01T00:00:00Z', comment: { id: 'c1', author: 'setup', text: 'Tried twice.\nBLOCKED the key is missing' } }]
+const records = [{ seq: 1, op: 'comment', issue_id: 'i-6', actor: 'qa', ts: '2026-01-01T00:00:00Z', comment: { id: 'c1', author: 'qa', text: 'Tried twice.\nBLOCKED the key is missing' } }]
 const srv = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x'), json = (o) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)) }
   if (u.pathname === '/v0/beads/events') return json({ head: 1, records: records.filter((x) => x.seq > Number(u.searchParams.get('since') || 0)) })
@@ -77,11 +77,11 @@ try {
   for (let i = 0; i < 50 && !meta; i++) { try { meta = await get('/api/meta') } catch { await sleep(200) } }
   const st = meta?.states || {}
   ok('/api/meta has a state for every role and setup', ['qa', 'dev', 'ops', 'arch', 'setup'].every((r) => st[r]?.label))
-  ok('qa (idle, an open item): ready', st.qa?.label === 'ready')
+  ok('qa (idle, an open item; a BLOCKED comment line on an item in progress): ready', st.qa?.label === 'ready')
   ok('dev (in a turn): working on the item wake handed it', st.dev?.label === 'working on i-2')
   ok('arch (no agent, a needs-you item): waiting for you, on i-3', st.arch?.label === 'waiting for you' && st.arch?.item === 'i-3')
   ok('ops (no agent, a failed start): start failed, on i-4, with the error', st.ops?.label === 'start failed' && st.ops?.item === 'i-4' && st.ops?.error === 'paseo refused')
-  ok('setup (no agent, its last comment a BLOCKED line): blocked', st.setup?.label === 'blocked' && st.setup?.item === 'i-5')
+  ok('setup (no agent, an item set to blocked): blocked', st.setup?.label === 'blocked' && st.setup?.item === 'i-5')
   ok('nothing says offline', !/offline|not running/.test(JSON.stringify(st)))
   const set = await get('/api/settings')
   ok('/api/settings carries the same states (the Leads page)', set.roles?.find((r) => r.role === 'arch')?.state?.label === 'waiting for you' && set.setup?.state?.label === 'blocked')

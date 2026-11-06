@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configApi } from './config-api.mjs'
-import { leadState, signalOf } from './lead-state.mjs'
+import { leadState } from './lead-state.mjs'
 import * as P_ from '../bin/lib/paseo.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -230,7 +230,7 @@ async function refreshMeta() {
       meta.seq = Math.max(meta.seq, e.seq)
       const t = Date.parse(e.ts); if (t > meta.lastTs) meta.lastTs = t
       if (e.op === 'create' && e.actor && !meta.creators[e.issue_id]) meta.creators[e.issue_id] = e.actor
-      if (e.op === 'comment' && e.comment) meta.last[e.issue_id] = { author: e.comment.author, at: e.comment.created_at || e.ts, signal: signalOf(e.comment.text) }
+      if (e.op === 'comment' && e.comment) meta.last[e.issue_id] = { author: e.comment.author, at: e.comment.created_at || e.ts }
       if (e.actor) meta.lastAct[e.actor] = { item: e.issue_id, at: e.ts }
     }
     if (recs.length < 500) break
@@ -244,7 +244,7 @@ async function leadStates(l) {
   let items = [], wake = {}
   try { items = (await fetch(new URL('/v0/beads/issues?limit=500', BD), { minMs: 1000 }).then((x) => x.json())).items || [] } catch {}
   try { wake = JSON.parse(fs.readFileSync(path.join(ROOT, '.wake-state.json'), 'utf8')) } catch {}
-  const data = Object.fromEntries([...ROLES, 'setup'].map((role) => [role, leadState({ role, agent: l[role], wake: wake[role], items, lastAct: meta.lastAct[role], last: meta.last })]))
+  const data = Object.fromEntries([...ROLES, 'setup'].map((role) => [role, leadState({ role, agent: l[role], wake: wake[role], items, lastAct: meta.lastAct[role] })]))
   statesCache = { at: Date.now(), data }
   return data
 }

@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-// bin/wake and the typed end signals (plans/slp step 1): a comment line HANDOFF <role> | BLOCKED | DEPENDENCY <item> |
-// REOPEN <item> | DONE wakes the named role at once, even when the writer is the item's assignee; HANDOFF owner labels
-// needs-you; the hop limit still counts signals; a working lead gets its wake only once it is idle.
-// Hermetic: temp folder, stub paseo, bd and bd-serve, no obs.
+// bin/wake and the end of a unit of work as a plain bd state change (plans/slp, "All of it is plain bd"):
+//   a reassign (bd update -a <role> --if-assignee/--if-status) wakes the new assignee, also when the writer is the old
+//   one; a reassign to a person labels needs-you; -s blocked wakes the Accountable role, else the board's Lead, else
+//   needs-you; bd dep add wakes the other item's assignee; bd reopen wakes its assignee; bd close wakes nobody. Words in a
+//   comment are not signals. The board's own actors never signal; the hop limit counts reassigns; a working lead gets its
+//   wake only once it is idle.
+// Hermetic: temp folder, stub paseo, bd and bd-serve (a small fake board that emits an event per change), no obs.
 //   node test/wake-signals.mjs            exit 0 = every check passed
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -35,10 +38,17 @@ case "$1" in
 esac
 `, { mode: 0o755 })
 
-const issues = {
-  'i-dep': { id: 'i-dep', assignee: 'review', status: 'open', title: 'the item others wait on' },
-  'i-spec': { id: 'i-spec', assignee: 'ops', status: 'open', title: 'the spec ops wrote' },
-}
+// the fake board: items, and one event per change (as bd serve's journal: op, actor, the item after the change)
+const now = () => new Date().toISOString()
+const items = new Map()
+const add = (id, f) => items.set(id, { id, title: `title of ${id}`, status: 'open', assignee: 'platform', labels: [], updated_at: now(), ...f })
+add('i-dep', { assignee: 'review', title: 'the item others wait on' })
+add('i-spec', { assignee: 'ops', status: 'closed', title: 'the spec ops wrote' })
+add('i-mine', { assignee: 'platform', status: 'closed', title: 'platform closed it too early' })
+for (const id of ['s-1', 's-2', 's-3', 's-4', 's-7', 's-9', 's-10', 's-11', 's-12', 's-13', 's-14', 's-15']) add(id, { status: 'in_progress' })
+add('s-5', { status: 'in_progress', labels: ['act:sec'] })
+add('s-6', { status: 'in_progress', assignee: 'ops' })
+add('s-8', { status: 'open', assignee: '' })
 const records = [], streams = []
 const srv = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x'), json = (o, c = 200) => { res.writeHead(c, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)) }
@@ -47,10 +57,10 @@ const srv = http.createServer((req, res) => {
     streams.push(res); req.on('close', () => streams.splice(streams.indexOf(res), 1)); return
   }
   if (u.pathname === '/v0/beads/events') { const since = Number(u.searchParams.get('since') || 0); return json({ head: records.at(-1)?.seq || 0, records: records.filter((e) => e.seq > since) }) }
-  if (u.pathname === '/v0/beads/ready') return json({ items: [] })
+  if (u.pathname === '/v0/beads/ready') return json({ items: [] }) // the queues are wake-reconcile's
   const m = /^\/v0\/beads\/issues\/(.+)$/.exec(u.pathname)
-  if (m) return issues[decodeURIComponent(m[1])] ? json({ ...issues[decodeURIComponent(m[1])], comments: [] }) : json({ title: 'not found' }, 404)
-  if (u.pathname === '/v0/beads/issues') return json({ items: [] })
+  if (m) return items.has(decodeURIComponent(m[1])) ? json({ ...items.get(decodeURIComponent(m[1])), comments: [] }) : json({ title: 'not found' }, 404)
+  if (u.pathname === '/v0/beads/issues') return json({ items: [...items.values()] })
   res.writeHead(404); res.end('{}')
 })
 await new Promise((r) => srv.listen(0, '127.0.0.1', r))
@@ -64,68 +74,80 @@ const bdlog = () => { try { return fs.readFileSync(BDLOG, 'utf8') } catch { retu
 const opsLog = () => { try { return fs.readFileSync(path.join(T, 'proj', '.run', 'logs', 'ops.log'), 'utf8') } catch { return '' } }
 // the prompts one agent got, as one string
 const to = (role) => sent().split('----\n').filter((b) => b.startsWith(`TO agent-${role}\n`)).join('\n')
-let seq = 0
-const emit = (e) => { e.seq = ++seq; records.push(e); for (const s of streams) s.write(`data: ${JSON.stringify(e)}\n\n`) }
-let n = 0
-const comment = (item, author, text, extra = {}) => emit({ op: 'comment', issue_id: item, actor: author,
-  issue: { assignee: 'platform', status: 'in_progress', title: `title of ${item}`, ...extra }, comment: { id: `c${++n}`, author, text } })
+let seq = 0, n = 0
+const emit = (e) => { e.seq = ++seq; e.ts = now(); records.push(e); for (const s of streams) s.write(`data: ${JSON.stringify(e)}\n\n`) }
+/** One change on the board by `actor` (bd update / reopen / close): the item changes, and its event is emitted. */
+const change = (id, actor, f, op = 'update') => { const i = items.get(id); Object.assign(i, f, { updated_at: now() }); emit({ op, issue_id: id, actor, issue: { ...i } }) }
+const comment = (id, author, text) => emit({ op: 'comment', issue_id: id, actor: author, issue: { ...items.get(id) }, comment: { id: `c${++n}`, author, text } })
+const depAdd = (id, actor, target) => emit({ op: 'dep_add', issue_id: id, actor, issue: { ...items.get(id) }, dep: { kind: 'blocks', target } })
+const times = (role, re) => (to(role).match(re) || []).length
 
 try {
   await until(() => /watching/.test(opsLog()))
-  console.log('== HANDOFF')
-  comment('s-1', 'platform', 'Built it on branch wake.\nHANDOFF review abc1234')
-  ok('the assignee writes HANDOFF review: review is woken, with the head', await until(() => /HANDOFF to you from platform on s-1 "title of s-1": abc1234/.test(to('review'))))
-  ok('...the writer (platform) is not woken by its own line', !/s-1/.test(to('platform')))
-  comment('s-2', 'platform', 'Needs the owner to approve.\nHANDOFF owner the plan in #2')
-  ok('HANDOFF owner: the item is labelled needs-you', await until(() => /label add s-2 needs-you --actor wake/.test(bdlog())))
-  comment('s-3', 'platform', 'HANDOFF reveiw abc')
-  ok('HANDOFF to an unknown role: wake says so on the item (nothing dropped silently)', await until(() => /comments add s-3 HANDOFF names "reveiw"/.test(bdlog())))
-
-  console.log('== BLOCKED')
-  comment('s-4', 'platform', 'BLOCKED the box has no docker')
-  ok('BLOCKED: the board\'s Lead (ops) is woken, with the reason', await until(() => /BLOCKED: platform is blocked on s-4 "title of s-4": the box has no docker/.test(to('ops'))))
-  comment('s-5', 'platform', 'BLOCKED waiting on a key', { labels: ['act:sec'] })
-  ok('BLOCKED on an item with an activity: its Accountable role (review) is woken instead', await until(() => /BLOCKED: platform is blocked on s-5/.test(to('review'))))
-  ok('...and not the Lead', !/s-5/.test(to('ops')))
-  comment('s-6', 'ops', 'BLOCKED the provider is down', { assignee: 'ops' })
-  ok('BLOCKED by the Lead itself: needs-you (the human)', await until(() => /label add s-6 needs-you/.test(bdlog())))
-
-  console.log('== DEPENDENCY, REOPEN, DONE')
-  comment('s-7', 'platform', 'DEPENDENCY i-dep the sign-in fix')
-  ok('DEPENDENCY: that item\'s assignee (review) is woken', await until(() => /DEPENDENCY: platform's s-7 "title of s-7" waits on your i-dep "the item others wait on" \(open\): the sign-in fix/.test(to('review'))))
-  comment('s-8', 'platform', 'REOPEN i-spec the Verify line asks for a test the box cannot run')
-  ok('REOPEN: that item\'s assignee (ops) is woken, with why', await until(() => /REOPEN i-spec "the spec ops wrote": platform says on s-8 .*the Verify line asks/.test(to('ops'))))
-  const before = sent()
-  comment('s-9', 'platform', 'All checks pass.\nDONE test/x.sh 12 passed')
+  console.log('== handoff = a reassign')
+  change('s-1', 'platform', { assignee: 'review', status: 'open' })
+  ok('the assignee (platform) reassigns to review: review is woken, told who handed it over', await until(() => /HANDOFF to you from platform on s-1 "title of s-1" \(was platform, now open\)/.test(to('review'))))
+  ok('...the writer (platform) is not woken by its own change', !/s-1/.test(to('platform')))
+  change('s-2', 'platform', { assignee: 'alex' })
+  ok('a reassign to a person (the owner, a human): the item is labelled needs-you', await until(() => /label add s-2 needs-you --actor wake/.test(bdlog())))
+  change('s-3', 'alex', { assignee: 'review', status: 'open' })
+  ok('a human reassigns to review: review is woken', await until(() => /HANDOFF to you from alex on s-3/.test(to('review'))))
+  const quiet0 = sent()
+  change('s-8', 'platform', { assignee: 'platform', status: 'in_progress' })
   await sleep(1500)
-  ok('DONE: nobody is woken (the writer is the assignee)', sent() === before)
+  ok('a lead taking an unassigned item for itself wakes nobody', sent() === quiet0)
 
-  console.log('== only real signals count')
+  console.log('== blocked = bd update -s blocked')
+  change('s-4', 'platform', { status: 'blocked' })
+  ok('blocked: the board\'s Lead (ops) is woken', await until(() => /BLOCKED: platform set s-4 "title of s-4" to blocked/.test(to('ops'))))
+  change('s-5', 'platform', { status: 'blocked' })
+  ok('blocked on an item with an activity: its Accountable role (review) is woken instead', await until(() => /BLOCKED: platform set s-5/.test(to('review'))))
+  ok('...and not the Lead', !/s-5/.test(to('ops')))
+  change('s-6', 'ops', { status: 'blocked' })
+  ok('blocked by the Lead itself: needs-you (the human)', await until(() => /label add s-6 needs-you/.test(bdlog())))
+
+  console.log('== dependency = bd dep add; reopen = bd reopen; done = bd close')
+  depAdd('s-7', 'platform', 'i-dep')
+  ok('dep add: the other item\'s assignee (review) is woken', await until(() => /DEPENDENCY: platform's s-7 "title of s-7" now waits on your i-dep "the item others wait on" \(open\)/.test(to('review'))))
+  change('i-spec', 'platform', { status: 'open' })
+  ok('reopen (closed -> open; bd journals it as an update): its assignee (ops) is woken', await until(() => /REOPEN: platform reopened i-spec "title of i-spec"|REOPEN: platform reopened i-spec "the spec ops wrote"/.test(to('ops'))))
+  change('i-mine', 'platform', { status: 'open' }, 'reopen')
+  ok('reopening its own item: the board\'s Lead (ops) is woken', await until(() => /REOPEN: platform reopened i-mine/.test(to('ops'))))
+  const before = sent()
+  change('s-9', 'platform', { status: 'closed', close_reason: 'tests pass' }, 'close')
+  await sleep(1500)
+  ok('close: nobody is woken (the writer is the assignee)', sent() === before)
+
+  console.log('== words and the board\'s own actors are not signals')
   const quiet = sent()
-  comment('s-12', 'platform', 'The brief says to end like this:\n```\nHANDOFF review fence1\n```\nThat is all.')
-  comment('s-13', 'platform', 'You wrote:\n> HANDOFF review quote1\nNoted.')
-  comment('s-14', 'watchdog', 'handoff:s-1 has no reply\nHANDOFF review dog1')
+  comment('s-10', 'platform', 'Built it on branch wake.\nHANDOFF review word1')
+  change('s-11', 'watchdog', { assignee: 'review' })
+  change('s-12', 'wake', { status: 'open' }) // wake's own requeue
+  change('s-13', 'beads', { status: 'blocked' }) // bd's own recompute
   await sleep(1800)
-  ok('a HANDOFF inside a fenced code block wakes nobody', !/fence1/.test(sent().slice(quiet.length)))
-  ok('a quoted HANDOFF (> ...) wakes nobody', !/quote1/.test(sent().slice(quiet.length)))
-  ok('a HANDOFF by watchdog (the Supervisor, the sentinel) wakes nobody', !/dog1/.test(to('review')))
+  ok('a HANDOFF line in a comment wakes nobody', !/word1/.test(sent().slice(quiet.length)))
+  ok('a reassign by watchdog (the Supervisor, the sentinel) is no handoff (its assignee hears of it as any change)', !/HANDOFF to you from watchdog/.test(to('review')))
+  ok('wake\'s and bd\'s own changes wake nobody', !/s-12|s-13/.test(sent().slice(quiet.length)) && !/s-13 needs-you/.test(bdlog()))
 
   console.log('== a working lead is not interrupted')
   st('review', 'running')
-  comment('s-10', 'platform', 'HANDOFF review def5678')
+  change('s-14', 'platform', { assignee: 'review', status: 'open' })
   await sleep(1500)
-  ok('review is busy: the HANDOFF waits', !/def5678/.test(to('review')))
+  ok('review is busy: the handoff waits', !/s-14/.test(to('review')))
   st('review', 'idle')
-  ok('...and arrives once review is idle', await until(() => /def5678/.test(to('review'))))
+  ok('...and arrives once review is idle', await until(() => /HANDOFF to you from platform on s-14/.test(to('review'))))
 
-  console.log('== the hop limit counts signals')
+  console.log('== the hop limit counts reassigns')
   for (let i = 1; i <= 3; i++) {
-    comment('s-11', i % 2 ? 'platform' : 'review', `round ${i}\nHANDOFF ${i % 2 ? 'review' : 'platform'} h${i}`)
-    await until(() => sent().includes(`h${i}`))
+    const [from, next] = i % 2 ? ['platform', 'review'] : ['review', 'platform']
+    const had = times(next, /on s-15/g)
+    change('s-15', from, { assignee: next, status: 'open' })
+    await until(() => times(next, /on s-15/g) > had)
   }
-  comment('s-11', 'platform', 'round 4\nHANDOFF review h4')
-  ok('the 4th lead-to-lead HANDOFF on one item is not sent', !(await until(() => sent().includes('h4'), 2000)))
-  ok('...the item is paused visibly (needs-you)', /label add s-11 needs-you/.test(bdlog()))
+  const had = times('review', /on s-15/g)
+  change('s-15', 'platform', { assignee: 'review', status: 'open' })
+  ok('the 4th lead-to-lead reassign on one item is not sent', !(await until(() => times('review', /on s-15/g) > had, 2000)))
+  ok('...the item is paused visibly (needs-you)', /label add s-15 needs-you/.test(bdlog()))
 } finally {
   w.kill(); srv.close(); for (const s of streams) s.destroy()
   if (fail) console.log(`--- wake output\n${opsLog().split('\n').slice(-25).join('\n')}\n${out.slice(-1500)}\n--- sent\n${sent().slice(-2500)}`)
