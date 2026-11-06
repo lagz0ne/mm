@@ -5,7 +5,7 @@
 #  1. bin/dolt-ready says ready only when a query gets a result (a stand-in MySQL socket: ok, auth switch, refused,
 #     silent), and quits cleanly
 #  2. the generated definitions: dolt's readiness is that query (ready.exec, placeholders filled), bd-serve waits for
-#     it, and every HTTP service's portless wrapper has --force
+#     it, and every HTTP service's portless wrapper has --force, after mm's check of the record (sy-1qkv)
 #  3. loadAll: a restart of dolt while its dependents wait (what an old board's health did) leaves them Skipped in
 #     process-compose; loadAll starts them once dolt is ready again, and returns with all of them up
 #  4. the same project unloaded and loaded again (a stale instance of each process): all up after each load
@@ -50,14 +50,14 @@ cp "$SRC/template/services.yaml" "$R/services.yaml"
 printf 'client: acme\nname: shop\nproject: acme-shop\nshort: as\n' >"$R/.mm-answers.yaml"
 "$BUN" -e "
   import { resolve, serviceProcess } from '$SRC/src/project.ts'
-  const { services } = resolve('$R'), o = { env: {}, socket: '$R/.dolt/mysql.sock', pdeath: '' }
+  const { services } = resolve('$R'), o = { env: {}, socket: '$R/.dolt/mysql.sock', pdeath: '', claim: '/c/portless-claim.mjs' }
   const ps = Object.fromEntries(Object.entries(services).map(([n, s]) => [n, serviceProcess('$R', 'acme-shop', n, s, services, o)]))
   await Bun.write('$T/defs.json', JSON.stringify(ps))" || bad "resolve/serviceProcess"
 is "dolt's readiness runs the query over its socket (placeholders filled)" \
   bash -c "[ \"\$(jq -r '.dolt.readiness_probe.exec.command' '$T/defs.json')\" = 'node $R/bin/dolt-ready $R/.dolt/mysql.sock' ]"
 is "bd-serve waits for dolt to be healthy (that probe)" bash -c "[ \"\$(jq -r '.\"bd-serve\".depends_on.\"acme-shop.dolt\".condition' '$T/defs.json')\" = process_healthy ]"
-is "every HTTP service's portless wrapper takes over its own name (--force)" \
-  bash -c "jq -e '[to_entries[] | select(.value.command | startswith(\"portless \"))] | length >= 3 and all(.value.command | test(\"^portless [a-z-]+[.]acme-shop --force \"))' '$T/defs.json' >/dev/null"
+is "every HTTP service's portless wrapper takes over its own name (--force), after mm's check of the record (sy-1qkv)" \
+  bash -c "jq -e '[to_entries[] | select(.value.command | test(\"portless \"))] | length >= 3 and all(.value.command | test(\"^node .?/c/portless-claim[.]mjs.? (?<n>[a-z-]+[.]acme-shop) && exec portless \\\\k<n> --force \"))' '$T/defs.json' >/dev/null"
 
 echo "== 3. loadAll heals what a restart of dolt left Skipped"
 # dolt: ready DOLT_UP seconds after each start (its marker is removed at start), like a slow Dolt under load

@@ -4,8 +4,9 @@
 # Proves:
 #  1. sameCommand: a process is the one process-compose started only when its command line is exactly mm's (the
 #     wrapper as Node runs it, the shell's own form, leading NAME=value words), never a near match (sy-pfbr)
-#  2. mm box on, with a portless wrapper that ignores TERM (as in a container): the host's reload still finishes, and
-#     the step says what mm stopped; a person's shell in the project, and the same command line started by hand, stay
+#  2. mm box on, with a portless wrapper that ignores TERM (as in a container; after mm's check of its record, sy-1qkv):
+#     the host's reload still finishes, and the step says what mm stopped; a person's shell in the project, and the
+#     same command line started by hand, stay
 #  3. a process that ignores TERM and isn't a wrapper with mm's command line: mm leaves it, and the step's failure says
 #     what hung (never an empty "host FAIL"); the project is not boxed
 #  4. a box's own process manager (its socket under mm's box folder): a restart of dolt during its first start leaves
@@ -72,12 +73,14 @@ is "...all 12 cases ran" [ "$(grep -c '^\(ok\|BAD\) ' "$T/same.out")" = 12 ]
 
 echo "== 2. mm box on: a wrapper that ignores TERM"
 R="$T/projects/acme/shop"; mkroot "$R" acme-shop
+# the wrapper as mm defines it: its check of the record first (sy-1qkv), then exec portless on the same pid
+CLAIM=$("$BUN" -e "import { writePortlessClaim } from '$SRC/src/project.ts'; console.log(writePortlessClaim('$MM_HOME/pc'))")
 cat >"$MM_HOME/pc/projects/acme-shop.yaml" <<EOF
 version: "0.5"
 processes:
   acme-shop.web:
     namespace: acme-shop
-    command: "portless web.acme-shop --force sh -c 'exec sleep 600'"
+    command: "node '$CLAIM' web.acme-shop && exec portless web.acme-shop --force sh -c 'exec sleep 600'"
     working_dir: $R
   acme-shop.db:
     namespace: acme-shop
