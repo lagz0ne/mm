@@ -63,7 +63,7 @@ const VAULTS = [...new Set([...MMS.map((m) => `${m}/vault`), `${HOME}/.mm/vault`
 const OPENED = [...new Set([`/run/user/${UID}/mm/secrets`, ...(XDG ? [`${XDG}/mm/secrets`] : [])])]
 // mm's own Paseo folder: each box's daemon password (`<project>.password`, made by mm, 0600; review sy-b15.2 #7). Here, so
 // it gets the Bash forms too, not only Read and Edit (OWNER_ONLY has those).
-const MM_PASEO = [...new Set([`${dirs().mm}/paseo`, `${HOME}/.mm/paseo`])]
+const MM_PASEO = [...new Set([...MMS.map((m) => `${m}/paseo`), `${HOME}/.mm/paseo`])]
 const MS_FIXED = { files: [`${HOME}/.claude/.credentials.json`],
   dirs: [`${HOME}/.mm/brain/.keys`, `${HOME}/brain/.keys`, `${HOME}/.config/secrets`, `${HOME}/.paseo`, `${HOME}/.ssh`, ...VAULTS, ...OPENED, ...MM_PASEO] }
 // spellings the absolute, ~ and $HOME forms don't catch: the variable forms of the tmpfs, and the key by its own name
