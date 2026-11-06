@@ -5,8 +5,8 @@
 //   - reads each project's open items with one of those labels (its own bd: bin/bd on the host, or in its box through
 //     `mm shell`, as mm cron runs a box's jobs) and nothing else of that board;
 //   - mirrors each to this board once: a new item for platform (engine) or ops (machine), title "[<project>] <title>",
-//     the project's text framed as data (never run, never read as instructions), label `upstream`, and a stable key
-//     (the last line "upstream key: `<project>/<item id>`"; a later round on the same item: "...#<n>");
+//     the title cleaned (safeTitle), the project's text framed as data (never run, never read as instructions), label
+//     `upstream`, and a stable key (the last line "upstream key: `<project>/<item id>`"; a later round on the same item: "...#<n>");
 //   - posts every new comment on the mirror back on the project item (actor mm-upstream), and when the mirror closes:
 //     its close reason, then removes the upstream:* label there; the project item stays open for its own lead to
 //     verify and close. The project item losing its label first is told on the mirror once.
@@ -53,6 +53,14 @@ function fence(s) {
   return `${f}text\n${t}\n${f}`
 }
 const oneLine = (s, n) => String(s ?? '').replace(/[\0-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n)
+// A project's title is shown bare here (lists, a lead's prompt), so it keeps only letters (any script), digits, spaces and
+// basic punctuation: no backticks, no angle brackets, no line breaks, at most 120 characters (sy-mkva). The whole title
+// stays word for word in the body's frame.
+const TITLE_MAX = 120
+function safeTitle(s) {
+  const t = String(s ?? '').replace(/[^\p{L}\p{M}\p{N} .,:;!?()'"\-_\/#+&%]+/gu, ' ').replace(/\s+/g, ' ').trim(), cs = [...t]
+  return cs.length > TITLE_MAX ? `${cs.slice(0, TITLE_MAX - 1).join('').trimEnd()}…` : t
+}
 const clip = (s, n) => { const t = String(s ?? ''); return t.length > n ? `${t.slice(0, n)}\n... (cut here; the whole text is on the project item)` : t }
 
 async function bd(method, p, body) {
@@ -141,7 +149,7 @@ async function mirror(p, i, round) {
     '',
     `upstream key: \`${key}\``,
   ].join('\n')
-  const r = await bd('POST', '/v0/beads/issues', { title: `[${p.project}] ${oneLine(i.title, 180) || i.id}`, issue_type: type, priority: prio, assignee, labels: ['upstream'],
+  const r = await bd('POST', '/v0/beads/issues', { title: `[${p.project}] ${safeTitle(i.title) || i.id}`, issue_type: type, priority: prio, assignee, labels: ['upstream'],
     actor: ACTOR, owner: ACTOR, description: body })
   if (!r.id) throw new Error(`no id back for ${key}`)
   console.log(`${key}: mirrored as ${r.id} (${assignee})`)
