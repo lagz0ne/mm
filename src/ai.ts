@@ -118,6 +118,22 @@ export function report(d: Database, since = monthStart()) {
 
 // ---------- the gateway ----------
 type KeyRow = { project: string; person: string; kind: string; expires: number; revoked: number }
+
+/** Oauth mode carries the machine owner's own subscription, which its terms keep to the owner's own use (review
+ *  sy-b15.10): only the owner's own run, or a project's background key, and only for a project where nobody but the
+ *  owner holds a role (mm.auth's grants). The reason it is refused, or null. Fails closed: grants it can't read refuse. */
+export function ownerOnly(k: { project: string; person: string }, owner: string, accounts = join(DIRS.mm, 'auth', 'accounts.db')): string | null {
+  if (k.person && k.person !== owner) return `a run for ${k.person}: in oauth mode only the owner's own runs may call`
+  if (!existsSync(accounts)) return null                          // no gateway on this machine: no grants to anyone
+  let db: Database | undefined
+  try {
+    db = new Database(accounts, { readonly: true })
+    const r = db.query(`SELECT COUNT(*) AS n FROM member m JOIN organization o ON o.id = m.organizationId JOIN user u ON u.id = m.userId
+      WHERE o.slug = ? AND COALESCE(u.role, '') != 'admin' AND COALESCE(u.banned, 0) = 0`).get(k.project) as { n: number }
+    return r.n > 0 ? `${k.project} has ${r.n} other ${r.n === 1 ? 'person' : 'people'} with a role: in oauth mode only a project of the owner alone may call` : null
+  } catch { return 'the grants could not be read, so oauth mode refuses' }
+  finally { db?.close() }
+}
 const apiError = (status: number, type: string, message: string, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify({ type: 'error', error: { type, message: `mm.ai: ${message}` } }), { status, headers: { 'content-type': 'application/json', ...extra } })
 const PASS_HEADERS = ['content-type', 'accept', 'anthropic-version', 'anthropic-dangerous-direct-browser-access']
@@ -242,6 +258,10 @@ export async function serve() {
     if (!k || k.revoked || k.expires < now() || k.project !== project) {
       log('warn', 'key refused', { box: project, key: raw ? h(raw).slice(0, 6) : undefined, why: !k ? 'unknown' : k.revoked ? 'revoked' : k.expires < now() ? 'expired' : `for ${k.project}` })
       return apiError(401, 'authentication_error', 'this key is not valid for this project (it may have expired)')
+    }
+    if (String(getPath(cfg(), 'ai.upstream_auth') || '') === 'oauth') {
+      const no = ownerOnly(k, String(getPath(cfg(), 'owner_name') ?? 'owner'))
+      if (no) { log('warn', 'oauth mode: not the owner\'s own use', { box: project, person: k.person || undefined, why: no }); return apiError(403, 'permission_error', no) }
     }
     const { input, key, why: badInput } = upstreamKey()
     if (badInput) { log('error', 'upstream key input refused', { why: badInput }); return apiError(503, 'api_error', `the machine's AI config is wrong: ${badInput}`) }

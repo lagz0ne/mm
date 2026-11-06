@@ -82,6 +82,16 @@ box's egress proxy and its list, as before.
 
 ## For now: the machine's Claude token as the upstream credential
 
+**Only for the machine owner's own work, on their own subscription. It is not a feature for anyone else's use.**
+Anthropic's terms for Claude Code (code.claude.com/docs/en/legal-and-compliance) say developers may not "route requests
+through Free, Pro, Max, or Ultra plan credentials on behalf of their users", nor "collect, store, or intermediate
+Claude.ai credentials or session tokens". What they allow is "an end user signing in to the unmodified Claude Code
+binary with their own Claude subscription, including where a platform hosts Claude Code". So mm keeps this mode to
+the owner: in oauth mode mm.ai takes only the owner's own run key (`owner_name`), or a project's background key for a
+project where nobody but the owner holds a role (mm.auth's grants, read at each call; if they can't be read, it
+refuses). Anyone else's run gets `403`. The default stays `ai-upstream-key`, a separate API key; use that as soon as you
+can. Read the terms yourself: this note is not legal advice.
+
 The owner can let mm.ai call Anthropic with the machine's long-term Claude token (the machine input
 `claude-oauth-token`, made with `claude setup-token`) instead of a separate upstream key. Then no `ai-upstream-key` is
 needed. Two lines, with `ai.enabled` on as above:

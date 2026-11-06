@@ -164,6 +164,26 @@ ident "claude-cli/$(printf 'x%.0s' $(seq 1 300))" cli
 check "...a user-agent over 256 characters is cut to 256" last '(.ua | length) == 256 and (.ua | startswith("claude-cli/xxx"))'
 ident "$UA" "$(printf 'cli\tx')"
 check "...one with a control character is dropped (the other still goes)" last '.app == "" and .ua == "claude-cli/2.1.318 (external, cli)"'
+# the owner's own use only (review sy-b15.10): a run for another person, or a project someone else holds a role on,
+# never rides the owner's subscription; grants come from mm.auth's accounts store, read-only, and fail closed
+upn() { wc -l <"$T/up.jsonl"; }
+KO=$(key acme-shop owner); N0=$(upn)
+check "oauth mode: a run for another person (alex): 403, nothing sent upstream" bash -c "call '$S2' '$KA' -d '$MSG' http://ai/v1/messages | grep -q \"only the owner's own runs\" && [ \$(wc -l <'$T/up.jsonl') = $N0 ]"
+check "...the owner's own run key: 200" bash -c "[ \"\$(code '$S1' '$KO' -d '$MSG' http://ai/v1/messages)\" = 200 ]"
+grants() { mkdir -p "$MM_HOME/auth"; rm -f "$MM_HOME/auth/accounts.db"; bun -e "
+import { Database } from 'bun:sqlite'; const d = new Database('$MM_HOME/auth/accounts.db', { create: true })
+d.run('CREATE TABLE user (id TEXT PRIMARY KEY, name TEXT, role TEXT, banned INTEGER)'); d.run('CREATE TABLE organization (id TEXT PRIMARY KEY, slug TEXT)')
+d.run('CREATE TABLE member (id TEXT PRIMARY KEY, organizationId TEXT, userId TEXT, role TEXT)')
+d.run(\"INSERT INTO organization VALUES ('o1', 'acme-shop'), ('o2', 'acme-other')\"); d.run(\"INSERT INTO user VALUES ('u0', 'owner', 'admin', 0), ('u1', 'bob', 'user', ${1:-0})\")
+d.run(\"INSERT INTO member VALUES ('m0', 'o1', 'u0', 'owner'), ('m1', 'o2', 'u1', 'member')\")"; }
+grants 0; N0=$(upn)
+check "...a project only the owner holds (acme-shop): its background key still 200" bash -c "[ \"\$(code '$S1' '$K1' -d '$MSG' http://ai/v1/messages)\" = 200 ]"
+check "...a project with a member (bob on acme-other): its background key 403, it says why, nothing sent" bash -c "call '$S2' '$K2' -d '$MSG' http://ai/v1/messages | grep -q 'acme-other has 1 other person with a role' && [ \$(wc -l <'$T/up.jsonl') = $((N0 + 1)) ]"
+grants 1
+check "...the member banned: that project's key works again" bash -c "[ \"\$(code '$S2' '$K2' -d '$MSG' http://ai/v1/messages)\" = 200 ]"
+printf 'not a database' >"$MM_HOME/auth/accounts.db"; N0=$(upn)
+check "...grants it can't read: refused (fails closed), nothing sent" bash -c "call '$S1' '$K1' -d '$MSG' http://ai/v1/messages | grep -q 'grants could not be read' && [ \$(wc -l <'$T/up.jsonl') = $N0 ]"
+rm -f "$MM_HOME/auth/accounts.db"
 mv "$TOK" "$T/tok"
 check "no Claude token on the machine: 503, it names claude-oauth-token" bash -c "call '$S1' '$K1' -d '$MSG' http://ai/v1/messages | grep -q 'mm fill claude-oauth-token'"
 mv "$T/tok" "$TOK"
