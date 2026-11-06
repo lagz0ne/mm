@@ -7,7 +7,8 @@
 //   Only that box's egress proxy mounts it, and forwards its port 4000 to it. The project is the socket the call came
 //   in on, never a name in the call (review sy-b15.8 5). No TCP port on the host.
 //   The store: $MM_HOME/ai/ai.db (0600, SQLite, WAL): keys (sha256 only), usage, budgets, notices sent.
-//   The upstream key: the machine input `ai-upstream-key` (a file, 0600), read at each call, never logged or passed on.
+//   The upstream key: the machine input `ai-upstream-key` (a file, 0600), or the one `ai.upstream_key_input` names (only
+//   `claude-oauth-token` besides), read at each call, never logged or passed on.
 import { Database } from 'bun:sqlite'
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
@@ -154,6 +155,24 @@ export function betaHeader(v: string | null, allowed: Set<string>): string | nul
   return keep.length ? keep.join(',') : null
 }
 
+// ---------- the upstream's credential (sy-b15.10) ----------
+// `ai.upstream_key_input` names the machine input mm.ai calls the upstream with: one of these names only, never a free
+// path. `claude-oauth-token` is the machine's long-term Claude token (the owner's choice "for now"); it goes with
+// `ai.upstream_auth: oauth`. Either way the file stays on the host: read by path at each call, never logged, never in a box.
+export const UPSTREAM_INPUTS = ['ai-upstream-key', 'claude-oauth-token']
+export function upstreamInput(c = loadConfig()): string {
+  const v = getPath(c, 'ai.upstream_key_input')
+  const name = v === undefined || v === null || v === '' ? 'ai-upstream-key' : String(v)
+  // the value itself is not repeated (it could be a path, or a token pasted by mistake)
+  if (!UPSTREAM_INPUTS.includes(name)) throw new Error(`ai.upstream_key_input may only be ${UPSTREAM_INPUTS.join(' or ')} (unset means ai-upstream-key)`)
+  return name
+}
+// an OAuth token (ai.upstream_auth: oauth) goes as `Authorization: Bearer`, with this beta, which the API needs for it
+export const OAUTH_BETA = 'oauth-2025-04-20'
+export function mergeBeta(v: string | null, add: string): string {
+  return [...new Set([...(v || '').split(',').map((x) => x.trim()).filter(Boolean), add])].join(',')
+}
+
 /** Read the token counts out of an answer: a JSON body, or the SSE stream's message_start and message_delta events. */
 export function usageOf(u: Record<string, number | undefined> | undefined, into: Usage) {
   if (!u) return
@@ -164,12 +183,17 @@ export function usageOf(u: Record<string, number | undefined> | undefined, into:
 }
 
 export async function serve() {
-  const d = store()
   const cfg = () => loadConfig()
+  try { upstreamInput(cfg()) } catch (e) { log('error', 'mm.ai refused to start', { why: (e as Error).message }); process.exit(1) }
+  const d = store()
   const upstream = () => String(process.env.MM_AI_UPSTREAM || getPath(cfg(), 'ai.upstream') || 'https://api.anthropic.com').replace(/\/+$/, '')
-  const upstreamKey = () => {
-    const f = process.env.MM_AI_UPSTREAM_KEY_FILE || expand(String(machineInputs()['ai-upstream-key']?.path || '~/.config/secrets/ai-upstream.key'))
-    try { return readFileSync(f, 'utf8').trim() } catch { return '' }
+  // the chosen input's file, read at each call (a new key needs no restart); a bad choice made while mm.ai runs is
+  // refused here too
+  const upstreamKey = (): { input: string; key: string; why?: string } => {
+    let input: string
+    try { input = upstreamInput(cfg()) } catch (e) { return { input: '', key: '', why: (e as Error).message } }
+    const f = process.env.MM_AI_UPSTREAM_KEY_FILE || expand(String(machineInputs()[input]?.path || (input === 'ai-upstream-key' ? '~/.config/secrets/ai-upstream.key' : '')))
+    try { return { input, key: f ? readFileSync(f, 'utf8').trim() : '' } } catch { return { input, key: '' } }
   }
   const maxParallel = () => Math.max(1, Number(getPath(cfg(), 'ai.max_parallel') ?? 3) || 3)
   const inflight = new Map<string, number>()
@@ -218,8 +242,9 @@ export async function serve() {
       log('warn', 'key refused', { box: project, key: raw ? h(raw).slice(0, 6) : undefined, why: !k ? 'unknown' : k.revoked ? 'revoked' : k.expires < now() ? 'expired' : `for ${k.project}` })
       return apiError(401, 'authentication_error', 'this key is not valid for this project (it may have expired)')
     }
-    const key = upstreamKey()
-    if (!key) { log('error', 'no upstream key (mm fill ai-upstream-key)'); return apiError(503, 'api_error', 'the machine has no upstream key yet (the owner: mm fill ai-upstream-key)') }
+    const { input, key, why: badInput } = upstreamKey()
+    if (badInput) { log('error', 'upstream key input refused', { why: badInput }); return apiError(503, 'api_error', `the machine's AI config is wrong: ${badInput}`) }
+    if (!key) { log('error', `no upstream key (mm fill ${input})`); return apiError(503, 'api_error', `the machine has no upstream key yet: the file of ${input} is missing or empty (the owner: mm fill ${input})`) }
     const bytes = req.method === 'POST' ? await req.arrayBuffer() : undefined
     let parsed: Record<string, unknown> = {}
     if (bytes) {
@@ -247,8 +272,11 @@ export async function serve() {
     }
     const headers = new Headers()
     for (const n of PASS_HEADERS) { const v = req.headers.get(n); if (v) headers.set(n, v) }
-    const beta = betaHeader(req.headers.get('anthropic-beta'), serverOk); if (beta) headers.set('anthropic-beta', beta)
-    if (String(getPath(cfg(), 'ai.upstream_auth') || 'x-api-key') === 'bearer') headers.set('authorization', `Bearer ${key}`); else headers.set('x-api-key', key)
+    // the client's own authorization / x-api-key (the box's mm key) are not among the passed headers: only ours goes up
+    const auth = String(getPath(cfg(), 'ai.upstream_auth') || 'x-api-key')
+    let beta = betaHeader(req.headers.get('anthropic-beta'), serverOk); if (auth === 'oauth') beta = mergeBeta(beta, OAUTH_BETA)
+    if (beta) headers.set('anthropic-beta', beta)
+    if (auth === 'bearer' || auth === 'oauth') headers.set('authorization', `Bearer ${key}`); else headers.set('x-api-key', key)
     let model = messages ? String(parsed.model || '') : ''
     if (messages) inflight.set(project, (inflight.get(project) || 0) + 1)
     let released = false
@@ -306,6 +334,6 @@ export async function serve() {
     }
   }
   sync(); setInterval(sync, 5000)
-  log('info', 'mm.ai up', { upstream: upstream(), max_parallel: maxParallel() })
+  log('info', 'mm.ai up', { upstream: upstream(), upstream_key_input: upstreamInput(cfg()), upstream_auth: String(getPath(cfg(), 'ai.upstream_auth') || 'x-api-key'), max_parallel: maxParallel() })
   await new Promise(() => {})
 }

@@ -80,6 +80,32 @@ box's egress proxy and its list, as before.
    `mm.ai`. `mm up` for each box then gives it a key.
 3. The guard and the template keep agents out of `$MM_HOME/ai/` and the upstream key file (sy-sn0).
 
+## For now: the machine's Claude token as the upstream credential
+
+The owner can let mm.ai call Anthropic with the machine's long-term Claude token (the machine input
+`claude-oauth-token`, made with `claude setup-token`) instead of a separate upstream key. Then no `ai-upstream-key` is
+needed. Two lines, with `ai.enabled` on as above:
+
+```
+mm config set ai.upstream_key_input claude-oauth-token
+mm config set ai.upstream_auth oauth
+```
+
+- `ai.upstream_key_input` names the machine input whose file mm.ai reads. Only `ai-upstream-key` (the default) and
+  `claude-oauth-token` are allowed, never a path. Anything else stops mm.ai at start, with a log line that says why.
+  If the config changes while mm.ai runs, each call gets `503` with the same reason.
+- `ai.upstream_auth: oauth` sends the token as `Authorization: Bearer`, with no `x-api-key`, and adds the beta
+  `oauth-2025-04-20` to the client's `anthropic-beta` (once).
+- The token stays on the host, in mm.ai. mm.ai reads it by path at each call. It never logs it, and never passes it to a
+  box. Boxes still get only their own per-run keys from mm, and the box's key never goes upstream.
+- Budgets, the cap and the logs work as before. Use shows in `mm usage`. Its cost there is the list price for the
+  tokens: on a subscription that money is notional, but the budgets still stop calls at 100 %.
+- The calls share the subscription's usage limits with the machine's own agents, which use the same token.
+- If the token file is missing, calls get `503`, and the message names `claude-oauth-token`.
+
+**Later, a separate key:** the owner fills `ai-upstream-key`, then `mm config unset ai.upstream_key_input` and
+`mm config unset ai.upstream_auth`. That is the default again (an API key as `x-api-key`).
+
 ## Logs
 
 Each call is one line in `~/.mm/pc/ai.log`: the box, the person, the model, the tokens and the cost. Refused keys are

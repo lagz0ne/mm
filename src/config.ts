@@ -29,9 +29,10 @@ export function unsetPath(c: Config, p: string) {
   if (o) delete o[ks[ks.length - 1]]
 }
 
-/** Evaluate a manifest `when` like `access == domain` against the config. */
+/** Evaluate a manifest `when` like `access == domain` against the config; `a == x && b != y` needs both. */
 export function when(expr: string | undefined, c: Config): boolean {
   if (!expr) return true
+  if (expr.includes('&&')) return expr.split('&&').every((e) => when(e, c))
   const m = /^\s*([\w.]+)\s*(==|!=)\s*([\w.-]+)\s*$/.exec(expr)
   if (!m) return true
   const v = String(getPath(c, m[1]) ?? '')
