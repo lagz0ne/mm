@@ -69,7 +69,10 @@ send the item to the machine's own board:
 - Write the item so a stranger can act on it: a clear title, and in the body what fails, the evidence (commands, file
   paths, errors), and what you need.
 - Label it and block it in one change: `bd update ID --add-label upstream:engine -s blocked` (for bin/, the template,
-  mm) or `--add-label upstream:machine` (the host). No `needs-you`: it is not the human's question.
+  mm) or `--add-label upstream:machine` (the host). No `needs-you`: it is not the human's question. If the system
+  board has not answered for 24 h, wake labels it `needs-you` itself, so the owner sees it.
+- Its title arrives there cleaned (letters, digits, basic punctuation, one line, 120 characters): put what matters in
+  the first words. The body goes as you wrote it, as data.
 - Within a few minutes it appears on the system board, for its platform (engine) or ops (machine) lead. Their comments
   come back on your item, by `mm-upstream`, and each one wakes you. When they close theirs, the close reason comes
   back and the label comes off. Then verify the change here, and close your item (or label it again, with what is
