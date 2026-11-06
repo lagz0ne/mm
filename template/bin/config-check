@@ -180,7 +180,7 @@ function render(tmpl, role, assistant = false, worker = null) {
     hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: GUARD_TOOLS.join('|'), hooks: [{ type: 'command', command: wrapHook(h), timeout: 10 }] }] }
   }
   if (worker?.allowOnly) hooks = { ...(hooks || {}), PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: worker.allowOnly, timeout: 10 }] },
-    ...(hooks?.PreToolUse || []).filter((e) => !hookCmds([e]).includes(worker.allowOnly))] }
+    ...(hooks?.PreToolUse || []).filter((e) => !(Array.isArray(e?.hooks) ? e.hooks : []).some((h) => String(h?.command ?? '') === worker.allowOnly))] }
   const govDeny = [...ALWAYS_DENY.map(gfill), ...BRAIN_DENY, ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? (worker ? worker.deny : mandatoryDeny(role)) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
   // who the session is, in the settings themselves (sy-670): a lead that Paseo resumes from `closed` runs without the
   // env bin/lead gave it at start, but Claude Code applies this to every session in this folder, however it started

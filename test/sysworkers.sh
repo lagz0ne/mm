@@ -97,7 +97,7 @@ check "ops-o1 may comment (bd comments add is not denied), as ops/o1" bash -c "!
 aoc() { jq -r '.hooks.PreToolUse[0] | select(.matcher == "*") | .hooks[0].command' "$1/.claude/$S"; }
 check "review-r1 runs the allow-only hook first, on every tool (matcher *)" bash -c "[ \"\$(jq -r '.hooks.PreToolUse[0].hooks[0].command' '$R1/.claude/$S')\" = '$SYS/bin/lib/allow-only.mjs read $W/review-r1 || exit 2' ] && [ \"\$(jq -r '.hooks.PreToolUse[0].matcher' '$R1/.claude/$S')\" = '*' ]"
 check "ops-o1 runs it as a board worker, on its own folder" test "$(aoc "$O1")" = "$SYS/bin/lib/allow-only.mjs board $W/ops-o1 || exit 2"
-check "...and the guard still, after it" bash -c "jq -e '.hooks.PreToolUse[1].hooks[0].command | endswith(\"/bin/guard\")' '$O1/.claude/$S' >/dev/null"
+check "...and the guard still, after it (wrapped: a crash denies, sy-in54)" bash -c "jq -e '.hooks.PreToolUse[1].hooks[0].command | startswith(\"mm_g=\$( \") and contains(\"/bin/guard\\n)\")' '$O1/.claude/$S' >/dev/null"
 check "platform-w1 (write) has no allow-only hook (auto, option b)" bash -c "! grep -q allow-only '$P1/.claude/$S'"
 hk() { (cd "$O1" && printf '%s' "$2" | sh -c "$(aoc "$O1")"); } # hk <folder> <hook input>: the rendered command, as Claude Code runs it
 hin() { jq -cn --arg t "$1" --arg c "$2" --arg w "$O1" '{tool_name: $t, tool_input: {command: $c}, cwd: $w}'; }
