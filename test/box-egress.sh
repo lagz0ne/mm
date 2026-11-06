@@ -8,21 +8,25 @@
 # resolves to loopback, a private address, the metadata address, a docker bridge, or a network mm names is refused
 # and logged with the name and the address, also when the name changes after it was allowed (rebinding); without the
 # proxy nothing gets out (no route, no DNS); the box can't reach the host's services.
-#   test/box-egress.sh        [--keep]        DOCKER="sudo -n docker" if needed; EGRESS_IMAGE=<tag> to skip the build
+# Through mm's Docker wrapper only (sy-e6t3; test/lib/docker.sh: the installed one, MM_DOCKER_BIN for this checkout's
+# copy), shaped as mm runs them: mm's names and labels, the project's own network (10.231.<n>.0/24), its own uids, the
+# folders in the tests' area. The box is an image built here with curl (BOX_IMAGE=<mm-box:tag> to skip that build).
+#   test/box-egress.sh        [--keep]        EGRESS_IMAGE=<mm-egress:tag> to skip the proxy's build
 set -uo pipefail
-DOCKER=${DOCKER:-docker}; KEEP=""; [ "${1:-}" = --keep ] && KEEP=1
+KEEP=""; [ "${1:-}" = --keep ] && KEEP=1
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-ID=$$; NET=mm-box-int-$ID; PX=mm-box-proxy-$ID; BOX=mm-box-$ID; FETCH=mm-box-fetch-$ID; BASE=${BASE:-ubuntu:24.04}
+. "$ROOT/test/lib/docker.sh"
+D() { $DOCKER "$@"; }
+ID=$$; BASE=${BASE:-ubuntu:24.04}
+TMP=$(mm_test_dir egress); PROJ=$(basename "$TMP"); NET=mm-net-$PROJ; PX=mm-egress-$PROJ; BOX=mm-box-$PROJ
 ALLOW=${ALLOW:-github.com}
-TMP=$(mktemp -d); LOGD=$TMP/log; ELOG=$LOGD/egress.log; AID=$TMP/ai; AIPID=""
-EUID_PX=190040 # the proxy's own uid, as mm gives it (190000 + n): no account here
-getent passwd "$EUID_PX" >/dev/null && { echo "uid $EUID_PX is an account here"; exit 1; }
-BUILT=""; IMG=${EGRESS_IMAGE:-}
+LOGD=$TMP/log; ELOG=$LOGD/egress.log; AID=$TMP/ai; AIPID=""
+BUILT=""; IMG=${EGRESS_IMAGE:-}; BOXIMG=${BOX_IMAGE:-}
 cleanup() {
   [ -n "$AIPID" ] && kill "$AIPID" 2>/dev/null
-  [ -n "$KEEP" ] && { echo "kept: $BOX $PX $FETCH $NET ${BUILT:+$IMG} $TMP"; return; }
-  $DOCKER rm -f "$BOX" "$PX" "$FETCH" >/dev/null 2>&1; $DOCKER network rm "$NET" >/dev/null 2>&1
-  [ -n "$BUILT" ] && $DOCKER rmi -f "$IMG" >/dev/null 2>&1
+  [ -n "$KEEP" ] && { echo "kept: $BOX $PX $NET $BUILT $TMP"; return; }
+  D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1
+  [ -n "$BUILT" ] && D rmi -f $BUILT >/dev/null 2>&1
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -30,23 +34,34 @@ pass=0; fail=0
 ok() { pass=$((pass+1)); echo "  ok   $*"; }; bad() { fail=$((fail+1)); echo "  FAIL $*"; }
 check() { local d=$1; shift; if "$@" >"$TMP/out" 2>&1; then ok "$d"; else bad "$d"; tail -3 "$TMP/out" | sed 's/^/       /'; fi; }
 
-echo "== the proxy image"
+echo "== the images (through $DOCKER)"
+# folders as mm-docker builds them (mm-box-build-*: the owner's, copied as checked)
 if [ -z "$IMG" ]; then
-  IMG=mm-egress-test:$ID
-  $DOCKER build -q -t "$IMG" -f "$ROOT/box/egress.Dockerfile" "$ROOT/box" >/dev/null || { echo "image build failed"; exit 1; }
-  BUILT=1
+  IMG=mm-egress:test-$ID; EB="$TMP/mm-box-build-eg$ID"; mkdir -p "$EB"; chmod 700 "$EB"
+  cp -r "$ROOT/box/egress" "$EB/egress"; cp "$ROOT/box/egress.Dockerfile" "$EB/Dockerfile"
+  D build -q -t "$IMG" -f "$EB/Dockerfile" "$EB" >/dev/null || { echo "image build failed"; exit 1; }
+  BUILT="$BUILT $IMG"
 fi
-echo "  $IMG"
+if [ -z "$BOXIMG" ]; then
+  # the box: curl and the CA certificates (the box itself has no way to apt; the build does)
+  BOXIMG=mm-box:egtest-$ID; BB="$TMP/mm-box-build-box$ID"; mkdir -p "$BB"; chmod 700 "$BB"
+  printf 'FROM %s\nRUN export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null && rm -rf /var/lib/apt/lists/*\n' "$BASE" >"$BB/Dockerfile"
+  D build -q -t "$BOXIMG" -f "$BB/Dockerfile" "$BB" >/dev/null || { echo "box image build failed"; exit 1; }
+  BUILT="$BUILT $BOXIMG"
+fi
+echo "  $IMG $BOXIMG"
 
 echo "== the network, the proxy, the box"
-# a helper on the normal bridge: the box's curl (the box itself has no way to apt), and an address of the allowed site
-$DOCKER run -d --name "$FETCH" "$BASE" sleep infinity >/dev/null || exit 1
-$DOCKER exec "$FETCH" sh -c 'export DEBIAN_FRONTEND=noninteractive; rm -f /etc/apt/apt.conf.d/docker-clean; apt-get update -qq >/dev/null && apt-get install -y -qq --download-only curl ca-certificates openssl libcurl4t64 >/dev/null 2>&1; ls /var/cache/apt/archives/*.deb' >/dev/null || { echo "fetch failed"; exit 1; }
-PUB=$($DOCKER exec "$FETCH" getent ahostsv4 "$ALLOW" | awk 'NR==1{print $1}')
+PUB=$(getent ahostsv4 "$ALLOW" | awk 'NR==1{print $1}')
 [ -n "$PUB" ] || { echo "can't resolve $ALLOW"; exit 1; }
-$DOCKER network create --internal "$NET" >/dev/null || exit 1
-SUBNET=$($DOCKER network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$NET")
-HOST_IP=$($DOCKER network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')
+for n in $(seq 249 -1 10); do
+  if D network create --internal --subnet "10.231.$n.0/24" --gateway "10.231.$n.1" --label "mm.project=$PROJ" "$NET" >/dev/null 2>"$TMP/err"; then break; fi
+  grep -qiE 'overlap|in use' "$TMP/err" || { cat "$TMP/err"; exit 1; }
+done
+SUBNET=$(D network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$NET")
+HOST_IP=$(D network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')
+EUID_PX=$((190000 + n)); BUID=$((200000 + n)) # the proxy's and the box's own uids, as mm gives them: no account here
+for u in $EUID_PX $BUID; do getent passwd "$u" >/dev/null && { echo "uid $u is an account here"; exit 1; }; done
 # the allow list as mm writes it (src/box.ts allowPatterns): one anchored, escaped pattern per name. The test names
 # point where an attacker's DNS would: a hosts file the proxy's resolver reads before DNS, mounted read-only from
 # here, so the test can move a name later (rebinding) the way a DNS answer would change.
@@ -66,15 +81,14 @@ while True:
 AIPID=$!
 for i in $(seq 1 20); do [ -S "$AID/ai.sock" ] && break; sleep 0.2; done
 # 203.0.114.0/24 stands for a docker network on public addresses: mm passes every docker subnet (MM_EGRESS_DENY)
-$DOCKER run -d --name "$PX" --init --read-only --tmpfs /run:size=8m --user "$EUID_PX:$(id -g)" --cap-drop ALL \
+D run -d --name "$PX" --label "mm.project=$PROJ" --init --read-only --tmpfs /run:size=8m --user "$EUID_PX:$(id -g)" --cap-drop ALL \
   --security-opt no-new-privileges --pids-limit 256 --memory 256m \
   -e "MM_EGRESS_DENY=203.0.114.0/24,$SUBNET" \
   -v "$TMP/hosts:/etc/hosts:ro" -v "$TMP/allow:/etc/mm/allow:ro" -v "$AID:/run/mm/ai" -v "$LOGD:/run/mm/log" "$IMG" \
   sh -c 'while :; do socat TCP-LISTEN:4000,fork,reuseaddr UNIX-CONNECT:/run/mm/ai/ai.sock 2>/dev/null; sleep 1; done & exec /usr/local/bin/mm-egress >>/run/mm/log/egress.log 2>&1' >/dev/null || { echo "proxy start failed"; exit 1; }
-$DOCKER network connect "$NET" "$PX" || exit 1
-$DOCKER run -d --name "$BOX" --network "$NET" "$BASE" sleep infinity >/dev/null || exit 1
-for f in $($DOCKER exec "$FETCH" sh -c 'ls /var/cache/apt/archives/*.deb'); do $DOCKER cp "$FETCH:$f" - | $DOCKER cp - "$BOX:/tmp/"; done
-$DOCKER exec "$BOX" sh -c 'dpkg -i /tmp/*.deb >/dev/null 2>&1; dpkg -i /tmp/*.deb >/dev/null 2>&1; command -v curl && test -s /etc/ssl/certs/ca-certificates.crt' >/dev/null || { echo "curl and CA certificates in the box failed"; exit 1; }
+D network connect "$NET" "$PX" || exit 1
+D run -d --name "$BOX" --label "mm.project=$PROJ" --network "$NET" --user "$BUID:$(id -g)" --cap-drop ALL "$BOXIMG" sleep infinity >/dev/null || exit 1
+D exec "$BOX" sh -c 'command -v curl && test -s /etc/ssl/certs/ca-certificates.crt' >/dev/null || { echo "curl and CA certificates in the box failed"; exit 1; }
 P=http://$PX:8888
 IN() { $DOCKER exec "$BOX" sh -c "$1"; }
 # the proxy's answer to a CONNECT: curl prints it (and fails) when the tunnel is refused
@@ -84,10 +98,12 @@ for i in $(seq 1 20); do grep -q ' start ' "$ELOG" && break; sleep 0.5; done
 
 echo "== the proxy"
 # the proxy process's status: the one whose command is the proxy itself (not the init or the shell that started it)
-pxstatus() { $DOCKER exec "$PX" sh -c 'for p in /proc/[0-9]*; do case "$(tr "\0" " " <$p/cmdline 2>/dev/null)" in /usr/local/bin/mm-egress*) cat $p/status;; esac; done'; }
+# the proxy's processes, read on the host from the container's cgroup (mm-docker never execs into an egress proxy)
+pxpids() { local pid cg; pid=$(D inspect -f '{{.State.Pid}}' "$PX"); cg=$(sed -n 's/^0:://p' "/proc/$pid/cgroup"); cat "/sys/fs/cgroup$cg/cgroup.procs"; }
+pxstatus() { for p in $(pxpids); do [ "$(cat "/proc/$p/comm" 2>/dev/null)" = mm-egress ] && cat "/proc/$p/status"; done; }
 check "it runs as its own uid ($EUID_PX, not root), with no capabilities" eval "s=\$(pxstatus); echo \"\$s\" | grep -E '^(Uid|CapEff)'; echo \"\$s\" | grep -qE '^Uid:[[:space:]]+$EUID_PX[[:space:]]+$EUID_PX[[:space:]]+$EUID_PX[[:space:]]+$EUID_PX\$' && echo \"\$s\" | grep -qE '^CapEff:[[:space:]]+0+\$'"
 # every process in it (the init, the shell, socat, the proxy): its uid from the start (no root step), no capabilities
-allstatus() { $DOCKER exec "$PX" sh -c 'for p in /proc/[0-9]*; do [ -r $p/status ] && grep -E "^(Uid|CapPrm|CapEff|CapBnd):" $p/status | tr -s "\t\n" "  " && echo; done'; }
+allstatus() { for p in $(pxpids); do [ -r "/proc/$p/status" ] && grep -E "^(Uid|CapPrm|CapEff|CapBnd):" "/proc/$p/status" | tr -s "\t\n" "  " && echo; done; }
 check "every process in it starts as $EUID_PX, with all capabilities 0" eval "a=\$(allstatus); echo \"\$a\"; [ \$(echo \"\$a\" | grep -c .) -ge 4 ] && ! echo \"\$a\" | grep . | grep -vE '^Uid: $EUID_PX $EUID_PX $EUID_PX $EUID_PX CapPrm: 0+ CapEff: 0+ CapBnd: 0+ \$'"
 check "the AI forwarder (its uid, the owner's group) reaches the box's socket on the host" eval "[ \"\$(IN \"curl -s --noproxy '*' --max-time 10 http://$PX:4000/\")\" = ai-ok ]"
 echo "== out"

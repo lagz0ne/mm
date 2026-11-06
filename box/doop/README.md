@@ -53,10 +53,11 @@ A key without a host, or a host without a key, stops Doop at boot.
 - `src/auth.ts`: the home page's card for a project is its board's host, never its Doop's.
 
 ## Build (a throwaway image, or ops' own)
-    DOCKER="sudo -n docker" box/doop/build.sh <tag> [mm-doop:0.12.0]
-It checks that the base is the pinned image (by id), copies `server/`, `shared/` and `package.json` out of a stopped
-container, applies the patch with `git apply`, builds `Dockerfile` on the base, and prints the new image's id. Nothing
-is pulled or pushed.
+    box/doop/build.sh mm-doop:<version> [mm-doop:0.12.0]
+Through mm's Docker wrapper (`DOCKER`, default `sudo -n /usr/local/libexec/mm-docker`; docs/mm-docker.md). It checks
+that the base is the pinned image (by id), copies `server/`, `shared/` and `package.json` out of a stopped container
+(labelled, no mounts, as a tar stream), applies the patch with `git apply`, builds `Dockerfile` on the base, and
+prints the new image's id. Nothing is pulled or pushed.
 
 ## Publish (ops, t2: the owner's approval through the bridge)
 1. **The repo:** a public fork of upstream Doop, on the owner's GitHub account. Its branch `mm/gateway-assertion`

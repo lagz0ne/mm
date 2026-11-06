@@ -7,18 +7,20 @@
 # second login and no cookie; owner and designer edit, member and viewer only look; Doop's own login is off there and
 # a client's cookie or agent key counts for nothing; the loopback side (the design lead's account, its agent key, the
 # MCP) is unchanged; without the gateway's key there is no public side. Throwaway image, containers and networks only.
-#   DOCKER="sudo -n docker" test/doop-gateway.sh [base image]        (base: mm-doop:0.12.0, the pinned one)
-#   DOCKER="sudo -n docker" MM_DOOP_GW_IMAGE=sha256:<id> test/doop-gateway.sh    an image built already (ops' publish
-#                                                                                step), instead of a throwaway build
+# Through mm's Docker wrapper only (test/lib/docker.sh: the installed one; MM_DOCKER_BIN for this checkout's copy).
+#   test/doop-gateway.sh [base image]        (base: mm-doop:0.12.0, the pinned one)
+#   MM_DOOP_GW_IMAGE=sha256:<id> test/doop-gateway.sh    an image built already (ops' publish step), instead of a
+#                                                        throwaway build
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-DOCKER=${DOCKER:-docker}; BASE=${1:-mm-doop:0.12.0}
+. "$HERE/test/lib/docker.sh"
+BASE=${1:-mm-doop:0.12.0}
 D() { $DOCKER "$@"; }; export -f D; export DOCKER
 pass=0; fail=0
 ok() { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }; bad() { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
-T=$(mktemp -d); OUT="$T/check.out"
+T=$(mm_test_dir doopgw); OUT="$T/check.out"   # the tests' area: its name is the throwaway project
 check() { local d=$1; shift; if "$@" >"$OUT" 2>&1; then ok "$d"; else bad "$d"; tail -3 "$OUT" | sed 's/^/       /'; fi; }
-PROJECT="qa-doopgw-$$"; P="$T/$PROJECT"; C="mm-doop-$PROJECT"; NET="mm-doop-net-$PROJECT"; TAG="mm-doop-gw-qa:$$"
+PROJECT=$(basename "$T"); P="$T/$PROJECT"; C="mm-doop-$PROJECT"; NET="mm-doop-net-$PROJECT"; TAG="mm-doop:gwqa-$$"
 free_port() { node -e "const s=require('net').createServer().listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"; }
 PORT=$(free_port); PUB=$(free_port); URL="http://doop.$PROJECT.localhost:1355"; HOST="doop.$PROJECT.example.test"
 B="http://127.0.0.1:$PORT"; PB="http://127.0.0.1:$PUB"
@@ -40,7 +42,7 @@ check "box/doop/build.sh: the patch applies to the pinned image's own source and
 check "...a moved tag is refused (the base must be the image the patch is for)" bash -c "! DOCKER='$DOCKER' '$HERE/box/doop/build.sh' '$TAG-x' '$TAG' 2>&1 | grep -q '^sha256:'"
 # the patch's own unit test (tests/ is not in the image), run in the image against its patched server/
 mkdir -p "$T/src"; git -C "$T/src" apply --include='tests/*' "$HERE/box/doop/0001-gateway-assertion.patch"
-check "the fork's own unit test passes in it (vitest, no network)" bash -c "D run --rm --network none --read-only --tmpfs /tmp -e HOME=/tmp -e NO_COLOR=1 -v '$T/src/tests:/app/tests:ro' --entrypoint sh '$IMAGE' -c 'cd /app && node_modules/.bin/vitest run tests/mmGateway.test.ts --cache=false' >'$T/unit.out' 2>&1; grep -E 'Tests +[0-9]+ passed' '$T/unit.out' && ! grep -q failed '$T/unit.out'"
+check "the fork's own unit test passes in it (vitest, no network)" bash -c "D run --rm --network none --user 210000:$(id -g) --cap-drop ALL --read-only --tmpfs /tmp -e HOME=/tmp -e NO_COLOR=1 -v '$T/src/tests:/app/tests:ro' --entrypoint sh '$IMAGE' -c 'cd /app && node_modules/.bin/vitest run tests/mmGateway.test.ts --cache=false' >'$T/unit.out' 2>&1; grep -E 'Tests +[0-9]+ passed' '$T/unit.out' && ! grep -q failed '$T/unit.out'"
 fi
 
 # the project, as mm stamps it (only what doop-run reads), with a test key in the gateway's place

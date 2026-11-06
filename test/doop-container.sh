@@ -3,20 +3,24 @@
 # project folder, without mm or the process manager. Its own uid (not the host owner's, not root); no way out (no
 # address, no name, none of the host's ports); the board reaches it on loopback; data an older Doop wrote as the host
 # owner still opens, and the host owner can still back it up and remove it. Throwaway containers and networks only.
-#   DOCKER="sudo -n docker" MM_DOOP_IMAGE=<name@sha256:… or sha256:…> test/doop-container.sh
+# Through mm's Docker wrapper (test/lib/docker.sh: the installed one; MM_DOCKER_BIN for this checkout's copy). The older
+# Doop (as the host owner's own uid, which the wrapper refuses) needs plain docker: MM_DOCKER_RAW, else it is skipped.
+#   MM_DOOP_IMAGE=<name@sha256:… or sha256:…> [MM_DOCKER_RAW="sudo -n docker"] test/doop-container.sh
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-DOCKER=${DOCKER:-docker}; IMAGE=${MM_DOOP_IMAGE:?the Doop image, by digest}
-D() { $DOCKER "$@"; }
+. "$HERE/test/lib/docker.sh"
+IMAGE=${MM_DOOP_IMAGE:?the Doop image, by digest}; RAW=${MM_DOCKER_RAW:-}
+D() { $DOCKER "$@"; }; R() { $RAW "$@"; }
 pass=0; fail=0
 ok() { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }; bad() { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
-T=$(mktemp -d); OUT="$T/check.out"
+T=$(mm_test_dir doopc); OUT="$T/check.out"   # the tests' area: its name is the throwaway project
 check() { local d=$1; shift; if "$@" >"$OUT" 2>&1; then ok "$d"; else bad "$d"; tail -3 "$OUT" | sed 's/^/       /'; fi; }
-PROJECT="qa-doopc-$$"; P="$T/$PROJECT"; C="mm-doop-$PROJECT"; NET="mm-doop-net-$PROJECT"; OLDNET="mm-doopc-old-$$"; OLDC="mm-doopc-old-$$"
+PROJECT=$(basename "$T"); P="$T/$PROJECT"; C="mm-doop-$PROJECT"; NET="mm-doop-net-$PROJECT"; OLDNET="mm-doopc-old-$$"; OLDC="mm-doopc-old-$$"
 free_port() { node -e "const s=require('net').createServer().listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"; }
 PORT=$(free_port); URL="http://doop.$PROJECT.localhost:1355"; B="http://127.0.0.1:$PORT"
 RUN=""
-cleanup() { [ -n "$RUN" ] && kill "$RUN" 2>/dev/null; sleep 1; D rm -f "$C" "$OLDC" >/dev/null 2>&1; D network rm "$NET" "$OLDNET" >/dev/null 2>&1
+cleanup() { [ -n "$RUN" ] && kill "$RUN" 2>/dev/null; sleep 1; D rm -f "$C" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1
+  [ -z "$RAW" ] || { R rm -f "$OLDC" >/dev/null 2>&1; R network rm "$OLDNET" >/dev/null 2>&1; }
   kill "${OLDFWD:-}" 2>/dev/null; rm -rf "$T"; }
 trap cleanup EXIT
 up() { for _ in $(seq 1 "${2:-150}"); do curl -sf -o /dev/null "$1/healthz" && return 0; sleep 1; done; return 1; }
@@ -61,23 +65,29 @@ const l = await call({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }
 console.log(`${n} tools`); process.exit(n ? 0 : 1)
 EOF
 
-echo "== an older Doop: as the host owner (umask 022), its account and agent key"
-D network create --internal "$OLDNET" >/dev/null
+if [ -n "$RAW" ]; then
+echo "== an older Doop: as the host owner (umask 022), its account and agent key (plain docker: $RAW)"
+R network create --internal "$OLDNET" >/dev/null
 SECRET=$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))"); DOM="old$$.doop.invalid"
 printf '%s' "$SECRET" >"$P/secrets/doop-auth-secret"; printf '%s' "$DOM" >"$P/secrets/doop-signup-domain"; chmod 600 "$P/secrets/"*
 printf 'NODE_ENV=production\nPORT=4400\nHOME=/tmp\nBETTER_AUTH_URL=%s\nTRUSTED_ORIGINS=%s\nBETTER_AUTH_SECRET=%s\nSIGNUP_EMAIL_DOMAINS=%s\n' "$URL" "$URL" "$SECRET" "$DOM" >"$T/old.env"
-D run -d --rm --name "$OLDC" --network "$OLDNET" --user "$(id -u):$(id -g)" --read-only --tmpfs /tmp --cap-drop ALL -v "$P/data/doop:/app/data" --env-file "$T/old.env" "$IMAGE" >/dev/null
-OIP=$(D inspect -f "{{(index .NetworkSettings.Networks \"$OLDNET\").IPAddress}}" "$OLDC"); OP=$(free_port)
+R run -d --rm --name "$OLDC" --network "$OLDNET" --user "$(id -u):$(id -g)" --read-only --tmpfs /tmp --cap-drop ALL -v "$P/data/doop:/app/data" --env-file "$T/old.env" "$IMAGE" >/dev/null
+OIP=$(R inspect -f "{{(index .NetworkSettings.Networks \"$OLDNET\").IPAddress}}" "$OLDC"); OP=$(free_port)
 socat "TCP-LISTEN:$OP,bind=127.0.0.1,fork,reuseaddr" "TCP:$OIP:4400" 2>/dev/null & OLDFWD=$!
 check "the older Doop answers" up "http://127.0.0.1:$OP"
 check "...its first start: the account and the agent key" node "$P/bin/lib/doop-init.mjs" "http://127.0.0.1:$OP" "$URL" "$P/secrets"
 cp "$P/secrets/doop-agent-key" "$T/old-key"
-D stop -t 10 "$OLDC" >/dev/null; kill "$OLDFWD" 2>/dev/null; D network rm "$OLDNET" >/dev/null
+R stop -t 10 "$OLDC" >/dev/null; kill "$OLDFWD" 2>/dev/null; R network rm "$OLDNET" >/dev/null
 check "its data is the host owner's" bash -c "[ \"\$(stat -c %u '$P/data/doop/pg')\" = '$(id -u)' ]"
+else echo "  skip the older Doop as the host owner's uid (needs MM_DOCKER_RAW: the wrapper runs no container as a real account)"; fi
 
 echo "== the new Doop (bin/doop-run)"
 PORT=$PORT DOOP_URL=$URL "$P/bin/doop-run" >"$T/run.log" 2>&1 & RUN=$!
 check "the board reaches it on loopback ($B)" up "$B"
+if [ -z "$RAW" ]; then  # no older Doop: its own first start made the account and the key, which stand for the older ones
+  check "...its first start: the account and the agent key" bash -c "for i in \$(seq 1 60); do [ -s '$P/secrets/doop-agent-key' ] && exit 0; sleep 1; done; exit 1"
+  cp "$P/secrets/doop-agent-key" "$T/old-key"
+fi
 DU=$(D inspect -f '{{.Config.User}}' "$C" 2>/dev/null)
 check "its own uid ($DU): 210000 + n, not the host owner's, not root" bash -c "u=\${1%%:*}; [ \"\$u\" -ge 210010 ] && [ \"\$u\" -le 210249 ] && [ \"\$u\" != '$(id -u)' ] && [ \"\$(D exec '$C' id -u)\" = \"\$u\" ] && [ \"\${1#*:}\" = '$(id -g)' ]" _ "$DU"
 check "...and its uid matches its network (10.232.<n>.0/24 -> 210000 + n)" bash -c "s=\$(D network inspect -f '{{(index .IPAM.Config 0).Subnet}}' '$NET'); n=\${s#10.232.}; [ \"210000\" -lt \"\${1%%:*}\" ] && [ \$((210000 + \${n%%.*})) = \"\${1%%:*}\" ]" _ "$DU"

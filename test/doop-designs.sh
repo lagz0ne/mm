@@ -4,15 +4,17 @@
 # its first start makes the design lead's account and agent key; a frame made through the MCP; then the board's server
 # from this checkout (a fake bd serve, an item that links the frame) shows it: Doop's own render as a PNG through the
 # board's route, what changed after a new version, the version before still served. Throwaway containers and networks.
-#   DOCKER="sudo -n docker" MM_DOOP_IMAGE=sha256:<64 hex> test/doop-designs.sh
+# Through mm's Docker wrapper (test/lib/docker.sh: the installed one; MM_DOCKER_BIN for this checkout's copy).
+#   MM_DOOP_IMAGE=sha256:<64 hex> test/doop-designs.sh
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-DOCKER=${DOCKER:-docker}; IMAGE=${MM_DOOP_IMAGE:?MM_DOOP_IMAGE=sha256:<64 hex> (the Doop image, by digest)}
+. "$HERE/test/lib/docker.sh"
+IMAGE=${MM_DOOP_IMAGE:?MM_DOOP_IMAGE=sha256:<64 hex> (the Doop image, by digest)}
 pass=0; fail=0
 ok() { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }; bad() { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
-T=$(mktemp -d); OUT="$T/check.out"
+T=$(mm_test_dir designs); OUT="$T/check.out"   # the tests' area: its name is the throwaway project
 check() { local d=$1; shift; if "$@" >"$OUT" 2>&1; then ok "$d"; else bad "$d"; tail -5 "$OUT" | sed 's/^/       /'; fi; }
-PROJECT="qa-designs-$$"; P="$T/$PROJECT"; C="mm-doop-$PROJECT"; NET="mm-doop-net-$PROJECT"
+PROJECT=$(basename "$T"); P="$T/$PROJECT"; C="mm-doop-$PROJECT"; NET="mm-doop-net-$PROJECT"
 free_port() { node -e "const s=require('net').createServer().listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"; }
 PORT=$(free_port); URL="http://doop.$PROJECT.localhost:1355"; B="http://127.0.0.1:$PORT"
 RUN=""

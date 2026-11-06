@@ -2,14 +2,14 @@
 # A project's own Doop (plans/doop.md, sy-d2t), on this machine: a throwaway project, `mm doop on`, and the design
 # lead's MCP the way bin/lead starts it. Needs the Doop image pinned by digest, sha256:<64 hex> (MM_DOOP_IMAGE or doop.image in the config; sy-7452) and
 # docker (MM_DOCKER or box.docker). Nothing outside the throwaway project, its container and its Claude folder changes.
-#   MM_DOCKER="sudo -n docker" MM_DOOP_IMAGE=<image> test/doop.sh [client/name]
+#   MM_DOOP_IMAGE=<image> test/doop.sh [client/name]     (MM_DOCKER: mm's Docker wrapper, through sudo, by default)
 set -uo pipefail
 PROJECTS_DIR=$(grep -qsE '^layout: *.?one-root' "${MM_HOME:-$HOME/.mm}/config.yaml" && echo "${MM_HOME:-$HOME/.mm}/projects" || echo "$HOME/projects")   # where mm keeps projects (its layout)
 REF=${1:-qa/doopt}; PROJECT=${REF/\//-}; ROOT="$PROJECTS_DIR/$REF"
 export PATH="$HOME/.mm/bin:$HOME/.mm/npm/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
 . "$(dirname "$0")/lib/routes.sh"   # this run's routes in its own folder, never in the live web proxy (review sy-uzh)
 unset PASEO_AGENT_ID PASEO_AGENT_CWD CLAUDECODE
-D() { ${MM_DOCKER:-docker} "$@"; }
+D() { ${MM_DOCKER:-sudo -n /usr/local/libexec/mm-docker} "$@"; }
 pass=0; fail=0
 ok() { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }; bad() { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
 check() { local d=$1; shift; if "$@" >/tmp/doop-test.out 2>&1; then ok "$d"; else bad "$d"; tail -3 /tmp/doop-test.out | sed 's/^/       /'; fi; }
