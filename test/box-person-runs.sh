@@ -14,7 +14,7 @@
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd); MMC=${1:-"bun $SRC/src/cli.ts"}
 command -v age >/dev/null && command -v age-keygen >/dev/null || { echo "age is not installed"; exit 2; }
-unset CLAUDECODE PASEO_AGENT_ID PASEO_AGENT_CWD PASEO_WORKSPACE_ID MM_SECRETS_DIR MM_PROJECTS MM_BRAIN MM_SYSTEM MM_API_ENABLED MM_API_DIR LEAD_NEXT LEAD_ITEMS
+unset CLAUDECODE PASEO_AGENT_ID PASEO_AGENT_CWD PASEO_WORKSPACE_ID MM_SECRETS_DIR MM_PROJECTS MM_BRAIN MM_SYSTEM MM_API_ENABLED MM_API_DIR MM_PERSON_RUNS LEAD_NEXT LEAD_ITEMS
 pass=0; fail=0
 ok()   { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }
 bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
@@ -154,7 +154,7 @@ cat >"$T/pc.ts" <<EOF
 import { writeBase } from '$SRC/src/pc'
 writeBase()
 EOF
-check "mm's process file has mm.api while person runs are on (the API itself off), and not when both are off" bash -c "bun '$T/pc.ts' && grep -q 'mm.api:' '$MM_HOME/pc/base.yaml' && printf '$CONF' >'$MM_HOME/config.yaml' && bun '$T/pc.ts' && ! grep -q 'mm.api:' '$MM_HOME/pc/base.yaml'"
+check "mm's process file has mm.api while person runs are on (the API itself off), and not when both are off (a test's MM_PERSON_RUNS=1 neither)" bash -c "bun '$T/pc.ts' && grep -q 'mm.api:' '$MM_HOME/pc/base.yaml' && printf '$CONF' >'$MM_HOME/config.yaml' && MM_PERSON_RUNS=1 bun '$T/pc.ts' && ! grep -q 'mm.api:' '$MM_HOME/pc/base.yaml'"
 on
 
 echo '== limits: one start at a time, and a rate per box'

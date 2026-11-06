@@ -11,7 +11,10 @@ import { DIRS } from './env'
 export const MODEL_HOST = 'api.anthropic.com'
 /** Person runs on for this machine (`mm config set wake.person_runs true`): the host's wake starts its leads per person,
  *  and a box's wake may ask the host for them (src/boxruns.ts, over the box's mm.api socket). Off as shipped. */
-export const personRunsOn = () => { const v = getPath(loadConfig(), 'wake.person_runs'); return v === true || ['true', 'on', 'yes'].includes(String(v)) }
+export const personRunsConfigured = () => { const v = getPath(loadConfig(), 'wake.person_runs'); return v === true || ['true', 'on', 'yes'].includes(String(v)) }
+/** ...or on for a test's own mm.api on a live machine (MM_PERSON_RUNS=1, test/box.sh): never the machine's process
+ *  manager (that is the config only, src/pc.ts). */
+export const personRunsOn = () => process.env.MM_PERSON_RUNS === '1' || personRunsConfigured()
 /** A run mm started: whose, for which role, its agent (null until Paseo gave its id), and when. */
 export type PersonRun = { person: string; role: string; agent: string | null; at: number }
 const PROJECT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/

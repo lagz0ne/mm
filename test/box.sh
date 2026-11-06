@@ -316,6 +316,35 @@ check "secret qa-secret: pending; approved: mm needs lists $PROJECT:qa-secret fo
 check "a call in no format, or not one of the four: refused" sh -c "APICALL route '{\"name\":\"Bad Name\"}' | jq -e '.why == \"format\"' && [ \"\$(D exec '$BOX' curl -s -o /dev/null -w '%{http_code}' --unix-socket /run/mm/api/api.sock -X POST -d '{}' http://api/shell)\" = 404 ]"
 check "every call is logged on the host with the box's project (from its socket)" sh -c "[ \$(grep -c '\"box\":\"$PROJECT\"' '$AIT/api.log') -ge 6 ] && ! grep -q someone-else '$AIT/api.log'"
 
+echo "== person runs (sy-9618): the box's wake asks the host on its socket; the host decides"
+# this test's mm.api again, with person runs on for it only (MM_PERSON_RUNS=1; never the machine's config), then off
+# again. Only while the owner has no personal token: else the box's wake could start a real run on it in the window
+OWNER=$(mm config get owner_name 2>/dev/null || true)
+PR() { D exec "$BOX" curl -s --max-time 60 --unix-socket /run/mm/api/api.sock -H 'content-type: application/json' "$@" http://api/person-run; }
+PRC() { D exec "$BOX" curl -s -o /dev/null -w '%{http_code}' --max-time 60 --unix-socket /run/mm/api/api.sock -H 'content-type: application/json' "$@" http://api/person-run; }
+personless() { BP ls -g --label "project=$PROJECT" --label "person=$1" --json 2>/dev/null | jq -e 'length == 0' >/dev/null; }
+export -f PR PRC personless; export OWNER
+if [ -z "$OWNER" ] || [ -e "$MM_HOME_DIR/vault/claude_token.$OWNER.age" ]; then
+  echo "  (skipped: the machine has no owner_name, or the owner has a personal token, and a real run could start on it)"
+else
+  kill "$APIGW" 2>/dev/null; wait "$APIGW" 2>/dev/null
+  MM_PERSON_RUNS=1 mm api serve >>"$AIT/api.log" 2>&1 & APIGW=$!
+  for _ in $(seq 1 30); do PR 2>/dev/null | grep -q '"on"' && break; sleep 1; done
+  check "from the box: GET /person-run says on, with the machine's sponsor ($OWNER)" sh -c "PR | jq -e --arg o '$OWNER' '.status == \"on\" and .sponsor == \$o'"
+  check "a person with no account here: refused (no-role), and no run of theirs in the box's Paseo" sh -c "[ \"\$(PRC -d '{\"role\":\"setup\",\"person\":\"qa-nobody\"}')\" = 403 ] && PR -d '{\"role\":\"setup\",\"person\":\"qa-nobody\"}' | jq -e '.why == \"no-role\"' && personless qa-nobody"
+  check "the owner with no personal token: refused (no-token, with the token page), never the machine's token: no run" sh -c "PR -d '{\"role\":\"setup\",\"person\":\"$OWNER\"}' | jq -e '.why == \"no-token\" and (.message | test(\"/s/token\"))' && personless '$OWNER'"
+  check "fields not in their formats: refused (400)" sh -c "[ \"\$(PRC -d '{\"role\":\"setup;x\",\"person\":\"$OWNER\"}')\" = 400 ] && [ \"\$(PRC -d '{\"role\":\"setup\",\"person\":\"$OWNER\",\"items\":[\"a b\"]}')\" = 400 ]"
+  check "...each ask logged on the host with the box's project (from its socket) and the person" sh -c "grep '\"person run refused' '$AIT/api.log' | grep '\"box\":\"$PROJECT\"' | grep -q '\"person\":\"qa-nobody\"'"
+  # the box's wake (Node, as the box user) reaches the socket too: it says what the host said at its next pass (60 s)
+  for _ in $(seq 1 45); do grep -q 'person runs in this box: on' "$ROOT/.run/logs/wake.log" 2>/dev/null && break; sleep 2; done
+  check "the box's wake asked the host itself and heard: on, with the sponsor" grep -q "person runs in this box: on: the host starts them (the sponsor: $OWNER)" "$ROOT/.run/logs/wake.log"
+  check "...and started no lead on anyone's token meanwhile (no person run in the box's Paseo)" personless "$OWNER"
+  kill "$APIGW" 2>/dev/null; wait "$APIGW" 2>/dev/null
+  mm api serve >>"$AIT/api.log" 2>&1 & APIGW=$!
+  for _ in $(seq 1 30); do PR 2>/dev/null | grep -q '"off"' && break; sleep 1; done
+  check "person runs off again (this test's mm.api as before): GET says off, an ask is refused (off)" sh -c "PR | jq -e '.status == \"off\"' && PR -d '{\"role\":\"setup\",\"person\":\"$OWNER\"}' | jq -e '.why == \"off\"'"
+fi
+
 echo "== its public board: from the host to the box, Traefik never on the box's network (review sy-b15.7 2)"
 PUBPORT=$(jq -r '.services.board.public_port // empty' "$ROOT/.run/services.json"); PUBBIND=$(jq -r '.services.board.public_bind // empty' "$ROOT/.run/services.json")
 PUBNAME=$(jq -r '.services.board.public.name // empty' "$ROOT/.run/services.json")
