@@ -308,6 +308,9 @@ export function up(root: string): Step[] {
   // with the host owner's group, so the host's tools still reach what the box writes (umask 002 in the box). An escape,
   // or a file the box leaves behind, is an unprivileged uid on the host.
   const id = boxIds(net.subnet), gid = process.getgid?.() ?? 1000
+  // the app the host ran, carried over at box on (sy-im89): its files become the box user's, so the app may set its own
+  // modes as it did on the host (an app that chmods its data folder: EPERM on the host owner's files)
+  if (api.on && api.granted.release?.id === CARRIED_ID) { const g = giveBuild(root, api.granted.release.build, id.uid, gid); if (g) steps.push(g) }
   const sec = vault.runtimeDir(a.project); chmodSync(sec, 0o750) // the box reads (its group), never writes
   copyFileSync(paseoPasswordFile(a.project), join(sec, 'paseo.password')); chmodSync(join(sec, 'paseo.password'), 0o640)
   const declared = [...new Set(Object.values(resolve(root).services).flatMap((x) => x.secrets || []))]
@@ -619,6 +622,29 @@ export function carryHostApp(root: string): Step[] {
   try { mkdirSync(dest); for (const f of top) renameSync(join(rel, f), join(dest, f)) } catch (e) { return [{ step: 'app', status: 'fail', detail: `could not move the host's app into release/${build}/: ${(e as Error).message}` }] }
   saveGranted(a.project, { ...granted(a.project), release: { build, id: CARRIED_ID } })
   return [{ step: 'app', status: 'ok', detail: `the app the host ran is the box's build release/${build}/ (carried over at box on; a new build goes through the project API)` }]
+}
+/**
+ * The carried-over build's files become the box user's (with the box stopped: up() runs this before the box starts).
+ * Only a file's owner may change its mode, and the app the host ran sets its own (a data folder 0700, as playground's
+ * does). Without root and without chown: the host's owner opens its own files there to the group (folders setgid),
+ * then a short container as the box's uid (no network, no capabilities, release/ its only mount) copies the build (the
+ * copy is its own), renames the old one aside and the copy into its place, and the host removes the old one. Nothing is
+ * removed before the copy is whole. Nothing to do when the box's uid owns all of it already. box off takes it back
+ * (reclaim's take), with the rest of the project.
+ */
+function giveBuild(root: string, build: string, uid: number, gid: number): Step | null {
+  const rel = join(realpathSync(root), 'release'), dir = join(rel, build), me = String(process.getuid?.() ?? 1000)
+  try { if (!lstatSync(dir).isDirectory()) return { step: 'app build', status: 'fail', detail: `release/${build} is not a folder` } } catch { return null }
+  const left = run(['find', dir, '!', '-user', String(uid), '-print', '-quit'])
+  if (!left.ok || !left.out.trim()) return null
+  run(['find', dir, '-user', me, '(', '(', '-type', 'd', '-exec', 'chmod', 'g+rwxs', '{}', '+', ')', '-o', '(', '-type', 'f', '-exec', 'chmod', 'g+rw', '{}', '+', ')', ')'])
+  try { chmodSync(rel, (lstatSync(rel).mode & 0o7777) | 0o2070) } catch {}
+  const tmp = `.${build}.box`, old = `.${build}.host`
+  const c = docker('run', '--rm', '--network', 'none', '--user', `${uid}:${gid}`, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    '-v', `${rel}:${rel}`, '--entrypoint', 'sh', IMAGE(), '-c', 'set -e; cd "$1"; rm -rf "$3"; cp -a "$2" "$3"; rm -rf "$4"; mv "$2" "$4"; mv "$3" "$2"', 'sh', rel, build, tmp, old)
+  if (!c.ok) return { step: 'app build', status: 'fail', detail: `release/${build}/ stays the host owner's (its app may not set its own modes): ${short(c)}` }
+  rmSync(join(rel, old), { recursive: true, force: true })
+  return { step: 'app build', status: 'ok', detail: `release/${build}/ is the box user's now (its app sets its own modes, as on the host)` }
 }
 export function uncarryHostApp(root: string): Step[] {
   const a = readAnswers(root)
