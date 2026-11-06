@@ -38,9 +38,10 @@ PCY="$MM_HOME/box/acme-shop/cfg/pc.yaml"
 # gives the app slot: its workdir, or "none"), egress (the box's list)
 cat >"$T/w.ts" <<EOF
 import { saveGranted } from '$SRC/src/apistate'
-import { appReload, egressList } from '$SRC/src/box'
+import { appReload, carryHostApp, egressList, uncarryHostApp } from '$SRC/src/box'
 import { resolve } from '$SRC/src/project'
 const [what, x, y] = process.argv.slice(2), root = '$R'
+if (what === 'carry' || what === 'uncarry') { const st = what === 'carry' ? carryHostApp(root) : uncarryHostApp(root); console.log(JSON.stringify(st)); if (st.some((s) => s.status === 'fail')) process.exit(1) }
 if (what === 'grant') saveGranted('acme-shop', { routes: [], egress: y ? [{ site: y, id: 'r-2' }] : [], release: x === '-' ? null : { build: x, id: 'r-1' }, secrets: [] })
 if (what === 'reload') { const st = appReload(root); if (st.some((s) => s.status === 'fail')) { console.error(JSON.stringify(st)); process.exit(1) } }
 if (what === 'slot') console.log(resolve(root).services.app?.workdir ?? 'none')
@@ -66,5 +67,14 @@ echo "== when that API is gone"
 check "the test's store removed: the app slot runs release/ again (as before the API)" sh -c "rm -rf '$T/store' && [ \"\$(OTHER slot)\" = '$R/release' ]"
 check "the machine's own store noted (its config had the API on), the API off now: release/ again (the owner turned it off)" sh -c "MM_API_ENABLED=1 bun '$T/w.ts' reload && jq -e --arg d '$MM_HOME/api' '.dir == \$d' '$MM_HOME/box/acme-shop/api-store.json' && [ \"\$(OTHER slot)\" = '$R/release' ]"
 check "nothing of the box on the host's process manager" sh -c "! grep -q 'acme-shop\\.' '$T/pc.log' 2>/dev/null"
+
+echo "== the app the host ran, into the box at box on and back at box off (sy-im89)"
+rm -rf "$T/store" "$R/release"; mkdir -p "$R/release/lib"; echo 'srv' >"$R/release/server.js"; echo 'x' >"$R/release/lib/x.js"
+check "box on with the API on: the host's app moves to release/host-<time>/, recorded as the box's build (id box-on)" sh -c "TESTAPI carry >'$T/carry.out' && b=\$(jq -r '.release.build' '$T/store/granted/acme-shop.json') && echo \"\$b\" | grep -Eq '^host-[0-9]{8}t[0-9]{6}\$' && jq -e '.release.id == \"box-on\"' '$T/store/granted/acme-shop.json' && [ -f '$R/release/'\$b/server.js ] && [ -f '$R/release/'\$b/lib/x.js ] && [ ! -e '$R/release/server.js' ]"
+check "...the box's app slot runs it" sh -c "b=\$(jq -r '.release.build' '$T/store/granted/acme-shop.json'); [ \"\$(TESTAPI slot)\" = '$R/release/'\$b ]"
+check "...a second box on carries nothing more (a build is granted already)" sh -c "TESTAPI carry | grep -qx '\\[\\]'"
+check "box off: the app is back in release/, its record gone, and the host runs release/ again" sh -c "TESTAPI uncarry >/dev/null && [ -f '$R/release/server.js' ] && [ -f '$R/release/lib/x.js' ] && ! ls '$R/release' | grep -q '^host-' && jq -e '.release == null' '$T/store/granted/acme-shop.json'"
+check "...a build the owner approved through the API (not carried) stays where it is at box off" sh -c "TESTAPI grant v9 && mkdir -p '$R/release/v9' && TESTAPI uncarry | grep -qx '\\[\\]' && [ -d '$R/release/v9' ] && jq -e '.release.build == \"v9\"' '$T/store/granted/acme-shop.json'"
+check "with the API off: nothing is carried (the slot runs release/ as on the host)" sh -c "rm -rf '$T/store' && OTHER carry | grep -qx '\\[\\]' && [ -f '$R/release/server.js' ]"
 
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]

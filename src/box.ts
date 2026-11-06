@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { AI_PORT, aiEnabled, aiSocket, mintKey, revokeKeys, store as aiStore } from './ai'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { apiSocketDir, boxApi, noteBoxApi } from './apistate'
+import { apiEnabled, apiSocketDir, boxApi, granted, noteBoxApi, saveGranted } from './apistate'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, HOME, run, which } from './env'
 import { MM_LOG_CONFIG } from './obs'
@@ -585,7 +585,8 @@ export function on(root: string): Step[] {
   sealEngine(root); steps.push({ step: 'engine', status: 'ok', detail: 'bin/ and site/ sealed on the host' })
   // ...and the mm-template commit (the base of every later mm update), from the host's own repo (review sy-055t)
   recordTemplate(root); steps.push({ step: 'template base', status: 'ok', detail: recordedTemplate(a.project) ? `mm-template ${recordedTemplate(a.project).slice(0, 12)} recorded on the host` : 'no mm-template branch to record (mm update refuses until it has one)' })
-  steps.push(setBox(root, true), ...up(root))
+  // the app the host ran goes with it, as the box's build (sy-im89)
+  steps.push(...carryHostApp(root), setBox(root, true), ...up(root))
   return steps
 }
 /** `mm box off <project>`: back onto the host (the box stops, its files go back to the host's owner). */
@@ -594,8 +595,44 @@ export function off(root: string): Step[] {
   if (!a.box) return [{ step: 'box off', status: 'skip', detail: `${a.project} is not a box` }]
   const steps = [...down(root), ...reclaim(root, true), paseoJoin(a.project, null)] // on the host, its agents are the machine Paseo's own
   rmSync(join(BOXES, `${a.project}.yaml`), { force: true })
-  steps.push(setBox(root, false), ...projectUp(root))
+  steps.push(...uncarryHostApp(root), setBox(root, false), ...projectUp(root))
   return steps
+}
+
+// ---------- the app the host ran, into the box and back (sy-im89) ----------
+// With the project API on, a box's app slot runs only a build the owner approved (release/<build>, the host's record of
+// the grant), never what is in release/ by itself. A project that ran on the host has its deployed app right in
+// release/ (its services.yaml: workdir {root}/release). So at box on, while nothing of the project runs, the host moves
+// that app into release/host-<time>/ and records it as the box's build: the owner approved the go, which moves the
+// project into its box as it is. Every later build goes through the project API. At box off, it goes back to release/.
+const CARRIED_ID = 'box-on' // the record's id: carried over at box on, not a request the owner approved through the API
+export function carryHostApp(root: string): Step[] {
+  const a = readAnswers(root)
+  if (!apiEnabled() || granted(a.project).release) return []
+  const rel = join(realpathSync(root), 'release')
+  let st: Stats; try { st = lstatSync(rel) } catch { return [] }
+  if (!st.isDirectory()) return [{ step: 'app', status: 'fail', detail: 'release/ is not a folder: no app carried into the box' }]
+  const top = readdirSync(rel)
+  if (!top.length) return []
+  const build = `host-${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15).toLowerCase()}` // host-20261106t174512
+  const dest = join(rel, build)
+  try { mkdirSync(dest); for (const f of top) renameSync(join(rel, f), join(dest, f)) } catch (e) { return [{ step: 'app', status: 'fail', detail: `could not move the host's app into release/${build}/: ${(e as Error).message}` }] }
+  saveGranted(a.project, { ...granted(a.project), release: { build, id: CARRIED_ID } })
+  return [{ step: 'app', status: 'ok', detail: `the app the host ran is the box's build release/${build}/ (carried over at box on; a new build goes through the project API)` }]
+}
+export function uncarryHostApp(root: string): Step[] {
+  const a = readAnswers(root)
+  if (!apiEnabled()) return []
+  const g = granted(a.project), b = g.release?.id === CARRIED_ID ? g.release.build : ''
+  if (!/^host-\d{8}t\d{6}$/.test(b)) return []
+  const rel = join(realpathSync(root), 'release'), src = join(rel, b)
+  let st: Stats; try { st = lstatSync(src) } catch { saveGranted(a.project, { ...g, release: null }); return [] }
+  if (!st.isDirectory()) return [{ step: 'app', status: 'fail', detail: `release/${b} is not a folder: the app stays where it is` }]
+  const names = readdirSync(src), clash = names.filter((f) => existsSync(join(rel, f)))
+  if (clash.length) return [{ step: 'app', status: 'fail', detail: `release/ already has ${clash.slice(0, 3).join(', ')}: the app stays in release/${b}/` }]
+  try { for (const f of names) renameSync(join(src, f), join(rel, f)); rmdirSync(src) } catch (e) { return [{ step: 'app', status: 'fail', detail: `could not move release/${b}/ back: ${(e as Error).message}` }] }
+  saveGranted(a.project, { ...g, release: null })
+  return [{ step: 'app', status: 'ok', detail: `release/${b}/ back in release/, where the host runs it` }]
 }
 /** The answers' `box:` line, committed in the project's config repo (as mm update commits its answers). */
 function setBox(root: string, on: boolean): Step {
