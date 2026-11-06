@@ -16,7 +16,7 @@ check() { local d=$1; shift; if "$@" >/tmp/box-test.out 2>&1; then ok "$d"; else
 BOX=mm-box-$PROJECT; PX=mm-egress-$PROJECT; NET=mm-net-$PROJECT; MM_HOME_DIR=${MM_HOME:-$HOME/.mm}
 D() { $MM_DOCKER "$@"; }
 IN() { D exec "$BOX" sh -c "umask 002; $*"; }   # as mm shell does
-cleanup() { [ -n "${AIGW:-}" ] && kill $AIGW 2>/dev/null; [ -n "${SYSPID:-}" ] && kill $SYSPID 2>/dev/null; [ -n "${AIUP:-}" ] && kill $AIUP 2>/dev/null; [ -n "${AIT:-}" ] && rm -rf "$AIT"
+cleanup() { [ -n "${AIGW:-}" ] && kill $AIGW 2>/dev/null; [ -n "${APIGW:-}" ] && kill $APIGW 2>/dev/null; [ -n "${SYSPID:-}" ] && kill $SYSPID 2>/dev/null; [ -n "${AIUP:-}" ] && kill $AIUP 2>/dev/null; [ -n "${AIT:-}" ] && rm -rf "$AIT"
   [ -n "${KEEP:-}" ] && return; mm archive "$REF" >/dev/null 2>&1; [ -n "${BKP:-}" ] && rm -rf "$BKP"; [ -n "${CAN:-}" ] && rm -rf "$CAN"; D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1; }
 trap cleanup EXIT
 export -f D IN; export BOX PX NET MM_DOCKER
@@ -45,6 +45,24 @@ http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); r
 EOF
 node "$AIT/up.mjs" $AIUPP "$AIT/up.jsonl" & AIUP=$!
 mm ai serve >"$AIT/ai.log" 2>&1 & AIGW=$!
+# mm's project API for this test only (sy-b15.8): its own store and owner socket, a stand-in for the system board (no
+# item on the live one), no owner notice (a dead Telegram address), and this test's box only (MM_API_*: src/api.ts).
+# The box gets its socket at mm up; its app slot runs only a build approved here.
+export MM_API_ENABLED=1 MM_API_DIR="$AIT/api" MM_API_BD="$AIT/fakebd" MM_API_FAKE_DIR="$AIT" MM_API_ONLY="$PROJECT" MM_API_SYNC_MS=500 MM_TELEGRAM_API=http://127.0.0.1:9
+cat >"$AIT/fakebd" <<'EOF'
+#!/usr/bin/env node
+const fs = require('fs'), T = process.env.MM_API_FAKE_DIR, a = process.argv.slice(2)
+fs.appendFileSync(`${T}/bd.jsonl`, JSON.stringify(a) + '\n')
+const lf = (id) => `${T}/labels-${id}`
+if (a[0] === 'create') { const n = (fs.existsSync(`${T}/bd.n`) ? Number(fs.readFileSync(`${T}/bd.n`, 'utf8')) : 0) + 1; fs.writeFileSync(`${T}/bd.n`, String(n)); console.log(JSON.stringify({ id: `qa-${n}` })) }
+else if (a[0] === 'show') console.log(JSON.stringify([{ id: a[1], labels: fs.existsSync(lf(a[1])) ? fs.readFileSync(lf(a[1]), 'utf8').split('\n').filter(Boolean) : [] }]))
+else if (a[0] === 'label' && a[1] === 'add') fs.appendFileSync(lf(a[2]), a[3] + '\n')
+EOF
+chmod +x "$AIT/fakebd"
+mm api serve >"$AIT/api.log" 2>&1 & APIGW=$!
+# a call from the box on its own socket (the box's user, docker exec with no shell in between)
+APICALL() { D exec "$BOX" curl -s --unix-socket /run/mm/api/api.sock -X POST -H 'content-type: application/json' -d "$2" "http://api/$1"; }
+export -f APICALL
 # a throwaway machine Paseo (the live one is never touched): mm up joins the box to it (sy-9q1)
 SYSP=$(( AIUPP + 7 )); export MM_PASEO_JOIN_HOME="$AIT/sys"; mkdir -p "$MM_PASEO_JOIN_HOME"
 PASEO_HOME="$MM_PASEO_JOIN_HOME" PASEO_LISTEN="127.0.0.1:$SYSP" PASEO_RELAY_ENABLED=false PASEO_WEB_UI_ENABLED=false paseo daemon run >"$AIT/sys.log" 2>&1 & SYSPID=$!
@@ -222,6 +240,35 @@ check "Claude Code in the box answers through the gateway (claude -p, the box's 
 check "...the upstream saw only the machine's key, never the box's" sh -c "grep -q 'upstream-secret-qa' '$AIT/up.jsonl' && ! grep -q mmk_ '$AIT/up.jsonl'"
 check "...and mm usage counts it for this project" sh -c "mm ai usage -o json | jq -e --arg p '$PROJECT' '.[0].rows[] | select(.project == \$p) | .calls >= 2'"
 
+echo "== the project API (sy-b15.8): the box asks on its own socket; only the owner decides, on the host"
+APS="$MM_HOME_DIR/box/$PROJECT/api/api.sock"
+for _ in $(seq 1 30); do [ -S "$APS" ] && IN 'test -S /run/mm/api/api.sock' && break; sleep 1; done
+check "the box has its socket (/run/mm/api/api.sock), in a folder it can't change" sh -c "IN 'test -S /run/mm/api/api.sock' && ! IN 'touch /run/mm/api/x' && ! IN 'rm -f /run/mm/api/api.sock' && [ -S '$APS' ]"
+check "...only its own: no owner socket, no other box's, nothing of mm.api's store in the box" sh -c "[ \"\$(IN 'ls -A /run/mm/api')\" = api.sock ] && ! IN 'grep -q approve.sock /proc/self/mountinfo' && ! IN 'test -e $MM_HOME_DIR/box' && ! IN 'test -e $MM_HOME_DIR/api'"
+OUT=$(APICALL egress '{"site":"example.com","project":"someone-else"}'); QE=$(echo "$OUT" | jq -r .id); QI=$(echo "$OUT" | jq -r .item)
+check "from the box: egress example.com is pending (a status, a request id, an item id: nothing else)" sh -c "echo '$OUT' | jq -e '.status == \"pending\" and (keys | sort) == [\"id\",\"item\",\"status\"]'"
+check "...the item is for this box's project, whatever the call said" sh -c "grep '\"create\"' '$AIT/bd.jsonl' | tail -1 | jq -e '.[1] == \"mm.api: $PROJECT asks for egress example.com\"'"
+check "...the box can't decide it: no approve call on its socket (404)" sh -c "[ \"\$(D exec '$BOX' curl -s -o /dev/null -w '%{http_code}' --unix-socket /run/mm/api/api.sock -X POST -d '{}' http://api/approve)\" = 404 ]"
+"$AIT/fakebd" label add "$QI" approved >/dev/null; "$AIT/fakebd" label add "$QI" signed-off >/dev/null; sleep 2
+check "...labels decide nothing (approved, signed-off): still pending, example.com still refused by the proxy" sh -c "[ \"\$(mm api show '$QE' -o json | jq -r .status)\" = pending ] && ! IN 'curl -s -o /dev/null --max-time 20 -x http://$PX:8888 https://example.com/'"
+check "...an agent's shell can't approve it (CLAUDECODE)" sh -c "! CLAUDECODE=1 mm api approve '$QE' --hash \$(mm api show '$QE' -o json | jq -r .hash | cut -c1-12) && [ \"\$(mm api show '$QE' -o json | jq -r .status)\" = pending ]"
+QH=$(mm api show "$QE" -o json | jq -r .hash)
+check "the owner approves (review signed off): example.com goes through the box's proxy" sh -c "mm api approve '$QE' --hash ${QH:0:12} >/dev/null && for i in \$(seq 1 20); do IN 'curl -s -o /dev/null --max-time 10 -x http://$PX:8888 https://example.com/' && exit 0; sleep 1; done; exit 1"
+check "...the box's AI gateway port still answers after the proxy's restart" sh -c "for i in \$(seq 1 20); do [ \"\$(IN \"curl -s -o /dev/null -w '%{http_code}' --noproxy '*' http://$PX:4000/v1/messages -H 'x-api-key: mmk_nope' -d '{}'\")\" = 401 ] && exit 0; sleep 1; done; exit 1"
+check "...mm api undo: example.com is refused again" sh -c "mm api undo '$QE' >/dev/null && sleep 3 && ! IN 'curl -s -o /dev/null --max-time 20 -x http://$PX:8888 https://example.com/'"
+# a build the box made in release/ (the host made release/ for it): it runs nowhere until the owner approves it
+D exec "$BOX" sh -c 'umask 002 && mkdir -p "$1/release/qa1" && echo "require(\"http\").createServer((q, s) => s.end(\"QA-APP-OK\")).listen(process.env.PORT)" > "$1/release/qa1/server.js"' sh "$ROOT"
+check "a build in release/qa1 runs nowhere by itself (no app slot)" sh -c "! mm inspect '$REF' | grep -q '^app '"
+OUT=$(APICALL release '{"build":"qa1"}'); QR=$(echo "$OUT" | jq -r .id); QRH=$(mm api show "$QR" -o json | jq -r .hash)
+check "release qa1: pending" sh -c "echo '$OUT' | jq -e '.status == \"pending\"'"
+check "...approved: the box's app slot runs it, in the box (its own process manager loads it; the box keeps running)" sh -c "mm api approve '$QR' --hash ${QRH:0:12} >/dev/null && for i in \$(seq 1 40); do IN 'curl -sf --max-time 3 http://app.$PROJECT.localhost:1355/' | grep -q QA-APP-OK && exit 0; sleep 2; done; exit 1"
+check "...as the box user, and not on the host's process manager" sh -c "[ \"\$(IN 'ps -o uid= -p \$(pgrep -f \"node server.js\" | head -1)' | tr -d ' ')\" -ge 200000 ] && ! process-compose -U -u $HOME/.mm/pc.sock process list -o json | jq -e '.[] | select(.name == \"$PROJECT.app\")'"
+check "...mm api undo: the build leaves the app slot" sh -c "mm api undo '$QR' >/dev/null && for i in \$(seq 1 30); do IN 'curl -sf --max-time 3 http://app.$PROJECT.localhost:1355/' 2>/dev/null | grep -q QA-APP-OK || exit 0; sleep 2; done; exit 1"
+OUT=$(APICALL secret '{"name":"qa-secret"}'); QS=$(echo "$OUT" | jq -r .id); QSH=$(mm api show "$QS" -o json | jq -r .hash)
+check "secret qa-secret: pending; approved: mm needs lists $PROJECT:qa-secret for the owner to fill (no value went anywhere)" sh -c "echo '$OUT' | jq -e '.status == \"pending\"' && mm api approve '$QS' --hash ${QSH:0:12} >/dev/null && mm needs -p '$PROJECT' -o json | jq -e '.[] | select(.name == \"qa-secret\" and .status == \"missing\")'"
+check "a call in no format, or not one of the four: refused" sh -c "APICALL route '{\"name\":\"Bad Name\"}' | jq -e '.why == \"format\"' && [ \"\$(D exec '$BOX' curl -s -o /dev/null -w '%{http_code}' --unix-socket /run/mm/api/api.sock -X POST -d '{}' http://api/shell)\" = 404 ]"
+check "every call is logged on the host with the box's project (from its socket)" sh -c "[ \$(grep -c '\"box\":\"$PROJECT\"' '$AIT/api.log') -ge 6 ] && ! grep -q someone-else '$AIT/api.log'"
+
 echo "== its public board: from the host to the box, Traefik never on the box's network (review sy-b15.7 2)"
 PUBPORT=$(jq -r '.services.board.public_port // empty' "$ROOT/.run/services.json"); PUBBIND=$(jq -r '.services.board.public_bind // empty' "$ROOT/.run/services.json")
 PUBNAME=$(jq -r '.services.board.public.name // empty' "$ROOT/.run/services.json")
@@ -279,6 +326,7 @@ IN "rm -f $ROOT/.run/logs/cwh.log" >/dev/null 2>&1
 echo "== archive"
 check "mm archive: the box and its proxy are gone, and what mm kept for it" sh -c "mm archive '$REF' >/dev/null && ! D inspect '$BOX' >/dev/null 2>&1 && ! D inspect '$PX' >/dev/null 2>&1 && ! D network inspect '$NET' >/dev/null 2>&1 && ! test -e '$HD' && ! test -e '$PW' && ! test -e '$MM_HOME_DIR/paseo/$PROJECT' && ! test -e '$MM_HOME_DIR/egress/$PROJECT'"
 check "...and it left the machine's Paseo" sh -c "[ -z \"\$(joined)\" ]"
+check "...and what the owner granted it through the project API (its requests stay, for the audit)" sh -c "! test -e '$AIT/api/granted/$PROJECT.json' && mm api show '$QE' -o json | jq -e '.status == \"undone\"'"
 check "...its public forwarder and its route are gone" sh -c "! test -e '$MM_HOME_DIR/pc/box-public/$PROJECT.yaml' && { [ -z '$PUBNAME' ] || ! $MM_EXPOSE ls | grep -q '$PUBNAME'; }"
 check "no route written into the live web proxy (review sy-uzh)" live_routes_same
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]
