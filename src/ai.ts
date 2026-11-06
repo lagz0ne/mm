@@ -15,13 +15,16 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } f
 import { join } from 'node:path'
 import type { Server } from 'bun'
 import { servedBoxes } from './boxreg'
-import { getPath, loadConfig } from './config'
+import { type Config, getPath, loadConfig } from './config'
 import { DIRS } from './env'
 import { expand, machineInputs } from './inputs'
 
-// MM_AI_DIR, MM_AI_UPSTREAM, MM_AI_UPSTREAM_KEY_FILE and MM_AI_ENABLED are for tests on a live machine (test/box.sh):
-// a throwaway store, upstream and key, with the machine's config untouched
+// MM_AI_DIR, MM_AI_UPSTREAM, MM_AI_UPSTREAM_KEY_FILE, MM_AI_UPSTREAM_AUTH and MM_AI_ENABLED are for tests on a live
+// machine (test/box.sh): a throwaway store, upstream, key and auth, with the machine's config untouched (a machine in
+// oauth mode sent the test's stand-in a Bearer header it refused; sy-bpgq)
 export const AI_DIR = process.env.MM_AI_DIR || join(DIRS.mm, 'ai')
+/** How the upstream key goes up: x-api-key (the default), bearer, or oauth (ai.upstream_auth; MM_AI_UPSTREAM_AUTH, tests). */
+const upstreamAuth = (c: Config) => String(process.env.MM_AI_UPSTREAM_AUTH || getPath(c, 'ai.upstream_auth') || 'x-api-key')
 export const aiEnabled = () => { if (process.env.MM_AI_ENABLED === '1') return true; const v = getPath(loadConfig(), 'ai.enabled'); return v === true || v === 'true' }
 export const aiSocket = (project: string) => join(DIRS.mm, 'box', project, 'ai', 'ai.sock')
 export const AI_PORT = 4000 // the port the box's egress proxy forwards to the box's socket
@@ -260,7 +263,7 @@ export async function serve() {
       log('warn', 'key refused', { box: project, key: raw ? h(raw).slice(0, 6) : undefined, why: !k ? 'unknown' : k.revoked ? 'revoked' : k.expires < now() ? 'expired' : `for ${k.project}` })
       return apiError(401, 'authentication_error', 'this key is not valid for this project (it may have expired)')
     }
-    if (String(getPath(cfg(), 'ai.upstream_auth') || '') === 'oauth') {
+    if (upstreamAuth(cfg()) === 'oauth') {
       const no = ownerOnly(k, String(getPath(cfg(), 'owner_name') ?? 'owner'))
       if (no) { log('warn', 'oauth mode: not the owner\'s own use', { box: project, person: k.person || undefined, why: no }); return apiError(403, 'permission_error', no) }
     }
@@ -295,7 +298,7 @@ export async function serve() {
     const headers = new Headers()
     for (const n of PASS_HEADERS) { const v = req.headers.get(n); if (v) headers.set(n, v) }
     // the client's own authorization / x-api-key (the box's mm key) are not among the passed headers: only ours goes up
-    const auth = String(getPath(cfg(), 'ai.upstream_auth') || 'x-api-key')
+    const auth = upstreamAuth(cfg())
     let beta = betaHeader(req.headers.get('anthropic-beta'), serverOk); if (auth === 'oauth') beta = mergeBeta(beta, OAUTH_BETA)
     if (beta) headers.set('anthropic-beta', beta)
     if (auth === 'bearer' || auth === 'oauth') headers.set('authorization', `Bearer ${key}`); else headers.set('x-api-key', key)
@@ -359,6 +362,6 @@ export async function serve() {
     }
   }
   sync(); setInterval(sync, 5000)
-  log('info', 'mm.ai up', { upstream: upstream(), upstream_key_input: upstreamInput(cfg()), upstream_auth: String(getPath(cfg(), 'ai.upstream_auth') || 'x-api-key'), max_parallel: maxParallel() })
+  log('info', 'mm.ai up', { upstream: upstream(), upstream_key_input: upstreamInput(cfg()), upstream_auth: upstreamAuth(cfg()), max_parallel: maxParallel() })
   await new Promise(() => {})
 }

@@ -30,7 +30,8 @@ export -f D IN; export BOX PX NET MM_DOCKER
 # mm's AI gateway for this test only (sy-b15.10): its own store, a fake upstream that answers like the Messages API,
 # and the machine's config untouched (MM_AI_*: src/ai.ts). The box gets its key at mm up.
 AIT=$(mktemp -d); AIUPP=$(( 39100 + RANDOM % 800 ))
-export MM_AI_ENABLED=1 MM_AI_DIR="$AIT/store" MM_AI_UPSTREAM="http://127.0.0.1:$AIUPP" MM_AI_UPSTREAM_KEY_FILE="$AIT/upstream.key"
+# (the auth too: a machine in oauth mode would send the stand-in a Bearer header, which it refuses; sy-bpgq)
+export MM_AI_ENABLED=1 MM_AI_DIR="$AIT/store" MM_AI_UPSTREAM="http://127.0.0.1:$AIUPP" MM_AI_UPSTREAM_KEY_FILE="$AIT/upstream.key" MM_AI_UPSTREAM_AUTH=x-api-key
 printf 'upstream-secret-qa' >"$AIT/upstream.key"; chmod 600 "$AIT/upstream.key"
 cat >"$AIT/up.mjs" <<'EOF'
 import http from 'node:http'; import fs from 'node:fs'
