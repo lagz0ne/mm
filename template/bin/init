@@ -32,14 +32,17 @@ git -C "$P/control" init -q -b main
 git -C "$P/control" config user.name "$(basename "$P")"
 git -C "$P/control" config user.email "board@$(basename "$P").local"
 
-# 3. Beads, server mode (bd starts a temporary Dolt server for this)
+# 3. Beads, server mode (bd starts a temporary Dolt server for this: the one time bin/bd may, sy-a0ac; bd-quiet
+#    below then turns that off for good)
 cd "$P/control"
+export BEADS_DOLT_AUTO_START=1
 "$P/bin/bd" init --quiet --stealth --skip-hooks --skip-agents --server --prefix "$PREFIX" --non-interactive --role maintainer
 
 # 4. live event stream for the board and wake
 "$P/bin/bd" config set events-journal true >/dev/null
 
-# 4b. bd stays quiet: no git hooks, no metrics, no git operations of its own (the owner, sy-8s1)
+# 4b. bd stays quiet: no git hooks, no metrics, no git operations of its own (the owner, sy-8s1), no Dolt of its own
+#     (dolt.auto-start false, sy-a0ac)
 "$P/bin/bd-quiet" >/dev/null
 
 # 5. hand Dolt over to the process manager
