@@ -1,11 +1,20 @@
-// One mm update of a project at a time (sy-qpqd): a lock file under the project's .git/, made with an exclusive open,
+// One mm update of a project at a time (sy-qpqd): a lock file in mm's host folder for the project, made with an exclusive open,
 // that holds the holder's pid and the time its process started (so a pid the kernel gave out again is not the holder).
 // A lock whose holder is gone (killed, crashed) is taken over: moved aside first, so of two runs that both find it
 // stale only one takes it.
-import { closeSync, constants, fstatSync, linkSync, lstatSync, openSync, readSync, renameSync, rmSync, writeSync } from 'node:fs'
+// The lock lives in $MM_HOME/update/ (0700), never in the project's repo: a box can write its repo's .git/, and a lock
+// it planted there naming a live host pid would block every mm update (review sy-rjwg 3). One host folder for every
+// project, box or not (the answers file that says "box" is the box's to write, so it can't pick the place). A lock an
+// older mm left in .git/ is ignored, and removed when its holder is gone.
+import { chmodSync, closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
+import { DIRS } from './env'
 
-export const updLockFile = (root: string) => join(root, '.git', 'mm-update.lock')
+const PROJECT_ID = /^[a-z][a-z0-9-]{0,62}$/
+export const updLockDir = () => join(DIRS.mm, 'update')
+export const updLockFile = (project: string) => join(updLockDir(), `${project}.lock`)
+/** Where an older mm kept the lock: in the repo (a box can write it). Only ever removed, when stale. */
+export const oldUpdLockFile = (root: string) => join(root, '.git', 'mm-update.lock')
 const FRESH_MS = 10_000 // a lock still empty this long after it was made: its maker died between open and write
 
 /** A process's state and when it started (Linux: fields 3 and 22 of /proc/<pid>/stat); '' where not known. */
@@ -43,7 +52,15 @@ function holder(f: string): { pid: number; busy: boolean; text: string } | null 
  * ("an update of <project> is running (pid N); try again").
  */
 export function lockUpdate(root: string, project: string): (() => void) | string {
-  const f = updLockFile(root), me = `${process.pid} ${proc(process.pid).start}\n`
+  if (!PROJECT_ID.test(project)) return `can't take the update lock: not a project id: ${JSON.stringify(project).slice(0, 80)}`
+  try { mkdirSync(updLockDir(), { recursive: true, mode: 0o700 }); chmodSync(updLockDir(), 0o700) } catch (e) { return `can't make ${updLockDir()}: ${(e as Error).message}` }
+  // an older mm's lock: ignored; removed when its holder is gone (a regular file only, in a real .git/ folder, not a link
+  // the box made to somewhere else on the host)
+  try {
+    const old = oldUpdLockFile(root)
+    if (lstatSync(join(root, '.git')).isDirectory() && lstatSync(old).isFile() && !holder(old)?.busy) rmSync(old, { force: true })
+  } catch {}
+  const f = updLockFile(project), me = `${process.pid} ${proc(process.pid).start}\n`
   const running = (pid: number) => `an update of ${project} is running (pid ${pid || '?'}); try again`
   for (let i = 0; i < 5; i++) {
     try {

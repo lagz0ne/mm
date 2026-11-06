@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One mm update of a project at a time (sy-qpqd), hermetic: two runs on one project once shared the scratch render
-# .git/mm-render, and one crashed (ENOENT) when the other removed it. Now each run takes a lock under the project's
-# .git/ (its pid in it; a dead holder's lock is taken over), and renders into its own fresh folder, removed at the end.
+# .git/mm-render, and one crashed (ENOENT) when the other removed it. Now each run takes a lock in mm's host folder
+# ($MM_HOME/update/<project>.lock, never in the repo a box can write: sy-rjwg 3; its pid in it; a dead holder's lock is
+# taken over), and renders into its own fresh folder, removed at the end.
 # A throwaway HOME / MM_HOME and a project laid out as mm new lays it out (nothing started; only --dry-run, --drift,
 # --reset -n and the refusals run).
 #   test/update-lock.sh [mm command]       default: bun <repo>/src/cli.ts
@@ -18,7 +19,7 @@ printf '#!/bin/sh\nexec %s "$@"\n' "$MMC" >"$T/bin/mm"; chmod +x "$T/bin/mm"
 # git, slowed down on demand (SLOWGIT=1) just after the render, so a run holds the lock long enough to meet another
 printf '#!/bin/sh\ncase " $* " in *" write-tree"*) [ -n "${SLOWGIT:-}" ] && sleep 3;; esac\nexec %s "$@"\n' "$(command -v git)" >"$T/bin/git"; chmod +x "$T/bin/git"
 export PATH="$T/bin:$PATH"
-ROOT="$MM_HOME/projects/acme/shop"; LOCK="$ROOT/.git/mm-update.lock"
+ROOT="$MM_HOME/projects/acme/shop"; LOCK="$MM_HOME/update/acme-shop.lock"; OLD="$ROOT/.git/mm-update.lock"
 G() { git -C "$ROOT" -c user.name=mm -c user.email=mm@acme-shop.local "$@"; }
 waitfor() { for _ in $(seq 100); do [ -e "$1" ] && return 0; sleep 0.1; done; return 1; }
 noscratch() { [ -z "$(find "$ROOT/.git" -maxdepth 1 -name 'mm-render*')" ]; }
@@ -105,6 +106,21 @@ check "an empty lock, a minute old (its maker died before it wrote): taken over"
 check "an empty lock just made (its maker is writing): refused" sh -c "! mm update acme/shop --dry-run >'$T/u.out' 2>&1 && grep -q 'is running (pid ?)' '$T/u.out'"
 rm -f "$LOCK"; ln -s "$T/elsewhere" "$LOCK"
 check "a symlink in place of the lock: taken over, the link removed, its target never made" sh -c "mm update acme/shop --dry-run >'$T/u.out' 2>&1 && ! test -e '$LOCK' && ! test -L '$LOCK' && ! test -e '$T/elsewhere'"
-check "no aside file left behind" sh -c "[ -z \"\$(find '$ROOT/.git' -maxdepth 1 -name 'mm-update.lock*')\" ]"
+check "no aside file left behind" sh -c "[ -z \"\$(find '$MM_HOME/update' -maxdepth 1 -name 'acme-shop.lock?*')\" ]"
+check "the lock's folder is the host's own, 0700" sh -c "[ \"\$(stat -c %a '$MM_HOME/update')\" = 700 ]"
+
+echo "== a lock in the repo (a box can write its .git/) blocks nothing (review sy-rjwg 3)"
+sleep 300 & SP=$!; HP=$SP
+echo "$SP $(awk '{print $22}' /proc/$SP/stat)" >"$OLD"
+check "a lock planted in .git/ naming a live pid (with its start time): mm update --dry-run still works" sh -c "mm update acme/shop --dry-run >'$T/u.out' 2>&1 && grep -q 'already at' '$T/u.out'"
+check "...it is left alone while that pid lives (only ignored)" test -e "$OLD"
+check "...--drift and --reset -n are not refused either" sh -c "mm update acme/shop --drift >'$T/u.out' 2>&1; ! grep -q 'is running' '$T/u.out' && mm update acme/shop --reset bin/lead -n >'$T/u.out' 2>&1; ! grep -q 'is running' '$T/u.out'"
+kill $SP; wait $SP 2>/dev/null; HP=
+echo "$(dead) 1" >"$OLD"
+check "an old lock in .git/ whose holder is gone: removed by the next run" sh -c "mm update acme/shop --dry-run >'$T/u.out' 2>&1 && ! test -e '$OLD'"
+mkdir -p "$T/far"; echo "$(dead) 1" >"$T/far/mm-update.lock"; mv "$ROOT/.git" "$T/realgit"; ln -s "$T/far" "$ROOT/.git"
+check "...but not through a .git/ that is a link to elsewhere (the file there stays)" sh -c "bun -e \"import { lockUpdate } from '$SRC/src/updlock'; const r = lockUpdate('$ROOT', 'acme-shop'); if (typeof r === 'string') process.exit(1); r()\" && test -e '$T/far/mm-update.lock'"
+rm "$ROOT/.git"; mv "$T/realgit" "$ROOT/.git"
+check "a project id that is not one (from a box-written answers file): refused, nothing made" sh -c "bun -e \"import { lockUpdate } from '$SRC/src/updlock'; process.exit(typeof lockUpdate('$ROOT', '../x') === 'string' ? 0 : 1)\" && ! test -e '$MM_HOME/x.lock'"
 
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]
