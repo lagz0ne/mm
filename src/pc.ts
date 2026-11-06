@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, hasSystemdUser, run, servicePath, toolPath, which } from './env'
-import { obsProcesses } from './obs'
+import { MM_LOG_CONFIG, obsProcesses } from './obs'
 
 const BASE = join(DIRS.pc, 'base.yaml'), PROJECTS = join(DIRS.pc, 'projects')
 const UNIT_DIR = join(HOME, '.config', 'systemd', 'user')
@@ -18,23 +18,23 @@ export function writeBase() {
     'mm.portless': {
       namespace: 'mm', command: `portless proxy start --foreground --port ${pp} --no-tls`,
       environment: [`PATH=${servicePath()}`, 'PORTLESS_SYNC_HOSTS=0'],
-      log_location: join(DIRS.pc, 'portless.log'), availability: { restart: 'always', backoff_seconds: 3 },
+      log_location: join(DIRS.pc, 'portless.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${pp}/` }, period_seconds: 3, failure_threshold: 20 },
     },
   } : {}
   const mm = which('mm') || join(DIRS.bin, 'mm')
-  processes['mm.cron'] = { namespace: 'mm', command: `${mm} cron`, environment: [`PATH=${servicePath()}`], log_location: join(DIRS.pc, 'cron.log'),
+  processes['mm.cron'] = { namespace: 'mm', command: `${mm} cron`, environment: [`PATH=${servicePath()}`], log_location: join(DIRS.pc, 'cron.log'), log_configuration: MM_LOG_CONFIG,
     availability: { restart: 'always', backoff_seconds: 5 } }   // every project's schedules (process-compose has no scheduler)
   // the sign-in gateway for every board (docs/auth-gateway.md); its state is under $MM_HOME/auth. Off until the machine
   // turns it on (`mm config set auth.enabled true`): a new listener on bind_host is an exposure change (t2, ops).
   if (getPath(loadConfig(), 'auth.enabled') === true || getPath(loadConfig(), 'auth.enabled') === 'true') processes['mm.auth'] = { namespace: 'mm', command: `${mm} auth serve`, environment: [`PATH=${servicePath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
-    log_location: join(DIRS.pc, 'auth.log'), availability: { restart: 'always', backoff_seconds: 3 },
+    log_location: join(DIRS.pc, 'auth.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
     readiness_probe: { exec: { command: `test -S ${join(DIRS.mm, 'run', 'auth.sock')}` }, period_seconds: 3, failure_threshold: 20 } }
   // the AI gateway for every box (src/ai.ts, sy-b15.10): one socket per box, no TCP port. Off until the machine turns it
   // on (`mm config set ai.enabled true`) and the owner fills its upstream key (`mm fill ai-upstream-key`).
   const ai = getPath(loadConfig(), 'ai.enabled')
   if (ai === true || ai === 'true') processes['mm.ai'] = { namespace: 'mm', command: `${mm} ai serve`, environment: [`PATH=${servicePath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
-    log_location: join(DIRS.pc, 'ai.log'), availability: { restart: 'always', backoff_seconds: 3 } }
+    log_location: join(DIRS.pc, 'ai.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 } }
   Object.assign(processes, obsProcesses())
   writeFileSync(BASE, `# mm: the machine process manager. Projects join as namespaces (~/.mm/pc/projects/*.yaml).\nversion: "0.5"\n${Bun.YAML.stringify({ processes }, null, 2)}\n`)
 }

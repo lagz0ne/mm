@@ -12,7 +12,8 @@ import { AI_PORT, aiEnabled, aiSocket, mintKey, revokeKeys, store as aiStore } f
 import { mkdtempSync, rmSync } from 'node:fs'
 import { getPath, held, loadConfig } from './config'
 import { DIRS, HOME, run, which } from './env'
-import { BOX_READONLY, BOXES, boxHook, gitRefusal, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, up as projectUp, writeRunFiles } from './project'
+import { MM_LOG_CONFIG } from './obs'
+import { BOX_READONLY, BOXES, boxHook, gitRefusal, hostGitEnv, loadAll, PROJECT_LOG_CONFIG, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, up as projectUp, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
 import paseoJoinScript from '../box/paseo-join.mjs' with { type: 'text' }
@@ -134,14 +135,14 @@ function boxProcesses(root: string, proxy: string, ip = '') {
   if (env.HTTPS_PROXY !== `http://${proxy}:8888`) throw new Error(`the box's proxy is ${proxy}, not ${env.HTTPS_PROXY}`)
   const processes: Record<string, unknown> = {
     [`${a.project}.portless`]: { namespace: a.project, command: `portless proxy start --foreground --port ${pp} --no-tls`, environment: Object.entries(env).map(([k, v]) => `${k}=${v}`),
-      log_location: join(root, '.run', 'logs', 'portless.log'), availability: { restart: 'always', backoff_seconds: 3 },
+      log_location: join(root, '.run', 'logs', 'portless.log'), log_configuration: PROJECT_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${pp}/` }, period_seconds: 3, failure_threshold: 20 } },
     // the box's own Paseo: runs the project's leads as the box user; only on the box network, with mm's password; no
     // relay and no web UI (only the system Paseo has the relay; review sy-b15.8)
     // its agents get the box's AI key from the file at start (never in a config file); none: no model
     [`${a.project}.paseo`]: { namespace: a.project, command: `sh -c '[ -r /run/mm/secrets/ai.key ] && export ANTHROPIC_API_KEY="$$(cat /run/mm/secrets/ai.key)"; PASEO_PASSWORD="$$(cat /run/mm/secrets/paseo.password)" exec paseo daemon run'`,
       environment: Object.entries({ ...env, PASEO_LISTEN: `0.0.0.0:${PASEO_PORT}`, PASEO_RELAY_ENABLED: 'false', PASEO_WEB_UI_ENABLED: 'false' }).map(([k, v]) => `${k}=${v}`),
-      log_location: join(root, '.run', 'logs', 'paseo.log'), availability: { restart: 'always', backoff_seconds: 3 },
+      log_location: join(root, '.run', 'logs', 'paseo.log'), log_configuration: PROJECT_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${PASEO_PORT}/` }, period_seconds: 3, failure_threshold: 40 } },
   }
   for (const [n, s] of Object.entries(services)) {
@@ -153,7 +154,7 @@ function boxProcesses(root: string, proxy: string, ip = '') {
     // never joins a box network, so a box can't reach Traefik or forge what it passes on; review sy-b15.7 2)
     if (s.public_port && ip) processes[`${a.project}.${n}-public`] = { namespace: a.project,
       command: `socat TCP-LISTEN:${s.public_port},bind=${ip},reuseaddr,fork TCP:127.0.0.1:${s.public_port}`,
-      log_location: join(root, '.run', 'logs', `${n}-public.log`), availability: { restart: 'always', backoff_seconds: 3 } }
+      log_location: join(root, '.run', 'logs', `${n}-public.log`), log_configuration: PROJECT_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 } }
   }
   return { project: a.project, processes }
 }
@@ -169,7 +170,7 @@ function publicUp(root: string, ip: string): Step[] {
     const bind = s.public_bind || '127.0.0.1'
     // named for its own namespace (<project>-public), so nothing on the host's process manager looks like the box's own
     processes[`${a.project}-public.${n}`] = { namespace: `${a.project}-public`, command: `socat TCP-LISTEN:${s.public_port},bind=${bind},reuseaddr,fork TCP:${ip}:${s.public_port}`,
-      log_location: join(hostDir(a.project), `${n}-public.log`), availability: { restart: 'always', backoff_seconds: 3 } }
+      log_location: join(hostDir(a.project), `${n}-public.log`), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 } }
   }
   mkdirSync(BOX_PUBLIC, { recursive: true })
   if (!pub.length) { rmSync(f, { force: true }); return [] }
