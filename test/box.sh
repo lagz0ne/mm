@@ -106,6 +106,7 @@ check "...and every program resolves those names, not only curl (Node: bd-serve.
 sleep 10   # wake's first board call comes a few seconds after the board is ready
 check "wake runs in the box (Running, no restarts)" sh -c "mm inspect '$REF' | awk '\$1==\"wake\"' | grep -qE 'Running +[^ ]+ +0( |\$)'"
 check "bd works in the box (an item, over Dolt's socket)" IN "cd $ROOT && bin/bd create 'made in the box' --json | grep -q '\"id\"'"
+check "a lead's start step in the box: config-check --render passes as the box user (setup/ is read-only there; sy-7870)" IN "cd $ROOT && bin/config-check --render"
 
 echo "== the box user"
 check "its own uid (200000+), not root and not the host's owner (uid $(id -u), who has sudo) (review sy-b15.15 1)" sh -c "u=\$(IN 'id -u'); [ \"\$u\" -ge 200000 ] && [ \"\$u\" != '$(id -u)' ]"

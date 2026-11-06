@@ -197,17 +197,21 @@ const ASSIST_ROOT = path.join(P, 'assistants')
 const ASSISTANTS = fs.existsSync(ASSIST_ROOT) ? fs.readdirSync(ASSIST_ROOT, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name) : []
 const SETTINGS_DIRS = [...fs.readdirSync(path.join(P, 'leads'), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(P, 'leads', d.name)), path.join(P, 'setup'),
   ...ASSISTANTS.map((u) => path.join(ASSIST_ROOT, u))]
+// a folder this process can't write (a box's read-only kernel, setup/: the host renders it at mm up): not rendered here;
+// what is there is still checked below as it is (sy-7870: a lead's start in a box failed on EROFS, so no lead started)
+const writable = (d) => { try { fs.accessSync(d, fs.constants.W_OK); return true } catch { return false } }
 for (const dir of SETTINGS_DIRS) {
   const t = path.join(dir, '.claude', 'settings.tmpl.json')
   if (!fs.existsSync(t)) continue
   let tj
   try { tj = JSON.parse(fs.readFileSync(t, 'utf8')) } catch (e) { bad(`${path.relative(P, t)} is not valid JSON (${e.message})`); continue }
   if (JSON.stringify(tj).includes(R)) bad(`${path.relative(P, t)} hard-codes ${R}; write {root} instead`)
-  if (process.argv.includes('--render')) fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify(render(tj, path.basename(dir), dir.startsWith(`${ASSIST_ROOT}/`)), null, 2) + '\n')
+  const rendering = process.argv.includes('--render') && writable(path.join(dir, '.claude'))
+  if (rendering) fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify(render(tj, path.basename(dir), dir.startsWith(`${ASSIST_ROOT}/`)), null, 2) + '\n')
   // a role's MCP servers (.mcp.tmpl.json -> .mcp.json): a server whose {url:<service>} doesn't run here is left out, so
   // e.g. the design lead gets Doop only while the project runs it (mm doop on)
   const mt = path.join(dir, '.mcp.tmpl.json'), mo = path.join(dir, '.mcp.json')
-  if (fs.existsSync(mt) && process.argv.includes('--render')) {
+  if (fs.existsSync(mt) && rendering && writable(dir)) {
     let m; try { m = JSON.parse(fs.readFileSync(mt, 'utf8')) } catch (e) { bad(`${path.relative(P, mt)} is not valid JSON (${e.message})`); continue }
     const fillAll = (v) => gfill(v).replaceAll('{project}', projectName()).replace(/\{url:([\w-]+)\}/g, (x, n) => svcUrl(n) || x)
     const servers = Object.fromEntries(Object.entries(m.mcpServers || {}).map(([k, s]) => [k, JSON.parse(fillAll(JSON.stringify(s)))])
