@@ -9,6 +9,14 @@
 set -eu
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 cd "$P/control"
+# mm update may have just restarted the board's Dolt (a new command): wait up to 60 s for it to answer, so bd finds the
+# process manager's Dolt (bd never starts one of its own, sy-a0ac). bin/init runs this with bd's own start on: no wait.
+if [ "${BEADS_DOLT_AUTO_START:-0}" != 1 ]; then
+  end=$(( $(date +%s) + 60 ))
+  until "$P/bin/bd" config get no-hooks >/dev/null 2>&1; do
+    [ "$(date +%s)" -lt "$end" ] || { echo "bd-quiet: bd reached no Dolt in 60 s (the board's Dolt is down; it starts none of its own)" >&2; exit 1; }; sleep 1
+  done
+fi
 for kv in no-hooks=true no-git-ops=true dolt.auto-start=false; do
   k=${kv%%=*}; v=${kv#*=}
   [ "$("$P/bin/bd" config get "$k" 2>/dev/null | tail -1)" = "$v" ] && continue
