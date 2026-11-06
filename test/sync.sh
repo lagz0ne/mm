@@ -150,7 +150,7 @@ check "its kernel is mm's (sy-atqr): ops/githooks/pre-commit is mm's render, the
 check "...setup/'s settings template is mm's render, and the box's rendered settings are gone" bash -c "cmp '$SRC/template/setup/.claude/settings.tmpl.json' '$RB/setup/.claude/settings.tmpl.json' && ! test -e '$RB/setup/.claude/settings.json' && git -C '$RB' show HEAD~1:setup/.claude/settings.json | grep -q 'Bash(\\*)'"
 check "...in HEAD too (HEAD holds what is on disk)" bash -c "[ -z \"\$(git -C '$RB' status --porcelain --untracked-files=no)\" ]"
 check "...and the report says so" grep -q "put back as mm has them" "$T/restore.json"
-check "a box: the host sets no core.hooksPath (the box sets its own inside; sy-atqr)" bash -c "! git -C '$RB' config core.hooksPath"
+check "a box: after the check, the repo's hooks are ops/githooks, and they are mm's (as mm new --box; sy-atqr)" bash -c "[ \"\$(git -C '$RB' config core.hooksPath)\" = ops/githooks ] && cmp '$SRC/template/ops/githooks/pre-commit' '$RB/ops/githooks/pre-commit' && [ \"\$(ls '$RB/ops/githooks')\" = pre-commit ]"
 mkdir -p "$T/boxhooks"; git -C "$RB" show HEAD~1:ops/githooks/pre-commit >"$T/boxhooks/pre-commit" 2>>"$LOG"; chmod +x "$T/boxhooks/pre-commit"
 check "control: the box's own hook (from its commit) runs when git is pointed at it (so 'no hook ran' could fail)" bash -c "git -C '$RB' -c core.hooksPath='$T/boxhooks' commit -q --allow-empty -m control && test -e '$T/hook-ran'"
 check "the engine seal and the template base are back on the host, mm-template on the recorded commit" bash -c "jq -e '.files[\"bin/backup\"] == \"seal-marker-6170\"' '$NB/.mm/box/acme-boxed/engine.json' && [ \"\$(jq -r .commit '$NB/.mm/box/acme-boxed/template.json')\" = \"\$(git -C '$RB' rev-parse refs/heads/mm-template)\" ]"

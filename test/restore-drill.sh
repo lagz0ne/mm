@@ -124,7 +124,7 @@ check "ops/githooks/pre-commit, setup/'s settings template and its brief are the
 check "...the box's other hooks and its rendered setup settings are gone" sh -c "! ls $R/ops/githooks/post-commit $R/ops/githooks/post-checkout $R/ops/githooks/post-merge 2>/dev/null && ! grep -rq box-settings $R/setup"
 check "...in HEAD as on disk" sh -c "[ -z \"\$(git -C $R status --porcelain --untracked-files=no)\" ] && git -C $R show HEAD:setup/CLAUDE.md | grep -vq box-setup-brief"
 check "...and the report says so" grep -q "put back as mm has them" /tmp/r.json
-check "a box: the host sets no core.hooksPath (the box sets its own inside)" sh -c "! git -C $R config core.hooksPath"
+check "a box: after the check, the repo's hooks are ops/githooks, and they are mm's (as mm new --box)" sh -c "[ \"\$(git -C $R config core.hooksPath)\" = ops/githooks ] && [ \"\$(ls $R/ops/githooks)\" = pre-commit ] && grep ' ops/githooks/pre-commit\$' ~/host-kernel.sha | (cd $R && sha256sum -c --quiet)"
 mkdir -p /tmp/boxhooks; git -C $R show HEAD~1:ops/githooks/pre-commit >/tmp/boxhooks/pre-commit; chmod +x /tmp/boxhooks/pre-commit
 check "control: the box's own hook (from its commit) runs when git is pointed at it (so 'no hook ran' could fail)" sh -c "git -C $R -c core.hooksPath=/tmp/boxhooks commit -q --allow-empty -m control; test -e /tmp/box-hook-ran"
 check "the host's engine seal is back where mm keeps it" test -s ~/.mm/box/acme-shop/engine.json
