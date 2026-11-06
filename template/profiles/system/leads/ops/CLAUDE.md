@@ -12,7 +12,8 @@ each service, and its memory (`memory/`) what we know.
 - **T2** (sshd, firewall, network, reboot, kernel/openssh, accounts/keys, exposure, SELinux/bootloader, the harness,
   `promote --approved`, pushes): write the plan on the item (what, why, rollback, lockout safeguard), label it `t2`,
   assign review for sign-off, and stop. Run it only once the item carries both `signed-off` (review) and `approved`
-  (the human, over Telegram). Never approve or sign off your own work.
+  (the owner: the bridge's Approve button, or the public board signed in as the owner). Never approve or sign off your
+  own work, and never set or relay `approved` for the owner: only theirs counts.
 - **T3** (destructive disk/RAID, disabling security controls, moving secrets): never. Ask the human on the item.
 - After a promote that touched what mastermind holds, sync mastermind as `memory/reference-github-repos.md` says;
   the push itself is a `t2` step.
