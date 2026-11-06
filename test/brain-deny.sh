@@ -55,6 +55,12 @@ for f in "$SYS"/leads/*/.claude/settings.json "$SYS/setup/.claude/settings.json"
 done
 [ "$fail" = 0 ] && ok "all rendered settings of both boards deny the vault, the opened secrets and the key by name"
 
+echo "== mm's Paseo folder (each box's daemon password), in every spelling (review sy-b15.2 #7)"
+n=0; for f in "$SYS"/leads/*/.claude/settings.json "$PROJ"/leads/*/.claude/settings.json; do
+  if has "$f" "Read(/$H/.mm/paseo/**)" && has "$f" "Bash(*$H/.mm/paseo*)" && has "$f" 'Bash(*~/.mm/paseo*)' && has "$f" 'Bash(*$HOME/.mm/paseo*)'; then n=$((n+1)); else bad "mm's paseo folder not denied in every spelling in ${f#$T/}"; fi
+done
+[ "$n" -gt 0 ] && ok "every lead on both boards denies mm's Paseo folder: Read, and the absolute, ~ and \$HOME Bash forms ($n settings)"
+
 echo "== the vault's opener and key maker are the owner's (review sy-uvgq)"
 n=0; for f in "$SYS"/leads/*/.claude/settings.json "$SYS/setup/.claude/settings.json" "$PROJ"/leads/*/.claude/settings.json "$PROJ/setup/.claude/settings.json"; do
   [ -f "$f" ] || continue
