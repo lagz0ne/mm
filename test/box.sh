@@ -336,8 +336,9 @@ else
   check "fields not in their formats: refused (400)" sh -c "[ \"\$(PRC -d '{\"role\":\"setup;x\",\"person\":\"$OWNER\"}')\" = 400 ] && [ \"\$(PRC -d '{\"role\":\"setup\",\"person\":\"$OWNER\",\"items\":[\"a b\"]}')\" = 400 ]"
   check "...each ask logged on the host with the box's project (from its socket) and the person" sh -c "grep '\"person run refused' '$AIT/api.log' | grep '\"box\":\"$PROJECT\"' | grep -q '\"person\":\"qa-nobody\"'"
   # the box's wake (Node, as the box user) reaches the socket too: it says what the host said at its next pass (60 s)
-  for _ in $(seq 1 45); do grep -q 'person runs in this box: on' "$ROOT/.run/logs/wake.log" 2>/dev/null && break; sleep 2; done
-  check "the box's wake asked the host itself and heard: on, with the sponsor" grep -q "person runs in this box: on: the host starts them (the sponsor: $OWNER)" "$ROOT/.run/logs/wake.log"
+  # the box's own log is the box user's (its process manager writes it owner-only), so it is read in the box
+  for _ in $(seq 1 45); do IN "grep -q 'person runs in this box: on' $ROOT/.run/logs/wake.log" 2>/dev/null && break; sleep 2; done
+  check "the box's wake asked the host itself and heard: on, with the sponsor" sh -c "IN \"grep -qF 'person runs in this box: on: the host starts them (the sponsor: $OWNER)' $ROOT/.run/logs/wake.log\""
   check "...and started no lead on anyone's token meanwhile (no person run in the box's Paseo)" personless "$OWNER"
   kill "$APIGW" 2>/dev/null; wait "$APIGW" 2>/dev/null
   mm api serve >>"$AIT/api.log" 2>&1 & APIGW=$!
