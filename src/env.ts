@@ -73,6 +73,14 @@ export const archNames = {
   rustarch: ARCH === 'x64' ? 'x86_64' : 'aarch64',
 }
 
+/**
+ * The PATH of everything mm runs under the process manager (its own services, and each project's): mm's folders, then
+ * the system's. Never the caller's PATH: an mm up from another shell (a lead's, a test's) would change every process's
+ * definition, and process-compose restarts what changed, mm's own log shipper and names proxy among them (sy-heeh).
+ */
+export function servicePath(): string {
+  return [DIRS.bin, join(DIRS.npm, 'bin'), join(HOME, '.local', 'bin'), join(HOME, '.npm-global', 'bin'), '/usr/local/bin', '/usr/bin', '/bin', '/usr/local/sbin', '/usr/sbin', '/sbin'].join(':')
+}
 /** PATH that also sees mm's own tools and the usual per-user bins. */
 export function toolPath(): string {
   const extra = [DIRS.bin, join(DIRS.npm, 'bin'), join(HOME, '.local', 'bin'), join(HOME, '.npm-global', 'bin')]

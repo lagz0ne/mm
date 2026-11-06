@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative } from 'node:path'
 import { canon, DIRS, HOME, run, within } from './env'
-import { BOXES, boxHook, boxish, engineRefusal, gitRefusal, headDrift, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, resolve, sealEngine, templateVars, up, writeRunFiles } from './project'
+import { BOXES, boxHook, boxish, engineRefusal, gitRefusal, headDrift, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, resolve, routeRm, sealEngine, templateVars, up, writeRunFiles } from './project'
 import { template, templateCommit } from './template'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
@@ -221,8 +221,7 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   // 2. public routes
   for (const sv of Object.values(services)) {
     if (!sv.public_port || !sv.public) continue
-    const r = run(['expose', 'rm', sv.public.name], { timeoutMs: 30_000 })
-    steps.push({ step: `unexpose ${sv.public.name}`, status: r.ok ? 'ok' : 'fail', detail: r.ok ? 'route removed' : short(r) })
+    steps.push(routeRm(a, sv.public.name))
   }
   // 3. agents (soft-delete in Paseo; their history stays recoverable there)
   let n = 0

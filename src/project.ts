@@ -5,7 +5,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSy
 import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { getPath, held, loadConfig } from './config'
-import { DIRS, engineDirs, HOME, run, toolPath, which } from './env'
+import { DIRS, engineDirs, HOME, run, servicePath, toolPath, which } from './env'
 import { obsEndpoints } from './obs'
 import { machineSecretPaths } from './inputs'
 import { publicKeyPem } from './auth'
@@ -429,7 +429,7 @@ export function up(root: string): Step[] {
   const steps: Step[] = []
   mkdirSync(join(root, '.run', 'logs'), { recursive: true }); mkdirSync(join(root, '.dolt'), { recursive: true }); mkdirSync(PROJECTS_PC, { recursive: true })
   const obs = obsEndpoints() as { traces?: string; metrics?: string }
-  const env = { PATH: toolPath(), MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0',
+  const env = { PATH: servicePath(), MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0',
     ...(obs.traces ? { MM_OBS_TRACES: obs.traces, MM_OBS_METRICS: obs.metrics } : {}) }
   const processes: Record<string, unknown> = {}
   const pdeath = run(['sh', '-c', 'command -v setpriv']).ok ? 'setpriv --pdeathsig TERM ' : ''
@@ -466,11 +466,37 @@ export function up(root: string): Step[] {
   // public routes (domain mode): the machine's `expose` tool writes the router entry
   for (const [, s] of Object.entries(services)) {
     if (!s.public_port || !s.public || hold) continue
-    if (!run(['sh', '-c', 'command -v expose']).ok) { steps.push({ step: `public ${s.public.name}`, status: 'fail', detail: 'no `expose` tool on this machine' }); continue }
-    const r = run(['expose', s.public.name, String(s.public_port), ...(s.public.auth === 'required' ? ['--auth'] : [])], { timeoutMs: 30_000 })
-    steps.push({ step: `public ${s.public.name}`, status: r.ok ? 'ok' : 'fail', detail: r.ok ? `${s.public_url}${s.public.auth === 'required' ? ' (password)' : ''}` : (r.err || r.out).trim().slice(0, 160) })
+    steps.push(routeUp(a, s.public.name, s.public_port, s.public.auth === 'required', `${s.public_url}${s.public.auth === 'required' ? ' (password)' : ''}`))
   }
   return steps
+}
+
+// ---------- public routes (review sy-uzh) ----------
+/** The tool that writes the web proxy's routes: the machine's `expose`, or MM_EXPOSE (a test's own, which keeps its
+ *  routes in a folder of the test's). A throwaway project (what tests make) never gets a live route: with no MM_EXPOSE,
+ *  its routes are skipped. */
+export function routeTool(a: Answers): string | null {
+  if (process.env.MM_EXPOSE) return process.env.MM_EXPOSE
+  return a.throwaway ? null : 'expose'
+}
+/** One public route, written only when it is missing or differs from what the tool lists (same port, same login):
+ *  `mm up` and `mm update` re-write nothing that is right already. */
+export function routeUp(a: Answers, name: string, port: number, auth: boolean, url: string): Step {
+  const step = `public ${name}`, tool = routeTool(a)
+  if (!tool) return { step, status: 'skip', detail: 'a throwaway project gets no live route (a test sets MM_EXPOSE)' }
+  if (!run(['sh', '-c', 'command -v "$1"', 'sh', tool]).ok) return { step, status: 'fail', detail: `no \`${tool}\` tool on this machine` }
+  const ls = run([tool, 'ls'], { timeoutMs: 30_000 })
+  const line = ls.ok ? ls.out.split('\n').find((l) => l.startsWith(`https://${name}.`)) : undefined
+  if (line && new RegExp(`:${port}(\\s|$)`).test(line) && line.includes('[auth]') === auth) return { step, status: 'ok', detail: `${url} (already there)` }
+  const r = run([tool, name, String(port), ...(auth ? ['--auth'] : [])], { timeoutMs: 30_000 })
+  return { step, status: r.ok ? 'ok' : 'fail', detail: r.ok ? url : (r.err || r.out).trim().slice(0, 160) }
+}
+/** Remove one public route (mm archive); a throwaway project's are only the test tool's. */
+export function routeRm(a: Answers, name: string): Step {
+  const step = `unexpose ${name}`, tool = routeTool(a)
+  if (!tool) return { step, status: 'skip', detail: 'a throwaway project has no live route' }
+  const r = run([tool, 'rm', name], { timeoutMs: 30_000 })
+  return { step, status: r.ok ? 'ok' : 'fail', detail: r.ok ? 'route removed' : (r.err || r.out).trim().slice(0, 160) }
 }
 
 /** Load the base file plus every project file into the running process-compose. */
@@ -482,7 +508,13 @@ export function loadAll() {
   const files = [join(DIRS.pc, 'base.yaml'), ...dirFiles(PROJECTS_PC), ...dirFiles(join(DIRS.pc, 'box-public'))]
   const r = run(['process-compose', '-U', '-u', DIRS.socket, 'project', 'update', ...files.flatMap((f) => ['-f', f])], { timeoutMs: 60_000 })
   // nothing to change (e.g. the last project was just removed) is not a failure
-  return /No processes were updated/i.test(r.out + r.err) ? { ...r, ok: true } : r
+  if (/No processes were updated/i.test(r.out + r.err)) return { ...r, ok: true }
+  // what the update restarted can leave a dependent "Skipped" for good: process-compose gives up on a process whose
+  // dependency stopped while it waited (mm.ship on mm.logs; sy-heeh, sy-5ku 3). Start those again: each waits for its
+  // dependency once more
+  Bun.sleepSync(1500)
+  for (const p of processes()) if (p.status === 'Skipped') run(['process-compose', '-U', '-u', DIRS.socket, 'process', 'start', p.name], { timeoutMs: 15_000 })
+  return r
 }
 
 export function namespaceOp(ref: string, op: 'start' | 'stop' | 'restart') {

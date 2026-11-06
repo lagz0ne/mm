@@ -5,9 +5,11 @@
 #
 #   test/machine-panel.sh [client/name]      default qa/panel; needs a built site's node_modules: SITE_NODE_MODULES=<dir>
 set -uo pipefail
+PROJECTS_DIR=$(grep -qsE '^layout: *.?one-root' "${MM_HOME:-$HOME/.mm}/config.yaml" && echo "${MM_HOME:-$HOME/.mm}/projects" || echo "$HOME/projects")   # where mm keeps projects (its layout)
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 REF=${1:-qa/panel}; CLIENT=${REF%/*}; NAME=${REF#*/}; PROJECT="$CLIENT-$NAME"
 export PATH="$HOME/.mm/bin:$HOME/.mm/npm/bin:$HOME/.local/bin:$PATH"
+. "$(dirname "$0")/lib/routes.sh"   # this run's routes in its own folder, never in the live web proxy (review sy-uzh)
 unset PASEO_AGENT_ID PASEO_AGENT_CWD
 NM=${SITE_NODE_MODULES:?set SITE_NODE_MODULES to a site node_modules folder (e.g. the site/node_modules of a board)}
 pass=0; fail=0
@@ -72,7 +74,8 @@ check "no filing endpoint" test "$(post -b board_user=alex -H 'content-type: app
 echo "== cleanup"
 kill $SRV 2>/dev/null; SRV=""
 mm archive "$REF" >/dev/null 2>&1 && ok "archived $REF" || bad "archive"
-rm -rf "$HOME/.local/share/backups/$PROJECT"; rmdir "$HOME/projects/$CLIENT" 2>/dev/null || true
+rm -rf "$HOME/.local/share/backups/$PROJECT"; rmdir "$PROJECTS_DIR/$CLIENT" 2>/dev/null || true
 [ "$fail" = 0 ] || { echo "--- server log"; tail -20 "$W/server.log"; }
+check "no route written into the live web proxy (review sy-uzh)" live_routes_same
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

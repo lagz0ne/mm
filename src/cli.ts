@@ -362,8 +362,11 @@ obs.command('errors').description('errors and failed operations, grouped (what t
   .option('--since <dur>', 'window, e.g. 15m 1h 1d', '1h').option('-p, --project <project>', 'one project (client-name)')
   .option('--by <group>', 'message (default) or service: one row per project/service with a few sample messages', 'message')
   .action(async (opts) => {
-    // test runs (MM_TEST: their records carry `test`) are left out: their failures are expected
-    const o = fmt(), f = `${opts.project ? ` project:${JSON.stringify(opts.project)}` : ''} -test:*`, ft = ' -"span_attr:test":*'
+    // mm's own records of a command on a throwaway project (mm marks them: mm_throwaway) are left out, their failures
+    // are the tests' expected ones. Only mm's own (project mm, service mm; spans of service mm), with that exact field:
+    // a project's or a box's line is never hidden this way, whatever it says (review sy-cwh)
+    const o = fmt(), f = `${opts.project ? ` project:${JSON.stringify(opts.project)}` : ''} -(project:=mm service:=mm mm_throwaway:*)`
+    const ft = ' -("resource_attr:service.name":=mm "span_attr:mm_throwaway":*)'
     if (opts.by === 'service') {
       // one row per service, whatever its messages say (ids and counters in messages make every line its own group)
       const logs = await logsql(`_time:${opts.since} level:error${f} | stats by (project, service) count() as n, max(_time) as last, uniq_values(_msg) limit 3 as sample | sort by (n desc) | limit 200`)
@@ -408,7 +411,13 @@ program.hook('preAction', (_p, cmd) => {
   // fill: the name only, never what follows it (a secret typed on the command line by mistake must not reach a trace).
   // (user, grant, revoke and token take no secret: a sign-in link or token is only ever printed, never an argument)
   const args = name === 'fill' ? String(cmd.args[0] ?? '') : cmd.args.join(' ')
-  const done = mmSpan(`mm ${name}`, { args })
+  // a command on a throwaway project (what the tests make) is marked by mm itself, from the project's answers (which no
+  // lead or box can write) or mm new's own --throwaway: its expected failures stay out of mm obs errors. Never from an
+  // environment variable a lead or a box could set (review sy-cwh).
+  let throwaway = ''
+  if (cmd.opts().throwaway && name === 'new') throwaway = String(cmd.args[0] ?? '').replace('/', '-')
+  else if (cmd.args[0]) { try { const a = readAnswers(findRoot(String(cmd.args[0]))); if (a.throwaway) throwaway = a.project } catch {} }
+  const done = mmSpan(`mm ${name}`, { args, ...(throwaway ? { mm_throwaway: throwaway } : {}) })
   process.on('exit', (code) => done(code === 0, { exit_code: code }))
 })
 

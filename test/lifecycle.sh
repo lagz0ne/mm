@@ -7,12 +7,13 @@
 #
 # Exit 0 = every check passed. Starts one cheap agent (haiku) to check that archive takes agents with it.
 set -uo pipefail
+PROJECTS_DIR=$(grep -qsE '^layout: *.?one-root' "${MM_HOME:-$HOME/.mm}/config.yaml" && echo "${MM_HOME:-$HOME/.mm}/projects" || echo "$HOME/projects")   # where mm keeps projects (its layout)
 OLD=${1:?old template dir}; REF=${2:-qa/life}
-CLIENT=${REF%/*}; NAME=${REF#*/}; PROJECT="$CLIENT-$NAME"; ROOT="$HOME/projects/$REF"
+CLIENT=${REF%/*}; NAME=${REF#*/}; PROJECT="$CLIENT-$NAME"; ROOT="$PROJECTS_DIR/$REF"
 PC="process-compose -U -u $HOME/.mm/pc.sock"
 export PATH="$HOME/.mm/bin:$HOME/.mm/npm/bin:$HOME/.local/bin:$PATH"
+. "$(dirname "$0")/lib/routes.sh"   # this run's routes in its own folder, never in the live web proxy (review sy-uzh)
 unset PASEO_AGENT_ID PASEO_AGENT_CWD   # run from inside an agent: these would override `paseo run --cwd` (the probe must live in the project)
-export MM_TEST=lifecycle   # mm's records of this run are stamped: their expected failures never reach mm obs errors or the sentinel
 pass=0; fail=0; T0=$(date +%s)
 ok()   { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }
 bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
@@ -34,12 +35,16 @@ step "new from the old template"
 MM_TEMPLATE_DIR=$OLD mm new "$REF" --short ql --throwaway >/tmp/mm-qa-new.$$ 2>&1; rc=$?
 [ $rc = 0 ] && ok "mm new exit 0" || { bad "mm new exit $rc"; tail -20 /tmp/mm-qa-new.$$; exit 1; }
 rm -f /tmp/mm-qa-new.$$
-check "4 services ready" wait_ready 3 90      # wake has no probe: dolt, bd-serve, board
+if wait_ready 3 90; then ok "4 services ready"   # wake has no probe: dolt, bd-serve, board
+else bad "4 services ready"   # what each one shows, for sy-ynb (it fails now and then)
+  $PC process list -o json 2>/dev/null | jq -r --arg p "$PROJECT." '.[] | select(.name | startswith($p)) | "       \(.name) \(.status) ready=\(.is_ready) restarts=\(.restarts)"'
+  for s in bd-serve board; do echo "       -- $s.log"; tail -5 "$ROOT/.run/logs/$s.log" 2>/dev/null | cut -c1-200 | sed 's/^/       /'; done
+fi
 check "board answers by name" board
 check "marked throwaway (mm ls)" sh -c "mm ls -o json | jq -e --arg p '$PROJECT' '.[] | select(.project == \$p) | .throwaway == true'"
 check "mm-template branch = baseline" git -C "$ROOT" rev-parse -q --verify refs/heads/mm-template
 PUB=$(public_name); PORT=$(public_port)
-if [ -n "$PUB" ]; then check "public route $PUB listed" sh -c "expose ls | grep -q '$PUB'"; fi
+if [ -n "$PUB" ]; then check "public route $PUB listed" sh -c "$MM_EXPOSE ls | grep -q '$PUB'"; fi
 BIND=$(mm config get bind_host 2>/dev/null || echo 127.0.0.1)
 if [ -n "$PORT" ] && [ "${BIND#127.}" = "$BIND" ]; then   # domain mode with the web proxy in docker: the forwarder
   listening() { for _ in $(seq 1 20); do ss -Hltn | awk '{print $4}' | grep -qx -- "$1" && return 0; sleep 1; done; return 1; }   # the forwarder starts just after the service
@@ -164,7 +169,13 @@ check "a lead may not install bd hooks or turn metrics on (rendered denies)" sh 
 check "a lead may not make people, links, grants or tokens, nor reach the gateway's socket or store (review sy-b15.13)" sh -c "jq -e --arg mm \"/\${MM_HOME:-$HOME/.mm}\" '.permissions.deny | index(\"Bash(mm user*)\") and index(\"Bash(mm grant*)\") and index(\"Bash(mm token*)\") and index(\"Bash(*auth.sock*)\") and index(\"Read(\(\$mm)/auth/**)\")' '$ROOT/leads/qa/.claude/settings.json'"
 check "...nor set an AI budget, or read or edit the AI gateway's store or the upstream key (sy-b15.10)" sh -c "jq -e --arg mm \"/\${MM_HOME:-$HOME/.mm}\" --arg home \"/$HOME\" '.permissions.deny | index(\"Bash(mm ai budget*)\") and index(\"Bash(*ai.sock*)\") and index(\"Read(\(\$mm)/ai/**)\") and index(\"Edit(\(\$mm)/ai/**)\") and index(\"Read(\(\$home)/.config/secrets/ai-upstream.key)\")' '$ROOT/leads/qa/.claude/settings.json'"
 check "...nor read the machine's secrets, from the manifest (bot token, Cloudflare token, Paseo, Claude's login): Read, Edit and Bash forms (review sy-5ag)" sh -c "jq -e --arg home \"/$HOME\" --arg h '$HOME' '.permissions.deny | index(\"Read(\(\$home)/brain/.keys/.telebot)\") and index(\"Read(\(\$home)/brain/.keys/**)\") and index(\"Bash(*~/brain/.keys*)\") and index(\"Bash(*\(\$h)/brain/.keys/.cf*)\") and index(\"Bash(*\$HOME/.config/secrets*)\") and index(\"Read(\(\$home)/.paseo/**)\") and index(\"Read(\(\$home)/.claude/.credentials.json)\")' '$ROOT/leads/qa/.claude/settings.json' && jq -e '.machine_secrets.files | index(\"$HOME/brain/.keys/.telebot\")' '$ROOT/.run/endpoints.json'"
-check "...nor anything in the brain (a project has no business there)" sh -c "jq -e --arg home \"/$HOME\" '.permissions.deny | index(\"Read(\(\$home)/brain/**)\") and index(\"Edit(\(\$home)/brain/**)\") and index(\"Bash(*~/brain*)\")' '$ROOT/leads/qa/.claude/settings.json'"
+check "...nor anything in the brain, in either layout (a project has no business there)" sh -c "jq -e --arg home \"/$HOME\" '.permissions.deny | index(\"Read(\(\$home)/brain/**)\") and index(\"Edit(\(\$home)/brain/**)\") and index(\"Bash(*~/brain*)\") and index(\"Read(\(\$home)/.mm/brain/**)\") and index(\"Bash(*~/.mm/brain*)\")' '$ROOT/leads/qa/.claude/settings.json'"
+check "...the brain's keys in the one-root layout too (~/.mm/brain/.keys: the owner's report)" sh -c "jq -e --arg home \"/$HOME\" '.permissions.deny | index(\"Read(\(\$home)/.mm/brain/.keys/**)\") and index(\"Bash(*~/.mm/brain/.keys*)\")' '$ROOT/leads/qa/.claude/settings.json'"
+# the run file is the project's to write (a box's too): with no machine secrets in it, the fixed list still renders
+cp "$ROOT/.run/endpoints.json" "/tmp/mm-ep.$$"
+jq '.machine_secrets = {}' "/tmp/mm-ep.$$" > "$ROOT/.run/endpoints.json"
+check "...and a run file that lists none (machine_secrets {}) still renders the fixed denies (review sy-v92 4)" sh -c "'$ROOT/bin/config-check' --render >/dev/null && jq -e --arg home \"/$HOME\" '.permissions.deny | index(\"Read(\(\$home)/.mm/brain/.keys/**)\") and index(\"Read(\(\$home)/brain/.keys/**)\") and index(\"Read(\(\$home)/.config/secrets/**)\") and index(\"Read(\(\$home)/.paseo/**)\") and index(\"Read(\(\$home)/.claude/.credentials.json)\")' '$ROOT/leads/qa/.claude/settings.json'"
+cp "/tmp/mm-ep.$$" "$ROOT/.run/endpoints.json"; rm -f "/tmp/mm-ep.$$"; "$ROOT/bin/config-check" --render >/dev/null 2>&1
 check "a lead's identity and tools are in its settings, so a lead resumed without bin/lead's env still has them (sy-670)" sh -c "jq -e --arg r '$ROOT' '.env.BEADS_ACTOR == \"qa\" and .env.GIT_AUTHOR_NAME == \"qa\" and (.env.PATH | startswith(\$r + \"/bin:\"))' '$ROOT/leads/qa/.claude/settings.json' && jq -e '.env.BEADS_ACTOR == \"setup\"' '$ROOT/setup/.claude/settings.json'"
 
 step "archive: dry run, then clean removal"
@@ -176,7 +187,7 @@ TB=$(sed -n 's/^archived: //p' /tmp/mm-qa-ar.$$); rm -f /tmp/mm-qa-ar.$$
 check "project directory gone" test ! -e "$ROOT"
 check "no processes left" test "$(proc_count)" = 0
 check "process file gone" test ! -e "$HOME/.mm/pc/projects/$PROJECT.yaml"
-[ -n "$PUB" ] && check "public route removed" sh -c "! expose ls | grep -q '$PUB'"
+[ -n "$PUB" ] && check "public route removed" sh -c "! $MM_EXPOSE ls | grep -q '$PUB'"
 [ -n "$PORT" ] && check "public port $PORT free" sh -c "! ss -Hltn | grep -q ':$PORT '"
 check "board name gone" sh -c "! curl -sf -o /dev/null --max-time 3 http://board.$PROJECT.localhost:1355/"
 check "leftover swept (argv through the symlink)" sh -c "! pgrep -f '$ALIAS/$NAME/[q]a-leftover'"
@@ -192,16 +203,17 @@ check "ready after restore" wait_ready 3 90
 check "board answers" board
 check "item survived archive + restore" item_there
 check "the memory survived archive + restore" test -f "$ROOT/memory/qa-probe.md"
-[ -n "$PUB" ] && check "public route back" sh -c "expose ls | grep -q '$PUB'"
+[ -n "$PUB" ] && check "public route back" sh -c "$MM_EXPOSE ls | grep -q '$PUB'"
 check "update state intact (no-op)" sh -c "mm update '$REF' | grep -q 'already at'"
 
 step "cleanup"
 mm archive "$REF" >/dev/null 2>&1 && ok "archived again" || bad "final archive"
 rm -rf "$HOME/.local/share/backups/$PROJECT"
 for f in $(ls "$HOME/.local/share/mm/archive"); do grep -qxF "$f" <<<"$ARCH_BEFORE" || rm -f "$HOME/.local/share/mm/archive/$f"; done
-rmdir "$HOME/projects/$CLIENT" 2>/dev/null || true
+rmdir "$PROJECTS_DIR/$CLIENT" 2>/dev/null || true
 check "nothing left" test ! -e "$ROOT"
 check "its Claude folder is gone too" test ! -e "$HOME/.mm/claude/$PROJECT"
 
+check "no route written into the live web proxy (review sy-uzh)" live_routes_same
 printf '\n%s passed, %s failed in %ss\n' "$pass" "$fail" $(( $(date +%s) - T0 ))
 [ "$fail" = 0 ]

@@ -7,8 +7,8 @@
 set -uo pipefail
 REF=${1:-qa/boxt}; PROJECT=${REF/\//-}
 export PATH="$HOME/.mm/bin:$HOME/.mm/npm/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
+. "$(dirname "$0")/lib/routes.sh"   # this run's routes in its own folder, never in the live web proxy (review sy-uzh)
 export MM_DOCKER=${MM_DOCKER:-docker}
-export MM_TEST=box   # mm's records of this run are stamped: their expected failures never reach mm obs errors or the sentinel
 unset PASEO_AGENT_ID PASEO_AGENT_CWD CLAUDECODE
 pass=0; fail=0
 ok() { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }; bad() { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
@@ -210,7 +210,7 @@ PUBNAME=$(jq -r '.services.board.public.name // empty' "$ROOT/.run/services.json
 if [ -n "$PUBPORT" ] && [ -n "$PUBBIND" ]; then
   for _ in $(seq 1 30); do [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://$PUBBIND:$PUBPORT/api/whoami")" != 000 ] && break; sleep 1; done
   check "the host's bind_host ($PUBBIND:$PUBPORT) reaches the box board's public side, which serves nothing without the gateway's assertion" sh -c "c=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 'http://$PUBBIND:$PUBPORT/api/whoami'); [ \"\$c\" != 000 ] && [ \"\$c\" != 200 ]"
-  check "...its route is listed ($PUBNAME), and no Traefik (no other container) is on the box's network" sh -c "expose ls | grep -q '$PUBNAME' && [ \"\$(D network inspect -f '{{range .Containers}}{{.Name}} {{end}}' '$NET' | wc -w)\" = 2 ]"
+  check "...its route is listed ($PUBNAME), and no Traefik (no other container) is on the box's network" sh -c "$MM_EXPOSE ls | grep -q '$PUBNAME' && [ \"\$(D network inspect -f '{{range .Containers}}{{.Name}} {{end}}' '$NET' | wc -w)\" = 2 ]"
   check "...the host's forwarder is in pc/box-public, not among the projects" sh -c "test -f '$MM_HOME_DIR/pc/box-public/$PROJECT.yaml' && ! test -e '$MM_HOME_DIR/pc/projects/$PROJECT.yaml'"
 else ok "no public board on this machine (not domain mode): skipped"; fi
 
@@ -244,8 +244,23 @@ for _ in $(seq 1 90); do mm inspect "$REF" 2>/dev/null | grep -q "board .*Ready"
 check "...its board is ready in the box, and the item made there before is still there" sh -c "mm inspect '$REF' | grep -q 'board .*Ready' && IN \"cd $ROOT && bin/bd list --json\" | grep -q 'made in the box'"
 check "...and it joined the machine's Paseo again (one entry)" sh -c "[ \"\$(SP host ls --json | jq --arg p '$PROJECT' '[.[] | select(.label == \$p)] | length')\" = 1 ]"
 
+echo "== which records mm obs errors leaves out (review sy-cwh)"
+MLOG="$MM_HOME_DIR/pc/mm.log"
+mm inspect "$REF" >/dev/null 2>&1
+check "a command on this throwaway project: mm marks its own record (mm_throwaway), from the project's answers" sh -c "grep '\"op\":\"mm inspect\"' '$MLOG' | tail -1 | jq -e '.mm_throwaway == \"$PROJECT\"' >/dev/null"
+MM_TEST=box mm ls >/dev/null 2>&1
+check "...an environment variable marks nothing (MM_TEST=box mm ls: no mark, no test field)" sh -c "grep '\"op\":\"mm ls\"' '$MLOG' | tail -1 | jq -e '(has(\"mm_throwaway\") or has(\"test\")) | not' >/dev/null"
+# the box writes an error line that names the mark and the word test, and claims to be mm's: still shown, as the box's.
+# In the shape a box service's lines have (process-compose's {level, process, message}, the service's JSON in message):
+# a bare top-level JSON line gets its level from its text, as a process-compose stderr line does
+IN "printf '%s\n' '{\"level\":\"error\",\"process\":\"board\",\"message\":\"{\\\"level\\\":\\\"error\\\",\\\"msg\\\":\\\"cwh-$$ a test line\\\",\\\"test\\\":\\\"box\\\",\\\"mm_throwaway\\\":\\\"x\\\",\\\"project\\\":\\\"mm\\\",\\\"service\\\":\\\"mm\\\"}\"}' >> $ROOT/.run/logs/cwh.log" >/dev/null 2>&1
+for _ in $(seq 1 45); do mm obs errors -p "$PROJECT" --since 10m -o json 2>/dev/null | grep -q "cwh-$$" && break; sleep 2; done
+check "...a box's error line with the mark and the word test still reaches mm obs errors, as the box's own" sh -c "mm obs errors -p '$PROJECT' --since 10m -o json | grep -q 'cwh-$$'"
+IN "rm -f $ROOT/.run/logs/cwh.log" >/dev/null 2>&1
+
 echo "== archive"
 check "mm archive: the box and its proxy are gone, and what mm kept for it" sh -c "mm archive '$REF' >/dev/null && ! D inspect '$BOX' >/dev/null 2>&1 && ! D inspect '$PX' >/dev/null 2>&1 && ! D network inspect '$NET' >/dev/null 2>&1 && ! test -e '$HD' && ! test -e '$PW' && ! test -e '$MM_HOME_DIR/paseo/$PROJECT' && ! test -e '$MM_HOME_DIR/egress/$PROJECT'"
 check "...and it left the machine's Paseo" sh -c "[ -z \"\$(joined)\" ]"
-check "...its public forwarder and its route are gone" sh -c "! test -e '$MM_HOME_DIR/pc/box-public/$PROJECT.yaml' && { [ -z '$PUBNAME' ] || ! expose ls | grep -q '$PUBNAME'; }"
+check "...its public forwarder and its route are gone" sh -c "! test -e '$MM_HOME_DIR/pc/box-public/$PROJECT.yaml' && { [ -z '$PUBNAME' ] || ! $MM_EXPOSE ls | grep -q '$PUBNAME'; }"
+check "no route written into the live web proxy (review sy-uzh)" live_routes_same
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]

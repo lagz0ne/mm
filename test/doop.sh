@@ -4,10 +4,11 @@
 # docker (MM_DOCKER or box.docker). Nothing outside the throwaway project, its container and its Claude folder changes.
 #   MM_DOCKER="sudo -n docker" MM_DOOP_IMAGE=<image> test/doop.sh [client/name]
 set -uo pipefail
-REF=${1:-qa/doopt}; PROJECT=${REF/\//-}; ROOT="$HOME/projects/$REF"
+PROJECTS_DIR=$(grep -qsE '^layout: *.?one-root' "${MM_HOME:-$HOME/.mm}/config.yaml" && echo "${MM_HOME:-$HOME/.mm}/projects" || echo "$HOME/projects")   # where mm keeps projects (its layout)
+REF=${1:-qa/doopt}; PROJECT=${REF/\//-}; ROOT="$PROJECTS_DIR/$REF"
 export PATH="$HOME/.mm/bin:$HOME/.mm/npm/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
+. "$(dirname "$0")/lib/routes.sh"   # this run's routes in its own folder, never in the live web proxy (review sy-uzh)
 unset PASEO_AGENT_ID PASEO_AGENT_CWD CLAUDECODE
-export MM_TEST=doop   # mm's records of this run are stamped: their expected failures never reach mm obs errors or the sentinel
 D() { ${MM_DOCKER:-docker} "$@"; }
 pass=0; fail=0
 ok() { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }; bad() { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
@@ -63,4 +64,5 @@ check "mm doop on again: the same account (the key still works)" sh -c "mm doop 
 
 echo "== archive"
 check "mm archive: its Doop container is gone too" sh -c "mm archive '$REF' >/dev/null && sleep 5 && ! D inspect '$C' >/dev/null 2>&1"
+check "no route written into the live web proxy (review sy-uzh)" live_routes_same
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]

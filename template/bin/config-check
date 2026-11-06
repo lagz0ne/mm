@@ -77,8 +77,9 @@ try { G = JSON.parse(fs.readFileSync(path.join(P, 'governance.json'), 'utf8')) }
 // {brain} {projects} {mm}: the machine's folders, from mm (one-root boxes keep them under $MM_HOME)
 const D = dirs()
 // a project has no business in the brain (review sy-5ag): all of it is denied to a board outside it (the system board
-// lives in it, and keeps its own rules)
-const BRAIN_DENY = (P + '/').startsWith(D.brain + '/') ? [] : [`Read(/${D.brain}/**)`, `Edit(/${D.brain}/**)`, ...named(D.brain)]
+// lives in it, and keeps its own rules). The brain's folder in either layout, as for its keys
+const BRAINS = [...new Set([D.brain, `${HOME}/.mm/brain`, `${HOME}/brain`])]
+const BRAIN_DENY = BRAINS.some((b) => (P + '/').startsWith(b + '/')) ? [] : BRAINS.flatMap((b) => [`Read(/${b}/**)`, `Edit(/${b}/**)`, ...named(b)])
 const gfill =(v) => v.replaceAll('{root}', R).replaceAll('{home}', HOME).replaceAll('{brain}', D.brain).replaceAll('{projects}', D.projects).replaceAll('{mm}', D.mm)
 const grule = (r) => { const v = gfill(r); return /^(Read|Edit|Write)\(\//.test(v) ? v.replace(/^(Read|Edit|Write)\(\//, '$1(//') : v }
 const G_READ = (G.read || []).map(gfill), G_WRITE = Object.fromEntries(Object.entries(G.write || {}).map(([k, v]) => [k, v.map(gfill)]))
