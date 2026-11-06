@@ -603,13 +603,13 @@ export function loadAll() {
   return { ...r, started: startSkipped(dependsOn(files)) }
 }
 
-/** Each process's dependencies in these process files: name -> dependency -> condition. */
+/** Each process in these process files, with its dependencies: name -> dependency -> condition ({} for none). */
 export function dependsOn(files: string[]): Record<string, Record<string, string>> {
   const out: Record<string, Record<string, string>> = {}
   for (const f of files) {
     let y: { processes?: Record<string, { depends_on?: Record<string, { condition?: string }> }> } = {}
     try { y = Bun.YAML.parse(readFileSync(f, 'utf8')) as typeof y } catch { continue }
-    for (const [n, p] of Object.entries(y?.processes || {})) if (p?.depends_on) out[n] = Object.fromEntries(Object.entries(p.depends_on).map(([d, c]) => [d, c?.condition || 'process_started']))
+    for (const [n, p] of Object.entries(y?.processes || {})) out[n] = Object.fromEntries(Object.entries(p?.depends_on || {}).map(([d, c]) => [d, c?.condition || 'process_started']))
   }
   return out
 }
@@ -622,12 +622,12 @@ const DEAD_GRACE_MS = 5000 // a restart shows its process as stopped for its bac
  * restart or an update of the dependency, or the instance left over from the same project loaded before), the waiter
  * is Skipped for good and never retried. So: poll until nothing is Skipped or Pending that can still come up (its
  * dependencies are running, on their way, or Skipped themselves with dependencies that can), at most `ms`. Returns
- * what it started.
+ * what it started. `socket`: the host's process manager, or a box's own (sy-5pvp, src/box.ts).
  */
-export function startSkipped(deps: Record<string, Record<string, string>>, ms = Number(process.env.MM_START_SKIPPED_MS || 90_000)): string[] {
+export function startSkipped(deps: Record<string, Record<string, string>>, ms = Number(process.env.MM_START_SKIPPED_MS || 90_000), socket = DIRS.socket): string[] {
   const end = Date.now() + ms, started: string[] = [], downSince = new Map<string, number>()
   for (;;) {
-    const ps = processes(), by = new Map(ps.map((p) => [p.name, p])), now = Date.now()
+    const ps = processes(undefined, socket), by = new Map(ps.map((p) => [p.name, p])), now = Date.now()
     for (const p of ps) if (COMING.includes(p.status)) downSince.delete(p.name); else if (!downSince.has(p.name)) downSince.set(p.name, now)
     const met = (d: string, cond: string) => {
       const x = by.get(d)
@@ -645,12 +645,13 @@ export function startSkipped(deps: Record<string, Record<string, string>>, ms = 
     }
     let waiting = false
     for (const p of ps) {
-      if (p.status !== 'Skipped' && p.status !== 'Pending') continue
-      const d = deps[p.name] || {}
+      // only what these files define (a box's process manager may list anything: it starts only mm's own names)
+      if ((p.status !== 'Skipped' && p.status !== 'Pending') || !Object.hasOwn(deps, p.name)) continue
+      const d = deps[p.name]
       if (!Object.keys(d).every((x) => canCome(x))) continue // a dependency that is down for good: nothing to wait for
       waiting = true
       if (p.status === 'Skipped' && Object.entries(d).every(([x, c]) => met(x, c))) {
-        if (run(['process-compose', '-U', '-u', DIRS.socket, 'process', 'start', p.name], { timeoutMs: 15_000 }).ok) started.push(p.name)
+        if (run(['process-compose', '-U', '-u', socket, 'process', 'start', p.name], { timeoutMs: 15_000 }).ok) started.push(p.name)
       }
     }
     if (!waiting || Date.now() >= end) return started
@@ -662,10 +663,12 @@ export function namespaceOp(ref: string, op: 'start' | 'stop' | 'restart') {
   return run(['process-compose', '-U', '-u', DIRS.socket, 'namespace', op, readAnswers(findRoot(ref)).project], { timeoutMs: 120_000 })
 }
 
-export function processes(project?: string) {
-  const r = run(['process-compose', '-U', '-u', DIRS.socket, 'process', 'list', '-o', 'json'], { timeoutMs: 15_000 })
+export function processes(project?: string, socket = DIRS.socket) {
+  const r = run(['process-compose', '-U', '-u', socket, 'process', 'list', '-o', 'json'], { timeoutMs: 15_000 })
   if (!r.ok) return []
-  const all = JSON.parse(r.out) as { name: string; namespace: string | string[]; status: string; is_ready: string; restarts: number }[]
+  type P = { name: string; namespace: string | string[]; status: string; is_ready: string; restarts: number; pid?: number }
+  let all: P[] = []
+  try { const j = JSON.parse(r.out); all = Array.isArray(j) ? (j as P[]).filter((p) => p && typeof p.name === 'string') : [] } catch { return [] }
   const ns = (p: { namespace: string | string[] }) => (Array.isArray(p.namespace) ? p.namespace : [p.namespace])
   return project ? all.filter((p) => ns(p as never).includes(project)) : all
 }
