@@ -4,7 +4,8 @@ import { basename, dirname, join } from 'node:path'
 import { type Config, getPath, loadConfig, when } from './config'
 import { DIRS, HOME, hasSystemdUser, isRoot, run, which } from './env'
 import { needs } from './inputs'
-import { engineRefusal, listProjects } from './project'
+import { boxish, engineRefusal, listProjects } from './project'
+import { engineDrift } from './lifecycle'
 import { manifest, type Tool } from './manifest'
 import * as vault from './vault'
 
@@ -87,6 +88,15 @@ export function doctor(): Check[] {
     : { layer: 'agents', item: 'shared instructions', status: 'ok', detail: 'none above the projects' })
   const global = ['CLAUDE.md', 'settings.json'].map((f) => join(HOME, '.claude', f)).filter((f) => existsSync(f))
   if (global.length) out.push({ layer: 'agents', item: 'global Claude folder', status: 'warn', detail: `${global.map((f) => f.replace(HOME, '~')).join(', ')} reach any agent not started by mm (mm's agents use $MM_HOME/claude/<project>)` })
+
+  // engine drift (sy-h5se): an engine file the three-way merge kept behind the template, which no project commit changed
+  for (const p of listProjects()) {
+    const root = expand(p.root); if (p.box || !existsSync(join(root, '.mm-answers.yaml')) || boxish(root)) continue
+    let left: string[] = []; try { left = engineDrift(root).filter((d) => d.by === 'baseline').map((d) => d.path) } catch { continue }
+    out.push(left.length
+      ? { layer: 'projects', item: `engine ${p.project}`, status: 'warn', detail: `kept behind the template it took, though no project commit changed ${left.length === 1 ? 'it' : 'them'}: ${left.join(', ')}`, fix: `mm update ${p.project} --reset ${left.join(' ')}` }
+      : { layer: 'projects', item: `engine ${p.project}`, status: 'ok', detail: 'bin/ and site/ as the template it took, or changed by its own commits' })
+  }
 
   // bd stays quiet (the owner, sy-8s1): no bd git hook in a board's repos (config, control, product; the hooks folder
   // git really uses, core.hooksPath included), bd's metrics off and no-hooks set on every board
