@@ -1,6 +1,6 @@
 // Where things live, and how to run things. Every path is derived from $HOME / $MM_HOME; nothing machine-specific is
 // written here, and nothing else in mm (or the template, through .run/endpoints.json "dirs") assumes a folder.
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -35,6 +35,65 @@ export const DIRS = {
   system: one ? join(MM, 'system') : join(HOME, 'brain', 'system'),
   backups: one ? join(MM, 'backups') : join(HOME, '.local', 'share', 'backups'),
   archive: one ? join(MM, 'archive') : join(HOME, '.local', 'share', 'mm', 'archive'),
+  portless: join(MM, 'portless'),          // the names proxy's state (PORTLESS_STATE_DIR; portless' own default: ~/.portless)
+  pcConfig: join(MM, 'pc', 'config'),      // process-compose's settings folder (PROC_COMP_CONFIG; its default: ~/.config/process-compose)
+}
+/**
+ * portless' state folder for what mm starts: $MM_HOME/portless; but the old ~/.portless while it is still a real folder
+ * (not moved yet, or its move was refused). The proxy and every project's wrappers must share one folder, else the names
+ * stop resolving; a link mm left there is the new folder.
+ */
+export function portlessDir(): string {
+  const old = join(HOME, '.portless')
+  try { if (lstatSync(old).isDirectory()) return old } catch {}
+  return DIRS.portless
+}
+/**
+ * The environment that keeps the tools mm runs inside $MM_HOME: each one's own default is a folder in the home folder (or
+ * /tmp). Set for mm's own calls (below), for every process the process manager runs (the launcher exports it; the
+ * definitions carry the portless one), and npm's for mm's installs (src/install.ts).
+ */
+export const toolEnv = (): Record<string, string> => ({
+  PORTLESS_STATE_DIR: portlessDir(),
+  PROC_COMP_CONFIG: DIRS.pcConfig,
+  PC_CLIENT_LOG_FILE: join(DIRS.pc, 'client.log'), // a client call's log; else /tmp/process-compose-<user>-client.log
+})
+for (const [k, v] of Object.entries(toolEnv())) process.env[k] ||= v
+
+/**
+ * Every path mm itself uses, or used, outside $MM_HOME: the one list `mm doctor` checks ("outside $MM_HOME") and
+ * `mm up` / `mm doctor --fix` move from. `allowed`: outside by design. `move`: mm moves it to `to`, once, by rename and
+ * only into an empty place; `link`: a link is left at the old path while the process manager runs (its processes may
+ * still use the old path until it restarts). `old`: mm no longer uses it, but doesn't move it (something not mm's may
+ * still run from it): removed by hand. `later`: still used; its move is another item's. `theirs`: not mm's.
+ */
+export interface Outside {
+  id: string; path: string; what: string
+  use: 'allowed' | 'move' | 'old' | 'later' | 'theirs'
+  to?: string; link?: boolean; note?: string
+}
+export function outsidePaths(): Outside[] {
+  const h = (...p: string[]) => join(HOME, ...p)
+  const legacy = one ? [] : (['projects', 'brain', 'system', 'backups', 'archive'] as const).map((k): Outside => ({
+    id: `layout ${k}`, path: DIRS[k], what: `the ${k} folder (legacy layout)`, use: 'later', to: join(MM, k), note: 'the one-root move (the whole layout at once, by ops; not mm up)' }))
+  const runtime = process.env.MM_SECRETS_DIR || join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 0}`, 'mm', 'secrets')
+  return [
+    { id: 'boot unit', path: h('.config', 'systemd', 'user', 'mm-pc.service'), what: 'the systemd user unit that starts the process manager at boot', use: 'allowed' },
+    { id: 'PATH line', path: h('.profile'), what: 'one PATH line (~/.mm/bin first)', use: 'allowed' },
+    { id: 'PATH line', path: h('.bashrc'), what: 'one PATH line (~/.mm/bin first)', use: 'allowed' },
+    { id: 'opened secrets', path: runtime, what: "secrets opened from the vault for services (memory only, gone at reboot)", use: 'allowed' },
+    { id: 'portless state', path: h('.portless'), what: "the names proxy's routes and state", use: 'move', to: DIRS.portless, link: true },
+    { id: 'process-compose config', path: h('.config', 'process-compose'), what: "process-compose's settings folder", use: 'move', to: DIRS.pcConfig },
+    { id: 'npm tools (old prefix)', path: h('.npm-global'), what: 'paseo and portless from an older install', use: 'old', to: DIRS.npm,
+      note: `mm runs its own from ${tilde(DIRS.npm)} (mm onboard installs them); remove it once nothing runs from it (the brain's paseo.service may)` },
+    ...['node', 'process-compose', 'merman-cli', 'victoria-metrics', 'victoria-logs', 'victoria-traces'].map((t): Outside => ({
+      id: `tool store ${t}`, path: h('.local', 'share', t), what: `${t} from an older install`, use: 'old', to: join(DIRS.tools, t),
+      note: `mm runs its own from ${tilde(DIRS.tools)} (mm onboard installs it); remove it once nothing runs from it` })),
+    { id: 'Paseo home', path: h('.paseo'), what: "the Paseo daemon's home (the brain's paseo.service today)", use: 'later', to: join(MM, 'paseo'), note: 'moves with mm.paseo (sy-nli)' },
+    { id: 'Claude folder', path: h('.claude'), what: "the human's own Claude folder", use: 'theirs', note: `mm's agents use ${tilde(join(MM, 'claude'))}/<project>` },
+    { id: 'claude (old install)', path: h('.local', 'bin', 'claude'), what: "the claude the install script put there (the human's own)", use: 'theirs', note: `mm runs its own from ${tilde(join(DIRS.tools, 'claude'))}` },
+    ...legacy,
+  ]
 }
 /** The folders a project's engine scripts need (written to .run/endpoints.json as "dirs"; never derived there). */
 export const engineDirs = () => ({ mm: DIRS.mm, brain: DIRS.brain, system: DIRS.system, projects: DIRS.projects, backups: DIRS.backups, vault: DIRS.vault, layout: LAYOUT })

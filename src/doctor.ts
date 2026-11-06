@@ -1,4 +1,4 @@
-// mm doctor: check this machine against the manifest. Never changes anything.
+// mm doctor: check this machine against the manifest. Never changes anything (`mm doctor --fix` is src/outside.ts).
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { type Config, getPath, loadConfig, when } from './config'
@@ -8,6 +8,7 @@ import { boxish, engineRefusal, listProjects } from './project'
 import { engineDrift } from './lifecycle'
 import { manifest, type Tool } from './manifest'
 import * as vault from './vault'
+import { outsideChecks } from './outside'
 
 export type Status = 'ok' | 'warn' | 'fail' | 'skip'
 export interface Check { layer: string; item: string; status: Status; detail: string; fix?: string }
@@ -88,6 +89,9 @@ export function doctor(): Check[] {
     : { layer: 'agents', item: 'shared instructions', status: 'ok', detail: 'none above the projects' })
   const global = ['CLAUDE.md', 'settings.json'].map((f) => join(HOME, '.claude', f)).filter((f) => existsSync(f))
   if (global.length) out.push({ layer: 'agents', item: 'global Claude folder', status: 'warn', detail: `${global.map((f) => f.replace(HOME, '~')).join(', ')} reach any agent not started by mm (mm's agents use $MM_HOME/claude/<project>)` })
+
+  // zero side effects (sy-8w1): every path of mm's outside $MM_HOME (src/env.ts outsidePaths), allowed or to move
+  out.push(...outsideChecks())
 
   // engine drift (sy-h5se): an engine file the three-way merge kept behind the template, which no project commit changed
   for (const p of listProjects()) {

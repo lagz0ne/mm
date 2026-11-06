@@ -1,10 +1,10 @@
 // The machine's one process-compose: API on ~/.mm/pc.sock, started at boot by one systemd user unit (mm-pc.service).
 // Projects are added as namespaces later (`mm new` / `mm up`); it starts empty and stays up (--keep-project).
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { apiConfigured } from './apistate'
 import { getPath, loadConfig } from './config'
-import { DIRS, HOME, hasSystemdUser, run, servicePath, toolPath, which } from './env'
+import { DIRS, HOME, hasSystemdUser, portlessDir, run, servicePath, toolEnv, which } from './env'
 import { MM_LOG_CONFIG, obsProcesses } from './obs'
 
 const BASE = join(DIRS.pc, 'base.yaml'), PROJECTS = join(DIRS.pc, 'projects')
@@ -18,7 +18,7 @@ export function writeBase() {
   const processes: Record<string, unknown> = which('portless') ? {
     'mm.portless': {
       namespace: 'mm', command: `portless proxy start --foreground --port ${pp} --no-tls`,
-      environment: [`PATH=${servicePath()}`, 'PORTLESS_SYNC_HOSTS=0'],
+      environment: [`PATH=${servicePath()}`, 'PORTLESS_SYNC_HOSTS=0', `PORTLESS_STATE_DIR=${portlessDir()}`],
       log_location: join(DIRS.pc, 'portless.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${pp}/` }, period_seconds: 3, failure_threshold: 20 },
     },
@@ -42,6 +42,8 @@ export function writeBase() {
     log_location: join(DIRS.pc, 'api.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
     readiness_probe: { exec: { command: `test -S ${join(DIRS.mm, 'api', 'approve.sock')}` }, period_seconds: 3, failure_threshold: 20 } } // never a test's MM_API_DIR
   Object.assign(processes, obsProcesses())
+  mkdirSync(DIRS.pc, { recursive: true })
+  writeLauncher()
   writeFileSync(BASE, `# mm: the machine process manager. Projects join as namespaces (~/.mm/pc/projects/*.yaml).\nversion: "0.5"\n${Bun.YAML.stringify({ processes }, null, 2)}\n`)
 }
 
@@ -65,20 +67,32 @@ export function pcRunning(): boolean {
   return answering()
 }
 
-export async function ensurePc(): Promise<string> {
-  mkdirSync(DIRS.pc, { recursive: true })
-  mkdirSync(join(HOME, '.config', 'process-compose'), { recursive: true }) // else every CLI call logs a debug line
-  writeBase()
-  const pc = which('process-compose')
-  if (!pc) throw new Error('process-compose is not installed')
-  // the launcher loads the base file and every project file, so projects come back after a reboot or restart
+/**
+ * The launcher (mm-pc-up): loads the base file and every project file, so projects come back after a reboot or restart.
+ * It exports the tools' folders under $MM_HOME (env.ts toolEnv): every process the process manager runs inherits them.
+ * Written by onboard and again whenever the base file is (a change takes effect at the next restart); null without
+ * process-compose.
+ */
+export function writeLauncher(): string | null {
+  const pc = which('process-compose'); if (!pc) return null
   const launcher = join(DIRS.bin, 'mm-pc-up')
-  mkdirSync(DIRS.bin, { recursive: true })
-  writeFileSync(launcher, [
+  mkdirSync(DIRS.bin, { recursive: true }); mkdirSync(DIRS.pcConfig, { recursive: true }) // else every CLI call logs a debug line
+  const body = [
     '#!/bin/sh', '# Written by mm onboard: the machine process manager with the base file and every project file.',
+    ...Object.entries(toolEnv()).map(([k, v]) => `export ${k}="${v}"`),
     `set -- -f "${BASE}"`, `for f in "${PROJECTS}"/*.yaml "${join(DIRS.pc, 'box-public')}"/*.yaml; do [ -e "$f" ] && set -- "$@" -f "$f"; done`, `rm -f "${DIRS.socket}"`,
     `exec "${pc}" up -t=false --keep-project -U -u "${DIRS.socket}" -L "${join(DIRS.pc, 'process-compose.log')}" "$@"`, '',
-  ].join('\n'), { mode: 0o755 })
+  ].join('\n')
+  let now = ''; try { now = readFileSync(launcher, 'utf8') } catch {}
+  if (now !== body) writeFileSync(launcher, body, { mode: 0o755 })
+  return launcher
+}
+
+export async function ensurePc(): Promise<string> {
+  mkdirSync(DIRS.pc, { recursive: true })
+  writeBase()
+  const launcher = writeLauncher()
+  if (!launcher) throw new Error('process-compose is not installed')
   if (hasSystemdUser()) {
     mkdirSync(UNIT_DIR, { recursive: true })
     writeFileSync(join(UNIT_DIR, 'mm-pc.service'), [

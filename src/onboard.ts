@@ -7,6 +7,7 @@ import { DIRS, HOME, LAYOUT, run } from './env'
 import { install, installSystem, packageManager } from './install'
 import { configKey, machineInputs, varDefault } from './inputs'
 import { manifest } from './manifest'
+import { moveOutside, toolsOutside } from './outside'
 import { ensurePc } from './pc'
 
 export interface OnboardOpts { access?: string; domain?: string; host?: string; yes?: boolean }
@@ -54,10 +55,14 @@ export async function onboard(o: OnboardOpts): Promise<{ steps: Step[]; checks: 
   vars(c, o, steps)
   for (const d of [DIRS.mm, DIRS.bin, DIRS.tools, DIRS.pc, DIRS.projects]) if (!existsSync(d)) { mkdirSync(d, { recursive: true }); steps.push({ step: `dir ${d.replace(HOME, '~')}`, status: 'fixed', detail: 'created' }) }
   pathLine(steps)
+  // what an older box kept outside $MM_HOME moves in, once (sy-8w1)
+  for (const m of moveOutside()) steps.push({ step: m.step, status: m.status === 'refused' ? 'fail' : 'fixed', detail: m.detail })
 
   // tools: system packages in one go, then node, then the rest (npm needs node)
   const tools = Object.entries(manifest.machine.tools).filter(([, t]) => t.install && when(t.when, c))
-  const missing = tools.filter(([n, t]) => checkTool(n, t, c).status === 'fail' || (checkTool(n, t, c).status === 'warn' && !t.optional))
+  // a managed tool this machine runs from outside $MM_HOME (an older install) counts as missing: mm installs its own
+  const outside = new Set(toolsOutside().map((t) => t.name))
+  const missing = tools.filter(([n, t]) => outside.has(n) || checkTool(n, t, c).status === 'fail' || (checkTool(n, t, c).status === 'warn' && !t.optional))
   const pm = packageManager()
   const sys = missing.filter(([, t]) => t.install!.kind === 'system')
   if (sys.length) {

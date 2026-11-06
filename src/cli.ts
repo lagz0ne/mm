@@ -9,6 +9,7 @@ import { DIRS, HOME, run, tilde } from './env'
 import { expand as expandHome, fill, needs, unmet } from './inputs'
 import { manifest } from './manifest'
 import { onboard } from './onboard'
+import { moveOutside } from './outside'
 import { archive, engineDrift, engineReset, restore, update } from './lifecycle'
 import { withUpdateLock } from './updlock'
 import { cron, runOnce } from './cron'
@@ -45,11 +46,19 @@ const summary = (checks: { status: string }[]) => {
   return { fail: n('fail'), warn: n('warn'), ok: n('ok') }
 }
 
-program.command('doctor').description('check this machine against the manifest (changes nothing)').action(() => {
-  const o = fmt(), checks = doctor(), s = summary(checks)
+program.command('doctor').description('check this machine against the manifest (changes nothing; --fix: move what an older box kept outside ~/.mm)')
+  .option('--fix', 'move what mm kept outside ~/.mm into it (once, by rename, only into an empty place), and remove a link it left once nothing needs it')
+  .action((opts: { fix?: boolean }) => {
+  const o = fmt()
+  if (opts.fix) {
+    const moved = moveOutside({ unlink: true })
+    if (o.format === 'table') { if (moved.length) { print(moved as unknown as Record<string, unknown>[], o); console.log('') } else if (!o.quiet) console.log('nothing to move\n') }
+    if (moved.some((m) => m.status === 'refused')) process.exitCode = 1
+  }
+  const checks = doctor(), s = summary(checks)
   print(checks as unknown as Record<string, unknown>[], o, 'item')
   if (o.format === 'table' && !o.quiet) console.log(`\n${s.fail ? `${s.fail} failing, ` : ''}${s.warn} warning(s), ${s.ok} ok${s.fail ? ': run `mm onboard`' : ''}`)
-  process.exit(s.fail ? 1 : 0)
+  process.exit(s.fail || process.exitCode ? 1 : 0)
 })
 
 program.command('onboard').description('install and configure what this machine is missing, then run doctor')

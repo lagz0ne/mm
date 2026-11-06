@@ -21,6 +21,12 @@ Onboard installs everything it can; what only you can give (tokens, keys, answer
 says what each one is for and how to get it. Fill each with `mm fill <name>`; `mm doctor` passes once the required
 ones are there.
 
+Everything mm installs, runs and keeps lives under `~/.mm` (`$MM_HOME`): its tools, the process manager's files and
+settings, the names proxy's state, the projects, the brain, the vault, the backups. Only two things are outside: the
+systemd user unit that starts the process manager at boot, and a PATH line in `~/.profile` / `~/.bashrc`. `mm doctor`
+lists what it finds outside ("outside $MM_HOME"); on a box set up by an older mm, `mm doctor --fix` (or the next
+`mm up`) moves the rest in once, by rename and only into an empty place.
+
 ## Use
 
 ```sh
