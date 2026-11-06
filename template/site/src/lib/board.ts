@@ -1,4 +1,4 @@
-import type { Issue } from './api'
+import type { Issue, LeadState } from './api'
 
 import { setPersonaRoles } from './persona'
 
@@ -15,6 +15,17 @@ export function setRoleDefs(defs: RoleDef[] | undefined) {
   for (const d of defs) ROLE_LABEL[d.id] = d.title
   setPersonaRoles(defs)
 }
+
+// Leads are on demand (wake starts one when a request waits, and closes an idle one), so a lead is never "offline":
+// ready unless a request is on it (site/lead-state.mjs gives the state).
+export const LEAD_DOT: Record<LeadState['state'], string> = {
+  ready: 'bg-foreground',
+  working: 'bg-swiss animate-pulse',
+  waiting: 'bg-swiss',
+  blocked: 'border-2 border-swiss',
+  error: 'bg-swiss',
+}
+export const LEAD_READY: LeadState = { state: 'ready', label: 'ready', item: null }
 
 export const COLUMNS = [
   { key: 'ready', label: 'Ready', hint: 'Open, nothing blocking' },

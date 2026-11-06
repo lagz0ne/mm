@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configApi } from './config-api.mjs'
+import { leadState, signalOf } from './lead-state.mjs'
 import * as P_ from '../bin/lib/paseo.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -229,20 +230,33 @@ async function refreshMeta() {
       meta.seq = Math.max(meta.seq, e.seq)
       const t = Date.parse(e.ts); if (t > meta.lastTs) meta.lastTs = t
       if (e.op === 'create' && e.actor && !meta.creators[e.issue_id]) meta.creators[e.issue_id] = e.actor
-      if (e.op === 'comment' && e.comment) meta.last[e.issue_id] = { author: e.comment.author, at: e.comment.created_at || e.ts }
+      if (e.op === 'comment' && e.comment) meta.last[e.issue_id] = { author: e.comment.author, at: e.comment.created_at || e.ts, signal: signalOf(e.comment.text) }
       if (e.actor) meta.lastAct[e.actor] = { item: e.issue_id, at: e.ts }
     }
     if (recs.length < 500) break
   }
 }
+// Each lead's state for the board (site/lead-state.mjs): ready / working on <item> / waiting for you / blocked / start
+// failed; never "offline" (leads are on demand: wake starts them when a request waits). Kept for 3 s.
+let statesCache = { at: 0, data: null }
+async function leadStates(l) {
+  if (statesCache.data && Date.now() - statesCache.at < 3000) return statesCache.data
+  let items = [], wake = {}
+  try { items = (await fetch(new URL('/v0/beads/issues?limit=500', BD), { minMs: 1000 }).then((x) => x.json())).items || [] } catch {}
+  try { wake = JSON.parse(fs.readFileSync(path.join(ROOT, '.wake-state.json'), 'utf8')) } catch {}
+  const data = Object.fromEntries([...ROLES, 'setup'].map((role) => [role, leadState({ role, agent: l[role], wake: wake[role], items, lastAct: meta.lastAct[role], last: meta.last })]))
+  statesCache = { at: Date.now(), data }
+  return data
+}
 async function sendMeta(res) {
   try {
     const [l] = await Promise.all([leads(), refreshMeta()])
+    const states = await leadStates(l)
     let personas = null
     try { personas = JSON.parse(readText('leads/personas.json') || 'null') } catch {}
     let raci = null
     try { raci = JSON.parse(readText('leads/raci.json') || 'null') } catch {}
-    send(res, 200, { project: PROJECT, leads: l, creators: meta.creators, last: meta.last, personas, roles: ROLE_DEFS, raci, panels: PANELS })
+    send(res, 200, { project: PROJECT, leads: l, states, creators: meta.creators, last: meta.last, personas, roles: ROLE_DEFS, raci, panels: PANELS })
   } catch (e) { send(res, 502, { title: 'meta failed', detail: e.message }) }
 }
 
@@ -339,6 +353,8 @@ function frontmatter(md) {
 }
 async function sendSettings(res) {
   const l = await leads()
+  await refreshMeta().catch(() => {})
+  const states = await leadStates(l)
   const start = readText('leads/START.md') || ''
   const roles = ROLES.map((role) => {
     const dir = `leads/${role}`
@@ -357,10 +373,10 @@ async function sendSettings(res) {
     try { permissions = JSON.parse(readText(`${dir}/.claude/settings.json`) || 'null')?.permissions || null } catch {}
     const settingsRaw = readText(`${dir}/.claude/settings.tmpl.json`) ?? readText(`${dir}/.claude/settings.json`)
     if (ROLE_DEFS.find((d) => d.id === role)?.workers) layers.push({ path: 'worktrees/CLAUDE.md', content: readText('worktrees/CLAUDE.md') })
-    return { role, cwd: dir, agent: l[role], layers, start: start.replaceAll('{role}', role).replaceAll('{project}', PROJECT), startTemplate: start,
+    return { role, cwd: dir, agent: l[role], state: states[role], layers, start: start.replaceAll('{role}', role).replaceAll('{project}', PROJECT), startTemplate: start,
       skills, permissions, settingsPath: `${dir}/.claude/settings.tmpl.json`, settingsRaw }
   })
-  const setup = { role: 'setup', cwd: 'setup', agent: l.setup,
+  const setup = { role: 'setup', cwd: 'setup', agent: l.setup, state: states.setup,
     layers: ['CLAUDE.md', 'setup/CLAUDE.md'].map((p) => ({ path: p, content: readText(p) })),
     start: (readText('setup/START.md') || '').replaceAll('{project}', PROJECT), settingsRaw: readText('setup/.claude/settings.tmpl.json') ?? readText('setup/.claude/settings.json') }
   const themes = await new Promise((ok) => execFile('node', [path.join(ROOT, 'bin/persona'), 'themes'], { timeout: 10000 }, (e, out) => ok(e ? '' : out)))

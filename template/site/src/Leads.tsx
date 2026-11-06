@@ -1,7 +1,8 @@
 import { useContext, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { ArrowClockwiseIcon, ClockCounterClockwiseIcon, PencilSimpleIcon, SparkleIcon, TrashIcon } from '@phosphor-icons/react'
-import { ROLE_LABEL } from '@/lib/board'
+import { LEAD_DOT, LEAD_READY, ROLE_LABEL } from '@/lib/board'
+import type { LeadState } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -17,6 +18,7 @@ interface RoleSettings {
   role: string
   cwd: string
   agent: { id: string; status: string; provider?: string; thinking?: string } | null
+  state?: LeadState
   layers: Layer[]
   start: string
   startTemplate: string
@@ -44,7 +46,7 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return d as T
 }
 
-interface SetupInfo { agent: RoleSettings['agent']; layers: Layer[]; start: string; settingsRaw: string | null }
+interface SetupInfo { agent: RoleSettings['agent']; state?: LeadState; layers: Layer[]; start: string; settingsRaw: string | null }
 interface GovItem { id: string; title: string; status: string; updated_at: string; created_by?: string; owner?: string }
 
 export function Leads({ onOpen, items, raci }: { onOpen: (id: string) => void; items: GovItem[]; raci: { activities: { id: string; title: string; raci: Record<string, string> }[] } | null }) {
@@ -70,8 +72,7 @@ export function Leads({ onOpen, items, raci }: { onOpen: (id: string) => void; i
             <Avatar actor={x.role} size="sm" />
             <span className="min-w-0 leading-tight"><span className="block truncate">{personaOf(personas, x.role)?.name}</span>
               <span className="block text-[11px] font-normal opacity-70">{ROLE_LABEL[x.role]}</span></span>
-            <span className={cn('ml-auto size-2 shrink-0', !x.agent ? 'border border-current' : x.agent.status === 'running' ? 'bg-swiss' : 'bg-current')}
-              title={x.agent ? x.agent.status : 'not running'} />
+            <span className={cn('ml-auto size-2 shrink-0', LEAD_DOT[(x.state || LEAD_READY).state])} title={(x.state || LEAD_READY).label} />
           </button>
         ))}
         <button onClick={() => setSel('setup')}
@@ -80,7 +81,7 @@ export function Leads({ onOpen, items, raci }: { onOpen: (id: string) => void; i
           <Avatar actor="setup" size="sm" />
           <span className="min-w-0 leading-tight"><span className="block truncate">{personaOf(personas, 'setup')?.name}</span>
             <span className="block text-[11px] font-normal opacity-70">Setup agent</span></span>
-          <span className={cn('ml-auto size-2 shrink-0', !setup?.agent ? 'border border-current' : setup.agent.status === 'running' ? 'bg-swiss' : 'bg-current')} />
+          <span className={cn('ml-auto size-2 shrink-0', LEAD_DOT[(setup?.state || LEAD_READY).state])} title={(setup?.state || LEAD_READY).label} />
         </button>
         <button onClick={() => setSel('raci')}
           className={cn('flex w-full items-center gap-2 border-b px-4 py-3 text-left text-[13px] font-semibold hover:bg-muted', sel === 'raci' && 'bg-foreground text-background hover:bg-foreground')}>
@@ -130,7 +131,8 @@ export function Leads({ onOpen, items, raci }: { onOpen: (id: string) => void; i
         <div key={r.role} className="min-h-0 overflow-y-auto">
           {setup && <Governance setup={setup} items={items} onOpen={onOpen} compact />}
           <section className="flex flex-wrap items-end gap-x-8 gap-y-3 border-b px-6 py-4 text-xs">
-            <Fact label="Agent" value={r.agent ? r.agent.id : 'not running'} mono />
+            <Fact label="State" value={(r.state || LEAD_READY).label} />
+            <Fact label="Agent" value={r.agent ? r.agent.id : 'starts on the next request'} mono={!!r.agent} />
             <Fact label="Model" value={r.agent?.provider || '—'} />
             <Fact label="Folder" value={`${r.cwd}/`} mono />
             <div className="ml-auto flex items-center gap-3">
@@ -371,8 +373,8 @@ function Governance({ setup, items, onOpen, compact }: { setup: SetupInfo; items
       <div className="flex flex-wrap items-center gap-3 px-6 py-2 text-xs">
         <b className="text-[11px] tracking-[0.1em] uppercase">Governance</b>
         <span className="flex items-center gap-1.5 text-muted-foreground">
-          <span className={cn('size-2', !setup.agent ? 'border border-current' : setup.agent.status === 'running' ? 'bg-swiss' : 'bg-foreground')} />
-          setup agent {setup.agent ? setup.agent.status : 'offline'}
+          <span className={cn('size-2', LEAD_DOT[(setup.state || LEAD_READY).state])} />
+          setup agent {(setup.state || LEAD_READY).label}
         </span>
         <span className="text-muted-foreground">Only the setup agent changes briefs, skills and permissions. Your edits here become requests to it.</span>
       </div>

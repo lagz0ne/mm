@@ -6,8 +6,12 @@
 // names, even when the writer is the item's assignee (see signal()).
 // Hop limit: after MAX_HOPS lead-to-lead wakes on one item without a human in between, the item gets `needs-you`
 // and leads stop being woken for it until a human acts on it.
-// Env: BD_SERVE (else the bd-serve URL from .run/endpoints.json), WAKE_EVERY_MS (default 5000). Paseo: bin/lib/paseo.mjs (its SDK, else
-// the CLI: PASEO_BIN, PASEO_URL, PASEO_NO_SDK=1).
+// Leads are on demand: a role with no agent (or a closed one) is started when work waits for it, and a lead idle for
+// WAKE_IDLE_CLOSE_MS with nothing of its own open is closed (see startLead() and closeIdle()).
+// Env: BD_SERVE (else the bd-serve URL from .run/endpoints.json), WAKE_EVERY_MS (default 5000), WAKE_RESUME_CHECK_MS (the
+// lead check, default 60000), WAKE_RESUME_MS (at most one start per role per this, default 600000), WAKE_IDLE_CLOSE_MS
+// (default 1800000 = 30 min; 0 = never close). Paseo: bin/lib/paseo.mjs (its SDK, else the CLI: PASEO_BIN, PASEO_URL,
+// PASEO_NO_SDK=1).
 import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/obs.mjs'
 import * as P_ from './lib/paseo.mjs'
 import { parseSignal } from './lib/signals.mjs'
@@ -17,7 +21,7 @@ import { fileURLToPath } from 'node:url'
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 import { projectName } from './lib/svc.mjs'
 const PROJECT = projectName()
-import { requireUrl } from './lib/svc.mjs'
+import { dirs, requireUrl } from './lib/svc.mjs'
 const BD = new URL(process.env.BD_SERVE || requireUrl('bd-serve'))
 const EVERY = Number(process.env.WAKE_EVERY_MS || 5000)
 const MAX_HOPS = Number(process.env.WAKE_MAX_HOPS || 3)
@@ -196,12 +200,8 @@ async function tick() {
       count('mm_wake_sent_total', { role })
       for (const [id, r] of batch) if (r.byLead) hops.set(id, (hops.get(id) || 0) + 1) // a lead-to-lead wake, sent
       // For the board's "who is working on what": the items this lead was just woken for.
-      try {
-        const f = path.join(P, '.wake-state.json')
-        const st = (() => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return {} } })()
-        st[role] = { items, at: new Date().toISOString(), agent: a.id }
-        fs.writeFileSync(f, JSON.stringify(st))
-      } catch {}
+      editState((st) => { st[role] = { items, at: new Date().toISOString(), agent: a.id } })
+      delete idleFrom[role] // it has a turn now
       log(`woke ${role} (${a.shortId || a.id}) with ${msg.split('\n').length - 3} reason(s)`)
     } catch (e) {
       for (const [id, r] of batch) if (!reasons.has(id)) reasons.set(id, r) // not sent: keep them for the next idle tick
@@ -210,42 +210,107 @@ async function tick() {
   }
 }
 
-// After a machine or Paseo restart, a lead's agent shows `closed` and is never idle, so tick() never reaches it and
-// its work stops (sy-6ym, the reboot of 2026-11-04). A closed lead with work waiting (reasons, or items in progress or
-// blocked) is started again with bin/lead start (sy-670): Paseo resumes a closed agent with none of the env bin/lead
-// gave it (its board actor, its own Claude folder), so a resumed lead posted as someone else, with Claude's global
-// folder, where its old session isn't anyway. bin/lead start archives the closed one, and the new lead's first prompt
-// lists its items in progress and blocked (the handover, sy-8n1); the reasons stay pending, and tick() sends them once
-// the new lead is idle. At most once per WAKE_RESUME_MS per agent; counted (mm_wake_resumed_total) and logged.
+// Leads on demand (sy-6ym, sy-670, sy-809m). A role whose lead has no agent, or a closed one (after a machine or Paseo
+// restart a lead shows `closed` and is never idle, so tick() never reaches it), is started with bin/lead start when work
+// waits for it: reasons, or items of its own in progress or blocked. bin/lead start, not a Paseo resume: a resumed agent
+// has none of the env bin/lead gives (its board actor, its own Claude folder); it archives the old one (one agent per
+// role), and the new lead's first prompt lists its items in progress and blocked (the handover, sy-8n1). The reasons
+// stay pending, and tick() sends them once the new lead is idle.
+// A lead idle for WAKE_IDLE_CLOSE_MS (default 30 min; 0 = never) with nothing of its own open is closed (archived, as
+// bin/lead stop does, but never mid-turn), and the next request starts it again here.
 const RESUME_CHECK = Number(process.env.WAKE_RESUME_CHECK_MS || 60000), RESUME_GAP = Number(process.env.WAKE_RESUME_MS || 600000)
-const resumed = {}
-let resuming = false // one check at a time: two overlapping checks would both see "not resumed yet" and send twice
-async function resumeClosed() {
-  if (resuming) return
-  resuming = true
-  try { await resumeClosed1() } finally { resuming = false }
+const IDLE_CLOSE = Number(process.env.WAKE_IDLE_CLOSE_MS ?? 1800000)
+const startedAt = {} // role -> when wake last started its lead (the rate limit)
+const startFailed = {} // role -> the failure already said on its items (once per run of failures)
+const idleFrom = {} // role -> { id, at }: since when wake has seen that agent idle
+let heldSaid = false
+
+// The project's restore hold (mm restore, until `mm restore --release`): no lead starts. mm doesn't run wake while it
+// holds, so this is the second guard, for a hold set while wake runs.
+function held() {
+  try { return /^restore:[ \t]*\n(?:[ \t]+.*\n)*?[ \t]+hold:[ \t]*true\b/m.test(fs.readFileSync(path.join(dirs().mm, 'config.yaml'), 'utf8')) } catch { return false }
 }
-async function resumeClosed1() {
+function editState(fn) {
+  const f = path.join(P, '.wake-state.json')
+  try { const st = (() => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return {} } })(); fn(st); fs.writeFileSync(f, JSON.stringify(st)) } catch {}
+}
+const leadStart = (role) => new Promise((ok, no) => execFile(path.join(P, 'bin', 'lead'), ['start', role], { cwd: P, timeout: 180000 },
+  (e, out, err) => (e ? no(new Error(String(err || e.message).trim().slice(0, 300))) : ok(out))))
+
+/** The one way wake starts a lead (a queue dispatcher can call it too): for `role`, because of `items` (ids) and `why`;
+ *  `was` = the closed agent it replaces, if any. Checks the restore hold and the rate limit (once per WAKE_RESUME_MS per
+ *  role); counts and logs; a failed start is kept for the board's Leads page and said once on the waiting items.
+ *  Resolves to { started: true } or { started: false, why: 'held' | 'rate' | 'failed', error? }. */
+async function startLead(role, { was = null, items = [], why = '' } = {}) {
+  if (held()) {
+    if (!heldSaid) { heldSaid = true; log(`restore hold on: not starting leads (${role} waits: ${why})`) }
+    return { started: false, why: 'held' }
+  }
+  heldSaid = false
+  if (Date.now() - (startedAt[role] || 0) < RESUME_GAP) return { started: false, why: 'rate' }
+  startedAt[role] = Date.now()
+  try {
+    await span(was ? 'wake resume' : 'wake start', { role, agent: was?.id || 'none', items: items.join(' '), via: 'bin/lead start' }, () => leadStart(role))
+    count(was ? 'mm_wake_resumed_total' : 'mm_wake_started_total', { role })
+    log(was ? `restarted ${role} (was ${was.shortId || was.id}, closed): ${why}` : `started ${role} (no agent): ${why}`)
+    delete startFailed[role]; delete idleFrom[role]
+    editState((st) => { st[role] = { ...(st[role] || {}), started: new Date().toISOString() }; delete st[role].startError; delete st[role].closed })
+    return { started: true }
+  } catch (e) {
+    delete startedAt[role] // not started: try again at the next check
+    count('mm_wake_start_failed_total', { role })
+    log(`${was ? 'restart' : 'start'} of ${role} failed (reasons kept):`, e.message)
+    editState((st) => { st[role] = { ...(st[role] || {}), startError: { error: e.message, items, at: new Date().toISOString() } } })
+    if (!startFailed[role]) {
+      startFailed[role] = true
+      for (const id of [...new Set(items)].slice(0, 5)) bdRun(['comments', 'add', id, `Error: wake could not start the ${role} lead for this item: ${clip(e.message, 300)}. It tries again every ${Math.round(RESUME_CHECK / 1000)} s; nothing waiting is lost.`], `comment ${id}`)
+    }
+    return { started: false, why: 'failed', error: e.message }
+  }
+}
+
+// A lead with nothing to do for IDLE_CLOSE is closed: idle all that time (as wake saw it, and by Paseo's own last change
+// when it gives one), no reason waiting, and no item of its own in progress, blocked or labelled needs-you. A plain
+// `paseo archive` (no --force) refuses an agent in a turn, so a lead is never cut off.
+async function closeIdle(role, a, own) {
+  if (!IDLE_CLOSE || a.status !== 'idle') { if (a.status !== 'idle') delete idleFrom[role]; return }
+  if (idleFrom[role]?.id !== a.id) idleFrom[role] = { id: a.id, at: Date.now() }
+  const since = Math.max(idleFrom[role].at, Date.parse(a.updated || '') || 0)
+  if (Date.now() - since < IDLE_CLOSE || pending[role].size) return
+  const busy = (await own()).find((i) => i.status === 'in_progress' || i.status === 'blocked' || (i.labels || []).includes('needs-you'))
+  if (busy) return
+  const b = await lead(role) // a fresh look, right before
+  if (!b || b.id !== a.id || b.status !== 'idle' || pending[role].size) { delete idleFrom[role]; return }
+  try {
+    await new Promise((ok, no) => execFile(process.env.PASEO_BIN || 'paseo', ['archive', a.id], { timeout: 30000 }, (e, out, err) => (e ? no(new Error(String(err || e.message).trim().slice(0, 300))) : ok(out))))
+    count('mm_wake_idle_closed_total', { role })
+    log(`closed ${role} (${a.shortId || a.id}): idle ${Math.round((Date.now() - since) / 60000)} min with nothing of its own open; the next request starts it again`)
+    delete idleFrom[role]; delete idleSeen[role]
+    editState((st) => { st[role] = { ...(st[role] || {}), closed: { at: new Date().toISOString(), why: 'idle' } } })
+  } catch (e) { log(`idle close of ${role} failed (left running):`, e.message) }
+}
+
+let checking = false // one check at a time: two overlapping checks would both see "not started yet" and start twice
+async function ensureLeads() {
+  if (checking) return
+  checking = true
+  try { await ensureLeads1() } finally { checking = false }
+}
+async function ensureLeads1() {
   loadRoles()
   let open = null
+  const items = async () => (open ||= await bd('/v0/beads/issues?limit=500')).items || []
   for (const role of ROLES) {
     let a
     try { a = await lead(role) } catch (e) { log('paseo ls failed:', e.message); return }
-    if (!a || a.status !== 'closed' || Date.now() - (resumed[a.id] || 0) < RESUME_GAP) continue
-    open ||= await bd('/v0/beads/issues?limit=500')
+    const own = async () => (await items()).filter((i) => i.assignee === role && i.status !== 'closed')
+    if (a && a.status !== 'closed') { await closeIdle(role, a, own); continue }
+    if (Date.now() - (startedAt[role] || 0) < RESUME_GAP) continue
     const reasons = pending[role]
-    const mine = (open.items || []).filter((i) => i.assignee === role && (i.status === 'in_progress' || i.status === 'blocked'))
+    const mine = (await own()).filter((i) => i.status === 'in_progress' || i.status === 'blocked')
     if (!reasons.size && !mine.length) continue
-    resumed[a.id] = Date.now()
-    try {
-      await span('wake resume', { role, agent: a.id, via: 'bin/lead start' }, () => new Promise((ok, no) =>
-        execFile(path.join(P, 'bin', 'lead'), ['start', role], { cwd: P, timeout: 180000 }, (e, out, err) => (e ? no(new Error(String(err || e.message).trim().slice(0, 300))) : ok(out)))))
-      count('mm_wake_resumed_total', { role })
-      log(`restarted ${role} (was ${a.shortId || a.id}, closed): ${reasons.size} reason(s) wait for it, ${mine.length} item(s) in its handover`)
-    } catch (e) {
-      delete resumed[a.id] // not started: try again at the next check
-      log(`restart of ${role} failed (reasons kept):`, e.message)
-    }
+    await startLead(role, { was: a, items: [...reasons.keys(), ...mine.map((i) => i.id)],
+      why: `${reasons.size} reason(s) wait for it, ${mine.length} item(s) in its handover` })
   }
 }
 
@@ -315,6 +380,6 @@ log(`wake for ${PROJECT}: watching ${BD.href} from seq ${since} (stall check eve
 setInterval(() => tick().catch((e) => log('tick:', e.message)), EVERY)
 setInterval(() => check().catch((e) => log('stream check failed:', e.message)), CHECK_MS)
 // the first look soon after start (wake itself restarts with the machine), then every RESUME_CHECK
-setTimeout(() => resumeClosed().catch((e) => log('resume check:', e.message)), Math.min(10000, RESUME_CHECK))
-setInterval(() => resumeClosed().catch((e) => log('resume check:', e.message)), RESUME_CHECK)
+setTimeout(() => ensureLeads().catch((e) => log('lead check:', e.message)), Math.min(10000, RESUME_CHECK))
+setInterval(() => ensureLeads().catch((e) => log('lead check:', e.message)), RESUME_CHECK)
 watch()

@@ -67,9 +67,12 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 type Page<T> = { items: T[]; has_more: boolean }
 
 export interface Lead { id: string; name: string; status: string }
+/** A lead as the board shows it (site/lead-state.mjs): leads are on demand, so never "offline". */
+export interface LeadState { state: 'ready' | 'working' | 'waiting' | 'blocked' | 'error'; label: string; item: string | null; error?: string }
 export interface Meta {
   project: string
   leads: Record<string, Lead | null> & { _workers?: { id: string; role: string; status: string; item: string }[] }
+  states?: Record<string, LeadState>
   creators: Record<string, string>
   personas?: import('@/lib/persona').Personas | null
   roles?: import('@/lib/board').RoleDef[]

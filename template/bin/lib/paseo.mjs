@@ -53,10 +53,12 @@ const cli = (args, timeout = 20000) => new Promise((ok, no) => execFile(BIN, arg
 const matches = (a, labels) => Object.entries(labels || {}).every(([k, v]) => a.labels?.[k] === v)
 
 const HOME = E.HOME || ''
-/** One shape whichever path brought it: {id, shortId, name, status, cwd (absolute), labels, provider, thinking, created, archived}. */
+/** One shape whichever path brought it: {id, shortId, name, status, cwd (absolute), labels, provider, thinking, created,
+ *  updated (its last activity, when Paseo gives one), archived}. */
 const norm = (a) => ({ id: a.id, shortId: a.shortId || String(a.id).slice(0, 7), name: a.title ?? a.name ?? null, status: a.status,
   cwd: String(a.cwd || '').replace(/^~(?=\/|$)/, HOME), labels: a.labels || {}, provider: a.provider ?? null,
-  thinking: a.thinking ?? a.thinkingOptionId ?? null, created: a.created ?? a.createdAt ?? null, archived: !!(a.archivedAt || a.archived) })
+  thinking: a.thinking ?? a.thinkingOptionId ?? null, created: a.created ?? a.createdAt ?? null,
+  updated: a.lastActivityAt ?? a.updatedAt ?? null, archived: !!(a.archivedAt || a.archived) })
 /** Agents (not archived unless `archived`), optionally only those with all these labels. */
 export async function list(labels = {}, { archived = false } = {}) {
   const c = await sdk()

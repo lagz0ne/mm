@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { ArrowUpRightIcon, ChatCircleIcon, LinkSimpleIcon, PlusIcon } from '@phosphor-icons/react'
 import { toast } from 'sonner'
 import { api, blockers, type BeadEvent, type Issue, type Meta } from '@/lib/api'
-import { COLUMNS, ROLES, ROLE_LABEL, ago, byPriority, columnOf, roleOf, setRoleDefs, type ColumnKey } from '@/lib/board'
+import { COLUMNS, LEAD_DOT, LEAD_READY, ROLES, ROLE_LABEL, ago, byPriority, columnOf, roleOf, setRoleDefs, type ColumnKey } from '@/lib/board'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -279,18 +279,13 @@ function verb(ev: BeadEvent) {
 
 type MoveFn = (id: string, role: string, col: ColumnKey) => void
 
-const LEAD_STATE: Record<string, { label: string; dot: string }> = {
-  running: { label: 'working', dot: 'bg-swiss animate-pulse' },
-  idle: { label: 'idle', dot: 'bg-foreground' },
-  none: { label: 'offline', dot: 'border border-muted-foreground' },
-}
 
 function Row({ role, items, ready, byId, meta, onOpen, onMove }: {
   role: string; items: Issue[]; ready: Set<string>; byId: Map<string, Issue>; meta: Meta
   onOpen: (id: string) => void; onMove: MoveFn
 }) {
   const lead = role ? meta.leads[role] : null
-  const st = !lead ? LEAD_STATE.none : LEAD_STATE[lead.status] || { label: lead.status, dot: 'bg-muted-foreground' }
+  const st = (role && meta.states?.[role]) || LEAD_READY
   return (
     <>
       <div className="border-b px-3 py-2.5">
@@ -304,9 +299,10 @@ function Row({ role, items, ready, byId, meta, onOpen, onMove }: {
             </div>
           </div>) })() : <div className="text-[13px] font-bold">{ROLE_LABEL[role]}</div>}
         {role && (
-          <div className={cn('mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground', !lead && 'text-swiss')}
-            title={lead ? `Lead: Paseo agent ${lead.id}` : 'No lead running: nobody picks these up'}>
-            <span className={cn('size-2 shrink-0', st.dot)} />{st.label}
+          <div className={cn('mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground', ['waiting', 'blocked', 'error'].includes(st.state) && 'font-semibold text-swiss')}
+            title={st.state === 'error' ? `Start failed: ${st.error}` : lead ? `Lead: Paseo agent ${lead.id}` : 'Starts on the next request'}>
+            <span className={cn('size-2 shrink-0', LEAD_DOT[st.state])} />
+            {st.item ? <button className="hover:underline" onClick={() => onOpen(st.item!)}>{st.label}</button> : st.label}
           </div>
         )}
         {role && (meta.leads._workers || []).some((w) => w.role === role) && (
