@@ -9,7 +9,8 @@ services:
     workdir: "{root}/control/.beads/dolt"
     env: { DOLT_ROOT_PATH: "{root}/.dolt-root", XDG_CONFIG_HOME: "{root}/.config" }
     port: internal
-    ready: { socket: "{socket}" }
+    # ready once it answers a query (bin/dolt-ready), not when the socket file appears: bd-serve waits for that
+    ready: { socket: "{socket}", exec: "node {root}/bin/dolt-ready {socket}" }
     restart: on_failure
   bd-serve:
     about: Beads HTTP API and event stream (board and wake read it).
