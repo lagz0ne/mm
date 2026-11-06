@@ -95,7 +95,7 @@ try {
   console.log('== a role with no agent and a new item')
   hold(false)
   ok('the hold is lifted: qa is started within one check (bin/lead start)', await until(() => starts('qa') === 1, 1500))
-  ok('...logged as a start from no agent, with its reasons', /started qa \(no agent\): 1 reason\(s\) wait for it/.test(opsLog()))
+  ok('...logged as a start from no agent, with its reasons', await until(() => /started qa \(no agent\): 1 reason\(s\) wait for it/.test(opsLog())))
   ok('...and the new lead gets the item', await until(() => /q-1 "a new item for qa"/.test(to('qa'))))
   ok('one agent per role: started once', starts('qa') === 1)
 
@@ -112,7 +112,7 @@ try {
 
   console.log('== a kept role is never started: the human is asked')
   ok('chat (kept) is closed with an item in progress: not started', starts('chat') === 0)
-  ok('...its item gets needs-you instead, and it is logged', /label add c-1 needs-you --actor wake/.test(bdlog()) && /chat is kept \(the owner's contact\): its agent is closed/.test(opsLog()))
+  ok('...its item gets needs-you instead, and it is logged', await until(() => /label add c-1 needs-you --actor wake/.test(bdlog()) && /chat is kept \(the owner's contact\): its agent is closed/.test(opsLog())))
   ok('...once, not on every check', (bdlog().match(/label add c-1 needs-you/g) || []).length === 1)
   create('c-2', 'chat', 'a new request for the contact')
   ok('a new item for it: labelled needs-you too, still not started', await until(() => /label add c-2 needs-you/.test(bdlog())) && starts('chat') === 0)
