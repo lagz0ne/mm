@@ -6,11 +6,12 @@ import { randomBytes } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { boxApi } from './apistate'
 import { getPath, held, loadConfig } from './config'
-import { DIRS, engineDirs, HOME, run, servicePath, toolPath, which, within } from './env'
+import { DIRS, engineDirs, HOME, portlessDir, run, servicePath, toolPath, which, within } from './env'
 import { obsEndpoints } from './obs'
 import { writeSecretPaths } from './inputs'
 import { nameClash, publicKeyPem } from './auth'
 import { type NamesMode, namesMode, routeName } from './names'
+import { moveOutside } from './outside'
 import { pcRunning, writeBase } from './pc'
 import { rendered, renderTo, template, templateCommit } from './template'
 import pkg from '../package.json'
@@ -519,14 +520,16 @@ export function setOptional(root: string, service: string, on: boolean): Step[] 
 }
 
 export function up(root: string): Step[] {
-  if (boxHook.up && readAnswers(root).box) return boxHook.up(root)
+  // an older box's folders outside $MM_HOME move in first, once (sy-8w1); a refusal doesn't stop the project
+  const moved = moveOutside().map((m): Step => ({ step: m.step, status: m.status === 'refused' ? 'skip' : 'ok', detail: m.status === 'refused' ? `refused: ${m.detail}` : m.detail }))
+  if (boxHook.up && readAnswers(root).box) return [...moved, ...boxHook.up(root)]
   const { answers: a, services, schedules, socket, pp, dport } = resolve(root)
   // its public hosts are its own, before it is registered (sy-b15.3: two projects never get one host)
   const clash = nameClash(root); if (clash) return [{ step: 'public names', status: 'fail', detail: `refused: ${clash}` }]
-  const steps: Step[] = []
+  const steps: Step[] = [...moved]
   mkdirSync(join(root, '.run', 'logs'), { recursive: true }); mkdirSync(join(root, '.dolt'), { recursive: true }); mkdirSync(PROJECTS_PC, { recursive: true })
   const obs = obsEndpoints() as { traces?: string; metrics?: string }
-  const env = { PATH: servicePath(), MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0',
+  const env = { PATH: servicePath(), MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0', PORTLESS_STATE_DIR: portlessDir(),
     ...(obs.traces ? { MM_OBS_TRACES: obs.traces, MM_OBS_METRICS: obs.metrics } : {}) }
   const processes: Record<string, unknown> = {}
   const pdeath = run(['sh', '-c', 'command -v setpriv']).ok ? 'setpriv --pdeathsig TERM ' : ''
