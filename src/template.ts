@@ -1,6 +1,6 @@
 // The project template: packed into the binary at build time (src/template.gen.json), or read from a directory
 // (MM_TEMPLATE_DIR, for development and for adopting projects made by an older mm).
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { run } from './env'
 import packed from './template.gen.json'
@@ -56,8 +56,9 @@ export function rendered(vars: Record<string, string>, t = template()): { p: str
  * `mm update` uses, so a project's own edits and the template's changes meet in an ordinary three-way merge.
  */
 export function templateCommit(root: string, vars: Record<string, string>, msg: string, parent?: string, t = template(), gitEnv: Record<string, string> = {}): string {
-  const scratch = join(root, '.git', 'mm-render'), index = join(root, '.git', 'mm-template.index')
-  rmSync(scratch, { recursive: true, force: true }); rmSync(index, { force: true })
+  // the scratch render and its index: a fresh folder per run, so two runs never share one, and a folder a run left
+  // behind (killed) never matters (sy-qpqd)
+  const tmp = mkdtempSync(join(root, '.git', 'mm-render-')), scratch = join(tmp, 'tree'), index = join(tmp, 'index')
   try {
     renderTo(scratch, vars, t)
     const env = { ...gitEnv, GIT_INDEX_FILE: index } // gitEnv: a box project's hardened host git (review sy-b15.6 2b)
@@ -70,6 +71,6 @@ export function templateCommit(root: string, vars: Record<string, string>, msg: 
     const tree = git(['write-tree'])
     return git(['commit-tree', tree, ...(parent ? ['-p', parent] : []), '-m', msg])
   } finally {
-    rmSync(scratch, { recursive: true, force: true }); rmSync(index, { force: true })
+    rmSync(tmp, { recursive: true, force: true })
   }
 }

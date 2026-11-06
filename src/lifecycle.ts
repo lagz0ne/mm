@@ -6,6 +6,7 @@ import { canon, DIRS, HOME, run, within } from './env'
 import { BOXES, boxHook, boxish, engineRefusal, gitRefusal, headDrift, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, resolve, routeRm, sealEngine, templateRecFile, templateVars, up, writeRunFiles } from './project'
 import { template, templateCommit } from './template'
 import { boxRoute } from './names'
+import { withUpdateLock } from './updlock'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
 const pc = (...a: string[]) => run(['process-compose', '-U', '-u', DIRS.socket, ...a], { timeoutMs: 120_000 })
@@ -61,6 +62,10 @@ export function engineDrift(root: string): Drift[] {
 /** Put engine files back as the template renders them, in one mm commit: only files that drifted from the baseline
  *  (no project commit changed them), never a box project's (its engine comes from mm's seal). */
 export function engineReset(root: string, paths: string[], dryRun = false): { steps: Step[]; ok: boolean } {
+  const r = withUpdateLock(root, readAnswers(root).project, () => engineResetHeld(root, paths, dryRun))
+  return 'refused' in r ? { steps: [{ step: 'lock', status: 'fail', detail: r.refused }], ok: false } : r
+}
+function engineResetHeld(root: string, paths: string[], dryRun: boolean): { steps: Step[]; ok: boolean } {
   const git = gitIn(root), steps: Step[] = [], t = template()
   const fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return { steps, ok: false } }
   if (boxish(root)) return fail('reset', 'a box project: mm up puts its engine back from mm\'s seal')
@@ -94,6 +99,11 @@ export type UpdateResult = { steps: Step[]; from: string; to: string; changed: s
  * governance check passes; otherwise the merge is left for resolving (`--continue`) or undone (`--abort`).
  */
 export function update(root: string, o: UpdateOpts = {}): UpdateResult {
+  // one run per project at a time, --dry-run, --continue and --abort too (sy-qpqd)
+  const a = readAnswers(root), r = withUpdateLock(root, a.project, () => updateHeld(root, o))
+  return 'refused' in r ? { steps: [{ step: 'lock', status: 'fail', detail: r.refused }], from: a.template_version, to: template().version, changed: [], conflicts: [], ok: false } : r
+}
+function updateHeld(root: string, o: UpdateOpts): UpdateResult {
   const git = gitIn(root), { a, vars } = varsOf(root), t = template()
   const steps: Step[] = [], res: UpdateResult = { steps, from: a.template_version, to: t.version, changed: [], conflicts: [], ok: false }
   const fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return res }
