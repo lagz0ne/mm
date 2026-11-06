@@ -87,7 +87,7 @@ machine:
                   install: { kind: node-dist, version: "24.21.0" } }
     npm:        { tested: "11.19.0", with: node, version: ["npm", "--version"] }
     claude:     { required: true, tested: "2.1.317", version: ["claude", "--version"],
-                  install: { kind: script, url: "https://claude.ai/install.sh", note: "installs ~/.local/bin/claude" } }
+                  install: { kind: claude-dist, version: "2.1.318" } }   # pinned (as the box's, box/npm) into ~/.mm/tools/claude; not the install script (~/.local)
     paseo:      { required: true, tested: "0.13.0", version: ["paseo", "--version"],
                   install: { kind: npm, package: "@getpaseo/cli", version: "0.13.0" } }   # pinned: the tested one
     portless:   { required: true, tested: "0.15.13", version: ["portless", "--version"],         # HTTP names + PORT
@@ -126,7 +126,9 @@ machine:
     projects: { dir: projects, legacy: "~/projects" }
     mm:       { dir: mm, legacy: "~/.mm" }          # bin/ (mm binary), pc.sock (process-compose API)
     backups:  { dir: backups, legacy: "~/.local/share/backups" }   # <project>/<date>/, written by <project>/bin/backup
-    tool_store: { path: "~/.local/share/<tool>/<version>" }     # versioned installs, linked into ~/.local/bin
+    tool_store: { path: "~/.mm/tools/<tool>/<version>" }       # versioned installs, linked into ~/.mm/bin (older boxes: ~/.local/share)
+    # Nothing else of mm's is outside $MM_HOME but the mm-pc user unit and a PATH line: src/env.ts outsidePaths() is the
+    # list (`mm doctor`, "outside $MM_HOME"); portless' state is ~/.mm/portless, process-compose's settings ~/.mm/pc/config.
 
   services:                                   # machine-level (brain), today as systemd user units
     paseo:          { unit: paseo.service }               # agent daemon

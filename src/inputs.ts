@@ -87,7 +87,8 @@ function machineNeed(name: string, i: Input, c: Config): Need {
   }
   if (i.kind === 'account') {
     if (!i.check) return { ...base, status: 'unchecked', fill: '', detail: 'check by hand' }
-    const r = run(i.check, { timeoutMs: 15_000 })
+    // its state (gh: a device id in ~/.local/state/gh at every call) goes under $MM_HOME; its login stays where it is
+    const r = run(i.check, { timeoutMs: 15_000, env: { XDG_STATE_HOME: join(DIRS.mm, 'state'), GH_NO_UPDATE_NOTIFIER: '1' } })
     return { ...base, status: r.ok ? 'filled' : 'missing', fill: '', detail: r.ok ? `${i.check.join(' ')}: ok` : `${i.check.join(' ')} failed` }
   }
   const f = secretFile(i.path!)
