@@ -23,6 +23,8 @@ import { getMigrations } from 'better-auth/db/migration'
 import { admin, bearer, magicLink, organization } from 'better-auth/plugins'
 import { createAccessControl } from 'better-auth/plugins/access'
 import { granted, grantedProjects } from './apistate'
+import { hasToken, removeToken, setToken, tokenSince } from './persontoken'
+import { ready as vaultReady } from './vault'
 import { getPath, loadConfig } from './config'
 import { expand, machineInputs } from './inputs'
 import { DIRS } from './env'
@@ -376,6 +378,52 @@ export async function gateway() {
     return html(homePage(p.name, cards))
   }
 
+  /** A form POST from one of this host's own pages (CSRF). Our pages are served with Referrer-Policy: no-referrer, so a
+   *  browser sends `Origin: null` on their forms' POST (sy-9tbm). A page can't set Sec-Fetch-Site. So: an Origin of
+   *  another host is always refused; when the browser sends Sec-Fetch-Site, only same-origin passes (cross-site,
+   *  same-site, none refused; a sandboxed frame elsewhere sends Origin null but cross-site); without it (an older
+   *  browser), Origin must be this host. */
+  const fromOwnPage = (req: Request) => {
+    const site = req.headers.get('sec-fetch-site'), origin = req.headers.get('origin') || ''
+    let from = ''; try { from = new URL(origin).host } catch {}
+    const foreign = origin !== '' && origin !== 'null' && from !== authHost
+    return !(foreign || (site ? site !== 'same-origin' : from !== authHost))
+  }
+  // ---------- "Your Claude token" (sy-8n4w): each person sets, replaces or removes their own, on this host only ----------
+  // The person is the session's, never a name in the form: nobody sets or removes another's. The value goes into the
+  // vault (sealed to the machine key and the recovery key) and is never shown, logged or sent anywhere again.
+  const TOKEN_FORM_MAX = 4096
+  const tokenPageFor = (name: string, msg = '', status = 200) =>
+    html(tokenPage(name, vaultReady(), hasToken(name), tokenSince(name), msg), status)
+  const claudeToken = async (req: Request, srv?: { requestIP?: (r: Request) => { address: string } | null }) => {
+    const p = await personOf(req)
+    if (req.method === 'GET' || req.method === 'HEAD') return p ? tokenPageFor(p.name) : new Response(null, { status: 302, headers: { location: '/s', ...headers } })
+    if (req.method !== 'POST') return new Response('method not allowed', { status: 405, headers })
+    const ip = clientIp(req, srv)
+    if (!p) return html(page('Your session has ended. Sign in again, then open "Your Claude token".'), 403)
+    if (!fromOwnPage(req)) { log('warn', 'claude token post refused (not from its page)', { user: p.name, ip, origin: req.headers.get('origin') || undefined, site: req.headers.get('sec-fetch-site') || undefined }); return tokenPageFor(p.name, 'Use the form on this page.', 403) }
+    if (limited(`ctok:${p.userId}`, 10, 10 * 60e3)) return tokenPageFor(p.name, 'Too many changes. Wait a few minutes.', 429)
+    if (Number(req.headers.get('content-length') || 0) > TOKEN_FORM_MAX) return tokenPageFor(p.name, 'That is too long for a Claude token.', 413)
+    const raw = await req.arrayBuffer().catch(() => new ArrayBuffer(0))
+    if (raw.byteLength > TOKEN_FORM_MAX) return tokenPageFor(p.name, 'That is too long for a Claude token.', 413)
+    const f = new URLSearchParams(new TextDecoder().decode(raw)), a = f.get('a')
+    if (a === 'remove') {
+      const was = removeToken(p.name)
+      log('info', was ? 'claude token removed' : 'claude token remove: none was set', { user: p.name, ip })
+      if (was) tellOwner(`${p.name} removed their Claude token (from ${ip}). Their runs don't start until they set one again.`)
+      return tokenPageFor(p.name, was ? 'Removed. Runs for you do not start until you set a token again.' : 'No token was set.')
+    }
+    if (a !== 'set') return tokenPageFor(p.name, 'Use the form on this page.', 400)
+    const had = hasToken(p.name)
+    try { setToken(p.name, String(f.get('v') || '')) } catch (e) {
+      log('warn', 'claude token refused', { user: p.name, ip, why: (e as Error).message.split('.')[0] })
+      return tokenPageFor(p.name, (e as Error).message, vaultReady() ? 400 : 503)
+    } finally { f.delete('v') }
+    log('info', had ? 'claude token replaced' : 'claude token set', { user: p.name, ip })
+    tellOwner(`${p.name} ${had ? 'replaced' : 'set'} their Claude token (from ${ip}). If that wasn't them: mm revoke ${p.name}`)
+    return tokenPageFor(p.name, had ? 'Replaced. mm will not show it again.' : 'Saved. mm will not show it again.')
+  }
+
   async function http(req: Request, srv?: { requestIP?: (r: Request) => { address: string } | null }): Promise<Response> {
     const u = new URL(req.url), host = req.headers.get('x-forwarded-host') || u.host, path = u.pathname
     // forward-auth: the web proxy asks for every request to a board host
@@ -421,15 +469,9 @@ export async function gateway() {
       if (req.method !== 'POST') return new Response(null, { status: 302, headers: { location: '/s/done', ...headers } })
       const ip = clientIp(req, srv)
       if (limited(`ba:${ip}`, 60, 60e3)) return json({ error: 'too many requests' }, 429)
-      // only the Continue page's own form (CSRF). Our pages are served with Referrer-Policy: no-referrer, so a browser
-      // sends `Origin: null` on that form's POST (sy-9tbm). A page can't set Sec-Fetch-Site. So: an Origin of another
-      // host is always refused; when the browser sends Sec-Fetch-Site, only same-origin passes (cross-site, same-site,
-      // none refused; a sandboxed frame elsewhere sends Origin null but cross-site); without it (an older browser),
-      // Origin must be this host. A non-browser client gains nothing here: it could post the token anyway.
-      const site = req.headers.get('sec-fetch-site'), origin = req.headers.get('origin') || ''
-      let from = ''; try { from = new URL(origin).host } catch {}
-      const foreign = origin !== '' && origin !== 'null' && from !== authHost
-      if (foreign || (site ? site !== 'same-origin' : from !== authHost)) { log('warn', 'link post refused (not from the link page)', { ip, origin: req.headers.get('origin') || undefined, site: site || undefined }); return html(page('Open the sign-in link itself, then press Continue.'), 403) }
+      // only the Continue page's own form (CSRF: fromOwnPage). A non-browser client gains nothing here: it could post
+      // the token anyway.
+      if (!fromOwnPage(req)) { log('warn', 'link post refused (not from the link page)', { ip, origin: req.headers.get('origin') || undefined, site: req.headers.get('sec-fetch-site') || undefined }); return html(page('Open the sign-in link itself, then press Continue.'), 403) }
       const f = await req.formData().catch(() => null), t = String(f?.get('t') || ''), c = String(f?.get('c') || '/s/done')
       const hdrs = new Headers(req.headers); hdrs.delete('cf-connecting-ip'); hdrs.delete('content-type'); hdrs.delete('content-length'); hdrs.set('x-mm-client-ip', ip)
       const r = await auth.handler(new Request(`https://${authHost}/api/auth/magic-link/verify?${new URLSearchParams({ token: t, callbackURL: c })}`, { method: 'GET', headers: hdrs }))
@@ -464,6 +506,7 @@ export async function gateway() {
       log('info', 'code issued', { board, code: short(code), ip })
       const r = html(codePage(code, board)); r.headers.append('set-cookie', setPendingCookie(req, id)); return r
     }
+    if (path === '/s/token' && host === authHost) return claudeToken(req, srv)
     if (path === '/s/app.js') return new Response(CODE_JS, { headers: { 'content-type': 'text/javascript', ...headers } })
     if (path === '/s/poll') {
       const v = cookies(req).mm_pending, k = v ? h(v) : '', pp = k ? pending.get(k) : undefined
@@ -537,8 +580,9 @@ export async function gateway() {
     if (u.pathname === '/user/rm') {
       const usr = userByName(name); if (!usr) return json({ error: `no user ${name}` }, 404)
       endSessions(usr.id); db.run('DELETE FROM mm_token WHERE user_id = ?', [usr.id]); db.run('DELETE FROM member WHERE userId = ?', [usr.id])
+      try { removeToken(usr.name) } catch (e) { log('warn', 'claude token not removed', { user: name, error: (e as Error).message }) }
       await ctx.internalAdapter.deleteUser(usr.id)
-      log('info', 'user removed', { user: name, by: caller }); tellOwner(`${name} was removed (grants, sessions and tokens ended)`); return json({ ok: true })
+      log('info', 'user removed', { user: name, by: caller }); tellOwner(`${name} was removed (grants, sessions, tokens and their Claude token ended)`); return json({ ok: true })
     }
     if (u.pathname === '/user/ls') {
       const rows = db.query('SELECT id, name, role, createdAt FROM user ORDER BY name').all() as { id: string; name: string; role?: string; createdAt: string }[]
@@ -546,7 +590,23 @@ export async function gateway() {
         grants: x.role === 'admin' ? 'owner (every project)' : (db.query('SELECT o.slug AS p, m.role AS r FROM member m JOIN organization o ON o.id = m.organizationId WHERE m.userId = ? ORDER BY o.slug').all(x.id) as { p: string; r: string }[]).map((g) => `${g.p}:${g.r}`).join(', '),
         sessions: (db.query('SELECT COUNT(*) AS n FROM session WHERE userId = ? AND expiresAt > ?').get(x.id, new Date().toISOString()) as { n: number }).n,
         last_signin: (db.query('SELECT createdAt AS t, ipAddress AS ip FROM session WHERE userId = ? ORDER BY createdAt DESC LIMIT 1').get(x.id) as { t: string; ip: string } | null)?.t || null,
-        tokens: (db.query('SELECT COUNT(*) AS n FROM mm_token WHERE user_id = ?').get(x.id) as { n: number }).n })))
+        tokens: (db.query('SELECT COUNT(*) AS n FROM mm_token WHERE user_id = ?').get(x.id) as { n: number }).n,
+        claude_token: hasToken(x.name) ? 'set' : 'none' })))
+    }
+    // the owner's own Claude token, from their own terminal (mm user claude-token): only the owner's account, never a name
+    if (u.pathname === '/claude-token') {
+      const own = db.query("SELECT name FROM user WHERE role = 'admin'").get() as { name: string } | null
+      if (!own) return json({ error: 'no owner yet: mm user add <your name> --owner' }, 409)
+      if (b.remove === true) {
+        const was = removeToken(own.name); log('info', was ? 'claude token removed' : 'claude token remove: none was set', { user: own.name, by: caller })
+        if (was) tellOwner(`the owner's Claude token was removed (from the terminal)`)
+        return json({ ok: true, name: own.name, claude_token: 'none' })
+      }
+      const had = hasToken(own.name)
+      try { setToken(own.name, String(b.value || '')) } catch (e) { return json({ error: (e as Error).message }, vaultReady() ? 400 : 503) }
+      log('info', had ? 'claude token replaced' : 'claude token set', { user: own.name, by: caller })
+      tellOwner(`the owner's Claude token was ${had ? 'replaced' : 'set'} (from the terminal). If that wasn't you: mm user claude-token --remove`)
+      return json({ ok: true, name: own.name, claude_token: 'set' })
     }
     if (u.pathname === '/grant') {
       const project = String(b.project || ''), role = guestRole(b.role), usr = userByName(name)
@@ -764,8 +824,28 @@ function homePage(name: string, cards: Card[]) {
 ${(() => { const w = c.s && worstOf(c.s); return w ? `<p class="worst${w.hot ? ' hot' : ''}">${esc(w.text)}</p>\n` : '' })()}${c.s ? `<dl class="counts">${count('Open', 'open items', c.s.open)}${count('P0', 'open P0 items', c.s.p0, true)}${count('Blocked', 'blocked items', c.s.blocked)}${count('Needs you', 'items that need a human', c.s.needs_you, true)}${count('Mine', 'open items assigned to you', c.s.mine)}</dl>
 ${c.s.last ? `<p class="last">Last activity: ${esc(c.s.last.slice(0, 16).replace('T', ' '))} UTC</p>` : ''}` : '<p class="na">Summary unavailable right now.</p>'}
 <p class="go"><a class="${c.role === 'viewer' ? 'view' : 'open'}" href="/s?b=${encodeURIComponent(c.host)}&amp;r=%2F">${c.role === 'viewer' ? 'View the board (read-only)' : 'Open the board'}</a></p></section>`
-  const nav = `<span class="here">Boards</span><span class="who">Signed in as <b>${esc(name)}</b></span><form method="post" action="/s/out"><button type="submit" class="quiet">Sign out</button></form>`
-  return shell('Your boards', nav, cards.length ? `${waitingList(cards)}<div class="cards">${cards.map(card).join('\n')}</div>` : '<p>You have no board yet; the owner can grant you one.</p>')
+  return shell('Your boards', homeNav('boards', name), cards.length ? `${waitingList(cards)}<div class="cards">${cards.map(card).join('\n')}</div>` : '<p>You have no board yet; the owner can grant you one.</p>')
+}
+/** The signed-in pages' nav: the boards, the person's Claude token, who, sign out. */
+function homeNav(here: 'boards' | 'token', name: string) {
+  const item = (k: typeof here, href: string, label: string) => (k === here ? `<span class="here">${label}</span>` : `<a href="${href}">${label}</a>`)
+  return `${item('boards', '/', 'Boards')}${item('token', '/s/token', 'Your Claude token')}<span class="who">Signed in as <b>${esc(name)}</b></span><form method="post" action="/s/out"><button type="submit" class="quiet">Sign out</button></form>`
+}
+/** "Your Claude token" (sy-8n4w): set, replace, remove. It never holds the value: only whether one is set, and since when. */
+function tokenPage(name: string, vaultOk: boolean, set: boolean, since: string | null, msg: string) {
+  const state = set ? `<p class="label">Status</p><p><b>Set</b>${since ? ` since ${esc(since.slice(0, 16).replace('T', ' '))} UTC` : ''}. mm does not show it again.</p>` : '<p class="label">Status</p><p><b>None</b>. Runs for you do not start until you set one.</p>'
+  const form = !vaultOk ? '<p>This machine has no vault yet, so mm can\'t keep a token. Ask the owner.</p>'
+    : `<form method="post" action="/s/token" class="tok"><input type="hidden" name="a" value="set">
+<label for="v">${set ? 'A new token (it replaces the one set now)' : 'Your token'}</label>
+<input id="v" name="v" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required maxlength="420" placeholder="sk-ant-oat01-…">
+<button type="submit">${set ? 'Replace' : 'Save'}</button></form>
+${set ? '<form method="post" action="/s/token" class="tok"><input type="hidden" name="a" value="remove"><button type="submit" class="quiet">Remove my token</button></form>' : ''}`
+  return shell('Your Claude token', homeNav('token', name), `${msg ? `<p class="msg" role="status">${esc(msg)}</p>` : ''}${state}
+<p>Work that mm runs for you runs in Claude Code with this token: your own Claude subscription, never the owner's.
+Make it with <code>claude setup-token</code> on your own computer, then paste it here.</p>
+${form}
+<p class="note">mm keeps it sealed on this machine. It is never shown again, never logged and never given to an agent.
+Remove it here at any time. Claude's terms apply to your subscription: read them yourself.</p>`)
 }
 // the boards' tokens (template/site/src/index.css): near-black on near-white, hairline rules, one red, no radius
 const APP_CSS = `:root{--fg:oklch(0.16 0 0);--bg:oklch(0.995 0 0);--muted:oklch(0.48 0 0);--rule:oklch(0.88 0 0);--swiss:oklch(0.58 0.235 27)}
@@ -819,6 +899,13 @@ button.quiet:hover{border-bottom-color:var(--swiss);color:var(--swiss)}
 .w-title{grid-area:title;font-size:15px;font-weight:600;text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:3px;overflow-wrap:anywhere}
 .w-where{grid-area:where;display:flex;flex-wrap:wrap;gap:0 .75rem;font-size:13px;color:var(--muted)}
 .w-id{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.top nav a{text-decoration:none;padding-bottom:2px;border-bottom:2px solid transparent}
+.top nav a:hover{border-bottom-color:var(--swiss);color:var(--swiss)}
+.msg{font-weight:600;border-left:3px solid var(--fg);padding-left:.5rem}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}
+.tok{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;margin:1rem 0}
+.tok label{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.tok input{font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;width:100%;max-width:34rem;min-height:44px;padding:.5rem;border:1px solid var(--fg);border-radius:0;background:var(--bg);color:var(--fg)}
 .w-none,.w-note{margin:.6rem 0 0;font-size:13px;color:var(--muted)}
 @media (min-width:48rem){.w-list a{grid-template-columns:12rem minmax(0,1fr) 9rem 7rem 4.5rem;grid-template-areas:"ask title board id age";align-items:baseline}.w-where{display:contents}.w-board{grid-area:board;overflow-wrap:anywhere}.w-id{grid-area:id}}
 @media (min-width:40rem){.top{padding:1rem 1.5rem .75rem}.wrap{padding:2rem 1.5rem 3rem}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}

@@ -15,8 +15,8 @@ Status: **built** (`src/auth.ts`; `test/auth.sh`, `test/auth-e2e.sh`, `test/box-
   `member` (steers the board), `viewer` (reads). The owner is `owner` on every project without a membership.
 - `mm grant <name> <project> --as designer|member|viewer` adds the member on the server, or changes the role.
   `mm revoke <name> <project>` removes it; `mm revoke <name>` removes every grant and ends their sessions.
-  `mm user rm <name>` removes the person: grants, sessions, board sessions and tokens end at once. `mm user ls` shows
-  people, owner or not, grants, sessions and tokens.
+  `mm user rm <name>` removes the person: grants, sessions, board sessions, tokens and their Claude token end at once.
+  `mm user ls` shows people, owner or not, grants, sessions, tokens, and `claude_token: set|none`.
 - **Names a person can't take:** the system's actors (`wake`, `watchdog`, `sentinel`, `bridge`, `mm`, `root`, …), the
   leads and `steward`/`assistant`, `owner` (except as the owner), and the owner's name (`owner_name`).
 - The forward-auth reads the role from the **membership in the host's project**, never from Better Auth's "active
@@ -86,6 +86,46 @@ they hold a role on. No session: `/` goes to the sign-in page.
 - **The page** is made on the server, has no script, escapes every value, and carries the gateway's headers
   (`Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`, `no-store`, `no-referrer`, `nosniff`); its
   stylesheet is `/s/app.css` (below).
+
+## Your Claude token (each person's own)
+Every person can set their **own long-term Claude token**, so the work mm runs for them runs on their own Claude
+subscription, never on the owner's (sy-8n4w).
+- **Setting it:** `https://auth.<domain>/s/token`, "Your Claude token" (linked from the home page), signed in. The
+  person pastes the token that `claude setup-token` made on their own computer, and presses Save. The same page
+  replaces it (paste a new one) and removes it. It is on the gateway's own host only (no new public route; on a board
+  host it is 404). Not signed in: the page sends you to sign in; a POST is refused.
+- **Only your own:** the person is the session's, never a name in the form, so nobody sets or removes another
+  person's token. The form's POST passes only from the page itself (the same CSRF rule as the link's Continue page:
+  a foreign `Origin` is refused; with `Sec-Fetch-Site` only `same-origin` passes). 10 changes per 10 minutes, 4 KB.
+  The page has the gateway's headers (CSP `default-src 'self'`, `no-store`, `no-referrer`) and no script.
+- **The owner,** in their own terminal: `mm user claude-token` (it asks with no echo, or reads a pipe; never an
+  argument), `mm user claude-token --remove`. It sets the owner's account only, and refuses in an agent's shell.
+- **Kept sealed:** in the vault as `claude_token.<person>` (`$MM_HOME/vault/`, sealed to the machine key and the
+  recovery key, like every vault value; `mm sync` carries it sealed). One per person. mm checks its shape lightly
+  (`sk-ant-oat01-...`) and never repeats what was pasted. It is never shown again, never logged (the log says who set,
+  replaced or removed one, and from where), and the owner hears each change on Telegram. `mm user ls` shows
+  `claude_token: set|none` only. `mm user rm` removes it with the account.
+- **Out of every agent's reach:** the vault folder and the opened-secrets folder are in every role's and setup's fixed
+  denies (Read, Edit, Bash in any spelling), and so are `claude_token.*`, `mm run-as`, `mm user claude-token` and
+  `bin/lead start ... --as`.
+- **Using it:** `mm run-as <person> <project> <role>` (the owner's step, or mm's; refused in an agent's shell) starts
+  that role's lead for that person. mm checks the person's role on the project (owner, designer or member; a viewer
+  has no runs; grants that can't be read refuse), opens their token from the vault into the noswap secrets tmpfs
+  (`<secrets>/_run/`, a new file for this run, removed as soon as the run holds it), and gives it to
+  `bin/lead start <role> --as <person>` on its stdin. bin/lead makes the run through Paseo's own client library, so
+  the token goes into that run's environment only, as `CLAUDE_CODE_OAUTH_TOKEN`, in the unmodified Claude Code binary.
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` are empty for it (nothing else signs its calls,
+  and its token goes to the model's own API only), `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` keeps it out of the shells and
+  hooks the run starts, and the run is labelled `person=<name>`. Like every lead, it is that role's one lead.
+- **No token, no run:** a person without one gets "set your Claude token on the home page", and nothing starts. The
+  owner's token is never used for anyone else. The owner without a personal token runs on the machine's own token
+  (which is the owner's), as every lead does.
+- **In a box:** the token goes over `docker exec -i`'s stdin to bin/lead in the box; it never enters a box's files.
+  The run calls the model's own API, not mm.ai, so the box's egress list must have `api.anthropic.com`; without it,
+  `mm run-as` refuses (the owner decides: that way skips mm.ai's check of server-side tools).
+- **The terms:** this follows Anthropic's "an end user signing in to the unmodified Claude Code binary with their own
+  Claude subscription, including where a platform hosts Claude Code". The owner reads the terms
+  (code.claude.com/docs/en/legal-and-compliance) and decides; this note is not legal advice.
 
 ## Hosts and cookies
 - The session cookie (Better Auth's, `__Secure-` prefixed) is **host-only** on `auth.<domain>`, `HttpOnly; Secure`,

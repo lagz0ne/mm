@@ -111,6 +111,21 @@ check "each of $n spellings is denied by the rendered denies (cat, cp to /tmp, R
 [ ${#miss[@]} = 0 ] || { echo "       ${#miss[@]} not denied:"; printf '       %s\n' "${miss[@]}"; }
 check "...while the project's own files stay readable (the denies name secrets/, not the project)" bash -c "! denied '$A' design '$D' Bash 'cat ../../services.yaml' && ! denied '$A' design '$D' Read '$A/leads/design/CLAUDE.md' && ! denied '$A' code '$W' Bash 'cat src/config/secrets.ts'"
 
+echo "== each person's own Claude token: no role reaches it, starts a run on it, or changes it (sy-8n4w)"
+TV="$MM_HOME/vault/claude_token.alice.age"; UIDN=$(id -u); n=0; miss=()
+for who in "$A qa $A/leads/qa" "$A design $D" "$A code $W" "$B qa $Q"; do
+  set -- $who; P=$1 role=$2 cwd=$3
+  try "$P" $role "$cwd" Read "$TV"; try "$P" $role "$cwd" Edit "$TV"
+  for c in "cat $TV" "cat ~/.mm/vault/claude_token.alice.age" "cd ~/.mm && age -d -i vault/key vault/claude_token.alice.age" "cp \$MM_HOME/vault/claude_token.bob.age /tmp/x" \
+    "cat /run/user/$UIDN/mm/secrets/_run/0a1b" "cd /run/user/$UIDN/mm && ls secrets/_run" \
+    "mm run-as alice acme-shop qa" "~/.mm/bin/mm run-as alice acme-shop qa" "mm user claude-token --remove" "env mm user claude-token" \
+    "bin/lead start qa --as alice" "$A/bin/lead start qa --model x --as alice"; do try "$P" $role "$cwd" Bash "$c"; done
+done
+check "each of $n spellings is denied by the rendered denies (Read, Edit, cat, age, cp, the run folder, run-as, claude-token, lead --as)" test ${#miss[@]} = 0
+[ ${#miss[@]} = 0 ] || { echo "       ${#miss[@]} not denied:"; printf '       %s\n' "${miss[@]}"; }
+check "...and the setup agent's settings carry the same denies" bash -c "f='$A/setup/.claude/settings.json'; jq -e --arg m '$MM_HOME' '.permissions.deny | index(\"Read(/\" + \$m + \"/vault/**)\") and index(\"Bash(*claude_token.*)\") and index(\"Bash(*mm run-as*)\") and index(\"Bash(*mm user claude-token*)\") and index(\"Bash(*lead start*--as*)\") and index(\"Bash(*secrets/_run*)\")' \"\$f\""
+check "...while a plain lead start stays free (the setup agent restarts leads)" bash -c "! denied '$A' qa '$A/leads/qa' Bash 'bin/lead start qa'"
+
 echo "== nothing ahead of /usr/bin in a lead's PATH can be written by a role (review sy-jm5 2)"
 ROLES=$(jq -r '.roles[].id' "$A/leads/roles.json" | tr '\n' ' ')
 PATH_WANT="$A/bin:$MM_HOME/bin:$MM_HOME/npm/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin"

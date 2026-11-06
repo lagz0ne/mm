@@ -44,6 +44,9 @@ export function machineSecretPaths(): { files: string[]; dirs: string[] } {
       if (d !== HOME && d !== join(HOME, '.claude') && d.startsWith(`${HOME}/`)) dirs.add(d)
     }
   }
+  // where opened secrets live while they are used, when the machine names its own (a noswap tmpfs, MM_SECRETS_DIR):
+  // a person's Claude token is opened there for one run (sy-8n4w); the default folder is in the template's fixed list
+  if (process.env.MM_SECRETS_DIR?.startsWith('/')) dirs.add(vault.secretsBase())
   return { files: [...files].sort(), dirs: [...dirs].sort() }
 }
 /** Where config-check reads machineSecretPaths() from: mm's own folder, outside every project, so neither a box nor a

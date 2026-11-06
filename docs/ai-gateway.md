@@ -23,8 +23,12 @@ agent in the box --http--> <egress proxy>:4000 --socat--> $MM_HOME/box/<project>
 - `mm up` for a box makes a new project key (31 days), and ends the project's previous ones.
 - `mm ai revoke <project>` ends every key of a project now.
 - mm keeps only each key's sha256. No command prints a key.
-- Keys for one person in a project (for a lead that works on that person's item) are in the store already. They are
-  handed out with the project API (sy-b15.8).
+- Keys for one person in a project are in the store already. They are handed out with the project API (sy-b15.8).
+- **A person's own subscription does not go through mm.ai.** mm.ai never signs another person's request with anyone's
+  subscription token (in oauth mode it serves only the owner's own runs and projects of the owner alone, below). A
+  person's work on their own Claude subscription runs with their own token in the unmodified Claude Code binary,
+  straight to the model's API: `mm run-as` and "Your Claude token" in docs/auth-gateway.md. The owner reads the terms
+  quoted below; this is not legal advice.
 
 ## Budgets and use
 

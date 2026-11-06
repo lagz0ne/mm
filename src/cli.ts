@@ -21,6 +21,7 @@ import { findRoot, listProjects, namespaceOp, newProject, parseRef, processes, r
 import * as boxMod from './box'
 import * as aiMod from './ai'
 import * as apiMod from './api'
+import * as runAsMod from './runas'
 import { APPROVE_SOCK } from './apistate'
 import { type Format, print } from './out'
 import pkg from '../package.json'
@@ -278,7 +279,7 @@ auth.command('serve').description('(run by mm-pc as mm.auth) the sign-in gateway
 const authOut = (r: { status: number; data: unknown }) => { const o = fmt(); if (o.format !== 'table') console.log(JSON.stringify(r.data, null, 2)); else if (Array.isArray(r.data)) print(r.data as Record<string, unknown>[], o); else console.log(JSON.stringify(r.data)); process.exit(r.status < 300 ? 0 : 1) }
 // what gives access (people, links, grants, tokens) is the owner's: refused from an agent's shell (review sy-b15.13 3).
 // A brake, not a wall (a process can still reach the socket): the guard, the denies and the owner's notice are the rest
-const GIVES_ACCESS = /^\/(user\/(add|link|rm)|grant|token|approve)$/
+const GIVES_ACCESS = /^\/(user\/(add|link|rm)|grant|token|approve|claude-token)$/
 const authCall = async (path: string, body?: Record<string, unknown>) => {
   if (GIVES_ACCESS.test(path) && (process.env.CLAUDECODE || process.env.PASEO_AGENT_ID)) { console.error('mm: people, links, grants and tokens are the owner\'s to make: run it yourself, in your own terminal'); process.exit(1) }
   try { authOut(await callApi(path, body)) } catch (e) { console.error(`mm auth: the gateway does not answer on ${tilde(AUTH_SOCK)} (${(e as Error).message})`); process.exit(1) } }
@@ -363,7 +364,25 @@ user.command('link <name>').description('a sign-in link that works once (1 h by 
     const m = /^(\d+)([smhd])$/.exec(String(o.ttl)); if (!m) { console.error('mm user link: --ttl like 30m, 2h, 1d'); process.exit(2) }
     return authCall('/user/link', { name, ttl: Number(m[1]) * ({ s: 1, m: 60, h: 3600, d: 86400 } as Record<string, number>)[m[2]], by: 'cli' }) })
 user.command('rm <name>').description('remove a person: their grants, sessions and tokens end at once').action((name: string) => authCall('/user/rm', { name, by: 'cli' }))
-user.command('ls').description('people: owner or not, grants, sessions, tokens').action(() => authCall('/user/ls'))
+user.command('ls').description('people: owner or not, grants, sessions, tokens, Claude token set or none').action(() => authCall('/user/ls'))
+// the owner's own long-term Claude token (sy-8n4w), from their own terminal: read with no echo (or from a pipe), never
+// an argument; sealed in the vault by the gateway. Everyone else sets theirs on the gateway's page ("Your Claude token").
+user.command('claude-token').description('set (or replace) your own long-term Claude token, the owner\'s; it is read with no echo, or from a pipe, and never shown again')
+  .option('--remove', 'remove it')
+  .action(async (o) => {
+    if (process.env.CLAUDECODE || process.env.PASEO_AGENT_ID) { console.error('mm: a Claude token is its person\'s own: run it yourself, in your own terminal'); process.exit(1) }
+    if (o.remove) return authCall('/claude-token', { remove: true, by: 'cli' })
+    let value = ''
+    if (process.stdin.isTTY) {
+      process.stderr.write('Paste your Claude long-term token (from claude setup-token), then Enter: ')
+      Bun.spawnSync(['stty', '-echo'], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' })
+      try { for await (const chunk of Bun.stdin.stream()) { value += new TextDecoder().decode(chunk); if (value.includes('\n')) break } }
+      finally { Bun.spawnSync(['stty', 'echo'], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' }); process.stderr.write('\n') }
+    } else value = await Bun.stdin.text()
+    value = value.split('\n')[0].trim()
+    if (!value) { console.error('mm user claude-token: nothing given: nothing set'); process.exit(1) }
+    return authCall('/claude-token', { value, by: 'cli' })
+  })
 program.command('grant <name> <project>').description('give a person a role on a project (the owner\'s step)')
   .option('--as <role>', 'designer (a member who also edits the project\'s Doop), member or viewer', 'member')
   .action((name: string, project: string, o) => authCall('/grant', { name, project, role: o.as, by: 'cli' }))
@@ -372,6 +391,15 @@ program.command('revoke <name> [project]').description('end a person\'s grant on
 program.command('token <name> <project>').description('a bearer token for a tool, for one person on one project (shown once)')
   .option('--days <n>', 'how long it lasts (1 to 365)', '30').option('--label <text>', 'what it is for')
   .action((name: string, project: string, o) => authCall('/token', { name, project, days: Number(o.days), label: o.label, by: 'cli' }))
+
+// a lead's run for one person, on that person's own Claude token (sy-8n4w, src/runas.ts): the owner's step (or mm's),
+// refused in an agent's shell; a person with no token gets no run, never the owner's token
+program.command('run-as <person> <project> <role>').description('start a lead for one person, on their own Claude token (opened from the vault for that run only); refused when they have none')
+  .option('--model <provider/model>', 'the model, as bin/lead start takes it')
+  .action(async (person: string, ref: string, role: string, o) => {
+    if (process.env.CLAUDECODE || process.env.PASEO_AGENT_ID) { console.error('mm run-as: a run on a person\'s own token is the owner\'s (or mm\'s) to start: refused in an agent\'s shell'); process.exit(1) }
+    try { process.exit(await runAsMod.runAs(person, ref, role, { model: o.model })) } catch (e) { console.error(`mm run-as: ${(e as Error).message}`); process.exit(1) }
+  })
 
 program.command('sync').description('seal what can\'t be rebuilt into the mastermind repo and push it (docs/restore.md)')
   .option('--init <repo>', 'first time: clone the mastermind repo into ~/.mm/state/mastermind and remember it')
