@@ -45,4 +45,23 @@ is "the board route goes back to [auth]" bash -c "l='$(line board-x)'; [[ \$l ==
 printf 'domain: example.org\n' >"$MM_HOME/config.yaml"
 is "no auth key at all: [auth], left alone" bash -c "[[ '$(up board-x 4101 true)' == *'(already there)' ]]"
 
+echo "== mm.log: one line per route mm added or removed (sy-n9zp), none for a route right already"
+LOG="$MM_HOME/pc/mm.log"; mkdir -p "$MM_HOME/pc"; rm -f "$LOG"
+n() { [ -f "$LOG" ] && wc -l <"$LOG" || echo 0; }; export -f n; export LOG
+rm_() { bun -e "import { routeRm } from '$SRC/src/project.ts'; const s = routeRm({ project: '$2', throwaway: $3 }, '$1'); console.log(s.status)" 2>&1; }
+gate false
+up log-x 4400 false >/dev/null
+is "a new route: one line, op route add, the project, name, port and open" bash -c "[ \"\$(n)\" = 1 ] && tail -1 '$LOG' | jq -e '.op == \"route add\" and .args == \"acme-shop log-x 4400 open\" and .ok == true and .project == \"mm\" and .service == \"mm\" and (.time | test(\"Z\$\")) and (has(\"mm_throwaway\") | not)' >/dev/null"
+up log-x 4400 false >/dev/null
+is "the same again (already there): no line" bash -c "[ \"\$(n)\" = 1 ]"
+up log-x 4400 true >/dev/null
+is "gated now: a line, sign-in" bash -c "[ \"\$(n)\" = 2 ] && tail -1 '$LOG' | jq -e '.args == \"acme-shop log-x 4400 sign-in\"' >/dev/null"
+rm_ log-x acme-shop false >/dev/null
+is "removed: a line, op route rm, project and name" bash -c "[ \"\$(n)\" = 3 ] && tail -1 '$LOG' | jq -e '.op == \"route rm\" and .args == \"acme-shop log-x\" and .ok == true' >/dev/null"
+rm_ log-x acme-shop false >/dev/null
+is "removed again (not there): no line" bash -c "[ \"\$(n)\" = 3 ]"
+bun -e "import { routeUp } from '$SRC/src/project.ts'; routeUp({ project: 'tp-x', throwaway: true }, 'tp-x', 4500, false, 'https://tp-x.test')" >/dev/null 2>&1
+is "a throwaway project's route (the test tool): marked mm_throwaway" bash -c "[ \"\$(n)\" = 4 ] && tail -1 '$LOG' | jq -e '.op == \"route add\" and .mm_throwaway == \"tp-x\"' >/dev/null"
+is "no line carries a secret field (only time, level, msg, project, service, op, args, ok, mm_throwaway)" bash -c "[ \"\$(jq -c 'keys - [\"time\",\"level\",\"msg\",\"project\",\"service\",\"op\",\"args\",\"ok\",\"mm_throwaway\"]' '$LOG' | sort -u)\" = '[]' ]"
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]

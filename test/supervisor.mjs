@@ -436,6 +436,27 @@ clock = T0 + 461 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('the bridge\'s approval from before the upgrade still counts: no finding for sy-40', !openOf(T2('sy-40')) && openKeys() === DIRTY)
 
+step('run 9l (+466..472 min): a route mm added or removed is a live step; a throwaway project\'s or a failed one is not (sy-n9zp)')
+clock = T0 + 466 * MIN
+item('sy-41', { title: 't2, a public route', priority: 2, assignee: 'platform', labels: ['t2'] }); update('sy-41', { status: 'in_progress' }, 'platform')
+clock = T0 + 467 * MIN
+mmLine('route add', 'tq tq 4300 open', clock, { mm_throwaway: 'tq' }) // a test's project
+mmLine('route rm', 'p7 p7-old', clock, { ok: false, level: 'error' }) // failed: nothing changed
+clock = T0 + 468 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('throwaway and failed route lines: nothing opens', openKeys() === DIRTY)
+mmLine('route add', 'p7 app.p7 4310 open', T0 + 469 * MIN)
+mmLine('route rm', 'p7 p7-old', T0 + 470 * MIN)
+clock = T0 + 471 * MIN
+ok('exit 0', (await supervise()) === 0)
+const RL = openOf(T2('sy-41'))
+ok('a recorded route add while sy-41 is in progress, unapproved: a P1', openKeys() === `${DIRTY} ${T2('sy-41')}` && RL?.priority === 1)
+ok('it names the route and its time, the removal too', RL?.description.includes(`"mm route add p7 app.p7 4310 open" at ${iso(T0 + 469 * MIN).replace(/\.\d+Z$/, 'Z')}`) && /"mm route rm p7 p7-old" at /.test(RL.description) && !/tq/.test(RL.description))
+update('sy-41', { labels: ['t2', 'approved'] }, 'bridge')
+clock = T0 + 472 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('approved by the bridge: cleared', openKeys() === DIRTY)
+
 step('run 10: the board is down: exit non-zero, nothing written')
 fs.writeFileSync(path.join(T, 'bd.fail'), '')
 const n = sup().length

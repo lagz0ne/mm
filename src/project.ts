@@ -1,7 +1,7 @@
 // Projects: stamp from the template (mm new), load into the machine's process-compose as a namespace (mm up),
 // namespace operations (down/restart), listing and inspection.
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { boxApi } from './apistate'
@@ -641,13 +641,27 @@ export function routeUp(a: Answers, name: string, port: number, auth: boolean, u
   const same = gate ? marks.length === 1 && marks[0] === gate.mark : marks.length === 0
   if (line && new RegExp(`:${port}(\\s|$)`).test(line) && same) return { step, status: 'ok', detail: `${url}${gate?.note ?? ''} (already there)` }
   const r = run([tool, name, String(port), ...(gate ? [gate.flag] : [])], { timeoutMs: 30_000 })
+  routeLog(a, 'route add', `${a.project} ${name} ${port} ${gate ? 'sign-in' : 'open'}`, r.ok)
   return { step, status: r.ok ? 'ok' : 'fail', detail: r.ok ? `${url}${gate?.note ?? ''}` : (r.err || r.out).trim().slice(0, 160) }
+}
+/** One line in <mm>/pc/mm.log per route mm added or removed (sy-n9zp), in the shape of the line per command (obs.ts):
+ *  the Supervisor reads it as a live step. Args: project, route name (and port, open or sign-in); never a secret. A
+ *  throwaway project's is marked mm_throwaway (from its answers, as cli.ts marks its commands). */
+function routeLog(a: Answers, op: 'route add' | 'route rm', args: string, ok: boolean) {
+  try {
+    appendFileSync(join(DIRS.pc, 'mm.log'), JSON.stringify({ time: new Date().toISOString(), level: ok ? 'info' : 'error', msg: `${op} ${ok ? 'ok' : 'failed'}`,
+      project: 'mm', service: 'mm', op, args, ...(a.throwaway ? { mm_throwaway: a.project } : {}), ok }) + '\n')
+  } catch {}
 }
 /** Remove one public route (mm archive); a throwaway project's are only the test tool's. */
 export function routeRm(a: Answers, name: string): Step {
   const step = `unexpose ${name}`, tool = routeTool(a)
   if (!tool) return { step, status: 'skip', detail: 'a throwaway project has no live route' }
+  // was it there (the tool's list, as routeUp reads it)? only a real removal is recorded; a list that fails counts as there
+  const ls = run([tool, 'ls'], { timeoutMs: 30_000 })
+  const there = !ls.ok || ls.out.split('\n').some((l) => l.startsWith(`https://${name}.`))
   const r = run([tool, 'rm', name], { timeoutMs: 30_000 })
+  if (there) routeLog(a, 'route rm', `${a.project} ${name}`, r.ok)
   return { step, status: r.ok ? 'ok' : 'fail', detail: r.ok ? 'route removed' : (r.err || r.out).trim().slice(0, 160) }
 }
 

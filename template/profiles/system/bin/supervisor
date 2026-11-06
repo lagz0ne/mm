@@ -12,7 +12,7 @@
 //                        summary (labelled or not; since this check first ran, when the item is closed), or, while it
 //                        is labelled t2 and in progress, a commit naming it is on mm's or the brain's main, or mm
 //                        recorded a live step since it went in progress (mm.log: config set/unset of api.*, ai.*,
-//                        wake.person_runs, names, box.docker; grant; box on|off; api approve; mm.api's applied
+//                        wake.person_runs, names, box.docker; grant; box on|off; api approve; route add|rm; mm.api's applied
 //                        requests, mm.auth's grants). Branch or worktree work alone is not live (sy-0cvx).
 //                        The tier is the one bin/brain applied (its state mark), else the header, read as 2
 //                        when the migration writes under /etc/ or /usr/local/. It says who took `t2` off such an item.
@@ -350,7 +350,7 @@ const mainCommits = once(async () => {
   return out
 })
 // (c) live steps that leave no commit, as mm records them with their time: its own line per command in <mm>/pc/mm.log
-// (op, args, ok; cli.ts), and what the owner's sockets do without the CLI: mm.api's "request applied" (the bridge's
+// (op, args, ok; cli.ts), its line per route it adds or removes (op route add|rm, args project name ...; project.ts), and what the owner's sockets do without the CLI: mm.api's "request applied" (the bridge's
 // Allow) and mm.auth's "granted" (the web), in their process logs <mm>/pc/api.log and auth.log. Only what succeeded, not
 // on a throwaway project. A config value is never read into a finding: only its key.
 const T2_KEY = /^(?:(?:api|ai|box\.docker)(?:\.|$)|wake\.person_runs$|names$)/
@@ -370,6 +370,7 @@ function liveStep(r) {
   switch (r.service === 'mm' ? r.op : `${r.service}:${r.msg}`) {
     case 'mm config set': case 'mm config unset': return r.ok && T2_KEY.test(args[0] || '') ? `${r.op} ${args[0]}` : null
     case 'mm grant': case 'mm box on': case 'mm box off': case 'mm api approve': return r.ok ? `${r.op} ${args.join(' ').slice(0, 80)}` : null
+    case 'route add': case 'route rm': return r.ok ? `mm ${r.op} ${args.join(' ').slice(0, 80)}` : null // a route mm wrote or removed (sy-n9zp)
     case 'api:request applied': return r.by !== 'cli' ? `mm.api applied ${r.call} for ${r.box} (${r.id}, by ${r.by})` : null // the CLI's: its mm.log line
     case 'auth:granted': return r.by !== 'cli' ? `mm.auth granted ${r.user} ${r.project} as ${r.role} (by ${r.by})` : null
     default: return null
