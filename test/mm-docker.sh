@@ -43,7 +43,7 @@ docker = $T/docker
 mm_home = $MM
 projects = $MM/projects
 secrets = $SEC
-root_containers = yes
+root_containers = no
 EOF
 export MM_DOCKER_CONF="$T/conf"
 
@@ -69,7 +69,14 @@ BOXRUN=(run -d --name mm-box-acme-shop --hostname acme-shop --label mm.project=a
   -v "$PR/bin:$PR/bin:ro" -v "$PR/.git/config:$PR/.git/config:ro" -v "$MM/box/acme-shop/cfg:/run/mm/cfg:ro" -v "$MM/box/acme-shop/sock:/run/mm/sock"
   -v "$MM/box/acme-shop/backup:/run/mm/backup" -v "$MM/claude/acme-shop:$MM/claude/acme-shop" -v "$MM/paseo/acme-shop:$MM/paseo/acme-shop"
   -v "$SEC/acme-shop:/run/mm/secrets:ro" -v "$MM/box/acme-shop/api:/run/mm/api:ro" -w "$PR" "$IMG" sh -c "umask 002 && exec process-compose up")
+# the egress proxy and giveBack's regroup as mm makes them now (sy-58fo): their own uid, no capabilities
 EGRUN=(run -d --name mm-egress-acme-shop --label mm.project=acme-shop --restart unless-stopped --init --read-only --tmpfs /run:size=8m
+  --user 190040:"$G" --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --memory 256m -e MM_EGRESS_DENY=10.0.0.0/8
+  -v "$MM/egress/acme-shop/allow:/etc/mm/allow:ro" -v "$MM/box/acme-shop/ai:/run/mm/ai" -v "$MM/box/acme-shop/egress:/run/mm/log" "$EG" sh -c 'exec mm-egress')
+GIVEBACK=(run --rm --network none --user 200040:"$G" --read-only --cap-drop ALL --security-opt no-new-privileges -v "$PR:$PR" -v "$MM/box/acme-shop:$MM/box/acme-shop"
+  --entrypoint sh "$IMG" -c 'find "$@" -user "$(id -u)" -exec chmod g+rw {} +; exit 0' sh "$PR" "$MM/box/acme-shop")
+# ...and as an older mm made them (root in the container): only with root_containers = yes
+EGRUN_OLD=(run -d --name mm-egress-acme-shop --label mm.project=acme-shop --restart unless-stopped --init --read-only --tmpfs /run:size=8m
   --cap-drop ALL --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges --pids-limit 256 --memory 256m -e MM_EGRESS_DENY=10.0.0.0/8
   --group-add "$G" -v "$MM/egress/acme-shop/allow:/etc/mm/allow:ro" -v "$MM/box/acme-shop/ai:/run/mm/ai" -v "$MM/box/acme-shop/egress:/run/mm/log" "$EG" sh -c 'exec mm-egress')
 CHOWN=(run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE -v "$PR:$PR" -v "$MM/box/acme-shop:$MM/box/acme-shop"
@@ -84,8 +91,8 @@ printf 'mm-box-acme-shop %s acme-shop\nmm-doop-acme-shop %s acme-shop\nmm-box-no
 echo "== mm's own calls pass (as the wrapper's own command line)"
 yes "box: run" "--volume=$PR:$PR" "${BOXRUN[@]}"
 yes "box: no-new-privileges and never a pull, always" "run --pull=never --security-opt=no-new-privileges" "${BOXRUN[@]}"
-yes "egress proxy: run (root in its image, SETUID/SETGID only)" "--cap-add=SETUID" "${EGRUN[@]}"
-yes "chown helper (giveBack)" "--entrypoint=chown" "${CHOWN[@]}"
+yes "egress proxy: run (its own uid, no capabilities)" "--user=190040:$G --cap-drop=ALL" "${EGRUN[@]}"
+yes "giveBack: the regroup as the box's uid (no root)" "--user=200040:$G" "${GIVEBACK[@]}"
 yes "doop: run (env file passed as an open file)" "--env-file=/dev/fd/" "${DOOP[@]}"
 yes "doop: release regroup" "--user=210040:$G" "${REGROUP[@]}"
 yes "network create (box)" - network create --internal --subnet 10.231.40.0/24 --gateway 10.231.40.1 --label mm.project=acme-shop mm-net-acme-shop
@@ -166,7 +173,7 @@ no "exec into a name with no mm.project label" exec mm-box-nolabel sh
 no "exec into a box labelled for another project" exec mm-box-other sh
 no "exec into a container that is not there" exec mm-box-ghost sh
 no "exec when docker's answer has no full id" exec mm-box-shortid sh
-no "exec into the egress proxy (root)" exec mm-egress-acme-shop sh
+no "exec into the egress proxy" exec mm-egress-acme-shop sh
 no "exec -u 0" exec -u 0 mm-box-acme-shop sh
 no "exec --user root" exec --user root mm-box-acme-shop sh
 no "exec --privileged" exec --privileged mm-box-acme-shop sh
@@ -184,18 +191,36 @@ no "--user a real account (nobody)" run --rm --network none --user "$(id -u nobo
 no "--group-add 0" run --group-add 0 "${BOXRUN[@]:1}"
 no "--group-add wheel" run --group-add wheel "${BOXRUN[@]:1}"
 no "no --user on a box (the image's root)" run -d --name mm-box-acme-shop --label mm.project=acme-shop --cap-drop ALL "$IMG"
+no "the egress shape on the host network" run --network host "${EGRUN[@]:1}"
+no "an --entrypoint other than sh/chown" run --entrypoint /bin/bash "${BOXRUN[@]:1}"
+echo "== refused with root_containers = no (the default): root and any capability, in every shape"
+no "the old egress proxy (the image's root, SETUID/SETGID)" "${EGRUN_OLD[@]}"
+no "the old chown helper (root, CHOWN/FOWNER/DAC_OVERRIDE)" "${CHOWN[@]}"
+no "the egress proxy without --user (the image's user: root as far as the wrapper knows)" run "${EGRUN[@]:1:11}" "${EGRUN[@]:14}"
+no "--cap-add SETUID on the egress proxy's own uid" run --cap-add SETUID "${EGRUN[@]:1}"
+no "--cap-add NET_BIND_SERVICE on the egress proxy" run --cap-add NET_BIND_SERVICE "${EGRUN[@]:1}"
+no "--cap-add CHOWN on the regroup" run --cap-add CHOWN "${GIVEBACK[@]:1}"
+no "--cap-add DAC_OVERRIDE on a box" run --cap-add DAC_OVERRIDE "${BOXRUN[@]:1}"
+no "the regroup as root" run --rm --network none --user 0:0 --read-only --cap-drop ALL -v "$PR:$PR" --entrypoint sh "$IMG" -c id
+no "the regroup as the owner's uid" run --rm --network none --user "$U:$G" --read-only --cap-drop ALL -v "$PR:$PR" --entrypoint sh "$IMG" -c id
+no "--entrypoint chown as a box's uid" run --rm --network none --user 200040:"$G" --cap-drop ALL -v "$PR:$PR" --entrypoint chown "$IMG" -R "$U:$G" "$PR"
+no "--user 0:0, no capabilities (root still owns every file)" run --rm --network none --user 0:0 --cap-drop ALL "$IMG"
+yes "a box still runs" - "${BOXRUN[@]}"
+yes "Doop's release regroup still runs" - "${REGROUP[@]}"
+echo "== root_containers = yes (an older mm only): its two root shapes, exactly"
+sed -i 's/^root_containers = no/root_containers = yes/' "$T/conf"
+yes "the old egress proxy (root in its image, SETUID/SETGID only)" "--cap-add=SETUID" "${EGRUN_OLD[@]}"
+yes "the old chown helper" "--entrypoint=chown" "${CHOWN[@]}"
 no "the chown helper with another entrypoint" run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN -v "$PR:$PR" --entrypoint sh "$IMG" -c id
 no "the chown helper chowning to root" run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN -v "$PR:$PR" --entrypoint chown "$IMG" -R --no-dereference 0:0 "$PR"
 no "the chown helper on a path it did not mount" run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN -v "$PR:$PR" --entrypoint chown "$IMG" -R --no-dereference "$U:$G" /etc
 no "the chown helper with a network" run --rm --user 0:0 --cap-drop ALL --cap-add CHOWN -v "$PR:$PR" --entrypoint chown "$IMG" -R --no-dereference "$U:$G" "$PR"
-no "the egress shape with another image" run "${EGRUN[@]:1:$((${#EGRUN[@]}-5))}" "$IMG" sh -c id
-no "the egress shape on the host network" run --network host "${EGRUN[@]:1}"
-no "an --entrypoint other than sh/chown" run --entrypoint /bin/bash "${BOXRUN[@]:1}"
+no "the old egress shape with another image" run "${EGRUN_OLD[@]:1:$((${#EGRUN_OLD[@]}-5))}" "$IMG" sh -c id
+no "the old egress shape on the host network" run --network host "${EGRUN_OLD[@]:1}"
+no "--cap-add=ALL (old egress)" run --cap-add=ALL "${EGRUN_OLD[@]:1}"
+no "--cap-add NET_ADMIN on the old egress proxy" run --cap-add NET_ADMIN "${EGRUN_OLD[@]:1}"
+no "egress caps on a box's own uid" run --cap-add SETUID "${BOXRUN[@]:1}"
 sed -i 's/^root_containers = yes/root_containers = no/' "$T/conf"
-no "root_containers = no: the egress proxy" "${EGRUN[@]}"
-no "root_containers = no: the chown helper" "${CHOWN[@]}"
-yes "root_containers = no: a box still runs" - "${BOXRUN[@]}"
-sed -i 's/^root_containers = no/root_containers = yes/' "$T/conf"
 
 echo "== refused: other ways out"
 no "-p 0.0.0.0:80:80 (publish)" run -p 0.0.0.0:80:80 "${BOXRUN[@]:1}"

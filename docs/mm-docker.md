@@ -21,12 +21,30 @@ writes itself (long options, `--opt=value`), never the caller's words. What was 
 | `network` | `create` (internal, `10.231.<n>.0/24` or `10.232.<n>.0/24` for Doop, mm's labels), `connect` (a project's own container to its own network), `inspect`, `ls`, `rm` of mm's networks. |
 | `inspect`, `container inspect`, `image inspect`, `rm`, `stop`, `restart`, `ps`, `pull` | mm's containers, networks and images only. `pull` by digest only. |
 
-**Who a container runs as:**
-- A box's or Doop's own uid: 100000 and up, never a real account, with the owner's group. No capabilities.
-- Root only in two fixed shapes, and only when the config says `root_containers = yes`:
-  - the egress proxy: `mm-egress-<p>`, the `mm-egress` image, `SETUID`/`SETGID` only;
-  - the chown helper: `--rm --network none --user 0:0`, `CHOWN`/`FOWNER`/`DAC_OVERRIDE` only, entrypoint `chown`,
-    `-R --no-dereference <owner>:<group>` on its own mounts only.
+**Who a container runs as:** always its own uid, given with `--user <uid>:<the owner's group>`: 100000 and up, never a
+real account. No capabilities: `--cap-add` is refused. Root is refused: `--user 0:0`, and a `run` with no `--user` (the
+image's user, root as far as the wrapper knows). mm's uids (`src/box.ts`, `bin/doop-run`; n is the third octet of the
+project's subnet):
+
+| Container | uid |
+|---|---|
+| the box `mm-box-<p>` | 200000 + n |
+| its egress proxy `mm-egress-<p>` (the proxy and its AI forwarder) | 190000 + n |
+| Doop `mm-doop-<p>` | 210000 + n |
+| giveBack's regroup and Doop's release (`--rm --network none`) | the uid whose files it opens |
+
+**Giving a box's files back, without root** (`src/box.ts` giveBack, take). Some programs in a box make their files
+`0600` and their folders `0700`, so the host's owner can't read them. Only a file's owner (or root) can change its mode.
+So mm runs a short container as each of mm's uids that owns such a file there (no network, no capabilities, the
+project's own folders its only mounts). It makes that uid's own files group-readable and -writable, and its folders
+group-writable and setgid, for the owner's group (as `bin/doop-run release` does for Doop). Then the host's owner can
+read, move and remove them: a backup lands this way, and `mm archive` packs and removes the project. For `mm box off`,
+mm then also takes them back with the box stopped: each file is copied, as the owner, and the copy renamed over it;
+each folder is made again and its entries moved into it. No chown.
+
+`root_containers = yes` is only for an mm older than sy-58fo, which ran these two as root (the egress proxy as the
+`mm-egress` image's root with `SETUID`/`SETGID`; a chown helper as `--user 0:0` with `CHOWN`/`FOWNER`/`DAC_OVERRIDE`).
+It allows those two exact shapes, and it is not a root boundary (see "Known limits"). Don't set it for this mm.
 
 **The project's own folders:** a folder inside one project (its `.mm-answers.yaml` names that project), or
 `<mm home>/{box,paseo,claude,egress}/<project>/`, or `<secrets>/<project>/`. The path must exist (else docker would make
@@ -35,7 +53,7 @@ nowhere else.
 
 **Always refused:** global options (`-H`, `--host`, `--context`, `--config`, `-D`); `DOCKER_HOST` and every other
 variable (docker gets a clean environment); `--privileged`; `--pid`, `--ipc`, `--uts`, `--userns`, `--cgroupns`;
-`--network host`, `--net`, `container:`; `--cap-add` beyond the two shapes above; `--device`; `--mount`,
+`--network host`, `--net`, `container:`; root and every `--cap-add` (with `root_containers = yes`: beyond its two old shapes); `--device`; `--mount`,
 `--volumes-from`, named volumes, `:shared` and `:z`; `--security-opt` other than `no-new-privileges`; `-p`/`-P`;
 `--sysctl`, `--runtime`, `--cgroup-parent`, `--log-driver`; `--env-file` that is not a plain file of the owner's in the
 project (it is opened by the wrapper and handed to docker as `/dev/fd/<n>`); images that are not mm's (or pinned by
@@ -53,7 +71,7 @@ docker = /usr/bin/docker        # the default
 mm_home = /home/<owner>/.mm     # the default: <owner's home>/.mm
 projects = /home/<owner>/.mm/projects   # one-root layout; ~/projects in the legacy one
 secrets = /run/user/<uid>/mm/secrets    # the default; MM_SECRETS_DIR's value if mm runs with one
-root_containers = no            # yes: the egress proxy and the chown helper may run (see "Known limits")
+root_containers = no            # the default: no root, no capabilities in any container (yes: an older mm only)
 ```
 
 Run as a user other than root (no sudo), the wrapper is in **test mode**: `MM_DOCKER_CONF` names its config, and it
@@ -92,16 +110,16 @@ The wrapper adds no right while the owner still has `NOPASSWD: ALL`. It is the r
 
 ## Known limits (open, for review and the owner)
 
-1. **The root shapes are not a root boundary yet.** With `root_containers = yes`, the egress proxy and the chown helper
-   run as uid 0 in the container, with a read-write mount of a folder the owner can rename. Docker resolves a mount's
-   host path again at each start (`restart`, a reboot, `--restart unless-stopped`). So the owner can swap a folder on
-   that path for a symlink after the wrapper's check, and the next start mounts what the symlink names. Also, both
-   images are built from the owner's files, and the egress proxy's command is the caller's. Together: root on the host.
-   **Fix (an mm change):** run the egress proxy as its own non-root uid (it needs no `SETUID`/`SETGID` then), and give a
-   box's files back with a regroup under the box's own uid (as `bin/doop-run release` does for Doop) instead of a chown
-   as root. Then `root_containers = no`.
-2. **Containers that do not run as root are safe from the same swap.** A box's or Doop's uid (100000 and up, not an
-   account, the owner's group, no capabilities, no new privileges) can reach no more than the owner can.
+1. **`root_containers = yes` is not a root boundary.** With it, an older mm's egress proxy and chown helper run as uid 0
+   in the container, with a read-write mount of a folder the owner can rename. Docker resolves a mount's host path again
+   at each start (`restart`, a reboot, `--restart unless-stopped`). So the owner can swap a folder on that path for a
+   symlink after the wrapper's check, and the next start mounts what the symlink names. Also, both images are built from
+   the owner's files, and the egress proxy's command is the caller's. Together: root on the host. **Fixed in mm
+   (sy-58fo):** the egress proxy starts as its own uid with no capabilities, and a box's files go back by a regroup under
+   the box's own uid. This mm needs no root container, so keep `root_containers = no` (the default).
+2. **Containers that do not run as root are safe from the same swap.** A box's, an egress proxy's or Doop's uid (100000
+   and up, not an account, the owner's group, no capabilities, no new privileges) can reach no more than the owner can.
+   Files those uids own stay theirs until mm box off takes them (a backup the box made stays the box uid's, group-rw).
 3. **Configured images:** `box.image` and `box.egress_image` must keep mm's names (`mm-box`, `mm-egress`) or be pinned by
    digest. Doop's image is by digest already (`bin/doop-run`).
 4. **`--pull=never`**: a `run` never pulls. mm builds its images here, and `pull <name>@sha256:<digest>` is allowed.
