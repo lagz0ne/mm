@@ -121,6 +121,13 @@ export const RULES = // BEGIN RULES
       "why": "ps with its BSD-style e option prints every process's environment, where tokens live. Use ps -ef or ps -o."
     },
     {
+      "id": "git-grep-pager",
+      "on": "bash",
+      "pre": true,
+      "re": "(?:^|[\\s;&|(`/])git\\b[^;&|\\n]*?\\sgrep\\b[^;&|\\n]*?\\s(?:-[A-Za-z0-9]*O|--op[\\w-]*)",
+      "why": "git grep -O (--open-files-in-pager) runs a program on the files it finds: a search that runs code. Use git grep -n or -l and read the files."
+    },
+    {
       "id": "sudo",
       "on": "bash",
       "boards": "project",

@@ -379,6 +379,14 @@ export const OWN = [
   ['Bash', 'ps -ef', 'allow'],
   ['Bash', 'ps -o pid,comm -u rocky', 'allow'],
   ['Bash', 'ps aux', 'allow'],
+  // git grep -O runs a program on what it finds (review, sy-jz99: read workers get git grep)
+  ['Bash', 'git grep -Osh foo', 'deny'],
+  ['Bash', 'git grep -nO foo', 'deny'],
+  ['Bash', 'git -C /x grep --open-files-in-pager=sh foo', 'deny'],
+  ['Bash', 'git grep --open foo', 'deny'],
+  ['Bash', 'git grep -n foo', 'allow'],
+  ['Bash', 'git grep -l --or -e a -e b', 'allow'],
+  ['Bash', 'git grep -n Options src', 'allow'],
   // the e option only as ps's own first word: words after a pipe are not ps's (a live false refusal, 11:2x)
   ['Bash', 'ps -ef | grep test/lifecycle.sh | grep -v grep | wc -l', 'allow'],
   ['Bash', 'ps aux | grep sleep', 'allow'],

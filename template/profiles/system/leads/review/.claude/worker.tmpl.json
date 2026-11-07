@@ -1,5 +1,5 @@
 {
-  "_doc": "A review worker (sy-asaw): reads a read-only checkout of mm's repo ({worktree}, at a ref) and the machine's repos; writes nothing, not even the board. config-check renders it into the worker's folder and adds the worker denies.",
+  "_doc": "A review worker (sy-asaw): reads a read-only checkout of mm's repo ({worktree}, at a ref) and the machine's repos; writes nothing, not even the board. config-check renders it into the worker's folder and adds the worker denies. git diff --output writes a file and --ext-diff runs a program, so both are denied; git grep -O (runs a program) is the guard's (git-grep-pager).",
   "permissions": {
     "defaultMode": "dontAsk",
     "allow": [
@@ -12,9 +12,15 @@
       "Bash(git diff*)",
       "Bash(git log*)",
       "Bash(git show*)",
+      "Bash(git grep*)",
+      "Bash(git ls-files*)",
+      "Bash(git blame*)",
       "Bash(git -C {repo} log*)",
       "Bash(git -C {repo} show*)",
       "Bash(git -C {repo} diff*)",
+      "Bash(git -C {repo} grep*)",
+      "Bash(git -C {repo} ls-files*)",
+      "Bash(git -C {repo} blame*)",
       "Bash(git -C {brain} log*)",
       "Bash(git -C {brain} show*)",
       "Bash(git -C {brain} diff*)",
@@ -24,7 +30,12 @@
       "Bash(bd list *)",
       "Bash(mm ls*)",
       "Bash(mm inspect *)",
-      "Bash(mm obs *)"
+      "Bash(mm obs *)",
+      "Bash(pwd)"
+    ],
+    "deny": [
+      "Bash(*--output*)",
+      "Bash(*--ext-diff*)"
     ]
   }
 }
