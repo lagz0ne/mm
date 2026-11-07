@@ -131,7 +131,7 @@ check "...while a plain lead start stays free (the setup agent restarts leads)" 
 
 echo "== nothing ahead of /usr/bin in a lead's PATH can be written by a role (review sy-jm5 2)"
 ROLES=$(jq -r '.roles[].id' "$A/leads/roles.json" | tr '\n' ' ')
-PATH_WANT="$A/bin:$MM_HOME/bin:$MM_HOME/npm/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
+PATH_WANT="$A/bin:$MM_HOME/bin:$MM_HOME/npm/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 check "every role ($ROLES): its PATH is the project's bin/, mm's, ~/.local/bin, ~/.npm-global/bin, ~/.bun/bin, then the system's" bash -c "for r in $ROLES; do jq -e --arg p '$PATH_WANT' '.env.PATH == \$p' '$A/leads/'\$r'/.claude/settings.json' || exit 1; done"
 check "...and no role may Edit or Write a file into any of those first six (bin/git, bin/bd, mm's bin/, ~/.local/bin)" bash -c "for r in $ROLES; do for t in Edit Write; do for f in '$A/bin/git' '$A/bin/bd' '$A/bin/lib/x.mjs' '$MM_HOME/bin/git' '$MM_HOME/npm/bin/bd' '$HOME/.local/bin/git' '$HOME/.npm-global/bin/git' '$HOME/.bun/bin/git'; do denied '$A' \$r '$A/leads/'\$r \$t \$f >/dev/null || { echo \"not denied: \$r \$t \$f\"; exit 1; }; done; done; done"
 check "...nor by a path relative to its folder or a worktree (../../bin/git)" bash -c "denied '$A' qa '$A/leads/qa' Edit ../../bin/git && denied '$A' code '$W' Write ../../bin/bd"
