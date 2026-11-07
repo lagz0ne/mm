@@ -110,8 +110,13 @@ $(fenced "$LEAD_NEXT")"
     MM_PROJECT="$PROJECT" node "$P/bin/lib/claude.mjs" prune >/dev/null 2>&1 || true
     # its place in Paseo: the role's workspace in the project's one Paseo project (empty: Paseo picks, as before)
     WS=$(node "$P/bin/lib/lead-workspace.mjs" "$P" "$DIR" "$role lead" "$PROJECT" || true)
+    # the daemon's worker it is made on (sy-vsh5): Paseo keeps no agent's env, so a lead it resumes after its daemon
+    # restarted has none of the env below; wake knows that one by this label and starts the role again instead. The
+    # daemon can't say: no label (wake leaves such a lead as before). A person's run gets it from run-as.mjs.
+    PW=""; [ -n "$as" ] || PW=$(node --input-type=module -e 'const m = await import(process.argv[1]); process.stdout.write((await m.worker({ fresh: true })) || "")' "$P/bin/lib/paseo.mjs" 2>/dev/null) || PW=""
+    case $PW in *[!0-9.]*) PW="" ;; esac
     set -- --no-wait -q --title "$PROJECT · $role lead${as:+ (for $as)}" --provider "$model" --mode auto --env "CLAUDE_CONFIG_DIR=$CDIR" \
-      ${WS:+--workspace "$WS"} --cwd "$DIR" --label "project=$PROJECT" --label "role=$role" ${as:+--label "person=$as"} \
+      ${WS:+--workspace "$WS"} --cwd "$DIR" --label "project=$PROJECT" --label "role=$role" ${as:+--label "person=$as"} ${PW:+--label "paseo-worker=$PW"} \
       --env "BEADS_ACTOR=$role" \
       --env "GIT_AUTHOR_NAME=$role" --env "GIT_COMMITTER_NAME=$role" \
       --env "GIT_AUTHOR_EMAIL=$role@$PROJECT.local" --env "GIT_COMMITTER_EMAIL=$role@$PROJECT.local" --env "PATH=$P/bin:$PATH" "$prompt"

@@ -410,6 +410,10 @@ async function tick1() {
     const steady = idle && idleSeen[role] === a.id
     idleSeen[role] = idle ? a.id : null
     if (!steady) continue
+    // a plain lead made before the daemon restarted gets nothing: a send resumes it without its env (sy-vsh5)
+    let stale = false
+    try { stale = await staleLead(a, true) } catch (e) { log('paseo daemon status failed:', e.message); continue }
+    if (stale) { staleSay(role, a, 'held', `${role}'s lead ${a.shortId || a.id} is stale (${staleWhy(a)}): not sent to${KEEP.has(role) ? ' (a kept role: as a closed one)' : '; the reconcile replaces it'}`); soon(); continue }
     let b = null
     try { b = await board() } catch (e) { log('board read failed (nothing held back for capacity):', e.message) }
     let batch = sendable(role, b), whose
@@ -795,6 +799,26 @@ async function tidyPersonRuns() {
     } catch (e) { log(`delete of the person run ${a.id} failed (tried again on the next pass):`, e.message) }
   }
 }
+// A plain lead made on a worker the daemon no longer has (sy-vsh5). Paseo keeps no agent's env: one it resumes after
+// its daemon restarted runs on the daemon's env (no CLAUDE_CONFIG_DIR: no trust, no session; no board actor). bin/lead
+// start labels each plain lead paseo-worker=<the daemon's worker>; a lead whose label is another worker is stale: wake
+// never sends to it (a send resumes it), and treats it as a closed lead: when work waits, bin/lead start (which archives
+// it), else a plain archive (transcripts stay); never one in a turn. A kept role follows its closed path (keptWaits(),
+// never archived). No label (a lead made before it, or Paseo's CLI list, which has none), or a daemon that can't say its
+// worker: not stale (as before). Said once per agent; counted (mm_wake_stale_leads_total).
+const staleSaid = new Map() // agent id -> what was said of it (each once)
+async function staleLead(a, fresh = false) {
+  const w = a?.labels?.['paseo-worker']
+  if (!w || a.status === 'closed' || isPersonRun(a)) return false
+  const cur = await P_.worker({ fresh })
+  return !!cur && w !== cur
+}
+function staleSay(role, a, what, msg) {
+  if (staleSaid.get(a.id)?.has(what)) return
+  if (!staleSaid.has(a.id)) { count('mm_wake_stale_leads_total', { role }); staleSaid.set(a.id, new Set()) }
+  staleSaid.get(a.id).add(what); log(msg)
+}
+const staleWhy = (a) => `made on the Paseo worker ${a.labels['paseo-worker']}, the daemon has another now: resumed, it would run without bin/lead's env`
 /** The person to start `role`'s lead as now, with that person's share of what waits: { person, items (ids), next (the
  *  queue items it may pull), own (its items in progress or blocked) }, or null (each person waiting is in a backoff).
  *  The queue's head goes first, then the talk, then a handover. */
@@ -832,7 +856,7 @@ async function startLead(role, { was = null, items = [], why = '', next = [], bo
   try {
     await span(was ? 'wake resume' : 'wake start', { role, agent: was?.id || 'none', items: items.join(' '), via: person ? 'mm run-as' : 'bin/lead start', ...(person ? { person } : {}) }, () => leadStart(role, next, person, own, items))
     count(was ? 'mm_wake_resumed_total' : 'mm_wake_started_total', { role })
-    log(was ? `restarted ${role}${as} (was ${was.shortId || was.id}, closed): ${why}` : `started ${role}${as} (no agent): ${why}`)
+    log(was ? `restarted ${role}${as} (was ${was.shortId || was.id}, ${was.status === 'closed' ? 'closed' : 'stale'}): ${why}` : `started ${role}${as} (no agent): ${why}`)
     for (const i of next) if (pending[role].get(i.id)?.kind === 'work') { pending[role].delete(i.id); (handed[role] ||= new Map()).set(i.id, Date.now()) } // in its first prompt
     for (const id of items) askedHuman.delete(id)
     delete startFailed[fk]; delete idleFrom[role]
@@ -984,7 +1008,22 @@ async function reconcile1() {
         } catch (e) { log(`delete of ${role}'s run ${a.id} failed (left running):`, e.message) }
       }
     }
-    if (a && a.status !== 'closed') { if (kept[role] || keptGone.has(role)) await keptBack(role, a, b); await closeIdle(role, a, own); continue }
+    // a plain lead made before the daemon restarted (sy-vsh5): as a closed one, below; never touched in a turn
+    const stale = a ? await staleLead(a) : false
+    if (stale && a.status === 'running') { staleSay(role, a, 'busy', `${role}'s lead ${a.shortId || a.id} is stale (${staleWhy(a)}), in a turn: left until its turn ends`); continue }
+    if (a && a.status !== 'closed' && !stale) { if (kept[role] || keptGone.has(role)) await keptBack(role, a, b); await closeIdle(role, a, own); continue }
+    if (stale && !KEEP.has(role) && !sendable(role, b).size && !(await own()).some((i) => i.status === 'in_progress' || i.status === 'blocked')) {
+      const f = (await leadsOf(role)).find((x) => x.id === a.id) // a fresh look, right before
+      if (!f || f.status === 'running') continue
+      try {
+        await new Promise((ok, no) => execFile(process.env.PASEO_BIN || 'paseo', ['archive', a.id], { timeout: 30000 }, (e, out, err) => (e ? no(new Error(String(err || e.message).trim().slice(0, 300))) : ok(out))))
+        staleSay(role, a, 'archived', `archived ${role}'s stale lead ${a.shortId || a.id} (${staleWhy(a)}): nothing waits for it; the next request starts it again`)
+        count('mm_wake_stale_leads_archived_total', { role })
+        delete idleFrom[role]; delete idleSeen[role]
+      } catch (e) { staleSay(role, a, 'failed', `archive of ${role}'s stale lead ${a.shortId || a.id} failed (tried again on the next pass): ${e.message}`) }
+      continue
+    }
+    if (stale) staleSay(role, a, 'restart', `${role}'s lead ${a.shortId || a.id} is stale (${staleWhy(a)}): ${KEEP.has(role) ? 'a kept role: as a closed one' : 'started again with bin/lead start when work waits'}`)
     if (Date.now() - (startedAt[role] || 0) < RESUME_GAP) continue
     const now = sendable(role, b)
     const mine = (await own()).filter((i) => i.status === 'in_progress' || i.status === 'blocked')
