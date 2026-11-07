@@ -106,10 +106,10 @@ export function secretModes(): Check {
  * Who may enter mm's own home (review sy-lud 1): $MM_HOME and its paseo/, claude/ and run/ folders 0700 (Paseo's and
  * Claude's state, the agents' activity, the runtime sockets); no socket of mm's (in $MM_HOME or run/) that the group or
  * others may connect to (a socket connects by its write bit); Paseo's logs (*.log in paseo/, they hold agent activity)
- * 0600. The owner's home at 0700 hides all this from other uids already; this holds when $MM_HOME is elsewhere too, and
+ * 0600; a box's (paseo/<box project>/, the box shares the owner's group) nothing for others. The owner's home at 0700 hides all this from other uids already; this holds when $MM_HOME is elsewhere too, and
  * when the home is opened. Stat only.
  */
-export function mmHomeModes(mm = DIRS.mm): Check {
+export function mmHomeModes(mm = DIRS.mm, boxes: Set<string> = new Set(listProjects().filter((x) => x.box).map((x) => x.project))): Check {
   const wide: { path: string; mode: number; fix: string }[] = []
   const st = (p: string) => { try { return statSync(p) } catch { return undefined } }
   const dirs = [mm, ...['paseo', 'claude', 'run'].map((d) => join(mm, d))]
@@ -123,7 +123,12 @@ export function mmHomeModes(mm = DIRS.mm): Check {
   }
   const sock = (p: string, s: Stats) => { if (s.isSocket() && (s.mode & 0o022)) wide.push({ path: p, mode: s.mode & 0o777, fix: 'go-w' }) }
   walk(mm, 0, sock); walk(join(mm, 'run'), 2, sock)
-  walk(join(mm, 'paseo'), 2, (p, s) => { if (s.isFile() && p.endsWith('.log') && (s.mode & 0o077)) wide.push({ path: p, mode: s.mode & 0o777, fix: '600' }) })
+  // a box's Paseo (paseo/<box project>/) shares the owner's group by design, as its secrets do: there only others' bits count
+  const boxOf = (p: string) => boxes.has(p.slice(join(mm, 'paseo').length + 1).split('/')[0])
+  walk(join(mm, 'paseo'), 2, (p, s) => {
+    const box = boxOf(p)
+    if (s.isFile() && p.endsWith('.log') && (s.mode & (box ? 0o007 : 0o077))) wide.push({ path: p, mode: s.mode & 0o777, fix: box ? 'o-rwx' : '600' })
+  })
   const shown = (p: string) => p.replace(HOME, '~'), item = `mode ${shown(mm)}`
   if (!wide.length) return { layer: 'machine', item, status: 'ok', detail: 'it and paseo/, claude/, run/ 0700; no socket others can connect to; Paseo logs 0600' }
   const fixes = new Map<string, string[]>()

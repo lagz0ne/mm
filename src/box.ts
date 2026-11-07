@@ -297,7 +297,7 @@ function boxProcesses(root: string, proxy: string, ip = '') {
     // the box's own Paseo: runs the project's leads as the box user; only on the box network, with mm's password; no
     // relay and no web UI (only the system Paseo has the relay; review sy-b15.8)
     // its agents get the box's AI key from the file at start (never in a config file); none: no model
-    [`${a.project}.paseo`]: { namespace: a.project, command: `sh -c '[ -r /run/mm/secrets/ai.key ] && export ANTHROPIC_API_KEY="$$(cat /run/mm/secrets/ai.key)"; PASEO_PASSWORD="$$(cat /run/mm/secrets/paseo.password)" exec paseo daemon run'`,
+    [`${a.project}.paseo`]: { namespace: a.project, command: `sh -c 'umask 007; [ -r /run/mm/secrets/ai.key ] && export ANTHROPIC_API_KEY="$$(cat /run/mm/secrets/ai.key)"; PASEO_PASSWORD="$$(cat /run/mm/secrets/paseo.password)" exec paseo daemon run'`,
       environment: Object.entries({ ...env, PASEO_LISTEN: `0.0.0.0:${PASEO_PORT}`, PASEO_RELAY_ENABLED: 'false', PASEO_WEB_UI_ENABLED: 'false' }).map(([k, v]) => `${k}=${v}`),
       log_location: join(root, '.run', 'logs', 'paseo.log'), log_configuration: PROJECT_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${PASEO_PORT}/` }, period_seconds: 3, failure_threshold: 40 } },

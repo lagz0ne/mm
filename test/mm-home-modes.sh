@@ -14,7 +14,7 @@ M="$MM_HOME"; mkdir -p "$M"/{paseo/logs,claude,run/boards,data}
 chmod 700 "$HOME" "$M" "$M/paseo" "$M/claude" "$M/run"
 cat >"$T/row.ts" <<EOF
 import { mmHomeModes } from '$SRC/src/doctor'
-const r = mmHomeModes(process.argv[2])
+const r = mmHomeModes(process.argv[2], new Set(['acme-box']))
 console.log(JSON.stringify(r))
 EOF
 row() { PATH="$HOME/.bun/bin:$PATH" bun "$T/row.ts" "$M" 2>/dev/null || bun "$T/row.ts" "$M"; }
@@ -45,6 +45,13 @@ echo "== Paseo logs"
 chmod 644 "$M/paseo/daemon.log"; want "daemon.log 0644 fails, fix chmod 600" fail "chmod 600 $S/paseo/daemon.log"; chmod 600 "$M/paseo/daemon.log"
 chmod 640 "$M/paseo/logs/agent.log"; want "a log one folder down 0640 fails" fail "$S/paseo/logs/agent.log"; chmod 600 "$M/paseo/logs/agent.log"
 : >"$M/paseo/state.json"; chmod 644 "$M/paseo/state.json"; want "a non-log file in paseo/ doesn't count" ok
+
+echo "== a box's Paseo (it shares the owner's group)"
+mkdir -p "$M/paseo/acme-box"; : >"$M/paseo/acme-box/daemon.log"; chmod 660 "$M/paseo/acme-box/daemon.log"
+want "a box's log 0660: ok (only others' bits count)" ok
+chmod 664 "$M/paseo/acme-box/daemon.log"; want "a box's log others may read fails, fix o-rwx" fail "chmod o-rwx $S/paseo/acme-box/daemon.log"; chmod 660 "$M/paseo/acme-box/daemon.log"
+mkdir -p "$M/paseo/acme-host"; : >"$M/paseo/acme-host/daemon.log"; chmod 640 "$M/paseo/acme-host/daemon.log"
+want "a host project's log 0640 still fails" fail "$S/paseo/acme-host/daemon.log"; chmod 600 "$M/paseo/acme-host/daemon.log"
 
 echo "== a missing folder"
 rmdir "$M/claude"; want "no claude/ yet: ok" ok
