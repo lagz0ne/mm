@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
+import { usePhone } from '@/lib/phone'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -26,6 +27,7 @@ export function Machine() {
   const [d, setD] = useState<MachineData | null>(null)
   const [err, setErr] = useState('')
   const [filing, setFiling] = useState<string | null>(null)
+  const phone = usePhone()
   const load = useCallback(async () => {
     try {
       const r = await fetch('/api/machine')
@@ -39,20 +41,20 @@ export function Machine() {
   if (!d) return <div className="p-6 text-xs text-muted-foreground">{err ? `Machine panel unavailable: ${err}` : 'Loading the machine…'}</div>
   const alerts = d.brain?.lines.filter((l) => LOUD.has(l.kind)) || []
   return (
-    <div className="flex-1 overflow-auto px-6 py-5">
-      <div className="mb-4 flex items-baseline gap-4">
+    <div className="min-w-0 flex-1 overflow-auto px-4 py-4 md:px-6 md:py-5">
+      <div className="mb-4 flex flex-wrap items-baseline gap-x-4">
         <h2 className="text-xl font-bold tracking-tight">Machine</h2>
         <span className="text-xs text-muted-foreground tabular-nums">updated {ago(d.at)}{err ? ` · last refresh failed: ${err}` : ''}</span>
       </div>
 
-      <div className="grid grid-cols-12 gap-6">
+      <div className="grid grid-cols-12 gap-6 [&>section]:min-w-0">
         <section className="col-span-12 border-t-2 border-foreground pt-3 lg:col-span-8">
           <h3 className="mb-2 text-[13px] font-semibold">Status <span className="font-normal text-muted-foreground">(bin/brain status)</span></h3>
           {!d.brain ? <p className="text-xs text-muted-foreground">No brain on this machine.</p> : (
             <ul className="space-y-1 text-[13px]">
               {alerts.length === 0 && <li className="text-xs text-muted-foreground">No alerts.</li>}
               {d.brain.lines.map((l, i) => (
-                <li key={i} className={cn('font-mono text-xs leading-5', LOUD.has(l.kind) ? 'font-semibold text-swiss' : l.kind === 'info' ? 'text-muted-foreground' : 'text-foreground')}>{l.text}</li>
+                <li key={i} className={cn('font-mono text-xs leading-5 [overflow-wrap:anywhere]', LOUD.has(l.kind) ? 'font-semibold text-swiss' : l.kind === 'info' ? 'text-muted-foreground' : 'text-foreground')}>{l.text}</li>
               ))}
               {!d.brain.ok && <li className="text-xs text-swiss">brain status failed: {d.brain.error}</li>}
             </ul>
@@ -69,12 +71,28 @@ export function Machine() {
           </div>
           <div className="border-t-2 border-foreground pt-3">
             <h3 className="mb-2 text-[13px] font-semibold">Observability</h3>
-            <ul className="flex gap-4 text-xs">{d.obs.stores.map((s) => <li key={s.store} className={cn(s.status === 'ok' ? '' : 'font-semibold text-swiss')}>{s.store} {s.status}</li>)}</ul>
+            <ul className="flex flex-wrap gap-x-4 text-xs">{d.obs.stores.map((s) => <li key={s.store} className={cn(s.status === 'ok' ? '' : 'font-semibold text-swiss')}>{s.store} {s.status}</li>)}</ul>
           </div>
         </section>
 
         <section className="col-span-12 border-t-2 border-foreground pt-3">
           <h3 className="mb-2 text-[13px] font-semibold">Projects <span className="font-normal text-muted-foreground">(mm ls · last hour from mm obs)</span></h3>
+          {phone ? (
+            <ul className="grid">{d.projects.map((p) => (
+              <li key={p.project} className="grid gap-1 border-b py-3">
+                <div className="flex flex-wrap items-baseline gap-x-2"><b className="text-[15px] [overflow-wrap:anywhere]">{p.project}</b>{p.self && <span className="text-xs text-muted-foreground">(this board)</span>}
+                  <span className={cn('ml-auto text-xs tabular-nums', !running(p) && 'font-semibold text-swiss')}>{p.processes} · {p.ready}</span></div>
+                <div className="font-mono text-[11px] text-muted-foreground [overflow-wrap:anywhere]">{p.root}</div>
+                <dl className="grid grid-cols-3 text-xs">
+                  {([['Logs', p.logs, false], ['Errors', p.errors, (p.errors || 0) > 0], ['Failed ops', p.failed_spans, (p.failed_spans || 0) > 0]] as const).map(([k, v, hot]) => (
+                    <div key={k}><dt className="text-[11px] text-muted-foreground">{k}</dt><dd className={cn('tabular-nums', hot && 'font-semibold text-swiss')}>{v ?? '–'}</dd></div>
+                  ))}
+                </dl>
+                {!p.self && <Button variant="outline" className="mt-1 w-full" onClick={() => setFiling(filing === p.project ? null : p.project)}>{filing === p.project ? 'Cancel' : 'File on its board'}</Button>}
+                {filing === p.project && <div className="pt-2"><FileItem project={p.project} onDone={() => setFiling(null)} /></div>}
+              </li>
+            ))}</ul>
+          ) : (
           <table className="w-full text-[13px]">
             <thead><tr className="border-b text-left text-xs text-muted-foreground">
               <th className="py-1.5 font-semibold">Project</th><th className="font-semibold">Folder</th><th className="font-semibold">Processes</th>
@@ -92,7 +110,7 @@ export function Machine() {
               </tr>
               {filing === p.project && <tr><td colSpan={7} className="border-b py-3"><FileItem project={p.project} onDone={() => setFiling(null)} /></td></tr>}
             </Fragment>))}</tbody>
-          </table>
+          </table>)}
         </section>
       </div>
     </div>
@@ -116,8 +134,8 @@ function FileItem({ project, onDone }: { project: string; onDone: () => void }) 
       <div className="text-xs text-muted-foreground">A new item on <b>{project}</b>'s own board. Its leads (or its setup agent) pick it up there.</div>
       <Input placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} />
       <Textarea placeholder="What you need, and why (markdown)" value={desc} onChange={(e) => setDesc(e.target.value)} rows={4} />
-      <div className="flex items-center gap-2">
-        <Input className="w-40" placeholder="assignee (role)" value={assignee} onChange={(e) => setAssignee(e.target.value.trim())} />
+      <div className="flex flex-wrap items-center gap-2">
+        <Input className="w-40 max-md:w-full" placeholder="assignee (role)" value={assignee} onChange={(e) => setAssignee(e.target.value.trim())} />
         <Button size="sm" disabled={busy || !title.trim()} onClick={submit}>{busy ? 'Filing…' : 'File it'}</Button>
         <Button size="sm" variant="ghost" onClick={onDone}>Cancel</Button>
       </div>

@@ -50,10 +50,10 @@ export function Designs({ id, tick, assignee, built, onOpen }: { id: string; tic
   const v: View = view || (['design', 'requirement', 'qa'].includes(assignee || '') ? (assignee as View) : 'summary')
   return (
     <Panel count={d.frames.length + (d.more || 0) + kids.reduce((n, c) => n + c.frames.length, 0)} action={
-      <div role="tablist" className="flex border border-foreground text-[11px]">
+      <div role="tablist" className="flex border border-foreground text-[11px] max-md:w-full max-md:text-xs">
         {VIEWS.map((x) => (
           <button key={x.key} role="tab" aria-selected={v === x.key} onClick={() => setView(x.key)}
-            className={cn('px-2 py-0.5 font-semibold', v === x.key ? 'bg-foreground text-background' : 'hover:bg-muted')}>{x.label}</button>
+            className={cn('px-2 py-0.5 font-semibold max-md:flex-1 max-md:px-1', v === x.key ? 'bg-foreground text-background' : 'hover:bg-muted')}>{x.label}</button>
         ))}
       </div>
     }>
@@ -70,8 +70,8 @@ export function Designs({ id, tick, assignee, built, onOpen }: { id: string; tic
 
 function Panel({ count, action, children }: { count: number; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className="border-b px-5 py-3">
-      <div className="mb-2 flex items-center justify-between gap-3">
+    <section className="min-w-0 border-b px-4 py-3 md:px-5">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <h3 className="text-[11px] font-bold tracking-[0.1em] uppercase">Designs · {count}</h3>
         {action}
       </div>
@@ -83,13 +83,13 @@ function Panel({ count, action, children }: { count: number; action?: React.Reac
 function Head({ f }: { f: Frame }) {
   return (
     <div className="mb-1 flex flex-wrap items-baseline gap-x-2 text-xs">
-      <b>{f.name || 'Untitled frame'}</b>
+      <b className="[overflow-wrap:anywhere]">{f.name || 'Untitled frame'}</b>
       <span className="text-[11px] text-muted-foreground">{f.canvas.name} · {f.width}×{f.height}</span>
       <span className={cn('border px-1 text-[10px] font-semibold tracking-[0.06em] uppercase', f.approval === 'ready_for_dev' ? 'border-foreground bg-foreground text-background' : f.approval === 'needs_review' ? 'border-swiss text-swiss' : 'border-muted-foreground text-muted-foreground')}>
         {APPROVAL[f.approval] || f.approval}
       </span>
       {f.open
-        ? <a href={f.open} target="_blank" rel="noreferrer" className="ml-auto flex items-center gap-1 text-[11px] font-semibold hover:underline"><ArrowSquareOutIcon />Open in Doop</a>
+        ? <a href={f.open} target="_blank" rel="noreferrer" className="ml-auto flex items-center gap-1 text-[11px] font-semibold hover:underline max-md:min-h-11 max-md:text-xs"><ArrowSquareOutIcon />Open in Doop</a>
         : <span className="ml-auto text-[11px] text-muted-foreground" title="Doop's public name comes with the project's names (the gateway signs you in there)">Doop has no public address yet</span>}
     </div>
   )
@@ -138,7 +138,7 @@ function FrameCard({ f }: { f: Frame }) {
         </div>
       ) : <Picture src={f.image} alt={f.name} />}
       <p className="mt-1 text-[11px] text-muted-foreground">
-        {changeLine(f)} {f.before && <button type="button" onClick={() => setCompare((x) => !x)} className="font-semibold text-foreground hover:underline">{compare ? 'Hide before' : 'Compare with before'}</button>}
+        {changeLine(f)} {f.before && <button type="button" onClick={() => setCompare((x) => !x)} className="font-semibold text-foreground hover:underline max-md:min-h-11">{compare ? 'Hide before' : 'Compare with before'}</button>}
         <span className="ml-1" title={HOW[f.how]}>· {HOW[f.how]}</span>
       </p>
       {open.length > 0 && (
@@ -176,7 +176,7 @@ function Thumbs({ frames }: { frames: Frame[] }) {
   return (
     <div className="flex flex-wrap gap-2">
       {frames.map((f) => (
-        <figure key={f.id} className="w-40">
+        <figure key={f.id} className="w-40 max-md:w-[calc(50%-0.25rem)]">
           <Picture src={f.image} alt={f.name} className="[&_img]:max-h-28" />
           <figcaption className="mt-0.5 truncate text-[11px]" title={f.name}>{f.name}</figcaption>
           {f.open && <a href={f.open} target="_blank" rel="noreferrer" className="text-[11px] font-semibold hover:underline">Open in Doop</a>}
@@ -199,7 +199,7 @@ function RequirementView({ d, onOpen }: { d: DesignsData; onOpen: (id: string) =
           <h4 className="text-[11px] font-semibold">Its parts</h4>
           {kids.map((c) => (
             <div key={c.id} className="border-t pt-2">
-              <button type="button" onClick={() => onOpen(c.id)} className="mb-1 flex gap-2 text-left text-xs hover:underline">
+              <button type="button" onClick={() => onOpen(c.id)} className="mb-1 flex min-w-0 flex-wrap gap-x-2 text-left text-xs hover:underline max-md:min-h-11 max-md:items-center">
                 <span className="font-mono text-[11px] text-muted-foreground">{c.id}</span>
                 <span className={c.status === 'closed' ? 'line-through opacity-60' : ''}>{c.title}</span>
                 <span className="text-[11px] text-muted-foreground">· {c.frames.length} design{c.frames.length === 1 ? '' : 's'}</span>
@@ -221,7 +221,7 @@ function QaView({ d, built }: { d: DesignsData; built: BuiltFile[] }) {
       {d.frames.map((f) => (
         <div key={f.id} className="min-w-0">
           <Head f={f} />
-          <div className={cn('grid gap-2', built.length ? 'grid-cols-2' : 'grid-cols-1')}>
+          <div className={cn('grid gap-2', built.length ? 'md:grid-cols-2' : 'grid-cols-1')}>
             <figure className="min-w-0"><figcaption className="mb-0.5 text-[11px] text-muted-foreground">Design</figcaption><Picture src={f.image} alt={f.name} /></figure>
             {built.length > 0 && <figure className="min-w-0"><figcaption className="mb-0.5 text-[11px] text-muted-foreground">Built</figcaption><Embed path={built[0].path} height={420} /></figure>}
           </div>
