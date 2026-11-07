@@ -14,6 +14,7 @@ import { type NamesMode, namesMode, routeName } from './names'
 import { pcRunning, writeBase } from './pc'
 import { rendered, renderTo, template, templateCommit } from './template'
 import { frontEnabled, heldPorts, removeRoutes, writeRoutes } from './front'
+import { clientAddress, listen as paseoListen, paseoManaged } from './paseo'
 import pkg from '../package.json'
 import portlessClaim from './portless-claim.mjs' with { type: 'text' }
 
@@ -417,6 +418,10 @@ export function writeRunFiles(root: string, pcSocket: string) {
     // the owner's name (mm's config owner_name; absent when unset): with the bridge, the only actor whose `approved`
     // counts (bin/supervisor, bin/flow), and a name the guard keeps agents from writing as (sy-h2yt)
     ...(owner ? { owner_name: owner } : {}),
+    // the machine's Paseo, at the address mm gave it (sy-nli; bin/lib/paseo.mjs, lead-workspace.mjs): unix:///path for
+    // a socket, ws://host:port/ws for TCP. Only while mm runs it (paseo.managed), and never for a box project: its
+    // Paseo is the box's own (src/box.ts), reached inside the box
+    ...(paseoManaged() && !a.box && pcSocket === DIRS.socket ? { paseo: clientAddress(paseoListen()) } : {}),
     containers: containersCfg(),
     services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.socket ? { socket: s.socket } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
   writeInProject(root, '.run/endpoints.json', JSON.stringify(ep, null, 2))

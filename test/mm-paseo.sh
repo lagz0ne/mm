@@ -12,6 +12,9 @@
 #     contents in any output
 #  3. mm doctor's paseo row: off: a warn naming the old unit while it exists, skip without it; on: fail while the old
 #     unit is enabled or active (the fix disables it), fail without mm.paseo, fail with two daemons, ok with mm's alone
+#  6. socket-first (sy-nli): managed with paseo.listen unset, the daemon listens on $MM_HOME/run/paseo.sock (run/
+#     0700, probed with test -S); a set value is kept; a host project's endpoints name the address (unix:///path or
+#     ws://host:port/ws), a box project's and an unmanaged machine's don't
 #   test/mm-paseo.sh
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -196,7 +199,7 @@ is "paseo.listen 0.0.0.0:6767: mm.paseo does not start the daemon" bash -c '! gr
 is "...it says why and stops (restart no)" grep -q "mm.paseo refused: paseo.listen is not" <<<"$(jq -r .command <<<"$p" | sed 's/\$\$/$/g' | bash 2>&1)" && [ "$(jq -r .availability.restart <<<"$p")" = no ]
 is "...the configured value is not on its command line" bash -c '! grep -qF "0.0.0.0" <<<"$1"' _ "$(jq -r .command <<<"$p")"
 FAKE_UNIT=off FAKE_PC=running want "...and doctor fails, naming the address and the fix" fail 'paseo.listen \"0.0.0.0:6767\" is not loopback'
-FAKE_UNIT=off FAKE_PC=running want "...its fix: back to 127.0.0.1:6767" fail '"fix":"mm config set paseo.listen 127.0.0.1:6767"'
+FAKE_UNIT=off FAKE_PC=running want "...its fix: unset (mm's socket, sy-nli) or a loopback port" fail "mm config unset paseo.listen (mm's socket, ~/.mm/run/paseo.sock), or set it to 127.0.0.1:<port>"
 
 echo "== 5. paseo.home: the home already under mm, used as is (sy-11g #14: ~/.paseo a link to \$MM_HOME/paseo/machine)"
 rm -rf "$O" "$S"; MH="$M/paseo/machine"; mkdir -p "$MH/agents"; printf '%s\n' "$MARK" >"$MH/daemon-keypair.json"; chmod 700 "$MH"; ln -s "$MH" "$O"
@@ -222,6 +225,48 @@ ln -s "$MH" "$M/paseo/alias"
 cfg 'layout: one-root' 'paseo:' '  managed: true' "  listen: 127.0.0.1:$PORT" "  home: ~/.mm/paseo/alias"
 FAKE_UNIT=off FAKE_PC=running want "paseo.home a link: refused" fail "is not a real folder"
 rm -f "$M/paseo/alias"
+
+echo "== 6. socket-first (sy-nli): paseo.listen unset is mm's socket; every host project's endpoints name the address"
+cfg 'layout: one-root' 'paseo:' '  managed: true'
+rm -rf "$M/run"
+r=$(base); p=$(jq -c .p <<<"$r")
+is "listen unset, managed: PASEO_LISTEN is unix://\$MM_HOME/run/paseo.sock" [ "$(envv PASEO_LISTEN)" = "unix://$M/run/paseo.sock" ]
+is "...the daemon starts (a socket is not refused)" grep -q "daemon run" <<<"$(jq -r .command <<<"$p")"
+is "...its readiness probe: the socket file" [ "$(jq -r .readiness_probe.exec.command <<<"$p")" = "test -S $M/run/paseo.sock" ]
+is "...run/ made 0700" [ "$(stat -c %a "$M/run")" = 700 ]
+chmod 755 "$M/run"; base >/dev/null
+is "...and put back to 0700 when it was wider" [ "$(stat -c %a "$M/run")" = 700 ]
+cfg 'layout: one-root' 'paseo:' "  listen: 127.0.0.1:$PORT"
+cat >"$T/listen.ts" <<EOF
+import { listen, clientAddress } from '$SRC/src/paseo'
+console.log(listen() + ' ' + clientAddress(listen()))
+EOF
+is "unmanaged: listen as configured" [ "$("$BUN" "$T/listen.ts")" = "127.0.0.1:$PORT ws://127.0.0.1:$PORT/ws" ]
+cfg 'layout: one-root'
+is "unmanaged, unset: Paseo's own default" [ "$("$BUN" "$T/listen.ts")" = "127.0.0.1:6767 ws://127.0.0.1:6767/ws" ]
+cfg 'layout: one-root' 'paseo:' '  managed: true' "  listen: /tmp/elsewhere.sock"
+is "a bare socket path: unix:///path for clients" [ "$("$BUN" "$T/listen.ts")" = "/tmp/elsewhere.sock unix:///tmp/elsewhere.sock" ]
+# the endpoints of a host project and of a box project (writeRunFiles), with the address mm gave the daemon
+proj() { # <dir> <project> [box]
+  mkdir -p "$1"; printf 'client: acme\nname: shop\nproject: %s\nshort: x\nroot: %s\ntemplate_version: test\ncreated: test\n%s' "$2" "$1" "${3:+box: true
+}" >"$1/.mm-answers.yaml"; printf 'services:\n  worker:\n    command: "true"\n' >"$1/services.yaml"; }
+proj "$T/hp" acme-host; proj "$T/bp" acme-box box
+cat >"$T/run.ts" <<EOF
+import { readFileSync } from 'node:fs'
+import { writeRunFiles } from '$SRC/src/project'
+import { DIRS } from '$SRC/src/env'
+const root = process.argv[2], box = process.argv[3] === 'box'
+writeRunFiles(root, box ? '/run/mm/sock/pc.sock' : DIRS.socket)
+console.log(JSON.parse(readFileSync(root + '/.run/endpoints.json', 'utf8')).paseo ?? 'none')
+EOF
+ep() { (cd "$T" && "$BUN" "$T/run.ts" "$@" 2>&1); }
+cfg 'layout: one-root' 'paseo:' '  managed: true'
+is "managed, listen unset: a host project's paseo is unix://\$MM_HOME/run/paseo.sock" [ "$(ep "$T/hp")" = "unix://$M/run/paseo.sock" ]
+is "...a box project's has none (its Paseo is the box's own)" [ "$(ep "$T/bp" box)" = none ]
+cfg 'layout: one-root' 'paseo:' '  managed: true' "  listen: 127.0.0.1:$PORT"
+is "managed, listen set to TCP: kept, as ws://host:port/ws" [ "$(ep "$T/hp")" = "ws://127.0.0.1:$PORT/ws" ]
+cfg 'layout: one-root'
+is "unmanaged: no paseo in the endpoints" [ "$(ep "$T/hp")" = none ]
 
 echo
 echo "mm-paseo: $pass passed, $fail failed"

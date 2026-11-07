@@ -2,7 +2,8 @@
 // (`mm config set paseo.managed true`) it stays where an older install put it (a systemd user unit, home ~/.paseo) and mm
 // only reports it. Turned on, it is mm.paseo (src/pc.ts writeBase), with its home in $MM_HOME/paseo/system;
 // `mm paseo migrate` copies the old home there first (never moves it: ~/.paseo stays as the rollback).
-// Keys: paseo.managed (off), paseo.listen (127.0.0.1:6767, Paseo's own default), paseo.relay and paseo.web_ui (unset:
+// Keys: paseo.managed (off), paseo.listen (unset: mm's socket $MM_HOME/run/paseo.sock once managed, sy-nli; a set value
+// is kept as it is; unmanaged, Paseo's own 127.0.0.1:6767), paseo.relay and paseo.web_ui (unset:
 // the home's own config.json decides, as for the old unit, and the app can still change them; true/false: fixed).
 // Nothing here opens a file of Paseo's home but its pid lock (paseo.pid: a pid and an address); a key is never read.
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync } from 'node:fs'
@@ -12,7 +13,10 @@ import { DIRS, HOME, hasSystemdUser, run, tilde } from './env'
 import type { Check } from './doctor'
 
 export const OLD_UNIT = 'paseo.service'
-export const DEFAULT_LISTEN = '127.0.0.1:6767'
+/** Paseo's own default (the old unit's): where an unmanaged daemon listens. */
+export const PASEO_DEFAULT_LISTEN = '127.0.0.1:6767'
+/** mm.paseo's address when paseo.listen is unset (sy-nli): a socket in mm's run/ folder (0700), no TCP port at all. */
+export const socketListen = () => `unix://${join(DIRS.mm, 'run', 'paseo.sock')}`
 const on = (v: unknown) => v === true || v === 'true'
 export const paseoManaged = (c: Config = loadConfig()) => on(getPath(c, 'paseo.managed'))
 /** mm's home for the machine's Paseo. */
@@ -44,7 +48,17 @@ export function homeRefusal(home: string): string | null {
   try { if (!lstatSync(home).isDirectory()) return `paseo.home ${tilde(home)} is not a real folder (a link or a file)` } catch {}
   return null
 }
-export const listen = (c: Config = loadConfig()) => String(getPath(c, 'paseo.listen') || DEFAULT_LISTEN)
+/** The machine Paseo's listen address: paseo.listen when set (kept as it is), else mm's socket once managed, else
+ *  Paseo's own default (an unmanaged daemon). */
+export const listen = (c: Config = loadConfig()) => String(getPath(c, 'paseo.listen') || (paseoManaged(c) ? socketListen() : PASEO_DEFAULT_LISTEN))
+/** The socket file of a socket listen address (an absolute path or unix:///path), or null for a host:port one. */
+export const socketPath = (l: string) => (l.startsWith('/') || l.startsWith('unix://') ? l.replace(/^unix:\/\//, '') : null)
+/** How a client reaches a listen address (sy-nli; .run/endpoints.json "paseo"): unix:///path for a socket, else
+ *  ws://host:port/ws. */
+export function clientAddress(l: string): string {
+  const s = socketPath(l)
+  return s ? `unix://${s}` : `ws://${l}/ws`
+}
 /**
  * Review sy-11g #12, fix 1: the daemon that drives every agent of this user listens on loopback or a socket only. Why
  * `l` is refused, or null: 127.0.0.1:<port>, [::1]:<port>, an absolute socket path or unix://<absolute path>; anything
@@ -83,7 +97,7 @@ export function daemonIn(home: string): { pid: number; listen: string | null } |
 }
 /** Something answers HTTP on a host:port address (a Paseo daemon, or anything else holding it). */
 export function answers(addr: string): boolean {
-  if (addr.startsWith('/') || addr.startsWith('unix://')) { const p = addr.replace(/^unix:\/\//, ''); try { return statSync(p).isSocket() } catch { return false } }
+  const p = socketPath(addr); if (p) { try { return statSync(p).isSocket() } catch { return false } }
   return run(['curl', '-s', '-o', '/dev/null', '--max-time', '2', `http://${addr}/`], { timeoutMs: 5000 }).ok
 }
 
@@ -176,7 +190,7 @@ export function daemonCheck(c: Config = loadConfig()): Check {
     return row('skip', `paseo.managed is off and there is no ${OLD_UNIT}`)
   }
   const bad = listenRefusal(listen(c))
-  if (bad) return row('fail', `${bad}: mm.paseo does not start`, `mm config set paseo.listen ${DEFAULT_LISTEN}`)
+  if (bad) return row('fail', `${bad}: mm.paseo does not start`, `mm config unset paseo.listen (mm's socket, ${tilde(socketPath(socketListen())!)}), or set it to 127.0.0.1:<port>`)
   const fix = `systemctl --user disable --now ${OLD_UNIT}`
   if (enabled === 'enabled' || active === 'active' || active === 'activating')
     return row('fail', `paseo.managed is on but ${OLD_UNIT} is still ${[active === 'active' || active === 'activating' ? active : '', enabled === 'enabled' ? 'enabled' : ''].filter(Boolean).join(' and ')}`, fix)

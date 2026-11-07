@@ -27,6 +27,7 @@ const row = (s, w) => { const p = s.projects.find((x) => x.projectId === w.proje
   return { id: w.id, projectId: w.projectId, projectRootPath: p.root, projectDisplayName: path.basename(p.root), projectCustomName: p.name || null,
     workspaceDirectory: w.dir, title: w.title, archivingAt: null } }
 export class DaemonClient {
+  constructor(cfg) { if (process.env.FAKE_CFG) fs.writeFileSync(process.env.FAKE_CFG, JSON.stringify({ url: cfg.url, transport: cfg.transportFactory ? cfg.transportFactory.connection : null })) }
   async connect() {}
   async close() {}
   async fetchWorkspaces() { const s = load(); return { entries: s.workspaces.filter((w) => !w.archived).map((w) => row(s, w)) } }
@@ -41,7 +42,12 @@ export class DaemonClient {
   async removeProject(id) { const s = load(); s.projects = s.projects.filter((p) => p.projectId !== id); save(s) }
 }
 EOF
-export PASEO_SDK=$T/sdk/index.js
+# the SDK's node entry (dist/node/index.js next to the entry): a socket's transport, which says what it was made for
+mkdir -p "$T/sdk/node"
+cat >"$T/sdk/node/index.js" <<'EOF'
+export function createHostTransportFactory(connection) { const f = () => { throw new Error('fake') }; f.connection = connection; return f }
+EOF
+export PASEO_SDK=$T/sdk/index.js PASEO_HOME=$T/nohome PASEO_URL=   # never the machine's daemon's pid lock
 LW() { node "$P/bin/lib/lead-workspace.mjs" "$@"; }
 q() { node -e "const s=JSON.parse(require('fs').readFileSync('$S','utf8'));process.stdout.write(String(($1)(s)))"; }
 
@@ -71,6 +77,24 @@ q "s=>{s.agents=[];require('fs').writeFileSync('$S',JSON.stringify(s));return ''
 LW --tidy "$P" 2>"$T/tidy2"
 check "once its agent is gone, the old workspace is archived and its project removed" test "$(q "s=>!!s.workspaces.find(w=>w.id==='wpo').archived+'/'+s.projects.some(p=>p.projectId==='po')")" = "true/false"
 check "  and tidy reports it" grep -q '1 workspace(s) archived, 0 kept (live agent), 1 empty project(s) removed' "$T/tidy2"
+
+echo "== the address (sy-nli): the project's endpoints \"paseo\", a socket through the SDK's node entry"
+export FAKE_CFG=$T/cfg.json
+EP=$P/.run/endpoints.json
+cfgis() { LW "$P" "$P/leads/qa" "qa lead" acme-shop >/dev/null 2>&1; cat "$FAKE_CFG"; }
+mkdir -p "$P/.run" "$T/ph"
+echo '{"paseo":"unix:///tmp/mm-test-nowhere/paseo.sock","services":{}}' >"$EP"
+check "a unix:// address: the node entry's transport for that socket, the SDK's placeholder URL" test "$(cfgis)" = '{"url":"ws://host-connector/ws","transport":"unix:///tmp/mm-test-nowhere/paseo.sock"}'
+echo '{"paseo":"ws://127.0.0.1:40999/ws","services":{}}' >"$EP"
+check "a ws:// address: as it is, no socket transport" test "$(cfgis)" = '{"url":"ws://127.0.0.1:40999/ws","transport":null}'
+check "PASEO_URL first (a bare socket path as unix://)" test "$(PASEO_URL=/tmp/mm-test-nowhere/x.sock cfgis)" = '{"url":"ws://host-connector/ws","transport":"unix:///tmp/mm-test-nowhere/x.sock"}'
+rm "$EP"
+echo '{"pid":1,"listen":"unix:///tmp/mm-test-nowhere/lock.sock"}' >"$T/ph/paseo.pid"
+check "no endpoints: the pid lock's address in PASEO_HOME" test "$(PASEO_HOME=$T/ph cfgis)" = '{"url":"ws://host-connector/ws","transport":"unix:///tmp/mm-test-nowhere/lock.sock"}'
+echo '{"pid":1,"listen":"127.0.0.1:40998"}' >"$T/ph/paseo.pid"
+check "...a host:port one as ws://host:port/ws" test "$(PASEO_HOME=$T/ph cfgis)" = '{"url":"ws://127.0.0.1:40998/ws","transport":null}'
+check "nothing at all: Paseo's own default" test "$(PASEO_HOME=$T/none HOME=$T/none cfgis)" = '{"url":"ws://127.0.0.1:6767/ws","transport":null}'
+unset FAKE_CFG
 
 echo "== without a client"
 out=$(PASEO_SDK=$T/none/index.js LW "$P" "$P/leads/qa" "qa lead" acme-shop 2>"$T/err"); rc=$?
