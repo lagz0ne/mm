@@ -11,6 +11,7 @@ import { expand, machineInputs } from './inputs'
 import { daemonEnv, homeRefusal, listenRefusal, managedHome, paseoManaged, socketPath, TOKEN_INPUT, tokenSource } from './paseo'
 import { MACHINE_SCOPE } from './vault'
 import { frontEnabled } from './front'
+import { lockBin } from './npmlock'
 
 const BASE = join(DIRS.pc, 'base.yaml'), PROJECTS = join(DIRS.pc, 'projects')
 const UNIT_DIR = join(HOME, '.config', 'systemd', 'user')
@@ -64,7 +65,7 @@ export function writeBase() {
   // (the old daemon's, copied) keeps deciding, and the app can still change them.
   if (paseoManaged()) {
     // its home: paseo.home (an existing home under mm, used as is) or mm's paseo/system (sy-11g #14)
-    const home = managedHome(), env = daemonEnv(), bin = join(DIRS.npm, 'bin', 'paseo'), badHome = homeRefusal(home)
+    const home = managedHome(), env = daemonEnv(), bin = lockBin('paseo', 'paseo'), badHome = homeRefusal(home)
     if (!badHome) { mkdirSync(home, { recursive: true, mode: 0o700 }); chmodSync(join(home, '..'), 0o700); chmodSync(home, 0o700) }
     const l = env.PASEO_LISTEN, sockFile = socketPath(l), sock = !!sockFile
     // its socket's folder (sy-nli): mm's run/ (the default) made 0700, as mm doctor's `mode ~/.mm` wants it; a socket

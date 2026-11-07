@@ -45,6 +45,7 @@ check "nothing of mm's outside ~/.mm (doctor: outside rows all ok)" jq -e '[.[] 
 check "no ~/.portless, ~/.config/process-compose, ~/.npm, ~/.local/bin/claude, ~/.local/share/claude" \
   sh -c '! test -e ~/.portless && ! test -e ~/.config/process-compose && ! test -e ~/.npm && ! test -e ~/.local/bin/claude && ! test -e ~/.local/share/claude'
 check "claude runs from ~/.mm/tools/claude" sh -c 'readlink -f "$(command -v claude)" | grep -q "^$HOME/.mm/tools/claude/" && claude --version'
+check "paseo runs from mm's lock (npm ci in ~/.mm/npm/paseo), its SDK next to it" sh -c 'readlink -f "$(command -v paseo)" | grep -q "^$HOME/.mm/npm/paseo/node_modules/@getpaseo/cli/" && test -f ~/.mm/npm/paseo/package-lock.json && test -f ~/.mm/npm/paseo/node_modules/@getpaseo/client/dist/index.js && paseo --version && ! test -e ~/.mm/npm/bin/paseo'
 echo "     outside ~/.mm after onboard: $(cd ~ && find . -path ./.mm -prune -o ! -type d -print | sed 's|^\./||' | sort | tr '\n' ' ')"
 sleep 3; check "process manager outlives mm" process-compose -U -u "$HOME/.mm/pc.sock" project state
 check "mm needs: exit 1 while a required input is missing" sh -c '! mm needs'

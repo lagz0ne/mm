@@ -1,0 +1,8 @@
+{
+  "name": "mm-paseo",
+  "private": true,
+  "description": "Paseo on the machine, installed by mm with npm ci from the committed lockfile: every transitive package pinned by its integrity hash",
+  "dependencies": {
+    "@getpaseo/cli": "0.13.0"
+  }
+}
