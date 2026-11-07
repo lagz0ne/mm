@@ -23,6 +23,7 @@ import { findRoot, listProjects, namespaceOp, newProject, parseRef, processes, r
 import * as boxMod from './box'
 import * as aiMod from './ai'
 import * as apiMod from './api'
+import * as frontMod from './front'
 import * as runAsMod from './runas'
 import { APPROVE_SOCK } from './apistate'
 import { type Format, print } from './out'
@@ -336,6 +337,13 @@ auth.command('approve <code>').description('sign in the browser that shows this 
 // the project API for boxes (src/api.ts, sy-b15.8): a box asks on its own socket; only the owner decides, here or with
 // the bridge's Allow (both call mm.api's owner socket). Refused in an agent's shell, as mm auth approve is: a brake (a
 // process can still reach the socket), with the template's denies and the guard as the rest
+const frontCmd = program.command('front').description('the local names (front.enabled): <service>.<project>.localhost to loopback ports and sockets, on 127.0.0.1 and ::1 only')
+frontCmd.command('serve').description('(run by mm-pc as mm.front) the front').option('--port <n>', 'listen port (default: portless_port)').action(async (o) => { await frontMod.serve(o.port ? { port: Number(o.port) } : {}) })
+frontCmd.command('ls').description('the route table the front serves (mm writes it at mm up), and what it refuses').action(() => {
+  const l = frontMod.loadRoutes(), o = fmt()
+  print([...l.table.values()].map((r) => ({ name: r.host, target: r.socket ? `unix:${r.socket}` : `127.0.0.1:${r.port}` })), o, 'name')
+  for (const x of l.refused) console.error(`refused: ${x}`)
+})
 const apiCmd = program.command('api').description('the project API for boxes: what a box asked for (route, egress, release, secret); only the owner decides (docs/project-api.md)')
 apiCmd.command('serve').description('(run by mm-pc as mm.api) the project API').action(async () => { await apiMod.serve() })
 const ownerOnly = (what: string) => { if (process.env.CLAUDECODE || process.env.PASEO_AGENT_ID) { console.error(`mm api ${what}: the owner decides what a box gets: run it yourself, in your own terminal`); process.exit(1) } }
