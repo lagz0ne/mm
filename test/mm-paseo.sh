@@ -198,6 +198,31 @@ is "...the configured value is not on its command line" bash -c '! grep -qF "0.0
 FAKE_UNIT=off FAKE_PC=running want "...and doctor fails, naming the address and the fix" fail 'paseo.listen \"0.0.0.0:6767\" is not loopback'
 FAKE_UNIT=off FAKE_PC=running want "...its fix: back to 127.0.0.1:6767" fail '"fix":"mm config set paseo.listen 127.0.0.1:6767"'
 
+echo "== 5. paseo.home: the home already under mm, used as is (sy-11g #14: ~/.paseo a link to \$MM_HOME/paseo/machine)"
+rm -rf "$O" "$S"; MH="$M/paseo/machine"; mkdir -p "$MH/agents"; printf '%s\n' "$MARK" >"$MH/daemon-keypair.json"; chmod 700 "$MH"; ln -s "$MH" "$O"
+cfg 'layout: one-root' 'paseo:' '  managed: true' "  listen: 127.0.0.1:$PORT" "  home: ~/.mm/paseo/machine"
+r=$(base); p=$(jq -c .p <<<"$r")
+is "mm.paseo runs on paseo.home (PASEO_HOME = paseo/machine)" [ "$(envv PASEO_HOME)" = "$MH" ] && grep -q "daemon run" <<<"$(jq -r .command <<<"$p")"
+is "...its clients get the same PASEO_HOME (toolEnv)" [ "$(jq -r .home <<<"$r")" = "$MH" ]
+is "...no paseo/system made" [ ! -e "$S" ]
+mig
+is "migrate: nothing to copy (exit 0), no second keypair" [ "$(rc)" = 0 ] && grep -q "nothing to copy" "$T/mig.out" && [ ! -e "$S" ] && clean
+printf '{"pid":%s,"startedAt":"2026-01-01T00:00:00Z","hostname":"h","uid":1,"listen":null}\n' "$live" >"$MH/paseo.pid"
+FAKE_UNIT=off FAKE_PC=running want "doctor: its daemon (seen through the ~/.paseo link too) is mm's, not a second one: ok" ok "mm.paseo runs (home ~/.mm/paseo/machine"
+FAKE_UNIT=on FAKE_PC=running want "...the old unit still enabled: fail, as before" fail "still"
+rm -f "$MH/paseo.pid"
+cfg 'layout: one-root' 'paseo:' '  managed: true' "  listen: 127.0.0.1:$PORT" "  home: $T/elsewhere"
+p=$(base | jq -c .p)
+is "paseo.home outside mm's paseo/ folder: mm.paseo does not start the daemon, and says why" bash -c '! grep -q "daemon run" <<<"$1" && grep -q "paseo.home is not a folder in mm/paseo" <<<"$1"' _ "$(jq -r .command <<<"$p")"
+is "...nothing made there" [ ! -e "$T/elsewhere" ]
+FAKE_UNIT=off FAKE_PC=running want "...doctor fails, naming it" fail "is not a folder inside ~/.mm/paseo"
+cfg 'layout: one-root' 'paseo:' '  managed: true' "  listen: 127.0.0.1:$PORT" "  home: ~/.mm/paseo/../outside"
+FAKE_UNIT=off FAKE_PC=running want "paseo.home with ..: refused" fail "is not a folder inside"
+ln -s "$MH" "$M/paseo/alias"
+cfg 'layout: one-root' 'paseo:' '  managed: true' "  listen: 127.0.0.1:$PORT" "  home: ~/.mm/paseo/alias"
+FAKE_UNIT=off FAKE_PC=running want "paseo.home a link: refused" fail "is not a real folder"
+rm -f "$M/paseo/alias"
+
 echo
 echo "mm-paseo: $pass passed, $fail failed"
 [ "$fail" = 0 ]
