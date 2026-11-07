@@ -538,6 +538,10 @@ function upUnder022(root: string): Step[] {
   const paseoHome = join(DIRS.mm, 'paseo', a.project), claude = join(DIRS.mm, 'claude', a.project)
   mkdirSync(claude, { recursive: true, mode: 0o2770 })
   steps.push(seedTrust(claude, root))
+  // sy-avky: a pid lock in the box's Paseo home that the host's owner owns (box off hands the box's files to the owner)
+  // is never a live box daemon's (that one writes it as the box user); left there, the box's Paseo can't take it over
+  // (EPERM on utime: only a file's owner may set its times). Removed; a link there is removed, never followed.
+  try { const pf = join(paseoHome, 'paseo.pid'); if (lstatSync(pf).uid === process.getuid?.()) rmSync(pf, { force: true }) } catch {}
   // what the box writes: group-writable (setgid folders keep the group), so the box's uid and the host's owner share it
   for (const d of [root, paseoHome, claude]) {
     mkdirSync(d, { recursive: true, mode: 0o2770 })
