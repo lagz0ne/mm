@@ -298,7 +298,13 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   if (existsSync(pf)) rmSync(pf)
   removeRoutes(a.project) // its local names leave the front (src/front.ts)
   rmSync(join(BOXES, `${a.project}.yaml`), { force: true }) // a box's registration
-  if (a.box) rmSync(join(DIRS.mm, 'box', a.project), { recursive: true, force: true }) // and what mm kept for it (src/box.ts hostDir)
+  // and what mm kept for it (src/box.ts hostDir). A folder there that isn't this user's (Docker makes a missing mount
+  // source as root, sy-avky) stops only this step: the rest of the archive goes on, and the step says what is left
+  if (a.box) {
+    const hd = join(DIRS.mm, 'box', a.project)
+    try { rmSync(hd, { recursive: true, force: true }) }
+    catch (e) { steps.push({ step: 'box folder', status: 'fail', detail: `${hd.replace(HOME, '~')} not removed (${(e as NodeJS.ErrnoException).code || (e as Error).message}): a part of it is another user's (Docker makes a missing mount folder as root); remove it as root` }) }
+  }
   // its opened secrets (the memory-backed folder mm opens them in, vault.runtimeDir): nothing of an archived project stays
   // open there (a box's key and Paseo password were left behind; mm doctor's secret modes failed on them)
   if (/^[a-z][a-z0-9-]{0,62}$/.test(a.project)) rmSync(join(secretsBase(), a.project), { recursive: true, force: true })
