@@ -13,15 +13,18 @@
 //   PRE     VAR=value words, a backslash, a quote and a path before the command's name (\sudo, "/usr/bin/sudo")
 //   MM      mm as the command, with its global options
 //   SEG     a command segment that does not start with ls, stat, test, du or [ (a listing stays free)
-//   SECRET  a secret path (the brain guard's SECRET_PATHS, plus mm's Paseo passwords and the board's own secrets/)
+//   SECRET  a secret path (the brain guard's SECRET_PATHS, plus mm's Paseo passwords, the board's own secrets/ and the
+//           approval signer's private/ folder)
 //   DUMP    a verb that reads a file out (cat, grep, cp, curl, python3, node, base64, <, …)
 //   WRITE   a verb that writes a file (sed -i, tee, >, cp, mv, rm, install, ln, truncate, open(…), …)
 //   APPROVAL the approval path's files: Claude settings (not the .tmpl.json the setup agent edits) and hooks, this
 //           guard (the board's own bin/guard, not a template copy elsewhere), the bridge, mm's process definitions, and
 //           the board's .run/endpoints.json (mm writes it: the gateway's key the board checks, the owner's name) and its
-//           supervisor.json (bin/supervisor's approver list, sy-1jmi)
+//           supervisor.json (bin/supervisor's approver list, sy-1jmi), the ledger's verifier bin/lib/ledger.mjs, and
+//           the signer's root-owned switch /etc/mm-approve.conf and its folder /var/lib/mm-approve/ (sy-4py1)
 //   APPROVAL_BASE those files by base name, wherever the shell is (endpoints.json, supervisor.json, bin/guard,
-//           guard-rules.mjs; not under /tmp/, not mm's template/bin/guard): bash only, a file tool's path is absolute
+//           guard-rules.mjs, ledger.mjs, mm-approve.conf, ledger.jsonl, mm-approve; not under /tmp/, not mm's own
+//           template/bin/guard, template/bin/lib/ledger.mjs or box/mm-approve): bash only, a file tool's path is absolute
 //   APPROVER an actor whose `approved` counts (bin/supervisor, bin/flow): the bridge's (`bridge`) and the owner's name
 //   BD      bd as a command word (bd, bin/bd, ~/.mm/…/bin/bd, "bd"), then a space
 // rules, checked in order; the first that matches denies with its reason:
@@ -46,14 +49,14 @@ export const RULES = // BEGIN RULES
     "MM": "{{CMD}}{{PRE}}mm['\"]?(?:\\s+-{1,2}[\\w-]+(?:\\s+(?:json|yaml|table))?)*\\s+",
     "SEG": "(?:^|[;&|\\n()`])\\s*(?!(?:ls|stat|test|du|\\[)\\s)[^;&|\\n()`]*",
     "MMDIR": "(?:\\.mm|\\$\\{?MM_HOME\\}?)",
-    "SECRET": "(?:(?<![\\w.-])\\.keys/|/brain/\\.keys\\b|/etc/cloudflared/\\S*token|\\.config/secrets/|(?:\\.paseo|\\.mm/paseo/[\\w.-]+)/(?:daemon-keypair\\.json|local-credential)|{{MMDIR}}/paseo/[\\w.-]+\\.password\\b|/etc/g?shadow|ssh_host_\\w+_key(?!\\.pub)|\\.cloudflared/[^ ]*\\.json|/etc/cloudflared/[^ ]*\\.json|\\.claude/\\.credentials|\\.ssh/(?!(?:known_hosts(?:\\.old)?|authorized_keys|config)(?![\\w.-]))[\\w.-]+(?<!\\.pub)(?![\\w.-])|\\.ssh/[\\w.-]*[*?\\[]|\\b(?:tar|zip|7z|cp\\s+-\\w*r\\w*|rsync|scp)\\b[^;&|]*\\.ssh/?(?:\\s|$)|\\.mm/vault/key\\b|/vault/key\\b|/mm/secrets(?:/|\\b)|AGE-SECRET-KEY-|{{MMDIR}}/(?:auth|ai|api)/|\\.config/gh/hosts\\.yml|\\bgh[pos]_[A-Za-z0-9]{20,}|(?:^|[\\s'\"=(<:])(?:\\.\\.?/)*secrets/|/projects/(?:[\\w.-]+/){1,2}secrets/|{{ROOT}}/secrets/)",
+    "SECRET": "(?:(?<![\\w.-])\\.keys/|/mm-approve/private(?![\\w.-])|/brain/\\.keys\\b|/etc/cloudflared/\\S*token|\\.config/secrets/|(?:\\.paseo|\\.mm/paseo/[\\w.-]+)/(?:daemon-keypair\\.json|local-credential)|{{MMDIR}}/paseo/[\\w.-]+\\.password\\b|/etc/g?shadow|ssh_host_\\w+_key(?!\\.pub)|\\.cloudflared/[^ ]*\\.json|/etc/cloudflared/[^ ]*\\.json|\\.claude/\\.credentials|\\.ssh/(?!(?:known_hosts(?:\\.old)?|authorized_keys|config)(?![\\w.-]))[\\w.-]+(?<!\\.pub)(?![\\w.-])|\\.ssh/[\\w.-]*[*?\\[]|\\b(?:tar|zip|7z|cp\\s+-\\w*r\\w*|rsync|scp)\\b[^;&|]*\\.ssh/?(?:\\s|$)|\\.mm/vault/key\\b|/vault/key\\b|/mm/secrets(?:/|\\b)|AGE-SECRET-KEY-|{{MMDIR}}/(?:auth|ai|api)/|\\.config/gh/hosts\\.yml|\\bgh[pos]_[A-Za-z0-9]{20,}|(?:^|[\\s'\"=(<:])(?:\\.\\.?/)*secrets/|/projects/(?:[\\w.-]+/){1,2}secrets/|{{ROOT}}/secrets/)",
     "SECRET_DIR": "(?:\\.ssh|\\.keys|\\.config/secrets|\\.paseo|{{MMDIR}}/(?:auth|ai|api|paseo|vault)|/mm/secrets|/projects/(?:[\\w.-]+/){1,2}secrets|{{ROOT}}/secrets)/?$",
     "DUMP": "(?:\\b(?:cat|less|more|head|tail|bat|batcat|xxd|od|hexdump|strings|base64|base32|basenc|grep|egrep|fgrep|zgrep|rg|ag|awk|gawk|sed|cut|tr|sort|uniq|diff|cmp|comm|join|paste|tac|nl|rev|fold|column|pr|expand|iconv|cp|mv|ln|install|scp|rsync|curl|wget|nc|ncat|socat|tee|printf|echo|read|mapfile|readarray|source|vi|vim|view|nano|emacs|python3?|node|bun|deno|perl|ruby|php|lua|jq|yq|sqlite3|tar|zip|7z|gzip|gunzip|zcat|bzip2|xz|zstd|dd|openssl|gpg|age|xargs|split)\\b|<|(?:^|[;&|]\\s*)\\.\\s+\\S)",
     "WRITE": "(?:\\bsed\\s+(?:-\\w+\\s+)*-i|\\bperl\\s+(?:-\\w+\\s+)*-\\w*i|\\btee\\b|>>?|\\b(?:cp|mv|rm|install|ln|truncate|chmod|chown|touch|patch|dd|rsync|unlink)\\b|\\b(?:open|write\\w*|append\\w*)\\(\\s*['\"]?)",
     "APPROVER": "(?:[bB][rR][iI][dD][gG][eE]|{{OWNER}})",
     "BD": "(?:^|[\\s;&|(){}`'\"/])bd['\"]?(?=\\s)",
-    "APPROVAL": "(?:\\.claude/settings(?!\\.tmpl)[\\w.-]*\\.json|\\.claude/hooks/|\\.local/lib/(?:paseo-telegram|brain)/|{{MMDIR}}/(?:claude/(?:[\\w.-]+/)?settings[\\w.-]*\\.json|pc/[\\w.-]+\\.ya?ml)|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*bin/(?:guard|lib/guard-rules\\.mjs)(?![\\w.-])|{{ROOT}}/bin/(?:guard|lib/guard-rules\\.mjs)(?![\\w.-])|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*\\.run/endpoints\\.json(?![\\w.-])|{{ROOT}}/\\.run/endpoints\\.json(?![\\w.-])|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*supervisor\\.json(?![\\w.-])|{{ROOT}}/supervisor\\.json(?![\\w.-]))",
-    "APPROVAL_BASE": "(?:^|(?<=[\\s'\"=<>:]))(?!/tmp/)(?:[^\\s'\"=<>;&|]*/)?(?:endpoints\\.json|supervisor\\.json|guard-rules\\.mjs|(?<!template/)bin/guard)(?![\\w.-])"
+    "APPROVAL": "(?:\\.claude/settings(?!\\.tmpl)[\\w.-]*\\.json|\\.claude/hooks/|\\.local/lib/(?:paseo-telegram|brain)/|{{MMDIR}}/(?:claude/(?:[\\w.-]+/)?settings[\\w.-]*\\.json|pc/[\\w.-]+\\.ya?ml)|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*bin/(?:guard|lib/(?:guard-rules|ledger)\\.mjs)(?![\\w.-])|{{ROOT}}/bin/(?:guard|lib/(?:guard-rules|ledger)\\.mjs)(?![\\w.-])|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*\\.run/endpoints\\.json(?![\\w.-])|{{ROOT}}/\\.run/endpoints\\.json(?![\\w.-])|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*supervisor\\.json(?![\\w.-])|{{ROOT}}/supervisor\\.json(?![\\w.-])|/etc/mm-approve\\.conf(?![\\w.-])|/var/lib/mm-approve(?![\\w.-]))",
+    "APPROVAL_BASE": "(?:^|(?<=[\\s'\"=<>:]))(?!/tmp/)(?:[^\\s'\"=<>;&|]*/)?(?:endpoints\\.json|supervisor\\.json|guard-rules\\.mjs|(?<!template/)bin/guard|(?<!template/bin/lib/)ledger\\.mjs|mm-approve\\.conf|ledger\\.jsonl|(?<!box/)mm-approve)(?![\\w.-])"
   },
   "rules": [
     {
@@ -185,13 +188,13 @@ export const RULES = // BEGIN RULES
       "id": "approval-write",
       "on": "bash",
       "re": "{{WRITE}}[^;&|]*{{APPROVAL}}",
-      "why": "changes the approval path (Claude settings and hooks, this guard, the bridge, mm's process definitions, the board's endpoints file): mm and the owner change it, never an agent."
+      "why": "changes the approval path (Claude settings and hooks, this guard, the bridge, mm's process definitions, the board's endpoints file, the approval ledger's verifier, the signer's config and folder): mm and the owner change it, never an agent."
     },
     {
       "id": "approval-base",
       "on": "bash",
-      "re": "{{WRITE}}[^;&|]*{{APPROVAL_BASE}}|\\b(?:cd|pushd)\\s+\\S*\\bbin/?(?=[\\s;&|)]|$)[^\\n]*?{{WRITE}}[^;&|\\n]*(?:^|(?<=[\\s'\"=<>]))(?:guard|lib/guard-rules\\.mjs)(?![\\w.-])",
-      "why": "changes a file of the approval path (a guard, the board's endpoints file, supervisor.json), named by its base name: mm and the owner change those, never an agent."
+      "re": "{{WRITE}}[^;&|]*{{APPROVAL_BASE}}|\\b(?:cd|pushd)\\s+\\S*\\bbin/?(?=[\\s;&|)]|$)[^\\n]*?{{WRITE}}[^;&|\\n]*(?:^|(?<=[\\s'\"=<>]))(?:guard|lib/(?:guard-rules|ledger)\\.mjs)(?![\\w.-])|\\b(?:cd|pushd)\\s+['\"]?\\S*/var/lib/mm-approve(?:/\\S*)?['\"]?(?=[\\s;&|)]|$)[^\\n]*?{{WRITE}}",
+      "why": "changes a file of the approval path (a guard, the board's endpoints file, supervisor.json, the ledger's verifier, the signer's config, folder or ledger), named by its base name: mm and the owner change those, never an agent."
     },
     {
       "id": "ssh-write",
@@ -209,7 +212,7 @@ export const RULES = // BEGIN RULES
       "id": "approval-file",
       "on": "file-write",
       "re": "{{APPROVAL}}",
-      "why": "the approval path (Claude settings and hooks, this guard, the bridge, mm's process definitions, the board's endpoints file): mm and the owner change it, never an agent."
+      "why": "the approval path (Claude settings and hooks, this guard, the bridge, mm's process definitions, the board's endpoints file, the approval ledger's verifier, the signer's config and folder): mm and the owner change it, never an agent."
     }
   ]
 }

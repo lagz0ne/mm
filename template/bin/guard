@@ -226,6 +226,7 @@ const NAMES = ['key', 'environ', 'cmdline', 'auxv', 'mem', 'endpoints.json', 'su
   'paseo', 'local-credential', 'daemon-keypair.json', 'vault', 'auth', 'ai', 'api', 'shadow', 'gshadow', 'id_ed25519', 'id_rsa', 'id_ecdsa',
   '.cloudflared', 'cloudflared', 'proc', '1', 'self', 'bin', 'lib', '.run', '.mm', 'run', 'brain', 'projects', 'etc', '.local',
   'paseo-telegram', 'pc', 'claude', 'ssh_host_ed25519_key', 'auth.sock', 'ai.sock', 'approve.sock', 'doop-mcp-headers',
+  'mm-approve', 'mm-approve.conf', 'ledger.mjs', 'ledger.jsonl', 'var', 'private', 'key.pem', 'key.pub', 'offers.json',
   'sudo', 'su', 'doas', 'pkexec', 'run0', 'sudoedit', 'ps', 'mm', 'x.password']
 const PROC_NAMES = new Set(['environ', 'cmdline', 'auxv', 'mem']), PROC_ONLY = /\/proc\b|\b(?:cd|pushd)\s/
 function globRe(part) {

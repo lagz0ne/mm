@@ -99,6 +99,10 @@ check "normalizing (sy-in54): quoted, escaped, prefixed, relative and globbed fo
 sed -n 's/^NORM: /       /p' "$T/check.out"
 check "the system board: sudo -n is its ops' and review's (the brain's guard governs it); every other rule holds" node "$SRC/test/lib/guard-run.mjs" "$SYS" SYSTEM NORMAL
 sed -n 's/^\(SYSTEM\|NORMAL\): /       /p' "$T/check.out"
+check "the ledger's files (sy-4py1): /etc/mm-approve.conf, /var/lib/mm-approve/, bin/lib/ledger.mjs, every spelling; on a project" node "$SRC/test/lib/guard-run.mjs" "$PROJ" LEDGER
+sed -n 's/^LEDGER: /       /p' "$T/check.out"
+check "...and on the system board, where its ops run sudo" node "$SRC/test/lib/guard-run.mjs" "$SYS" LEDGER
+sed -n 's/^\(FAIL\|LEDGER\)/       &/p' "$T/check.out"
 cp -r "$PROJ" "$T/boxed"; printf 'profile: system\nbox: true\n' >"$T/boxed/.mm-answers.yaml"
 check "a box that says it is the system profile gets the project's rule (sudo denied)" bash -c "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sudo -n true\"}}' | '$T/boxed/bin/guard' | grep -q '\"deny\"'"
 
