@@ -1,6 +1,6 @@
 {
   "name": "mm",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Set up the stack on a machine and stamp projects from the template.",
