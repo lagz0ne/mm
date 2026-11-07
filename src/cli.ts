@@ -572,7 +572,7 @@ obs.command('logs').description('recent log lines (LogsQL filter optional)').arg
   })
 obs.command('ui').description('where the UIs are (loopback: open them through an SSH tunnel)').action(() => {
   const e = obsEndpoints() as { ui?: Record<string, string> }
-  if (!e.ui) { console.error('mm obs: the stack is not installed (mm onboard)'); process.exit(1) }
+  if (!e.ui) { console.error('mm obs: no stack of this MM_HOME (not installed, or never run here: mm onboard)'); process.exit(1) }
   const ports = Object.values(e.ui).map((u) => new URL(u).port)
   for (const [k, u] of Object.entries(e.ui)) console.log(`${k.padEnd(8)} ${u}`)
   console.log(`\ntunnel: ssh ${ports.map((p) => `-L ${p}:127.0.0.1:${p}`).join(' ')} <this machine>`)

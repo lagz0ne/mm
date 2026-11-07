@@ -10,9 +10,17 @@ export const DATA = join(DIRS.mm, 'data')
 const cfgPort = (k: string, d: number) => Number(getPath(loadConfig(), k) ?? d)
 export function obsPorts() { return { metrics: cfgPort('metrics_port', 8428), logs: cfgPort('logs_port', 9428), traces: cfgPort('traces_port', 10428) } }
 export const obsInstalled = () => !!(which('victoria-metrics') && which('victoria-logs') && which('victoria-traces'))
-/** Where engine code sends telemetry (env + .run/endpoints.json); empty when the stack is not installed. */
+/**
+ * The stack is this $MM_HOME's when its stores keep their data here: each Victoria store makes its folder under
+ * <mm home>/data the first time this home's process manager runs it. A throwaway MM_HOME (a test's) has none, though the
+ * binaries are on PATH and the machine's stack answers on the same loopback ports: mm and the projects it sets up from
+ * there ship nothing, so a test's expected failures never reach the machine's stores (sy-28ev).
+ */
+export const obsHere = () => ['metrics', 'logs', 'traces'].some((s) => existsSync(join(DATA, s)))
+/** Where engine code sends telemetry (env + .run/endpoints.json); empty when the stack is not installed, or is not this
+ *  MM_HOME's (obsHere). */
 export function obsEndpoints() {
-  if (!obsInstalled()) return {}
+  if (!obsInstalled() || !obsHere()) return {}
   const p = obsPorts(), h = '127.0.0.1'
   return {
     traces: `http://${h}:${p.traces}/insert/opentelemetry/v1/traces`,
