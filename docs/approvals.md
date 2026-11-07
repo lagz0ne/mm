@@ -57,6 +57,7 @@ user or root, when the ledger is a symlink or has a second link, or when the pub
 | `expires_hours` | `24` | how long an offer can be tapped |
 | `max_shown` | `3500` | how much a message shows: the plan, then its blocks' hashes (Telegram's limit is 4096) |
 | `openssl` | `/usr/bin/openssl` | the ed25519 implementation (python's standard library has none) |
+| `bridge_socket` | none | the bridge's unix socket for the board's web Approve (absolute path; the socket the signer's user's, in folders only it or root can change). None: no web approval. |
 
 The file is root's, so the owner account can't flip the switch. Ops' guard lists it as tier 2. The verifiers read it
 whenever it exists, and then never a config named by the environment. Only on a machine without it, `MM_APPROVE_CONF`
@@ -171,9 +172,44 @@ same item.
 - On "plan changed": send a new offer. On "used" or "expired": say so.
 - Then add `approved` on the board as today, for the people who read the board. The label alone counts for nothing.
 
-The owner's Approve on the board's public address is to go the same way (not built yet): it asks the bridge to send
-the Telegram offer, and the tap is what counts. Until then, with the ledger on, an approval on the board's web page
-counts for nothing.
+### The board's web Approve (with the ledger on)
+
+With `verifier = ledger`, the board writes no `approved` on its public side and signs nothing: adding the label
+there is refused, and the owner's **Approve on Telegram** button (a signed-off t2 without `approved`) asks the bridge
+to send the Telegram offer. The owner's tap there is what counts. With `verifier = actor` nothing changes: the
+owner adds `approved` on the public side as before.
+
+The board reads the mode and the socket as `bin/lib/ledger.mjs` reads them (only from `/etc/mm-approve.conf` when
+it exists), on every click. It sends nothing, and tells the owner there is no web approval, when there is no
+`bridge_socket`, the path isn't absolute, isn't a socket, doesn't belong to the signer's user, or a folder above it
+can be changed by anyone but that user or root.
+
+**The request** (the board to the bridge, one per click, over the unix socket):
+
+```
+POST /approve HTTP/1.1
+Host: mm-approve
+Content-Type: application/json
+X-Mm-Assertion: <the gateway's assertion, byte for byte as the board received it>
+
+{"item":"<item id>"}
+```
+
+Nothing else: no text, subjects, plan or name. Anything else in the click is dropped. The board only sends it for a
+request that came with a valid owner assertion. The assertion is `base64url(JSON {u, r, h, exp, n})` "."
+`base64url(Ed25519 signature)` over the first part, made with the gateway's key.
+
+**What the bridge must do with it (v14):**
+- Check the assertion itself: the signature with the gateway's public key (as the bridge holds it, not from a file
+  the owner account can write), `r == "owner"`, `exp` in the future (milliseconds), `h` a board host it serves, and
+  the item id (`^[a-z][a-z0-9]*-[a-z0-9]+(\.\d+)*$`) an item of that board.
+- Then `offer <item>` and send its `text` as for any other offer, saying it came from the board's web page. One live
+  offer per item: a second click sends the same offer again.
+- Answer `200` with `{"ok": true}` when the offer is on its way (or sent again). The owner then reads "Sent to your
+  Telegram: tap Approve there."
+- Otherwise answer a 4xx/5xx with `{"title": "<one plain sentence for the owner>"}`. The board shows it (control
+  characters out, at most 200 characters) as "The bridge refused it: … Nothing was approved." It waits 10 s at most.
+- Never sign on the request itself. Only the tap signs.
 
 ## Putting it on the machine (ops, tier 2)
 
@@ -202,5 +238,8 @@ item, an expired offer, an offer used twice, a tap by someone else, an offer nev
 plan's blocks (a staged script that differs from the block gets no line, a subject not in the plan is refused, a plan
 with no block or a malformed block is refused, a header inside a script is the script's); the ledger, its folder or the
 key writable by others, a second link, a symlink, another owner; the switch; subjects; a long plan; `mm doctor`.
-`test/supervisor.mjs` and `test/flow.mjs` each run their ledger cases with the real signer. On a machine where
+`test/supervisor.mjs` and `test/flow.mjs` each run their ledger cases with the real signer. `test/auth.sh` runs
+the board's web Approve with a test config and a stub bridge socket: exactly `{item}` and the assertion sent, no
+label, the owner's message; no socket, a socket that isn't safe, a bridge that refuses or is down: refused, nothing
+approved; with `actor` as before. On a machine where
 `/etc/mm-approve.conf` exists, the verifier cases are skipped: the verifiers never read a test config there.
