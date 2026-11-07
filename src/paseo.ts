@@ -5,7 +5,7 @@
 // Keys: paseo.managed (off), paseo.listen (127.0.0.1:6767, Paseo's own default), paseo.relay and paseo.web_ui (unset:
 // the home's own config.json decides, as for the old unit, and the app can still change them; true/false: fixed).
 // Nothing here opens a file of Paseo's home but its pid lock (paseo.pid: a pid and an address); a key is never read.
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, statSync, symlinkSync, unlinkSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { getPath, loadConfig, type Config } from './config'
 import { DIRS, HOME, hasSystemdUser, run, tilde } from './env'
@@ -24,6 +24,25 @@ export function machineHome(c: Config = loadConfig()): string {
   const h = getPath(c, 'paseo.home')
   if (typeof h === 'string' && h.trim()) return h.trim().replace(/^~(?=\/|$)/, HOME)
   return paseoManaged(c) ? systemHome() : oldHome()
+}
+/** The home mm.paseo runs on: paseo.home when set (an existing home already under mm, used as is: no copy, no second
+ *  keypair; sy-11g #14), else mm's paseo/system. */
+export function managedHome(c: Config = loadConfig()): string {
+  const h = getPath(c, 'paseo.home')
+  return typeof h === 'string' && h.trim() ? h.trim().replace(/^~(?=\/|$)/, HOME) : systemHome()
+}
+/** Both paths name the same folder (after links), and it exists. */
+export function sameDir(a: string, b: string): boolean {
+  try { return realpathSync(a) === realpathSync(b) } catch { return false }
+}
+/** Why mm.paseo must not run on `home`, or null: an absolute path inside mm's paseo/ folder, a real folder (not a link)
+ *  when it exists. Anything else would put the daemon's keypair and sessions outside the folder mm keeps at 0700. */
+export function homeRefusal(home: string): string | null {
+  const base = join(DIRS.mm, 'paseo')
+  if (!home.startsWith('/') || relative(base, home).startsWith('..') || relative(base, home) === '' || /(^|\/)\.\.(\/|$)/.test(home))
+    return `paseo.home ${JSON.stringify(home)} is not a folder inside ${tilde(base)}`
+  try { if (!lstatSync(home).isDirectory()) return `paseo.home ${tilde(home)} is not a real folder (a link or a file)` } catch {}
+  return null
 }
 export const listen = (c: Config = loadConfig()) => String(getPath(c, 'paseo.listen') || DEFAULT_LISTEN)
 /**
@@ -44,7 +63,7 @@ const tri = (c: Config, k: string): 'true' | 'false' | undefined => { const v = 
 
 /** mm.paseo's environment besides PATH/HOME/MM_HOME (pc.ts). Only what the old unit's defaults would give. */
 export function daemonEnv(c: Config = loadConfig()): Record<string, string> {
-  const e: Record<string, string> = { PASEO_HOME: systemHome(), PASEO_LISTEN: listen(c) }
+  const e: Record<string, string> = { PASEO_HOME: managedHome(c), PASEO_LISTEN: listen(c) }
   const relay = tri(c, 'paseo.relay'), web = tri(c, 'paseo.web_ui')
   if (relay) e.PASEO_RELAY_ENABLED = relay
   if (web) e.PASEO_WEB_UI_ENABLED = web
@@ -93,8 +112,10 @@ export interface MigrateResult { ok: boolean; lines: string[] }
  * are kept (the target folder and $MM_HOME/paseo are 0700 whatever the source's). Prints paths and counts only.
  */
 export function migrate(o: { dryRun?: boolean; force?: boolean; from?: string; to?: string } = {}): MigrateResult {
-  const from = o.from || oldHome(), to = o.to || systemHome(), lines: string[] = []
+  const from = o.from || oldHome(), to = o.to || managedHome(), lines: string[] = []
   const no = (why: string): MigrateResult => ({ ok: false, lines: [...lines, `refused: ${why}`] })
+  // the old home is already mm's (a link to it, or paseo.home names it): nothing to copy (sy-11g #14)
+  if (!o.from && !o.to && sameDir(from, to)) return { ok: true, lines: [`nothing to copy: ${tilde(from)} is ${tilde(to)}, the home mm.paseo runs on (paseo.home)`] }
   let src: ReturnType<typeof lstatSync>
   try { src = lstatSync(from) } catch { return no(`no Paseo home at ${tilde(from)}`) }
   if (!src.isDirectory()) return no(`${tilde(from)} is not a folder`)
@@ -145,7 +166,11 @@ export function daemonCheck(c: Config = loadConfig()): Check {
   const load = sd ? run(['systemctl', '--user', 'show', OLD_UNIT, '-p', 'LoadState', '--value'], { timeoutMs: 5000 }).out.trim() : ''
   const exists = load !== '' && load !== 'not-found'
   const enabled = exists ? unit('is-enabled') : '', active = exists ? unit('is-active') : ''
-  const oldD = daemonIn(oldHome()), sysD = daemonIn(systemHome())
+  const home = managedHome(c), badHome = homeRefusal(home)
+  if (badHome) return row('fail', `${badHome}: mm.paseo does not start`, 'mm config set paseo.home <a folder in ~/.mm/paseo>, or unset it')
+  // ~/.paseo a link to mm's home (the one-root move): one home, so one daemon there is mm's, not a second one
+  const same = sameDir(oldHome(), home)
+  const oldD = same ? null : daemonIn(oldHome()), sysD = daemonIn(home)
   if (!paseoManaged(c)) {
     if (exists) return row('warn', `${OLD_UNIT} (${active || 'unknown'}, ${enabled || 'unknown'}) runs the machine's Paseo from ${tilde(oldHome())}: not under mm yet: sy-11g`)
     return row('skip', `paseo.managed is off and there is no ${OLD_UNIT}`)
@@ -155,10 +180,10 @@ export function daemonCheck(c: Config = loadConfig()): Check {
   const fix = `systemctl --user disable --now ${OLD_UNIT}`
   if (enabled === 'enabled' || active === 'active' || active === 'activating')
     return row('fail', `paseo.managed is on but ${OLD_UNIT} is still ${[active === 'active' || active === 'activating' ? active : '', enabled === 'enabled' ? 'enabled' : ''].filter(Boolean).join(' and ')}`, fix)
-  if (oldD && sysD && oldD.pid !== sysD.pid) return row('fail', `two Paseo daemons: pid ${oldD.pid} on ${tilde(oldHome())}, pid ${sysD.pid} on ${tilde(systemHome())}`, `stop the one on ${tilde(oldHome())} (kill ${oldD.pid})`)
+  if (oldD && sysD && oldD.pid !== sysD.pid) return row('fail', `two Paseo daemons: pid ${oldD.pid} on ${tilde(oldHome())}, pid ${sysD.pid} on ${tilde(home)}`, `stop the one on ${tilde(oldHome())} (kill ${oldD.pid})`)
   if (oldD) return row('fail', `a Paseo daemon (pid ${oldD.pid}) still runs on ${tilde(oldHome())}`, `kill ${oldD.pid}`)
   const p = mmPaseo()
   if (!p) return row('fail', 'paseo.managed is on but the process manager has no mm.paseo', 'the next mm up of any project reloads the base file (or mm onboard)')
   if (p.status !== 'Running') return row('fail', `mm.paseo is ${p.status} (${p.restarts} restart(s); see ${tilde(join(DIRS.pc, 'paseo.log'))})`)
-  return row('ok', `mm.paseo runs (home ${tilde(systemHome())}, ${listen(c)}); no other Paseo daemon`)
+  return row('ok', `mm.paseo runs (home ${tilde(home)}, ${listen(c)}); no other Paseo daemon`)
 }

@@ -8,7 +8,7 @@ import { getPath, loadConfig } from './config'
 import { DIRS, HOME, hasSystemdUser, portlessDir, run, servicePath, toolEnv, which } from './env'
 import { MM_LOG_CONFIG, obsProcesses } from './obs'
 import { expand, machineInputs } from './inputs'
-import { daemonEnv, listenRefusal, paseoManaged, systemHome } from './paseo'
+import { daemonEnv, homeRefusal, listenRefusal, managedHome, paseoManaged } from './paseo'
 import { frontEnabled } from './front'
 
 const BASE = join(DIRS.pc, 'base.yaml'), PROJECTS = join(DIRS.pc, 'projects')
@@ -62,14 +62,16 @@ export function writeBase() {
   // web UI or listen setting is forced unless paseo.relay / paseo.web_ui / paseo.listen say so: the home's config.json
   // (the old daemon's, copied) keeps deciding, and the app can still change them.
   if (paseoManaged()) {
-    const home = systemHome(), env = daemonEnv(), bin = join(DIRS.npm, 'bin', 'paseo')
-    mkdirSync(home, { recursive: true, mode: 0o700 }); chmodSync(join(home, '..'), 0o700); chmodSync(home, 0o700)
+    // its home: paseo.home (an existing home under mm, used as is) or mm's paseo/system (sy-11g #14)
+    const home = managedHome(), env = daemonEnv(), bin = join(DIRS.npm, 'bin', 'paseo'), badHome = homeRefusal(home)
+    if (!badHome) { mkdirSync(home, { recursive: true, mode: 0o700 }); chmodSync(join(home, '..'), 0o700); chmodSync(home, 0o700) }
     const token = expand(String(machineInputs()['claude-oauth-token']?.path || ''))
     const l = env.PASEO_LISTEN, sock = l.startsWith('/') || l.startsWith('unix://')
-    // a listen address off loopback is refused (review sy-11g #12): the process only says so (a fixed text, never the
-    // configured value on a command line) and stops; mm doctor's paseo row names the address and the fix
-    if (listenRefusal(l)) processes['mm.paseo'] = { namespace: 'mm',
-      command: `sh -c 'echo "mm.paseo refused: paseo.listen is not 127.0.0.1:<port>, [::1]:<port> or a socket path (mm doctor)" >&2; exit 1'`,
+    // a listen address off loopback, or a home outside mm's paseo/ folder, is refused (review sy-11g #12): the process
+    // only says so (a fixed text, never the configured value on a command line) and stops; mm doctor's paseo row names
+    // the value and the fix
+    if (listenRefusal(l) || badHome) processes['mm.paseo'] = { namespace: 'mm',
+      command: `sh -c 'echo "mm.paseo refused: paseo.listen is not 127.0.0.1:<port>, [::1]:<port> or a socket path, or paseo.home is not a folder in mm/paseo (mm doctor)" >&2; exit 1'`,
       environment: [`PATH=${servicePath()}`],
       log_location: join(DIRS.pc, 'paseo.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'no' } }
     else processes['mm.paseo'] = { namespace: 'mm',

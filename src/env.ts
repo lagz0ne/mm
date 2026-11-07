@@ -87,11 +87,17 @@ export const toolEnv = (): Record<string, string> => ({
   // the machine's Paseo once mm runs it (paseo.managed, src/paseo.ts): a `paseo` client finds its daemon by the pid lock
   // in PASEO_HOME (default ~/.paseo), so mm's own calls, every process under the process manager (wake, the board) and
   // the agents the daemon starts (they inherit its environment) look in mm's home. A box's services set their own.
-  ...(paseoManagedRaw() ? { PASEO_HOME: join(MM, 'paseo', 'system') } : {}),
+  // paseo.home (an existing home under mm, used as is; sy-11g #14) when set, else mm's paseo/system
+  ...(paseoRaw().managed ? { PASEO_HOME: paseoRaw().home || join(MM, 'paseo', 'system') } : {}),
 })
-/** config.yaml's paseo.managed, read here without config.ts (it imports this file); src/paseo.ts has the real one. */
-function paseoManagedRaw(): boolean {
-  try { const v = (Bun.YAML.parse(readFileSync(join(MM, 'config.yaml'), 'utf8')) as { paseo?: { managed?: unknown } } | null)?.paseo?.managed; return v === true || v === 'true' } catch { return false }
+/** config.yaml's paseo.managed and paseo.home, read here without config.ts (it imports this file); src/paseo.ts has the
+ *  real ones (and refuses a home outside mm's paseo/ folder: then mm.paseo does not run, so no client finds it). */
+function paseoRaw(): { managed: boolean; home: string } {
+  try {
+    const p = (Bun.YAML.parse(readFileSync(join(MM, 'config.yaml'), 'utf8')) as { paseo?: { managed?: unknown; home?: unknown } } | null)?.paseo
+    const h = typeof p?.home === 'string' ? p.home.trim().replace(/^~(?=\/|$)/, HOME) : ''
+    return { managed: p?.managed === true || p?.managed === 'true', home: h }
+  } catch { return { managed: false, home: '' } }
 }
 for (const [k, v] of Object.entries(toolEnv())) process.env[k] ||= v
 
