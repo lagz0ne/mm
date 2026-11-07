@@ -300,7 +300,43 @@ async function catchUp() {
 }
 
 async function lead(role) {
-  return (await P_.list({ project: PROJECT, role }))[0] || null
+  return (await leadsOf(role))[0] || null
+}
+
+// One live lead per role (sy-p8pc). After a machine restart Paseo can resume an old lead (one that was in a turn when
+// the machine went down) after bin/lead start looked for it, and two leads of one role then work side by side. So a
+// role's agents are read newest first (created), wake sends only to the newest, and every reconcile pass archives each
+// older plain lead of the role (oneLead()): a plain `paseo archive` (no --force) when it is not in a turn; one in a
+// turn is left until it ends and archived on a later pass. A worker (role=<role>-worker) has another label and is not
+// listed here; a person's run (label person, or its title "(for <person>)" where the CLI gives no labels) is never
+// counted as a second lead (sy-q8fv deletes those itself). Said once per agent; counted (mm_wake_extra_leads_*).
+const byNewest = (as) => as.map((a, k) => [a, k]).sort(([a, i], [b, j]) => (Date.parse(b.created || '') || 0) - (Date.parse(a.created || '') || 0) || i - j).map(([a]) => a)
+async function leadsOf(role) { return byNewest(await P_.list({ project: PROJECT, role })) }
+const isPersonRun = (a) => !!a.labels?.person || /\(for [a-z][a-z0-9._-]*\)$/.test(a.name || '')
+const extraSaid = new Map() // `<role>:<agent id>` -> what was said of it last (busy | archived | failed)
+async function oneLead(role, all) {
+  let plain = all.filter((a) => !isPersonRun(a))
+  if (plain.length < 2) { for (const k of extraSaid.keys()) if (k.startsWith(`${role}:`)) extraSaid.delete(k); return }
+  // the CLI gives no labels: a person's run is also known by asking for each person wake knows of
+  if (P_.via() !== 'sdk' && persons().length) {
+    const runs = new Set()
+    for (const p of persons()) for (const x of await P_.list({ project: PROJECT, role, person: p })) runs.add(x.id)
+    plain = plain.filter((a) => !runs.has(a.id))
+    if (plain.length < 2) return
+  }
+  const keep = plain[0], k0 = (a) => `${role}:${a.id}`
+  for (const k of extraSaid.keys()) if (k.startsWith(`${role}:`) && !plain.some((a) => k0(a) === k)) extraSaid.delete(k)
+  for (const a of plain.slice(1)) {
+    const say = (what, msg) => { if (extraSaid.get(k0(a)) === what) return; if (!extraSaid.has(k0(a))) count('mm_wake_extra_leads_total', { role }); extraSaid.set(k0(a), what); log(msg) }
+    const fresh = (await leadsOf(role)).find((x) => x.id === a.id) // a fresh look, right before
+    if (!fresh) continue
+    if (fresh.status === 'running') { say('busy', `${role} has a second lead (${a.shortId || a.id}, older than ${keep.shortId || keep.id}), in a turn: left until its turn ends, then archived`); continue }
+    try {
+      await new Promise((ok, no) => execFile(process.env.PASEO_BIN || 'paseo', ['archive', a.id], { timeout: 30000 }, (e, out, err) => (e ? no(new Error(String(err || e.message).trim().slice(0, 300))) : ok(out))))
+      say('archived', `archived an older ${role} lead (${a.shortId || a.id}, ${fresh.status}): ${keep.shortId || keep.id} is the role's lead (one live lead per role)`)
+      count('mm_wake_extra_leads_archived_total', { role })
+    } catch (e) { say('failed', `archive of the older ${role} lead ${a.shortId || a.id} failed (tried again on the next pass): ${e.message}`) }
+  }
 }
 
 // The board as wake last read it (the reconcile's view, also the capacity check at send time): every item, the
@@ -908,7 +944,9 @@ async function reconcile1() {
   try { await tidyPersonRuns() } catch (e) { log('person runs: tidy failed:', e.message) }
   const agents = {}
   for (const role of ROLES) {
-    try { agents[role] = await lead(role) } catch (e) { log('paseo ls failed:', e.message); return }
+    let all; try { all = await leadsOf(role) } catch (e) { log('paseo ls failed:', e.message); return }
+    agents[role] = all[0] || null
+    try { await oneLead(role, all) } catch (e) { log(`one lead per role: ${role} failed:`, e.message) }
   }
   await expire(b, new Set(ROLES.filter((r) => agents[r]?.status === 'running')))
   upstreamWaits(b)
