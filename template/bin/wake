@@ -511,6 +511,7 @@ function askHuman(items, why) {
 // of wake's that someone removes (an event, or a later read of the board, without it) is forgotten, so if they set it
 // again, it is theirs. A note the owner closes stays closed until the agent is back (and gone again).
 const kept = (() => { try { return readState()._kept || {} } catch { return {} } })() // role -> { note, n, labelled }
+const keptRefused = (() => { try { return readState()._keptRefused || {} } catch { return {} } })() // item id -> when closing wake's own note was refused (sy-71up)
 const keptGone = new Set() // kept roles whose agent this wake sees gone (a queued label checks it before it writes)
 const inFlight = new Set() // `add|remove <id>` queued, not written yet
 let keptSaved = JSON.stringify(kept)
@@ -587,13 +588,25 @@ async function keptBack(role, a, b) {
   if (!st) return
   st.labelled ||= {}; st.done = {}
   const byId = new Map(b.all.map((i) => [i.id, i]))
+  // only wake's own note (review sy-71up): made by wake, with its key label kept:<role>; never an item a person or a
+  // lead made, even one that carries the label
+  const own = (id) => { const i = byId.get(id); return !!i && i.created_by === 'wake' && (i.labels || []).includes(`kept:${role}`) }
   const notes = new Set([st.note, ...b.all.filter((i) => (i.labels || []).includes(`kept:${role}`)).map((i) => i.id)]
-    .filter((id) => id && byId.has(id) && byId.get(id).status !== 'closed'))
+    .filter((id) => id && byId.has(id) && byId.get(id).status !== 'closed' && own(id)))
   const ids = Object.keys(st.labelled)
   for (const id of notes) {
-    const r = await bdStep(['close', id, '--reason', `the ${role} lead's agent is found again (${a.shortId || a.id}); wake removes the needs-you it added on ${ids.length} item(s)`], `close ${id}`)
-    if (r.ok) log(`${role}'s agent is back (${a.shortId || a.id}): closed ${id}`)
-    else return // tried again on the next pass
+    // refused once: said once, never tried again (sy-71up: 87 failed closes); kept in its own state key, so it outlives
+    // the role's note cycle
+    if (keptRefused[id]) continue
+    // its condition has cleared, and it is wake's own: --force passes bd's guard for an item now assigned to the owner
+    const r = await bdStep(['close', id, '--force', '--reason', `the ${role} lead's agent is found again (${a.shortId || a.id}); wake removes the needs-you it added on ${ids.length} item(s)`], `close ${id}`)
+    if (r.ok) { log(`${role}'s agent is back (${a.shortId || a.id}): closed ${id}`); continue }
+    if (/cannot close|refus|not allowed|permission/i.test(`${r.error || ''}`)) {
+      keptRefused[id] = new Date().toISOString(); editState((s) => { s._keptRefused = { ...keptRefused } })
+      log(`${role}'s agent is back, but closing ${id} was refused: left for the owner, not tried again (${String(r.error || '').slice(0, 160)})`)
+      continue
+    }
+    return // the board didn't answer: tried again on the next pass
   }
   st.note = null; st.n = 0
   const queued = []

@@ -37,7 +37,7 @@ for (let n = 1; n <= 8; n++) add(`l-${n}`, { priority: 2 }) // P2: counted, not 
 add('z-1', { priority: 0, status: 'in_progress' }) // a P0 in progress: labelled
 add('h-1', { priority: 1, labels: ['needs-you'] }) // a person set needs-you before: never wake's
 const records = [], streams = []
-let seq = 0, nextId = 1, busyOnce = true, labelsNow = 0, labelsMax = 0
+let seq = 0, nextId = 1, busyOnce = true, labelsNow = 0, labelsMax = 0, closeRefused = 0
 const emit = (op, id, actor, extra = {}) => { const e = { seq: ++seq, ts: new Date().toISOString(), op, issue_id: id, actor, issue: { ...items.get(id) }, ...extra }; records.push(e); for (const s of streams) s.write(`data: ${JSON.stringify(e)}\n\n`) }
 const change = (id, actor, f, op = 'update') => { Object.assign(items.get(id), f, { updated_at: new Date().toISOString() }); emit(op, id, actor) }
 const label = (id, actor, l, on = true) => change(id, actor, { labels: on ? [...new Set([...items.get(id).labels, l])] : items.get(id).labels.filter((x) => x !== l) })
@@ -46,7 +46,7 @@ async function bdCli(args) {
   const [cmd, a1, a2, a3] = args
   if (cmd === 'create') {
     const id = `n-${nextId++}`
-    items.set(id, { id, title: a1, description: flag('-d'), status: 'open', priority: Number(flag('-p')), assignee: flag('-a'), labels: (flag('-l') || '').split(',').filter(Boolean), updated_at: new Date().toISOString() })
+    items.set(id, { id, title: a1, description: flag('-d'), status: 'open', priority: Number(flag('-p')), assignee: flag('-a'), labels: (flag('-l') || '').split(',').filter(Boolean), created_by: actor, updated_at: new Date().toISOString() })
     emit('create', id, actor); return { code: 0, out: JSON.stringify({ id }) }
   }
   const i = items.get(cmd === 'label' ? a2 : a1)
@@ -59,7 +59,12 @@ async function bdCli(args) {
     label(i.id, actor, a3, a1 === 'add'); return { code: 0 }
   }
   if (cmd === 'update') { const f = {}; if (flag('--title')) f.title = flag('--title'); if (flag('-d')) f.description = flag('-d'); if (flag('-s')) f.status = flag('-s'); change(i.id, actor, f); return { code: 0 } }
-  if (cmd === 'close') { change(i.id, actor, { status: 'closed', close_reason: flag('--reason') }, 'close'); return { code: 0 } }
+  if (cmd === 'close') {
+    // bd's guard: an item assigned to someone else closes only with --force; a 'locked' one never (a stand-in for any refusal)
+    if (i.locked) { closeRefused++; return { code: 1, err: `cannot close ${i.id}: it is locked` } }
+    if (i.assignee && i.assignee !== actor && !args.includes('--force')) { closeRefused++; return { code: 1, err: `cannot close ${i.id}: assignee is ${i.assignee}, actor is ${actor}; reclaim or use --force` } }
+    change(i.id, actor, { status: 'closed', close_reason: flag('--reason') }, 'close'); return { code: 0 }
+  }
   if (cmd === 'comments' && a1 === 'add') { emit('comment', i.id, actor, { comment: { id: `c${seq + 1}`, author: actor, text: a3 } }); return { code: 0 } }
   return { code: 1, err: `stub bd: ${cmd}?` }
 }
@@ -150,6 +155,10 @@ try {
   ok('...the state still has its labels (49: p-2, p-3 left)', Object.keys(wstate()._kept?.ops?.labelled || {}).length === 49)
 
   console.log('== the agent is back')
+  // review sy-71up: an item a person made, with wake's label, is never closed by wake; one whose close is refused is
+  // said once and never tried again
+  add('x-1', { title: "The ops lead's agent can't be found: a person's copy", assignee: 'alex', labels: ['kept:ops'], created_by: 'alex' }); emit('create', 'x-1', 'alex')
+  add('x-2', { title: "The ops lead's agent can't be found: locked", assignee: 'alex', labels: ['kept:ops'], created_by: 'wake', locked: true }); emit('create', 'x-2', 'wake')
   st('ops', 'idle')
   ok('the note is closed, by wake', await until(() => I(n.id).status === 'closed') && /found again/.test(I(n.id).close_reason || ''))
   ok('every needs-you wake added is removed', await until(() => P01.filter((id) => !['p-2', 'p-3'].includes(id)).every((id) => !has(id))))
@@ -161,6 +170,14 @@ try {
   const after = bdlog()
   await sleep(2000)
   ok('then quiet: no more writes', bdlog() === after)
+  ok('the note (assigned to the owner) closed with --force, wake\'s own', /^close n-\d+ --force /m.test(bdlog()))
+  ok('a person\'s item with the kept:ops label is never closed', I('x-1').status !== 'closed' && !/^close x-1 /m.test(bdlog()))
+  const tries = (bdlog().match(/^close x-2 /gm) || []).length
+  ok('a refused close is said once, as left for the owner', (log().match(/closing x-2 was refused: left for the owner, not tried again/g) || []).length === 1)
+  // the agent goes and comes back: a new note cycle, which closes its new note and leaves x-2 alone
+  st('ops', 'none'); await until(() => notes().some((x) => x.status !== 'closed' && x.id !== 'x-2' && x.created_by === 'wake')); st('ops', 'idle')
+  await until(() => !notes().some((x) => x.status !== 'closed' && x.id !== 'x-2' && x.created_by === 'wake')); await sleep(1500)
+  ok('...and never tried again (one bd step, its own retries only)', tries >= 1 && tries <= 3 && (bdlog().match(/^close x-2 /gm) || []).length === tries)
 } finally {
   w?.kill(); srv.close(); for (const s of streams) s.destroy()
   if (fail) console.log(`--- wake output\n${log().split('\n').slice(-40).join('\n')}\n${out.slice(-1500)}`)
