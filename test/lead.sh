@@ -33,7 +33,11 @@ case "\$1" in
     if [ -n "\$force" ]; then [ -e "\$S/stuck" ] && { echo "daemon refused: agent \$id is locked" >&2; exit 1; }
     elif [ "\$b" != 0 ]; then [ "\$b" -gt 0 ] && echo \$((b - 1)) >"\$S/busy"; echo "agent \$id is running (use --force)" >&2; exit 1; fi
     grep -vx "\$id" "\$S/agents" >"\$S/a.tmp"; mv "\$S/a.tmp" "\$S/agents"; echo "\$id" >>"\$S/archived" ;;
-  run) for a in "\$@"; do last=\$a; done; printf '%s' "\$last" >"\$S/prompt"; echo new-agent ;;
+  run) for a in "\$@"; do last=\$a; done; printf '%s' "\$last" >"\$S/prompt"
+    # an old lead Paseo resumed meanwhile (sy-p8pc): \$S/appear holds its id; the new agent is listed then too
+    [ -e "\$S/appear-busy" ] && echo -1 >"\$S/busy"
+    [ -e "\$S/appear" ] && { echo new-agent >>"\$S/agents"; cat "\$S/appear" >>"\$S/agents"; }
+    echo new-agent ;;
 esac
 EOF
 chmod +x "$T/paseo"
@@ -64,6 +68,12 @@ rm -f "$T/st/items.json"
 printf 'old-1\nold-2\n' >"$T/st/agents"
 check "two old leads of the role (the sy-8n1 state): both archived, then one starts" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && [ \"\$(grep -c 'archived previous qa lead' '$T/out')\" = 2 ] && ! test -s '$T/st/agents'"
 
+echo '== start: an older lead that shows up during the start (sy-p8pc)'
+reset old-1 0; echo old-9 >"$T/st/appear"
+check "it is archived right after the start (a plain archive), and the new lead stays" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && grep -qx 'archived an older qa lead old-9 (it appeared during the start)' '$T/out' && grep -qx new-agent '$T/st/agents' && ! grep -qx old-9 '$T/st/agents'"
+reset old-1 0; echo old-9 >"$T/st/appear"
+touch "$T/st/appear-busy"
+check "...one in a turn is left (never --force), and it says so; the start still succeeds" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && grep -q 'an older qa lead old-9 appeared during the start and is in a turn: left' '$T/out' && grep -qx old-9 '$T/st/agents' && grep -qx new-agent '$T/st/agents'"
 echo '== stop'
 reset old-1 0
 check "stop: archived" bash -c "'$P/bin/lead' stop qa >'$T/out' 2>&1 && grep -q 'archived qa lead old-1' '$T/out'"

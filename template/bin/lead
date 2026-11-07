@@ -116,7 +116,15 @@ $(fenced "$LEAD_NEXT")"
     # --as: the same run, made through Paseo's client library, so the token goes to the run's environment only (never
     # on a command line or in a file); bin/lib/run-as.mjs reads it from fd 3
     if [ -n "$as" ]; then exec node "$P/bin/lib/run-as.mjs" "$as" "$@" <&3 3<&-; fi
-    "$PASEO" run "$@"
+    new=$("$PASEO" run "$@"); [ -z "$new" ] || printf '%s\n' "$new"
+    # one look more (sy-p8pc): after a machine restart Paseo can resume an old lead of the role after archive_role
+    # looked; archive it now (a plain archive: never one in a turn; wake archives that one when its turn ends)
+    new=$(printf '%s' "$new" | tail -n 1 | tr -d '[:space:]')
+    [ -z "$new" ] || for id in $(ids "$role"); do
+      case $new in "$id"*) continue ;; esac; case $id in "$new"*) continue ;; esac
+      if "$PASEO" archive "$id" >/dev/null 2>&1; then echo "archived an older $role lead $id (it appeared during the start)"
+      else echo "lead: an older $role lead $id appeared during the start and is in a turn: left; wake archives it when its turn ends" >&2; fi
+    done
     ;;
   *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
