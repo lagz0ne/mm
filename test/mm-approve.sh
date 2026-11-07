@@ -31,9 +31,15 @@ conf() { # conf <file> [key = value lines...]
     echo "plan_command = $T/plan"; echo "owner_telegram_id = 4242"; echo "expires_hours = 24"; printf '%s\n' "$@"; } >"$f"
 }
 conf "$T/conf"; export MM_APPROVE_CONF="$T/conf"
-plan() { printf '%s' "$2" >"$T/plans/$1"; }
-S1=sha256:$(printf 1 | sha256sum | cut -c1-64); S2=sha256:$(printf 2 | sha256sum | cut -c1-64)
-HEAD=git:$(printf h | sha1sum | cut -c1-40)
+# plan <item> <text> [<block file>...]: the item's plan, its prose then its blocks (sy-4py1: the subjects come only
+# from the blocks the plan shows)
+plan() { local f="$T/plans/$1"; printf '%s' "$2" >"$f"; shift 2; [ $# = 0 ] || cat "$@" >>"$f"; }
+printf '#!/bin/sh\necho one\n' >"$T/s1"; printf '#!/bin/sh\necho undo one\n' >"$T/r1"
+printf '#!/bin/sh\necho two\n' >"$T/s2"; printf '#!/bin/sh\necho undo two\n' >"$T/r2"
+"$A" block migration one "$T/s1" "$T/r1" >"$T/b1"; "$A" block migration two "$T/s2" "$T/r2" >"$T/b2"
+S1=$("$A" subject migration "$T/s1" "$T/r1"); S2=$("$A" subject migration "$T/s2" "$T/r2")
+HS=$(printf h | sha1sum | cut -c1-40); BASE=$(printf b | sha1sum | cut -c1-40); HEAD=git:$HS
+"$A" block head "$HS" "$BASE" >"$T/bh"
 js() { node -e "$1" "$LIB" "${@:2}"; }
 # nodev <item> <subject>: the node verifier's answer (yes/no)
 nodev() { js 'import(process.argv[1]).then((m) => { const l = m.readLedger(); console.log(l.has(process.argv[2], process.argv[3]) ? "yes" : "no") })' "$@"; }
@@ -55,8 +61,10 @@ install -m 0644 "$D/key.pub" "$P/key.pub" # ops' step: the public key where the 
 check 'check: no problems' "$A" check
 
 step 'the good path: offer, the owner taps, a signed line, both verifiers say yes'
-plan sy-a $'Plan for sy-a: open port 8443.\nRollback: close it.\n'
-check 'an offer without a subject is refused' refused - "$A" offer sy-a
+plan sy-a $'Plan for sy-a: open port 8443.\nRollback: close it.\n' "$T/b1" "$T/bh"
+plan sy-n $'Plan for sy-n: prose only, no block.\n'
+check 'a plan with no block: refused, no subjects (fail closed)' refused - "$A" offer sy-n
+check '...and a --subject does not make one' refused - "$A" offer sy-n --subject "$S1"
 check 'an offer for an item with no plan is refused' refused - "$A" offer sy-nope --subject "$S1"
 check 'a plan given that is not the board\x27s is refused (the signer offers only what it read itself)' \
   bash -c "printf 'another plan' | '$A' offer sy-a --subject '$S1' --plan-stdin 2>&1 | grep -q refused"
@@ -76,20 +84,20 @@ step 'none of these counts (review condition 9)'
 check 'an offer used twice: refused (exit 4), no second line' bash -c "out=\$('$A' tap '$OA' 4242 2>&1); [ \$? = 4 ] && [ \$(grep -c . '$D/ledger.jsonl') = 1 ]"
 vno 'a line for another subject: no' sy-a "$S2"
 vno 'another item with the same subject: no' sy-b "$S1"
-plan sy-b 'Plan for sy-b.'
+plan sy-b $'Plan for sy-b.\n' "$T/b2"
 OB=$(offer sy-b --subject "$S2")
 check 'callback data naming another item (sy-a) than the offer (sy-b): refused' refused - "$A" tap "$OB" 4242 --item sy-a
 vno '...so sy-a has no line for sy-b\x27s subject' sy-a "$S2"
 check '...and the offer is still the owner\x27s to tap, for sy-b only' bash -c "'$A' tap '$OB' 4242 --item sy-b | grep -q '\"item\": \"sy-b\"'"
 vyes '...which counts for sy-b' sy-b "$S2"
-plan sy-c 'Plan for sy-c: v1.'
+plan sy-c $'Plan for sy-c: v1.\n' "$T/b1"
 OC=$(offer sy-c --subject "$S1")
-plan sy-c 'Plan for sy-c: v2, something else.'
+plan sy-c $'Plan for sy-c: v2, something else.\n' "$T/b1"
 check 'the plan changed after the offer: refused (exit 3), asks for a new offer' bash -c "out=\$('$A' tap '$OC' 4242 2>&1); [ \$? = 3 ] && grep -q 'new offer' <<<\"\$out\""
-plan sy-c 'Plan for sy-c: v1.'
+plan sy-c $'Plan for sy-c: v1.\n' "$T/b1"
 check '...and that offer stays void, even with the plan back' refused - "$A" tap "$OC" 4242
 vno '...no line for sy-c' sy-c "$S1"
-plan sy-d 'Plan for sy-d.'
+plan sy-d $'Plan for sy-d.\n' "$T/b1"
 NOW=$(date +%s)
 OD=$(MM_APPROVE_NOW=$NOW offer sy-d --subject "$S1")
 check 'an expired offer (25 h later): refused (exit 5)' bash -c "out=\$(MM_APPROVE_NOW=$((NOW + 25 * 3600)) '$A' tap '$OD' 4242 2>&1); [ \$? = 5 ]"
@@ -98,7 +106,7 @@ check '...one within its 24 h still taps' bash -c "MM_APPROVE_NOW=$((NOW + 23 * 
 step 'a forged line (another key), a line changed after signing'
 D2="$T/forger"; mkdir -p "$D2"; chmod 755 "$D2"
 conf "$T/conf2"; sed -i "s|^dir = .*|dir = $D2|; s|^public_key = .*|public_key = $D2/key.pub|" "$T/conf2"
-plan sy-e 'Plan for sy-e.'
+plan sy-e $'Plan for sy-e.\n' "$T/b1"
 MM_APPROVE_CONF="$T/conf2" "$A" keygen >/dev/null
 OE=$(MM_APPROVE_CONF="$T/conf2" offer sy-e --subject "$S1")
 MM_APPROVE_CONF="$T/conf2" "$A" tap "$OE" 4242 >/dev/null
@@ -139,9 +147,45 @@ printf '#!/bin/sh\necho undo something else\n' >"$T/m.rollback.sh"
 check '...and a changed rollback is another subject' bash -c "[ \"\$('$A' subject migration '$T/m.sh' '$T/m.rollback.sh')\" != '$SUBJ' ]"
 check 'a head\x27s subject is git:<sha>' bash -c "[ \"\$('$A' subject head $(printf a%.0s $(seq 40)))\" = git:$(printf a%.0s $(seq 40)) ]"
 conf "$T/conf5" 'max_shown = 40'
-plan sy-g "$(printf 'Line %s of a long plan.\n' $(seq 50))"
-check 'a plan longer than the message: it says so, shows the hash, and hashes the whole plan' \
-  bash -c "out=\$(MM_APPROVE_CONF='$T/conf5' '$A' offer sy-g --subject '$S1'); python3 -c 'import json,sys; o=json.loads(sys.argv[1]); assert not o[\"complete\"] and \"longer than this message\" in o[\"text\"] and o[\"plan\"]==sys.argv[2] and sys.argv[2] in o[\"text\"] and \"Line 50\" not in o[\"text\"]' \"\$out\" \$(sha256sum '$T/plans/sy-g' | cut -c1-64)"
+printf 'Line %s of a long plan.\n' $(seq 50) >"$T/long"; plan sy-g "$(cat "$T/long")"$'\n' "$T/b1"
+check 'a plan longer than the message: it says so, shows the plan\x27s hash, the block\x27s hashes and subject, and hashes the whole plan' \
+  bash -c "out=\$(MM_APPROVE_CONF='$T/conf5' '$A' offer sy-g --subject '$S1'); python3 -c 'import json,sys; o=json.loads(sys.argv[1]); assert not o[\"complete\"] and \"longer than this message\" in o[\"text\"] and o[\"plan\"]==sys.argv[2] and sys.argv[2] in o[\"text\"] and \"Line 50\" not in o[\"text\"] and sys.argv[3] in o[\"text\"] and sys.argv[4] in o[\"text\"]' \"\$out\" \$(sha256sum '$T/plans/sy-g' | cut -c1-64) '$S1' \$(sha256sum '$T/s1' | cut -c1-64)"
+
+step 'the subjects come only from the blocks the owner is shown (sy-4py1, review condition 1)'
+check 'the block format, byte for byte: a header with the length, the bytes, a newline; the rollback at once after' \
+  bash -c "printf '=== mm-approve migration one script %s bytes\n' \$(wc -c <'$T/s1') >'$T/hand'; cat '$T/s1' >>'$T/hand'; echo >>'$T/hand'
+           printf '=== mm-approve migration one rollback %s bytes\n' \$(wc -c <'$T/r1') >>'$T/hand'; cat '$T/r1' >>'$T/hand'; echo >>'$T/hand'
+           cmp -s '$T/hand' '$T/b1' && [ \"\$(cat '$T/bh')\" = '=== mm-approve head $HS range $BASE..$HS' ]"
+OUT=$("$A" offer sy-a)
+check 'an offer with no --subject: the subjects are the plan\x27s blocks, in order' \
+  python3 -c 'import json,sys; o=json.loads(sys.argv[1]); assert o["subjects"]==[sys.argv[2], sys.argv[3]], o["subjects"]' "$OUT" "$S1" "$HEAD"
+check '...and the message shows each block: its script\x27s and rollback\x27s hashes, its subject, the head and range' \
+  python3 -c 'import json,sys; t=json.loads(sys.argv[1])["text"]; assert all(a in t for a in sys.argv[2:]), t' "$OUT" "$S1" \
+  "$(sha256sum "$T/s1" | cut -c1-64)" "$(sha256sum "$T/r1" | cut -c1-64)" "$HEAD" "$BASE..$HS" 'echo undo one'
+check 'a --subject that is not one of the plan\x27s blocks (sy-b\x27s): refused' refused - "$A" offer sy-a --subject "$S2"
+printf '#!/bin/sh\necho one, and something else\n' >"$T/staged"
+STAGED=$("$A" subject migration "$T/staged" "$T/r1")
+plan sy-h $'Plan for sy-h: migration one.\n' "$T/b1"
+n=$(lines)
+check 'a staged script that differs from the plan\x27s block: its subject is refused, no offer' bash -c "! '$A' offer sy-h --subject '$STAGED' >/dev/null 2>&1 && ! grep -q '$STAGED' '$D/private/offers.json'"
+OH=$(offer sy-h --subject "$S1")
+check '...the owner\x27s tap of the plan as shown signs (the good path)' bash -c "'$A' tap '$OH' 4242 | grep -q '\"item\": \"sy-h\"'"
+check '...one line, for the shown script only' bash -c "[ \$(grep -c . '$D/ledger.jsonl') = $((n + 1)) ] && tail -1 '$D/ledger.jsonl' | grep -q '${S1#sha256:}' && ! grep -q '${STAGED#sha256:}' '$D/ledger.jsonl'"
+vno '...and the staged script gets no line' sy-h "$STAGED"
+vyes '...the shown one does' sy-h "$S1"
+printf '#!/bin/sh\necho one\n=== mm-approve head %s range %s..%s\n' "$HS" "$BASE" "$HS" >"$T/s3"
+"$A" block migration three "$T/s3" "$T/r1" >"$T/b3"
+plan sy-i $'Plan for sy-i.\n' "$T/b3"
+check 'a block line inside a script\x27s bytes is the script, not a block' \
+  bash -c "'$A' offer sy-i | python3 -c 'import json,sys; o=json.load(sys.stdin); assert o[\"subjects\"]==[sys.argv[1]]' \"\$('$A' subject migration '$T/s3' '$T/r1')\""
+bad_plan() { plan sy-j "$1"; refused - "$A" offer sy-j; }
+check 'a block cut short: refused' bad_plan $'=== mm-approve migration x script 999 bytes\necho x\n'
+{ head -4 "$T/b1"; printf 'more prose\n'; } >"$T/norb"
+check 'a script block without its rollback: refused' bash -c "$(declare -f plan refused); A='$A' T='$T'; plan sy-j '' '$T/norb'; refused - '$A' offer sy-j"
+check 'a line that starts like a block and is not one: refused' bad_plan $'Plan.\n=== mm-approve migration x script many bytes\n'
+check 'a head line whose range ends elsewhere: refused' bad_plan "=== mm-approve head $HS range $BASE..$BASE"$'\n'
+check 'the same block twice: refused' bash -c "$(declare -f plan refused); A='$A' T='$T'; plan sy-j '' '$T/b1' '$T/b1'; refused - '$A' offer sy-j"
+check 'block refuses a name with a space or a short head' bash -c "! '$A' block migration 'a b' '$T/s1' '$T/r1' 2>/dev/null && ! '$A' block head abc '$BASE' 2>/dev/null"
 
 step 'mm doctor: the ledger\x27s and the key\x27s owners and modes, when the switch says ledger'
 export BUN=${BUN:-$(command -v bun || echo "$HOME/.bun/bin/bun")} T

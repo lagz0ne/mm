@@ -52,10 +52,10 @@ user or root, when the ledger is a symlink or has a second link, or when the pub
 | `user` | `mm-approve` | the signer's user |
 | `dir` | `/var/lib/mm-approve` | the signer's folder (ledger, `key.pub`, `private/`) |
 | `public_key` | `/etc/mm-approve.pub` | the public key the verifiers use (root's) |
-| `plan_command` | none | a root-owned command that prints an item's plan: `plan_command <item>` |
+| `plan_command` | none | a root-owned command that prints an item's plan, with its blocks: `plan_command <item>` |
 | `owner_telegram_id` | none | the only Telegram id whose tap signs |
 | `expires_hours` | `24` | how long an offer can be tapped |
-| `max_shown` | `3500` | how much of the plan a message shows (Telegram's limit is 4096) |
+| `max_shown` | `3500` | how much a message shows: the plan, then its blocks' hashes (Telegram's limit is 4096) |
 | `openssl` | `/usr/bin/openssl` | the ed25519 implementation (python's standard library has none) |
 
 The file is root's, so the owner account can't flip the switch. Ops' guard lists it as tier 2. The verifiers read it
@@ -64,13 +64,17 @@ names another one (mm's tests).
 
 ## How an approval is made
 
-1. **Offer** (before the bridge shows a button): `mm-approve offer <item> --subject <S>...`. The signer runs
-   `plan_command <item>` itself and hashes the raw text it prints (sha256): the **plan hash**. It keeps
-   `{offer id, item, plan hash, subjects, expires}` in its private folder, and prints JSON: the offer id, the plan hash,
-   the subjects, the expiry, and `text`: what the message shows. The text is the plan as the command printed it, then
-   the hash and the subjects. If the plan is longer than `max_shown`, the text says so; the hash is still the whole
-   plan's. (`--plan-stdin`: the bridge may pass the text it means to show; the signer refuses it unless it is exactly
-   what the command printed.)
+1. **Offer** (before the bridge shows a button): `mm-approve offer <item> [--subject <S>]...`. The signer runs
+   `plan_command <item>` itself and hashes the raw text it prints (sha256): the **plan hash**. It reads the
+   **subjects** from the plan's blocks (below), in exactly those bytes, and computes each itself. A plan with no block
+   has nothing to approve: refused. A `--subject` is only a check: one that is not a block of the plan is refused (the
+   bridge never adds a subject). It keeps `{offer id, item, plan hash, subjects, expires}` in its private folder, and
+   prints JSON: the offer id, the plan hash, the subjects, the expiry, and `text`: what the message shows. The text is
+   the plan as the command printed it (its blocks with it), then the plan hash, then one line per block: a migration's
+   name, its script's and rollback's sha256 and sizes, and its subject; a promote's head, range and subject. If that is
+   longer than `max_shown`, the text shows the plan's start and says so; the block lines are always there, and the
+   hashes are still the whole plan's. (`--plan-stdin`: the bridge may pass the text it means to show; the signer
+   refuses it unless it is exactly what the command printed.)
 2. **Show**: the bridge sends `text` with an Approve button whose callback data is the offer id.
 3. **Tap**: on the callback, `mm-approve tap <offer id> <tapper id> [--item <the item the callback names>]`. The tapper
    id is the one Telegram's update says tapped (the bridge checks the update came from Telegram). The signer:
@@ -82,6 +86,32 @@ names another one (mm's tests).
    - then appends one signed line to the ledger.
 
 Exit codes: 0 signed; 2 refused; 3 the plan changed; 4 used; 5 expired.
+
+### The plan's blocks: what the owner is shown is what is approved
+
+An agent can't stage one script and show the owner another: the subjects are computed from the bytes of the plan the
+message shows, never given by the caller. `plan_command` prints, after the plan's prose, one block per thing the
+approval lets run. Each header is a line of its own; a block's bytes are counted, so a script may hold any text (a
+line inside a script that looks like a header is the script's):
+
+```
+=== mm-approve migration <name> script <N> bytes
+<the script's N bytes, exactly>
+=== mm-approve migration <name> rollback <M> bytes
+<the rollback's M bytes, exactly (0 for none)>
+=== mm-approve head <full sha> range <base sha>..<full sha>
+```
+
+- After each block's bytes comes one newline (so a script without a final newline ends at its count, not at a line).
+- The rollback block follows its script block at once, with the same name (letters, digits, `.`, `_`, `-`; up to 128).
+- A promote is the one head line; its range ends at its head. Its subject is `git:<head>`.
+- Fail closed: a line that starts with `=== mm-approve ` and is not a whole block, a block cut short, a script with no
+  rollback after it, or the same block twice: the offer is refused.
+- `mm-approve block migration <name> <script> <rollback>` and `mm-approve block head <sha> <base>` print a block byte
+  for byte: the plan command may call them on the files it is about to show.
+
+The plan command is ops' code. It must print the blocks from the same files the root-side runner will run (then
+`verify` holds only for those), and read each once, from a place an agent can't swap between show and run.
 
 ### What is signed: a ledger line
 
@@ -131,8 +161,11 @@ same item.
 - Run as the signer's user, from root-owned code and a root-owned unit. Code the owner account can write would give
   it the signer's rights.
 - Read the new bot token (rotated at the move); nobody else reads it.
-- Before it shows an Approve button: `offer`, and show exactly the `text` it gets. A model's rewrite may be shown as
-  well, but it is never part of what is offered or signed. Better: the model call runs in another process.
+- Before it shows an Approve button: `offer <item>`, without building subjects of its own (a `--subject` it passes
+  is only checked against the plan's blocks). Then show exactly the `text` it gets, unchanged: not cut, not
+  reformatted, not escaped into Markdown or HTML that drops characters (send it as plain text; if it is too long for
+  one message, lower `max_shown`, never trim it). A model's rewrite may be shown as well, but it is never part of what
+  is offered or signed. Better: the model call runs in another process.
 - On the callback: `tap <offer id from the callback> <the tapper's id from Telegram's update>` (and `--item` with the
   item the callback names, if it names one). Never sign itself, never build a ledger line.
 - On "plan changed": send a new offer. On "used" or "expired": say so.
@@ -165,7 +198,9 @@ Keep the key. A new key makes every earlier line unverifiable (`keygen` refuses 
 `test/mm-approve.sh` (hermetic: the signer in test mode, a throwaway folder as its home, the test's user as the
 signer's user, a stub plan command): the good path in both verifiers; a forged line (another key), a line with its item
 or subject changed, a line for another subject or item, a changed plan after the offer, callback data naming another
-item, an expired offer, an offer used twice, a tap by someone else, an offer never made, the ledger, its folder or the
+item, an expired offer, an offer used twice, a tap by someone else, an offer never made; the subjects only from the
+plan's blocks (a staged script that differs from the block gets no line, a subject not in the plan is refused, a plan
+with no block or a malformed block is refused, a header inside a script is the script's); the ledger, its folder or the
 key writable by others, a second link, a symlink, another owner; the switch; subjects; a long plan; `mm doctor`.
 `test/supervisor.mjs` and `test/flow.mjs` each run their ledger cases with the real signer. On a machine where
 `/etc/mm-approve.conf` exists, the verifier cases are skipped: the verifiers never read a test config there.

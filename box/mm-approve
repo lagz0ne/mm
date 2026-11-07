@@ -7,8 +7,9 @@
 #   keygen                                   the key pair and the ledger, in the config's `dir` (once)
 #   offer <item> [--subject S]... [--plan-stdin]
 #                                            before the bridge shows an Approve button: the signer runs the config's
-#                                            plan_command for <item> itself, keeps {offer id, item, plan hash, subjects,
-#                                            expires} in its own state, and prints what the message shows (JSON)
+#                                            plan_command for <item> itself, takes the subjects from the plan's blocks
+#                                            (a --subject must be one of them), keeps {offer id, item, plan hash,
+#                                            subjects, expires} in its own state, and prints what the message shows (JSON)
 #   tap <offer> <tapper> [--item <claimed>]  on the button's callback: <tapper> is the Telegram id the bridge verified.
 #                                            Only an offer this signer made, not used, not expired, by the owner's id;
 #                                            the item is read again and must hash as offered. Then one signed line.
@@ -16,6 +17,8 @@
 #                                            ledger of the right owner and mode; else no (exit 1)
 #   subject migration <script> [<rollback>]  the subject of a migration (its script and rollback), or of a head
 #   subject head <git sha>
+#   block migration <name> <script> <rollback>  the plan's block for a migration, or for a promote (what plan_command
+#   block head <git sha> <base sha>          prints, byte for byte: docs/approvals.md, "The plan's blocks")
 #   check                                    the ledger's, the key's and the config's owners and modes
 #
 # The item and the plan hash never come from callback data: an offer id is only a key into the signer's own record.
@@ -212,6 +215,71 @@ def migration_subject(script, rollback):
     return 'sha256:' + sha256(f'{VERSION} migration\n{sha256(script)}\n{sha256(rollback)}\n'.encode())
 
 
+BLOCK = b'=== mm-approve '
+NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}')
+SHA = r'[0-9a-f]{40}(?:[0-9a-f]{24})?'
+PART = re.compile(r'=== mm-approve migration (\S+) (script|rollback) (\d{1,8}) bytes')
+HEADLINE = re.compile(rf'=== mm-approve head ({SHA}) range ({SHA})\.\.({SHA})')
+
+
+def plan_blocks(text):
+    """The subjects a plan shows, parsed from exactly the bytes the owner is shown (sy-4py1; docs/approvals.md, "The
+    plan's blocks"). A migration is a script block followed at once by its rollback block, each a header line with its
+    length in bytes, then those bytes, then a newline; a promote is one head line. Fail closed: a line that starts like
+    a block and isn't one, a block cut short, a script without its rollback, a name or head twice: refused."""
+    out, seen, i, n = [], set(), 0, len(text)
+
+    def header(i):
+        j = text.find(b'\n', i)
+        return (text[i:] if j < 0 else text[i:j]), (n if j < 0 else j + 1)
+
+    def body(i, size):
+        if i + size + 1 > n or text[i + size:i + size + 1] != b'\n':
+            refuse(f'a block of the plan is cut short (it says {size} bytes, then a newline)')
+        return text[i:i + size], i + size + 1
+
+    while i < n:
+        line, nxt = header(i)
+        if not line.startswith(BLOCK):
+            i = nxt
+            continue
+        h = line.decode(errors='replace')
+        m, g = PART.fullmatch(h), HEADLINE.fullmatch(h)
+        if m and m.group(2) == 'script':
+            name = m.group(1)
+            if not NAME.fullmatch(name):
+                refuse(f'a migration\'s name in the plan: {show(name)}')
+            script, i = body(nxt, int(m.group(3)))
+            line, nxt = header(i)
+            r = PART.fullmatch(line.decode(errors='replace'))
+            if not r or r.group(1) != name or r.group(2) != 'rollback':
+                refuse(f'the plan\'s script block of {name} is not followed at once by its rollback block')
+            rollback, i = body(nxt, int(r.group(3)))
+            key = f'migration {name}'
+            out.append({'kind': 'migration', 'name': name, 'script': sha256(script), 'script_bytes': len(script),
+                        'rollback': sha256(rollback), 'rollback_bytes': len(rollback),
+                        'subject': migration_subject(script, rollback)})
+        elif g:
+            if g.group(3) != g.group(1):
+                refuse(f'the plan\'s head line: its range must end at its head ({show(h)})')
+            key = f'head {g.group(1)}'
+            out.append({'kind': 'head', 'head': g.group(1), 'range': f'{g.group(2)}..{g.group(3)}', 'subject': f'git:{g.group(1)}'})
+            i = nxt
+        else:
+            refuse(f'a line of the plan starts like a block and is not one: {show(h)}')
+        if key in seen or out[-1]['subject'] in {b['subject'] for b in out[:-1]}:
+            refuse(f'the plan names {key} twice')
+        seen.add(key)
+    return out
+
+
+def block_lines(blocks):
+    """What the message says of each block: its subject and the hashes it is made of."""
+    return [f'- migration {b["name"]}: script sha256 {b["script"]} ({b["script_bytes"]} bytes), rollback sha256 '
+            f'{b["rollback"]} ({b["rollback_bytes"]} bytes); subject {b["subject"]}' if b['kind'] == 'migration' else
+            f'- promote: head {b["head"]} (range {b["range"]}); subject {b["subject"]}' for b in blocks]
+
+
 def signed_text(line):
     """The bytes a signature covers: one field per line, in this order (ledger.mjs signedText)."""
     return (f'{VERSION}\nitem={line["item"]}\nplan={line["plan"]}\nsubjects={",".join(line["subjects"])}\n'
@@ -376,19 +444,30 @@ def cmd_offer(c, args):
             i += 1
         else:
             refuse(f'offer: {show(args[i])}?')
-    if not subjects:
-        refuse('offer: at least one --subject (what the approval lets run)')
     text = plan_text(c, item)
     if given is not None and given != text:
         refuse('the plan given is not the board\'s plan for this item (the signer offers only what it read itself)')
+    # the subjects come only from the plan's blocks, in the bytes the owner is shown (sy-4py1): a caller's --subject is
+    # a check that it is one of them, never a subject of its own
+    blocks = plan_blocks(text)
+    if not blocks:
+        refuse(f'the plan of {item} has no block (a migration\'s script and rollback, or a promote\'s head): '
+               'nothing to approve (docs/approvals.md, "The plan\'s blocks")')
+    mine = [b['subject'] for b in blocks]
+    for s_ in subjects:
+        if s_ not in mine:
+            refuse(f'subject {s_} is not one of the plan\'s blocks ({", ".join(mine)}): the approval is only for what '
+                   'the owner is shown')
+    subjects = mine
     h, t = sha256(text), now()
-    shown = text.decode()
-    full = len(shown) <= int(c['max_shown'])
-    if not full:
-        shown = shown[:int(c['max_shown'])]
-    shown = (f'{shown}\n\n' + ('' if full else f'[The plan is longer than this message: only its start is shown. '
-                                               f'The approval is for the whole plan.]\n')
-             + f'Plan sha256: {h}\nSubjects: {", ".join(subjects)}')
+    summary = '\n'.join(block_lines(blocks))
+    plan = text.decode()
+    room = max(0, int(c['max_shown']) - len(summary))
+    full = len(plan) <= room
+    shown = (f'{plan if full else plan[:room]}\n\n'
+             + ('' if full else '[The plan is longer than this message: only its start is shown, and its blocks may '
+                                'not be. The approval is for the whole plan: compare the hashes below.]\n')
+             + f'Plan sha256: {h}\nWhat it lets run:\n{summary}')
     s = State(c)
     for k, o in list(s.offers.items()):  # forget what can't be tapped any more (a week after it expired)
         if o['expires'] + 7 * 86400 < t:
@@ -481,6 +560,21 @@ def cmd_subject(args):
     refuse('subject migration <script> [<rollback>] | subject head <full git sha>')
 
 
+def cmd_block(args):
+    out = sys.stdout.buffer
+    if len(args) == 3 and args[0] == 'head' and all(re.fullmatch(SHA, a) for a in args[1:]):
+        out.write(f'=== mm-approve head {args[1]} range {args[2]}..{args[1]}\n'.encode())
+        return
+    if len(args) == 4 and args[0] == 'migration' and NAME.fullmatch(args[1]):
+        for part, p in (('script', args[2]), ('rollback', args[3])):
+            fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as f:
+                b = f.read()
+            out.write(f'=== mm-approve migration {args[1]} {part} {len(b)} bytes\n'.encode() + b + b'\n')
+        return
+    refuse('block migration <name> <script> <rollback> | block head <full git sha> <base sha>')
+
+
 def cmd_check(c, args):
     p = ledger_problems(c)
     print(json.dumps({'config': c['path'], 'verifier': c['verifier'], 'ledger': c['ledger'], 'public_key': c['public_key'], 'problems': p}))
@@ -489,10 +583,12 @@ def cmd_check(c, args):
 
 def main(argv):
     if not argv:
-        refuse('keygen | offer | tap | verify | subject | check (see the top of this file)')
+        refuse('keygen | offer | tap | verify | subject | block | check (see the top of this file)')
     cmd, args = argv[0], argv[1:]
     if cmd == 'subject':
         return cmd_subject(args)
+    if cmd == 'block':
+        return cmd_block(args)
     signer = cmd in ('keygen', 'offer', 'tap')
     if cmd not in ('keygen', 'offer', 'tap', 'verify', 'check'):
         refuse(f'{show(cmd)}?')
