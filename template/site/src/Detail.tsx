@@ -88,27 +88,27 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className={cn('gap-0 overflow-x-hidden overflow-y-auto p-0 data-[side=right]:sm:max-w-none',
-        wide ? 'data-[side=right]:w-screen' : 'data-[side=right]:w-[min(1200px,94vw)]')}>
+        wide ? 'data-[side=right]:w-screen' : 'data-[side=right]:w-[min(1200px,94vw)]', 'max-md:data-[side=right]:w-screen max-md:data-[side=right]:border-l-0')}>
         {!i ? <div className="p-6 text-xs text-muted-foreground">Loading…</div> : (
           <AnnotateContext.Provider value={{ itemId: i.id, comments: i.comments || [],
             post: async (text) => { await api.comment(i.id, text); onChanged() },
             revOf: (p) => content.find((f) => f.path === p)?.commits[0]?.short }}>
-            <div className="relative border-t-4 border-b border-foreground px-5 pt-4 pb-3 pr-24">
+            <div className="relative border-t-4 border-b border-foreground px-4 pt-3 pr-14 pb-3 md:px-5 md:pt-4 md:pr-24">
               <button type="button" onClick={toggleWide} title={wide ? 'Narrower' : 'Full width'}
-                className="absolute top-3 right-11 flex size-7 items-center justify-center hover:bg-muted">
+                className="absolute top-3 right-11 flex size-7 items-center justify-center hover:bg-muted max-md:hidden">
                 {wide ? <ArrowsInIcon /> : <ArrowsOutIcon />}
               </button>
-              <SheetDescription className="flex gap-3 font-mono text-[11px]">
+              <SheetDescription className="flex flex-wrap gap-x-3 font-mono text-[11px]">
                 <span>{i.id}</span><span>{i.issue_type}</span><span>by {i.created_by || i.owner || creator || '—'}</span><span>{ago(i.updated_at)} ago</span>
               </SheetDescription>
               <SheetTitle className="sr-only">{i.title}</SheetTitle>
-              <Input value={title} onChange={(e) => setTitle(e.target.value)}
+              <Input data-big value={title} onChange={(e) => setTitle(e.target.value)}
                 onBlur={() => title.trim() && title !== i.title && run(() => api.patch(i.id, { title: title.trim() }))}
                 onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
                 aria-label="Title" className="mt-1 h-auto border-0 px-0 text-xl md:text-xl font-bold tracking-tight shadow-none focus-visible:ring-0 dark:bg-transparent" />
             </div>
 
-            <div className="grid grid-cols-3 border-b">
+            <div className="grid border-b md:grid-cols-3">
               <Field label="Status">
                 {closed ? <span className="text-xs font-semibold">closed</span> : (
                   <Select value={i.status} onValueChange={(v) => run(() => api.patch(i.id, { status: v }))} disabled={busy}>
@@ -135,7 +135,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
               </Field>
             </div>
 
-            <div className="flex flex-wrap gap-2 border-b px-5 py-3">
+            <div className="flex flex-wrap gap-2 border-b px-4 py-3 md:px-5">
               {closed ? (
                 <Button size="sm" variant="outline" disabled={busy} onClick={() => run(() => api.reopen(i.id))}>Reopen</Button>
               ) : (
@@ -195,7 +195,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
 
             {(parent || waitsOn.length > 0 || unblocks.length > 0 || children.length > 0) && (
               <Section label="Links">
-                <dl className="grid grid-cols-[6rem_1fr] gap-y-1 text-xs">
+                <dl className="grid grid-cols-[6rem_minmax(0,1fr)] gap-y-1 text-xs max-md:gap-y-2 max-md:text-[13px]">
                   {parent && <Links label="Part of" items={[{ id: parent.id!, title: parent.title, status: parent.status }]} onOpen={onOpen} />}
                   {waitsOn.length > 0 && <Links label="Waits on" items={waitsOn.map((d) => ({ id: d.id!, title: d.title, status: d.status }))} onOpen={onOpen} />}
                   {unblocks.length > 0 && <Links label="Unblocks" items={unblocks} onOpen={onOpen} />}
@@ -211,12 +211,12 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                   const per = kind === 'lead' ? personaOf(personas, g.author) : null
                   const first = g.items[0].n, last = g.items[g.items.length - 1].n
                   return (
-                    <li key={g.items[0].c.id} className={cn('grid grid-cols-[1fr_auto] gap-x-2',
-                      kind === 'human' && 'ml-16 border-l-4 border-foreground bg-muted px-3 py-2',
-                      kind === 'lead' && 'mr-16 border-l-2 pl-3',
-                      kind === 'system' && 'mx-16 border-l border-dashed border-muted-foreground pl-3 text-muted-foreground')}
+                    <li key={g.items[0].c.id} className={cn('grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2',
+                      kind === 'human' && 'ml-8 border-l-4 border-foreground bg-muted px-3 py-2 md:ml-16',
+                      kind === 'lead' && 'mr-4 border-l-2 pl-3 md:mr-16',
+                      kind === 'system' && 'mx-4 border-l border-dashed border-muted-foreground pl-3 text-muted-foreground md:mx-16')}
                       style={per ? { borderLeftColor: per.color } : undefined}>
-                      <span className="flex items-center gap-2 text-xs">
+                      <span className="flex min-w-0 flex-wrap items-center gap-x-2 text-xs">
                         {kind === 'lead'
                           ? <><Avatar actor={g.author} size="sm" /><b className="text-[12px]" style={{ color: per?.color }}>{per?.worker ? per.label : per?.name}</b>
                               <span className="text-[11px] tracking-[0.08em] text-muted-foreground uppercase">{leadLabel(g.author)}</span></>
@@ -226,7 +226,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                       <span className="text-[11px] text-muted-foreground" title={g.items[0].c.created_at}>{ago(g.items[0].c.created_at)} ago</span>
                       <div className="col-span-2 mt-0.5 grid gap-1.5">
                         {g.items.map(({ c, n }) => (
-                          <div key={c.id} id={`c-${i.id}-${n}`} className={cn('grid grid-cols-[2rem_1fr] scroll-mt-4', flash === n && 'bg-swiss/10')}>
+                          <div key={c.id} id={`c-${i.id}-${n}`} className={cn('grid grid-cols-[2rem_minmax(0,1fr)] scroll-mt-4', flash === n && 'bg-swiss/10')}>
                             <a href={`#c-${n}`} onClick={(e) => { e.preventDefault(); navigator.clipboard?.writeText(`#${n}`); toast.success(`Copied #${n}: use it to refer to this comment`) }}
                               title="Copy reference" className="pt-0.5 font-mono text-[11px] text-muted-foreground hover:text-swiss">#{n}</a>
                             <Markdown className={cn(kind === 'system' && 'text-xs')} onRef={jump}>{c.text}</Markdown>
@@ -246,7 +246,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                 <Textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3}
                   placeholder="Write to the lead. Refer to earlier comments as #3. Markdown; paths like docs/design/x.html embed. Ctrl+Enter sends." className="text-[13px]"
                   onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) e.currentTarget.form?.requestSubmit() }} />
-                <Button size="sm" type="submit" disabled={busy || !comment.trim()} className="justify-self-end">Send</Button>
+                <Button size="sm" type="submit" disabled={busy || !comment.trim()} className="justify-self-end max-md:px-6">Send</Button>
               </form>
             </Section>
           </AnnotateContext.Provider>
@@ -258,7 +258,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid gap-1 border-l px-3 py-2.5 first:border-l-0 first:pl-5">
+    <div className="grid items-center gap-1 border-t px-4 py-1.5 first:border-t-0 max-md:grid-cols-[6rem_minmax(0,1fr)] md:items-stretch md:border-t-0 md:border-l md:px-3 md:py-2.5 md:first:border-l-0 md:first:pl-5">
       <span className="text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">{label}</span>
       {children}
     </div>
@@ -271,7 +271,7 @@ const byKind = (a: ContentFile, b: ContentFile) => KIND(a.path) - KIND(b.path) |
 
 function Section({ label, action, children }: { label: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className="border-b px-5 py-3">
+    <section className="min-w-0 border-b px-4 py-3 md:px-5">
       <div className="mb-2 flex items-baseline justify-between">
         <h3 className="text-[11px] font-bold tracking-[0.1em] uppercase">{label}</h3>
         {action}
@@ -287,9 +287,9 @@ function Links({ label, items, onOpen }: { label: string; items: { id: string; t
       <dt className="text-muted-foreground">{label}</dt>
       <dd className="grid gap-0.5">
         {items.map((x) => (
-          <button key={x.id} onClick={() => onOpen(x.id)} className="flex gap-2 text-left hover:underline">
+          <button key={x.id} onClick={() => onOpen(x.id)} className="flex min-w-0 gap-2 text-left hover:underline max-md:min-h-9 max-md:items-baseline">
             <span className="font-mono text-[11px] text-muted-foreground">{x.id}</span>
-            <span className={x.status === 'closed' ? 'line-through opacity-60' : ''}>{x.title}</span>
+            <span className={cn('min-w-0 [overflow-wrap:anywhere]', x.status === 'closed' && 'line-through opacity-60')}>{x.title}</span>
           </button>
         ))}
       </dd>
@@ -338,8 +338,8 @@ function Workers({ id, tick }: { id: string; tick: number }) {
   }, [id, tick, running])
   if (!w || w.workers.length === 0) return null
   return (
-    <section className="border-b px-5 py-3">
-      <div className="mb-2 flex items-baseline gap-3">
+    <section className="min-w-0 border-b px-4 py-3 md:px-5">
+      <div className="mb-2 flex flex-wrap items-baseline gap-x-3">
         <h3 className="text-[11px] font-bold tracking-[0.1em] uppercase">Work · {w.workers.length} worker{w.workers.length > 1 ? 's' : ''}</h3>
         <span className="text-[11px] text-muted-foreground">
           {w.branch ? <>branch <span className="font-mono">{w.branch}</span> · {w.commits.length} commit{w.commits.length === 1 ? '' : 's'} not yet on main</> : 'landed on main'}
@@ -354,7 +354,7 @@ function Workers({ id, tick }: { id: string; tick: number }) {
       {w.stat && <pre className="mb-2 overflow-x-auto bg-muted/40 px-3 py-2 font-mono text-[11px] leading-snug">{w.stat}</pre>}
       {w.workers.map((x) => (
         <details key={x.id} open={x.status === 'running'} className="border-t">
-          <summary className="flex cursor-pointer items-center gap-2 py-1.5 text-xs hover:bg-muted">
+          <summary className="flex cursor-pointer flex-wrap items-center gap-x-2 py-1.5 text-xs hover:bg-muted max-md:min-h-11">
             <span className={cn('size-2', x.status === 'running' ? 'animate-pulse bg-swiss' : 'bg-foreground')} />
             <span className="font-mono">{x.id}</span><span className="text-muted-foreground">{x.status} · started {x.created}</span>
             <span className="ml-auto text-[11px] text-muted-foreground">activity (latest {x.activity.length} lines)</span>
