@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Toaster } from '@/components/ui/sonner'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { usePhone } from '@/lib/phone'
 import { cn } from '@/lib/utils'
 import { NewItem } from '@/NewItem'
 import { Identify } from '@/Identify'
@@ -46,6 +48,9 @@ export default function App() {
   const [, setNow] = useState(0) // re-render each poll so "waiting 3m" ages
   const [tick, setTick] = useState(0) // bumps when anything changes, so an open detail reloads
   const search = useRef<HTMLInputElement>(null)
+  // Phones (sy-81dm): one column at a time, its tabs on top; Now and Activity cover the board behind one tap.
+  const phone = usePhone()
+  const [col, setCol] = useState<ColumnKey>('ready')
   // Tablet widths (md to xl, the breakpoints the header and grid already use): Now and Activity fold into a drawer
   // the toolbar's toggle opens over the columns, below the toolbar so the toggle stays in reach (sy-l6t1). Phone keeps
   // them below the board, desktop beside it.
@@ -174,10 +179,13 @@ export default function App() {
     <PersonaContext.Provider value={meta.personas ?? null}>
     <PresenceContext.Provider value={presence}>
     <div className="flex h-svh flex-col overflow-hidden border-t-4 border-foreground bg-background text-foreground">
-      <header className="grid shrink-0 grid-cols-12 items-end gap-x-6 border-b border-foreground px-6 pt-4 pb-3">
-        <div className="col-span-12 flex items-end gap-6 md:col-span-5">
-          <h1 className="text-4xl leading-none font-bold tracking-tight">{meta.project || '…'}</h1>
-          <nav className="flex gap-4 pb-0.5 text-[13px] font-semibold">
+      <header className="grid shrink-0 grid-cols-12 items-end gap-x-6 border-b border-foreground px-4 pt-3 pb-2 md:px-6 md:pt-4 md:pb-3">
+        <div className="col-span-12 flex flex-wrap items-end gap-x-6 gap-y-1 md:col-span-5 md:flex-nowrap">
+          <h1 className="flex min-w-0 items-center gap-2 text-3xl leading-none font-bold tracking-tight [overflow-wrap:anywhere] md:text-4xl">
+            {meta.project || '…'}
+            <span className={cn('size-2.5 shrink-0 md:hidden', live ? 'bg-swiss' : 'border border-muted-foreground')} title={live ? 'Live updates on' : 'Live updates off'} />
+          </h1>
+          <nav className="flex flex-wrap gap-x-4 pb-0.5 text-[13px] font-semibold max-md:gap-x-5 max-md:text-sm [&>a]:max-md:py-2.5">
             {(['board', 'leads', ...(meta.panels?.includes('machine') ? ['machine' as const] : [])] as const).map((v) => (
               <a key={v} href={v === 'board' ? '#' : `#${v}`}
                 className={cn('border-b-2 pb-0.5 capitalize', view === v ? 'border-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>{v}</a>
@@ -190,7 +198,7 @@ export default function App() {
             ))}
           </nav>
         </div>
-        <dl className={cn('col-span-12 mt-3 grid grid-cols-5 gap-x-6 md:col-span-7 md:mt-0', view !== 'board' && 'invisible')}>
+        <dl className={cn('col-span-12 mt-3 grid grid-cols-5 gap-x-6 max-md:hidden md:col-span-7 md:mt-0', view !== 'board' && 'invisible')}>
           {COLUMNS.map((c) => (
             <div key={c.key} title={c.hint}>
               <dt className="text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">{c.label}</dt>
@@ -205,35 +213,44 @@ export default function App() {
       </header>
 
       {view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
-      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-6 py-2.5">
-        <ToggleGroup type="single" value={role} onValueChange={(v) => v && setRole(v)} variant="outline" size="sm" spacing={0}>
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2 md:gap-3 md:px-6 md:py-2.5">
+        {phone && (
+          <Select value={role} onValueChange={setRole}>
+            <SelectTrigger aria-label="Role" className="w-32"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All roles</SelectItem>
+              {ROLES.map((r) => <SelectItem key={r} value={r}>{ROLE_LABEL[r]}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
+        <ToggleGroup type="single" value={role} onValueChange={(v) => v && setRole(v)} variant="outline" size="sm" spacing={0} className="max-md:hidden">
           <ToggleGroupItem value="all">All</ToggleGroupItem>
           {ROLES.map((r) => <ToggleGroupItem key={r} value={r}>{ROLE_LABEL[r]}</ToggleGroupItem>)}
         </ToggleGroup>
         <Input ref={search} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search"
-          className="h-7 w-56" />
+          className="h-7 w-56 max-md:order-4 max-md:w-auto max-md:min-w-0 max-md:flex-1 max-md:basis-40" />
         <button type="button" ref={sideBtn} aria-expanded={side} aria-controls="board-side" onClick={() => (side ? closeSide() : setSide(true))}
           title="Now and recent activity"
-          className={cn('ml-auto hidden h-7 items-center gap-1.5 border px-2.5 text-xs font-semibold md:inline-flex xl:hidden', side ? 'border-foreground bg-foreground text-background' : 'border-input hover:border-foreground')}>
+          className={cn('inline-flex h-7 items-center gap-1.5 border px-2.5 text-xs font-semibold max-md:min-h-11 max-md:px-3 md:ml-auto xl:hidden', side ? 'border-foreground bg-foreground text-background' : 'border-input hover:border-foreground')}>
           Now <span className={cn('min-w-4 px-1 text-center tabular-nums', presence.length ? 'bg-swiss text-white' : 'bg-muted text-muted-foreground', side && !presence.length && 'bg-background/20 text-background')}>{presence.length}</span>
           <span aria-hidden className={side ? 'opacity-60' : 'text-muted-foreground'}>·</span> Activity
         </button>
-        <button type="button" className="ml-auto text-xs hover:underline md:ml-0 xl:ml-auto" disabled={idSource === 'gateway'}
+        <button type="button" className="ml-auto text-xs hover:underline max-md:order-5 max-md:ml-0 max-md:min-h-11 max-md:max-w-[40vw] max-md:truncate max-md:text-sm md:ml-0 xl:ml-auto" disabled={idSource === 'gateway'}
           title={idSource === 'gateway' ? 'Your name comes from your sign-in' : 'Change who you are'}
           onClick={() => setIdentifying(true)}>
           <b>{actor || '…'}</b>{idSource === 'default' && <span className="text-swiss"> · who are you?</span>}
         </button>
-        <Button size="sm" title="New item (N)" onClick={() => setCreating(true)}><PlusIcon weight="bold" />New</Button>
+        <Button size="sm" title="New item (N)" className="max-md:order-3 max-md:ml-auto max-md:px-4" onClick={() => setCreating(true)}><PlusIcon weight="bold" />New</Button>
       </div>
 
       {epics.length > 0 && (
-        <section className="grid shrink-0 border-b md:grid-cols-2 xl:grid-cols-3">
+        <section className="grid shrink-0 border-b max-md:max-h-28 max-md:overflow-y-auto md:grid-cols-2 xl:grid-cols-3">
           {epics.map((e) => {
             const kids = issues.filter((i) => i.parent === e.id)
             const done = kids.filter((i) => i.status === 'closed').length
             return (
               <button key={e.id} onClick={() => setOpenId(e.id)}
-                className="grid grid-cols-[auto_1fr_auto] items-center gap-x-3 border-r px-6 py-2 text-left hover:bg-muted">
+                className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 border-r px-4 py-2 text-left hover:bg-muted max-md:min-h-11 max-md:border-b md:px-6">
                 <span className="font-mono text-[11px] text-muted-foreground">{e.id}</span>
                 <span className="truncate text-[13px] font-semibold">{e.title}</span>
                 <span className="text-xs tabular-nums">{done}/{kids.length}</span>
@@ -246,8 +263,9 @@ export default function App() {
         </section>
       )}
 
-      <div className="relative grid min-h-0 flex-1 grid-rows-[1fr_14rem] md:grid-rows-1 xl:grid-cols-[1fr_20rem]">
+      <div className="relative grid min-h-0 flex-1 grid-rows-1 xl:grid-cols-[1fr_20rem]">
         <main className="min-h-0 overflow-auto">
+          {phone ? <PhoneBoard rows={rows} work={work} ready={ready} byId={byId} meta={meta} counts={counts} col={col} onCol={setCol} onOpen={setOpenId} /> : (
           <div className="grid min-w-[880px] grid-cols-[9.5rem_repeat(4,minmax(0,1fr))]">
             <div className="sticky top-0 z-10 border-b border-foreground bg-background" />
             {COLUMNS.map((c) => (
@@ -260,22 +278,27 @@ export default function App() {
               <Row key={r || 'none'} role={r} items={work.filter((i) => roleOf(i) === r)} ready={ready} byId={byId}
                 meta={meta} onOpen={setOpenId} onMove={move} />
             ))}
-          </div>
+          </div>)}
         </main>
 
         {side && <div aria-hidden data-side-scrim onClick={() => closeSide()} className="absolute inset-0 z-40 hidden bg-foreground/25 md:block xl:hidden" />}
         <aside id="board-side" ref={sidePanel} tabIndex={-1} aria-label="Now and activity"
-          className={cn('flex min-h-0 flex-col border-t outline-none',
+          className={cn('min-h-0 flex-col border-t outline-none',
+            'max-md:absolute max-md:inset-0 max-md:z-50 max-md:border-t-0 max-md:bg-background',
             'md:absolute md:inset-y-0 md:right-0 md:z-50 md:w-80 md:max-w-[85vw] md:border-t-0 md:border-l md:border-foreground md:bg-background md:shadow-2xl',
-            side ? 'md:flex' : 'md:hidden',
+            side ? 'flex' : 'hidden',
             'xl:static xl:z-auto xl:flex xl:w-auto xl:max-w-none xl:border-border xl:shadow-none')}>
+          <div className="flex shrink-0 items-center justify-between border-b px-4 md:hidden">
+            <span className="text-[11px] font-bold tracking-[0.1em] uppercase">Now and activity</span>
+            <button type="button" onClick={() => closeSide()} className="-mr-2 min-h-11 px-3 text-sm font-semibold hover:underline">Close</button>
+          </div>
           <NowStrip onOpen={openFromSide} />
           <h2 className="shrink-0 border-b border-foreground px-4 py-2 text-[11px] font-bold tracking-[0.1em] uppercase">Activity</h2>
           <ol className="min-h-0 flex-1 overflow-y-auto">
             {events.length === 0 && <li className="px-4 py-3 text-xs text-muted-foreground">No events yet.</li>}
             {events.map((ev) => (
               <li key={ev.seq}>
-                <button onClick={() => openFromSide(ev.issue_id)} className="grid w-full grid-cols-[2.5rem_1fr] gap-x-2 border-b px-4 py-2 text-left hover:bg-muted">
+                <button onClick={() => openFromSide(ev.issue_id)} className="grid w-full grid-cols-[2.5rem_minmax(0,1fr)] gap-x-2 border-b px-4 py-2 text-left hover:bg-muted max-md:py-3">
                   <span className="text-[11px] text-muted-foreground tabular-nums">{ago(ev.ts)}</span>
                   <span className="min-w-0 text-xs leading-snug">
                     <ActorName actor={ev.actor || 'beads'} personas={meta.personas ?? null} /> {verb(ev)} <span className="font-mono text-[11px]">{ev.issue_id}</span>
@@ -314,6 +337,55 @@ function verb(ev: BeadEvent) {
 }
 
 type MoveFn = (id: string, role: string, col: ColumnKey) => void
+
+/** The board on a phone: the four columns as tabs, the chosen one as a list, grouped by role (each with its lead's state). */
+function PhoneBoard({ rows, work, ready, byId, meta, counts, col, onCol, onOpen }: {
+  rows: string[]; work: Issue[]; ready: Set<string>; byId: Map<string, Issue>; meta: Meta; counts: Record<ColumnKey, number>
+  col: ColumnKey; onCol: (c: ColumnKey) => void; onOpen: (id: string) => void
+}) {
+  const inCol = work.filter((i) => columnOf(i, ready) === col)
+  const groups = rows.map((r) => {
+    const items = inCol.filter((i) => roleOf(i) === r)
+    return { role: r, items: col === 'done' ? items.sort((a, b) => (b.closed_at || '').localeCompare(a.closed_at || '')).slice(0, 8) : items.sort(byPriority) }
+  }).filter((g) => g.items.length)
+  return (
+    <div className="min-w-0">
+      <div role="tablist" aria-label="Columns" className="sticky top-0 z-10 grid grid-cols-4 border-b border-foreground bg-background">
+        {COLUMNS.map((c) => (
+          <button key={c.key} type="button" role="tab" aria-selected={col === c.key} onClick={() => onCol(c.key)} title={c.hint}
+            className={cn('flex min-h-12 min-w-0 flex-col items-center justify-center gap-0.5 border-b-2 px-1 text-center',
+              col === c.key ? 'border-foreground' : 'border-transparent text-muted-foreground')}>
+            <span className="w-full truncate text-[11px] font-bold tracking-[0.06em] uppercase">{c.label}</span>
+            <span className="text-base leading-none font-bold tabular-nums">{counts[c.key]}</span>
+          </button>
+        ))}
+      </div>
+      {groups.length === 0 && <p className="px-4 py-6 text-sm text-muted-foreground">Nothing here.</p>}
+      {groups.map((g) => {
+        const st = (g.role && meta.states?.[g.role]) || LEAD_READY
+        const p = g.role ? personaOf(meta.personas ?? null, g.role) : null
+        return (
+          <section key={g.role || 'none'} className="border-b">
+            <h2 className="flex min-h-10 items-center gap-2 bg-muted/40 px-4 py-1.5 text-[13px]">
+              {g.role && <Avatar actor={g.role} size="sm" />}
+              <b className="truncate" style={{ color: p?.color }}>{p?.name || ROLE_LABEL[g.role]}</b>
+              {g.role && p?.name && <span className="text-[11px] text-muted-foreground">{ROLE_LABEL[g.role]}</span>}
+              {g.role && (
+                <span className={cn('ml-auto flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground', ['waiting', 'blocked', 'error'].includes(st.state) && 'font-semibold text-swiss')}>
+                  <span className={cn('size-2 shrink-0', LEAD_DOT[st.state])} /><span className="truncate">{st.label}</span>
+                </span>
+              )}
+            </h2>
+            <div className="grid gap-2 p-2">
+              {g.items.map((i) => <Card key={i.id} issue={i} col={col} waitsOn={blockers(i, byId)} last={meta.last[i.id]} onOpen={onOpen}
+                worker={meta.leads._workers?.find((w) => w.item === i.id)} />)}
+            </div>
+          </section>
+        )
+      })}
+    </div>
+  )
+}
 
 
 function Row({ role, items, ready, byId, meta, onOpen, onMove }: {
@@ -396,7 +468,7 @@ function Card({ issue: i, col, waitsOn, last, onOpen, worker }: {
       draggable
       onDragStart={(e) => e.dataTransfer.setData('text/plain', i.id)}
       onClick={() => onOpen(i.id)}
-      className={cn('grid gap-1 border border-border bg-card px-2 py-1.5 text-left hover:border-foreground',
+      className={cn('grid min-w-0 gap-1 border border-border bg-card px-2 py-1.5 text-left hover:border-foreground max-md:px-3 max-md:py-2.5',
         i.priority === 0 && !closed && 'border-l-4 border-l-swiss', closed && 'opacity-55')}
     >
       <span className="flex items-center gap-2 text-[11px]">
@@ -409,7 +481,7 @@ function Card({ issue: i, col, waitsOn, last, onOpen, worker }: {
         {i.status === 'blocked' && <span className={cn('font-semibold uppercase', !worker && 'ml-auto')}>blocked</span>}
         {i.status === 'deferred' && <span className="ml-auto font-semibold uppercase">deferred</span>}
       </span>
-      <span className={cn('text-[13px] leading-snug font-medium', closed && 'line-through')}>{i.title}</span>
+      <span className={cn('text-[13px] leading-snug font-medium [overflow-wrap:anywhere] max-md:text-[15px]', closed && 'line-through')}>{i.title}</span>
       {(waitsOn.length > 0 || !!i.comment_count || col === 'ready') && (
         <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
           {col === 'ready' && (
