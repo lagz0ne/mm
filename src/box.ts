@@ -174,6 +174,9 @@ function doopProcess(root: string): { process: Record<string, unknown> } | { ref
   if (!Number.isInteger(port) || port < 1024 || port > 65535) { port = hashPort(`${a.project}/doop-host`); writeFileSync(join(home, 'port'), String(port)) }
   const env: Record<string, string> = { PATH: servicePath(), PORT: String(port), DOOP_URL: String(s.env?.DOOP_URL || s.url || ''),
     DOOP_HOME: home, DOOP_PROJECT: a.project, DOOP_BOX_SOCKET: join(sd, 'doop.sock'), DOOP_AGENT_KEY_TO: doopKeyTo(a.project),
+    // the image doop-run starts (it reads it from mm's file): here too, so a new doop.image changes this process's
+    // definition and the process manager's project update restarts it on the new image (sy-um8r)
+    MM_DOOP_IMAGE: containersCfg().doop_image,
     ...(s.env?.DOOP_PUBLIC_PORT ? { DOOP_PUBLIC_PORT: String(s.env.DOOP_PUBLIC_PORT) } : {}) }
   return { process: { namespace: `${a.project}-public`, command: join(realpathSync(root), 'bin', 'doop-run'), working_dir: home,
     environment: Object.entries(env).map(([k, v]) => `${k}=${v}`), log_location: join(hostDir(a.project), 'doop.log'), log_configuration: MM_LOG_CONFIG,

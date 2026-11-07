@@ -88,6 +88,13 @@ check "...bind_host on loopback: no second forwarder for Doop's public side (doo
 cp "$MM_HOME/config.yaml" "$T/config.keep"; sed -i 's/^bind_host: .*/bind_host: 10.9.9.1/' "$MM_HOME/config.yaml"; mm reload >/dev/null
 check "bind_host off loopback: <project>-public.doop-public forwards from it to doop-run's public port on loopback, and <project>-public.doop is still the host's Doop" sh -c "pp=\$(envof '$PUB' acme-shop-public.doop | sed -n 's/^DOOP_PUBLIC_PORT=//p'); [ -n \"\$pp\" ] && proc '$PUB' acme-shop-public.doop-public | jq -r .command | grep -qx \"socat TCP-LISTEN:\$pp,bind=10.9.9.1,reuseaddr,fork TCP:127.0.0.1:\$pp\" && [ \"\$(proc '$PUB' acme-shop-public.doop | jq -r .command)\" = '$R/bin/doop-run' ]"
 cp "$T/config.keep" "$MM_HOME/config.yaml"; mm reload >/dev/null
+# sy-um8r: the image is in the host's Doop's process definition, so a new doop.image changes it and the process
+# manager's project update restarts Doop on it (before: only endpoints.json changed, and the old container ran on)
+check "the host's Doop names its image in its definition (MM_DOOP_IMAGE = the pinned default)" sh -c "envof '$PUB' acme-shop-public.doop | grep -qx 'MM_DOOP_IMAGE=sha256:[0-9a-f]\{64\}'"
+I0=$(envof "$PUB" acme-shop-public.doop | sed -n 's/^MM_DOOP_IMAGE=//p')
+printf 'doop:\n  image: sha256:%064d\n' 1 >>"$MM_HOME/config.yaml"; mm reload >/dev/null
+check "...a new doop.image changes that definition (so the project update restarts it), and endpoints.json agrees" sh -c "I1=\$(envof '$PUB' acme-shop-public.doop | sed -n 's/^MM_DOOP_IMAGE=//p'); [ \"\$I1\" = sha256:$(printf '%064d' 1) ] && [ \"\$I1\" != '$I0' ] && jq -e --arg i \"\$I1\" '.containers.doop_image == \$i' '$DH/endpoints.json'"
+cp "$T/config.keep" "$MM_HOME/config.yaml"; mm reload >/dev/null
 check "...endpoints.json in DOOP_HOME (docker, image, the fork's tag for its source link), not the project's .run/" sh -c "jq -e '.containers.docker == \"$T/bin/fakedocker\" and (.containers.doop_image | test(\"sha256:\")) and (.containers.doop_tag | test(\"-mm\\\\.[0-9]+\$\")) and .containers.doop_source == \"\"' '$DH/endpoints.json'"
 check "...the socket's folder 0750, the host port kept in a file (the same one at the next up)" sh -c "[ \"\$(stat -c %a '$H/doop-sock')\" = 750 ] && p1=\$(cat '$DH/port') && mm reload >/dev/null && [ \"\$(cat '$DH/port')\" = \"\$p1\" ] && envof '$PUB' acme-shop-public.doop | grep -qx \"PORT=\$p1\""
 cp "$R/bin/doop-run" "$T/doop-run.orig"; echo '# the box wrote this' >>"$R/bin/doop-run"
