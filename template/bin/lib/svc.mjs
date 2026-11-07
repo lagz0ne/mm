@@ -48,6 +48,41 @@ export function serviceLogs(name, lines = 100) {
   if (!t) throw new Error('no logs command in .run/endpoints.json')
   return execSync(t.replaceAll('{service}', name).replaceAll('{project}', projectName()).replaceAll('{lines}', String(lines)), { encoding: 'utf8', timeout: 30000 })
 }
+const sockKey = (name) => `SVC_SOCKET_${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`
+/** The unix socket a service listens on, or null (it is on TCP: use svcUrl). Order: env SVC_SOCKET_<NAME>; an env
+ *  SVC_URL_<NAME> (an explicit address) wins over endpoints.json's socket; else endpoints.json `socket`. */
+export function svcSocket(name) {
+  if (process.env[sockKey(name)]) return process.env[sockKey(name)]
+  if (process.env[envKey(name)]) return null
+  return endpoints().services?.[name]?.socket || null
+}
+/**
+ * One HTTP request to a service, over its socket when it has one, else to its URL: node's global fetch can't dial a
+ * unix socket (Node has no `socketPath` for it), so this goes through http.request. Over a socket, Host is the
+ * service's name (its URL's host), as through the front. Resolves { status, headers, body } (body: a string);
+ * rejects when the service is unknown, unreachable or slower than timeoutMs.
+ */
+export async function request(name, pathname = '/', { method = 'GET', headers = {}, body, timeoutMs = 10_000 } = {}) {
+  const http = await import('node:http')
+  const sock = svcSocket(name), url = svcUrl(name)
+  if (!sock && !url) throw new Error(`${name}: unknown address; set ${envKey(name)} or ${sockKey(name)}, or start it through the process manager (.run/endpoints.json)`)
+  const u = url ? new URL(pathname, `${url}/`) : null
+  const opts = sock
+    ? { socketPath: sock, path: pathname, headers: { host: u ? u.host : 'localhost', ...headers } }
+    : { host: u.hostname, port: u.port || 80, path: `${u.pathname}${u.search}`, headers }
+  return new Promise((resolve, reject) => {
+    const req = http.request({ ...opts, method, timeout: timeoutMs }, (res) => {
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }))
+      res.on('error', reject)
+    })
+    req.on('timeout', () => req.destroy(new Error(`${name}: no answer in ${timeoutMs} ms`)))
+    req.on('error', reject)
+    if (body !== undefined) req.write(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body))
+    req.end()
+  })
+}
 export function requireUrl(name) {
   const u = svcUrl(name)
   if (!u) { console.error(`${name}: unknown address; set ${envKey(name)} or start it through the process manager (.run/endpoints.json)`); process.exit(2) }

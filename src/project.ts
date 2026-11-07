@@ -211,7 +211,21 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
 // ---------- services.yaml -> process-compose project file + .run/ ----------
 type Svc = { about?: string; command: string; secrets?: string[]; workdir?: string; env?: Record<string, string>; port?: 'http' | 'internal' | 'none'
   public?: { name: string; auth: string }; depends_on?: Record<string, string>; ready?: { http?: string; socket?: string; exec?: string }; restart?: string; optional?: boolean; outward?: boolean
-  stop_seconds?: number } // how long the manager waits after TERM before it kills (process-compose's default: 10)
+  stop_seconds?: number // how long the manager waits after TERM before it kills (process-compose's default: 10)
+  listen?: 'unix' | 'tcp' } // unix: it may listen on its socket under $MM_HOME/run/<project>/ (sockets-first, step 1); default tcp
+
+/** sun_path holds 108 bytes on Linux, the last a NUL: a longer socket path can't be bound or dialled. */
+export const SUN_PATH_MAX = 107
+/** A project's folder for its services' sockets (0700; the sockets 0600): $MM_HOME/run/<project>. */
+export const runDir = (project: string) => join(DIRS.mm, 'run', project)
+/** The socket of one service of a project (`<service>.sock`, or `<service>-public.sock` for its gated public side).
+ *  Refused, clearly, when the path is too long for a socket (a deep MM_HOME, a long project id). */
+export function sockPath(project: string, service: string, side: 'local' | 'public' = 'local'): string {
+  const p = join(runDir(project), `${service}${side === 'public' ? '-public' : ''}.sock`)
+  const n = Buffer.byteLength(p)
+  if (n > SUN_PATH_MAX) throw new Error(`${project}.${service}: its socket ${p} is ${n} bytes, more than a unix socket path can hold (${SUN_PATH_MAX}): use a shorter MM_HOME or project id, or leave out \`listen: unix\``)
+  return p
+}
 
 /** The services with their own gateway-checked public listener (the port in this env var; it takes only requests with
  *  the gateway's signed assertion): the board (site/server.mjs) and Doop (bin/doop-run, the mm fork; sy-3yz). */
@@ -235,9 +249,10 @@ export function resolve(root: string, o: { names?: NamesMode } = {}) {
   const url = (s: string) => `http://${s}.${a.project}.localhost:${pp}`
   const fill = (v: string) => v.replaceAll('{root}', root).replaceAll('{home}', HOME).replaceAll('{project}', a.project)
     .replaceAll('{socket}', socket).replaceAll('{dolt_port}', String(dport)).replaceAll('{portless_port}', String(pp)).replace(/\{url:([\w-]+)\}/g, (_m, s) => url(s))
+    .replace(/\{socket:([\w-]+)\}/g, (_m, s) => sockPath(a.project, s))
   const c = loadConfig(), access = String(getPath(c, 'access') ?? ''), domain = String(getPath(c, 'domain') ?? '')
   const bindHost = String(getPath(c, 'bind_host') ?? '127.0.0.1'), mode = o.names ?? namesMode(c)
-  const services: Record<string, Svc & { url?: string; public_url?: string; public_port?: number; public_bind?: string }> = {}
+  const services: Record<string, Svc & { url?: string; public_url?: string; public_port?: number; public_bind?: string; socket?: string; public_socket?: string }> = {}
   // a box with the project API on (src/api.ts): its app slot runs only the build the owner approved (release/<build>),
   // from the host's record of the grant, never from what the box put in release/ by itself; the same whoever writes
   // the box's file (boxApi: an mm without a test's API env still sees the store that governs the box, sy-jm5)
@@ -266,7 +281,13 @@ export function resolve(root: string, o: { names?: NamesMode } = {}) {
       Object.assign(env, side ? { [side]: String(port) } : { PORTLESS_APP_PORT: String(port) })
       pub = { public_url: `https://${pname}.${domain}`, public_port: port, public_bind: bindHost }
     }
-    services[n] = { ...s, command: fill(s.command), workdir: s.workdir && fill(s.workdir), env, ...(s.ready?.exec ? { ready: { ...s.ready, exec: fill(s.ready.exec) } } : {}), ...(s.port === 'http' ? { url: url(n) } : {}), ...pub,
+    // the route table (sockets-first): an HTTP service that says `listen: unix` gets its socket path (and one for a gated
+    // public side). Nothing listens there yet: the path is what mm and the front will use. A box's sockets live in the
+    // box (a later step): none here for a box project.
+    if (s.listen !== undefined && s.listen !== 'unix' && s.listen !== 'tcp') throw new Error(`${a.project}.${n}: listen: "${s.listen}" is not one of unix, tcp`)
+    const sock = s.listen === 'unix' && s.port === 'http' && !a.box
+      ? { socket: sockPath(a.project, n), ...(s.public?.auth === 'required' ? { public_socket: sockPath(a.project, n, 'public') } : {}) } : {}
+    services[n] = { ...s, command: fill(s.command), workdir: s.workdir && fill(s.workdir), env, ...(s.ready?.exec ? { ready: { ...s.ready, exec: fill(s.ready.exec) } } : {}), ...(s.port === 'http' ? { url: url(n) } : {}), ...sock, ...pub,
       ...(s.public ? { public: { ...s.public, name: pname } } : {}) }
   }
   const schedules = Object.fromEntries(Object.entries(spec.schedules || {}).map(([k, v]) => [k, { ...v, command: fill(v.command) }]))
@@ -364,7 +385,7 @@ export function writeRunFiles(root: string, pcSocket: string) {
     // counts (bin/supervisor, bin/flow), and a name the guard keeps agents from writing as (sy-h2yt)
     ...(owner ? { owner_name: owner } : {}),
     containers: containersCfg(),
-    services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
+    services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, { ...(s.url ? { url: s.url } : {}), ...(s.socket ? { socket: s.socket } : {}), ...(s.public_url ? { public: s.public_url } : {}) }])) }
   writeInProject(root, '.run/endpoints.json', JSON.stringify(ep, null, 2))
   // where the machine's secrets are (paths only), for config-check to deny to every role (sy-5ag): in mm's folder, never
   // in the project's run files, which the project (a box too) can write (review sy-v92 2)
@@ -585,6 +606,8 @@ export function up(root: string): Step[] {
   const clash = nameClash(root); if (clash) return [{ step: 'public names', status: 'fail', detail: `refused: ${clash}` }]
   const steps: Step[] = []
   mkdirSync(join(root, '.run', 'logs'), { recursive: true }); mkdirSync(join(root, '.dolt'), { recursive: true }); mkdirSync(PROJECTS_PC, { recursive: true })
+  // the folder of its sockets, the project's alone (0700): a socket in it is reached only by this user
+  if (Object.values(services).some((s) => s.socket)) { mkdirSync(runDir(a.project), { recursive: true, mode: 0o700 }); chmodSync(runDir(a.project), 0o700) }
   const obs = obsEndpoints() as { traces?: string; metrics?: string }
   const env = { PATH: servicePath(), MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0', PORTLESS_STATE_DIR: portlessDir(),
     ...(obs.traces ? { MM_OBS_TRACES: obs.traces, MM_OBS_METRICS: obs.metrics } : {}) }
