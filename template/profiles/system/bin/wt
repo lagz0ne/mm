@@ -60,7 +60,7 @@ function make(role, name, ref) {
     }
     const r = render()
     if (r.status !== 0 || !fs.existsSync(path.join(W, '.claude', 'settings.local.json'))) throw new Error(`its permissions could not be rendered, so it is not made:\n${(r.stderr || r.stdout || '').trim()}`)
-    try { execFileSync('node', [path.join(P, 'bin', 'lib', 'claude.mjs'), 'trust', W], { stdio: 'ignore', env: { ...process.env, MM_PROJECT: projectName() } }) } catch {}
+    try { execFileSync('node', [path.join(P, 'bin', 'lib', 'claude.mjs'), 'trust', '--no-memory', W], { stdio: 'ignore', env: { ...process.env, MM_PROJECT: projectName() } }) } catch {}
   } catch (e) {
     try { made?.() } catch {}
     die(String(e.stderr || e.message || e).trim())
@@ -97,6 +97,8 @@ switch (a) {
       tryGit(f.s.repo, ['worktree', 'prune'])
     } else fs.rmSync(f.path, { recursive: true, force: true })
     render() // the others' permissions no longer name it
+    // its trust and Claude entry, and any memory link no lead owns (sy-0e5)
+    for (const a of [['forget', f.path], ['prune']]) try { execFileSync('node', [path.join(P, 'bin', 'lib', 'claude.mjs'), ...a], { stdio: 'ignore', env: { ...process.env, MM_PROJECT: projectName() } }) } catch {}
     console.log(`removed ${b}`)
     break
   }

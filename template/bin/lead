@@ -106,6 +106,8 @@ $(fenced "$LEAD_NEXT")"
     # (and the project root: Claude Code runs an MCP headersHelper, e.g. the design lead's Doop key, only when the
     # workspace root, the git root, is trusted; plans/doop.md)
     CDIR=$(MM_PROJECT="$PROJECT" node "$P/bin/lib/claude.mjs" trust "$DIR" "$P") || { echo "lead: could not prepare the Claude folder" >&2; exit 1; }
+    # memory links no lead or setup folder owns (a removed worktree's, a worker's, an assistant's) go (sy-0e5)
+    MM_PROJECT="$PROJECT" node "$P/bin/lib/claude.mjs" prune >/dev/null 2>&1 || true
     # its place in Paseo: the role's workspace in the project's one Paseo project (empty: Paseo picks, as before)
     WS=$(node "$P/bin/lib/lead-workspace.mjs" "$P" "$DIR" "$role lead" "$PROJECT" || true)
     set -- --no-wait -q --title "$PROJECT · $role lead${as:+ (for $as)}" --provider "$model" --mode auto --env "CLAUDE_CONFIG_DIR=$CDIR" \
