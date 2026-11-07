@@ -26,7 +26,7 @@ trap cleanup EXIT
 [ -n "${KEEP:-}" ] && trap - EXIT && echo "kept: $T"
 MMC=${1:-"$BUN $SRC/src/cli.ts"}
 export BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 MM_OBS_TRACES="" MM_SECRETS_DIR="$T/run/secrets" XDG_RUNTIME_DIR="$T/run"
-unset PORTLESS_STATE_DIR PROC_COMP_CONFIG PC_CLIENT_LOG_FILE MM_LAYOUT XDG_CONFIG_HOME
+unset PORTLESS_STATE_DIR PROC_COMP_CONFIG PC_CLIENT_LOG_FILE MM_LAYOUT XDG_CONFIG_HOME MM_SECRETS_DIR
 mkdir -p "$T/bin" "$T/run"
 ln -s "$BUN" "$T/bin/bun"
 # every manifest tool answers its version; the ones mm calls for more get their own stub below
