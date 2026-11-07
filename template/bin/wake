@@ -410,10 +410,6 @@ async function tick1() {
     const steady = idle && idleSeen[role] === a.id
     idleSeen[role] = idle ? a.id : null
     if (!steady) continue
-    // a plain lead made before the daemon restarted gets nothing: a send resumes it without its env (sy-vsh5)
-    let stale = false
-    try { stale = await staleLead(a, true) } catch (e) { log('paseo daemon status failed:', e.message); continue }
-    if (stale) { staleSay(role, a, 'held', `${role}'s lead ${a.shortId || a.id} is stale (${staleWhy(a)}): not sent to${KEEP.has(role) ? ' (a kept role: as a closed one)' : '; the reconcile replaces it'}`); soon(); continue }
     let b = null
     try { b = await board() } catch (e) { log('board read failed (nothing held back for capacity):', e.message) }
     let batch = sendable(role, b), whose
@@ -426,6 +422,11 @@ async function tick1() {
       if (personRuns() && !KEEP.has(role)) { whose = r.person || sponsor(); batch = new Map([...batch].filter(([id]) => runnerOf(id) === whose)) }
     }
     if (!batch.size) continue // only queue items past its capacity, or another person's work: they wait
+    // a plain lead made before the daemon restarted gets nothing: a send resumes it without its env (sy-vsh5).
+    // Asked only right before a send (a `paseo daemon status` is a CLI start: never each tick, sy-aaq3); what waits stays pending
+    let stale = false
+    try { stale = await staleLead(a, true) } catch (e) { log('paseo daemon status failed:', e.message); continue }
+    if (stale) { staleSay(role, a, 'held', `${role}'s lead ${a.shortId || a.id} is stale (${staleWhy(a)}): not sent to${KEEP.has(role) ? ' (a kept role: as a closed one)' : '; the reconcile replaces it'}`); soon(); continue }
     const q = queueLine(role, b, whose), told = [...batch.values()].flatMap((r) => r.text || [])
     const msg = [`Board update for the ${role} lead (${PROJECT}):`, ...[...batch.values()].map((r) => `- ${r.reason}`),
       '', ...boardText([...told, ...q.text]), ...[q.line].filter(Boolean),
