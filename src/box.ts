@@ -680,8 +680,11 @@ const STAMP = /^20\d\d-\d\d-\d\dT\d{4}Z$/
 /** After a box's backup: its new dated folder(s) go to <backups>/<project>/ as the host owner's; the newest 14 stay. */
 export function landBackup(root: string): string {
   const stage = backupStage(root), dest = join(DIRS.backups, readAnswers(root).project)
-  const got = existsSync(stage) ? readdirSync(stage).filter((d) => STAMP.test(d) && lstatSync(join(stage, d)).isDirectory()) : []
-  if (!got.length) throw new Error(`the box left no backup in ${stage}`)
+  const named = existsSync(stage) ? readdirSync(stage).filter((d) => STAMP.test(d) && lstatSync(join(stage, d)).isDirectory()) : []
+  // the box names the folder (review sy-rjwg 8): only a real date, not ahead of the host's clock, lands
+  const refused = named.map((d) => [d, stampProblem(d)] as const).filter(([, why]) => why)
+  const got = named.filter((d) => !stampProblem(d)), said = refused.map(([d, why]) => `refused ${d} (${why})`).join('; ')
+  if (!got.length) throw new Error(`the box left no backup in ${stage}${said ? `: ${said}` : ''}`)
   // the staging folder itself is the host's: what the box made in it, group-readable and -writable for the owner (its
   // own uid's regroup, no root), so the owner moves it out and later removes it (no copy here: the box still runs)
   const r = giveBack([stage])
@@ -707,7 +710,18 @@ export function landBackup(root: string): string {
     else { chmodSync(out, 0o600); doop = ', doop' }
   }
   for (const d of readdirSync(dest).filter((x) => STAMP.test(x)).sort().slice(0, -14)) rmSync(join(dest, d), { recursive: true, force: true })
-  return `${got.join(', ')} -> ${dest}${doop}`
+  return `${got.join(', ')} -> ${dest}${doop}${said ? `; ${said}` : ''}`
+}
+/** Why a box's backup folder name (STAMP's shape, YYYY-MM-DDTHHMMZ) can't land, or '' (review sy-rjwg 8): not a real
+ *  date (2026-02-30, hour 25), or more than STAMP_AHEAD_MS (5 min) ahead of the host's clock. */
+const STAMP_AHEAD_MS = 5 * 60_000
+export function stampProblem(d: string, now = Date.now()): string {
+  const m = /^(\d{4})-(\d\d)-(\d\d)T(\d\d)(\d\d)Z$/.exec(d); if (!m) return 'not a dated name'
+  const [y, mo, da, h, mi] = m.slice(1).map(Number), t = Date.UTC(y, mo - 1, da, h, mi)
+  const back = new Date(t)
+  if (h > 23 || mi > 59 || back.getUTCFullYear() !== y || back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== da) return 'not a real date'
+  if (t - now > STAMP_AHEAD_MS) return 'ahead of the host\'s clock'
+  return ''
 }
 boxHook.reclaim = reclaim
 /** mm archive, after down and reclaim: the box's network goes too (its subnet is free again). */
