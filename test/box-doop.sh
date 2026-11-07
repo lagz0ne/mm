@@ -51,7 +51,7 @@ printf 'old-auth-secret' >"$R/secrets/doop-auth-secret"; printf 'abc123.doop.inv
 echo "# from $R/services.yaml" >"$MM_HOME/pc/boxes/acme-shop.yaml"
 H="$MM_HOME/box/acme-shop"; DH="$H/doop"; PCY="$H/cfg/pc.yaml"; PUB="$MM_HOME/pc/box-public/acme-shop.yaml"
 cat >"$T/w.ts" <<EOF
-import { appReload, doopIn, doopOut, landBackup, backupStage, up } from '$SRC/src/box'
+import { appReload, doopIn, doopOut, landed, backupStage, up } from '$SRC/src/box'
 import { sealEngine } from '$SRC/src/project'
 const [what] = process.argv.slice(2), root = '$R'
 const out = (x: unknown) => console.log(JSON.stringify(x))
@@ -59,7 +59,7 @@ if (what === 'seal') sealEngine(root)
 if (what === 'reload') out(appReload(root))
 if (what === 'in') out(doopIn(root))
 if (what === 'out') out(doopOut(root))
-if (what === 'land') console.log(landBackup(root))
+if (what === 'land') { const l = landed(root); require('fs').writeFileSync('$T/landed.json', JSON.stringify(l)); console.log(l.text) }
 if (what === 'up') out(up(root))
 if (what === 'stage') console.log(backupStage(root))
 EOF
@@ -124,6 +124,7 @@ echo "== 5. the box's backup lands, with Doop's from the host"
 rm -rf "$R/data/doop.box-"*; mm in >/dev/null; mm reload >/dev/null
 ST=$(mm stage); mkdir -p "$ST/2026-11-06T0330Z"; echo '{}' >"$ST/2026-11-06T0330Z/board.jsonl"
 check "landBackup: the dated folder lands, with doop.tar.gz (0600) from the host's folder" sh -c "mm land | grep -q ', doop\$' && B=\$(bun -e \"import { DIRS } from '$SRC/src/env'; console.log(DIRS.backups)\")/acme-shop/2026-11-06T0330Z && [ -f \"\$B/board.jsonl\" ] && [ \"\$(stat -c %a \"\$B/doop.tar.gz\")\" = 600 ] && tar -tzf \"\$B/doop.tar.gz\" | grep -qx 'doop/PG_VERSION' && ! tar -tzf \"\$B/doop.tar.gz\" | grep -qv '^doop'"
+check "...landed() names it as data (sy-0z58): its newest folder, an existing path with doop.tar.gz in it, no ', doop' in any path" sh -c "jq -e '(.newest | endswith(\"/acme-shop/2026-11-06T0330Z\")) and .doop == \"yes\" and ([.dest, .newest] | all(test(\", \") | not))' '$T/landed.json' && [ -f \"\$(jq -r .newest '$T/landed.json')/doop.tar.gz\" ]"
 
 echo "== 6. mm up of the box (stand-in Docker): the socket's folder, read-only, only with Doop on"
 mm up >"$T/up.json" 2>&1
