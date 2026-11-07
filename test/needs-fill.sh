@@ -13,7 +13,7 @@ bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
 check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" MM_HOME="$T/home/.mm" MM_OBS_TRACES="" ; mkdir -p "$HOME" "$MM_HOME"
-unset PASEO_AGENT_ID PASEO_AGENT_CWD
+unset PASEO_AGENT_ID PASEO_AGENT_CWD MM_SECRETS_DIR   # the process manager sets it for its children (sy-vpqo)
 LOG="$T/all-output"
 mm() { "$MM" "$@" 2>&1 | tee -a "$LOG"; return "${PIPESTATUS[0]}"; }
 rows() { "$MM" needs --all -o json 2>/dev/null; }

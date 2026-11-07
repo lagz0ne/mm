@@ -7,7 +7,7 @@
 set -uo pipefail
 # the test plays the owner in a throwaway HOME: vault init and run refuse in an agent's shell (sy-uvgq), so not one
 # here; the agent checks below set CLAUDECODE themselves
-unset CLAUDECODE PASEO_AGENT_ID
+unset CLAUDECODE PASEO_AGENT_ID MM_SECRETS_DIR   # the process manager sets it for its children (sy-vpqo)
 SRC=$(cd "$(dirname "$0")/.." && pwd); MMC=${1:-"bun $SRC/src/cli.ts"}
 for c in age age-keygen ssh-keygen jq; do command -v $c >/dev/null || { echo "$c is not installed"; exit 2; }; done
 pass=0; fail=0

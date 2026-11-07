@@ -9,7 +9,7 @@
 #     files are checked in mm.paseo's home once managed; the old ~/.paseo: a link to mm's home allowed, a real folder warns
 #   test/paseo-token.sh   (needs age + age-keygen)
 set -uo pipefail
-unset CLAUDECODE PASEO_AGENT_ID   # the test plays the process manager and the owner in a throwaway HOME
+unset CLAUDECODE PASEO_AGENT_ID MM_SECRETS_DIR   # the test plays the process manager and the owner in a throwaway HOME
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 BUN=$(command -v bun || echo "$HOME/.bun/bin/bun")
 command -v age >/dev/null && command -v age-keygen >/dev/null || { echo "age is not installed"; exit 2; }
