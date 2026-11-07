@@ -92,7 +92,7 @@ function runClaude(extra, prompt) {
     ...(E.ASSIST_MODEL ? ['--model', E.ASSIST_MODEL] : []), ...extra, '--disallowedTools', TOOLS_DENIED.join(',')]
   const t0 = Date.now()
   return new Promise((ok) => {
-    const env = { ...E, BEADS_ACTOR: `assistant-${user}`, CLAUDE_CONFIG_DIR: claudeTrust([DIR]) }
+    const env = { ...E, BEADS_ACTOR: `assistant-${user}`, CLAUDE_CONFIG_DIR: claudeTrust([DIR], undefined, { memory: false }) }
     const p = spawn(CLAUDE, args, { cwd: DIR, env, stdio: ['pipe', 'pipe', 'pipe'] })
     p.stdin.on('error', () => {}) // a run killed at its first line may not have read its prompt
     let buf = '', done = false, tools = null, mcp = null, result = null
@@ -182,7 +182,7 @@ async function chat() {
   if (audit.err) { log('error', `assist chat for ${user}: not started: ${audit.err}`, { op: 'assist chat', user }); die(`not started: ${audit.err}`, 5) }
   const model = E.ASSIST_CHAT_MODEL || 'claude/claude-opus-5-5'
   execFileSync(PASEO, ['run', '--no-wait', '-q', '--title', `${project} · assistant for ${user}`, '--provider', model, '--mode', 'dontAsk', '--cwd', DIR, ...labels,
-    '--env', `PATH=${path.join(P, 'bin')}:${E.PATH}`, '--env', `BEADS_ACTOR=assistant-${user}`, '--env', `CLAUDE_CONFIG_DIR=${claudeTrust([DIR])}`,
+    '--env', `PATH=${path.join(P, 'bin')}:${E.PATH}`, '--env', `BEADS_ACTOR=assistant-${user}`, '--env', `CLAUDE_CONFIG_DIR=${claudeTrust([DIR], undefined, { memory: false })}`,
     `You are the assistant for ${user}. Read ../CLAUDE.md and CLAUDE.md. Wait for ${user}'s first message; messages from the bridge arrive here.`], { env, stdio: 'inherit' })
 }
 

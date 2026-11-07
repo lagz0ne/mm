@@ -126,7 +126,7 @@ async function start(P, role, name, o) {
   if (pcap && t + add > pcap + over) die(`the project holds ${t} of its cap ${pcap}: no new worker now`)
   // its folder (bin/wt renders its permissions), then the agent
   const W = execFileSync(path.join(P, 'bin', 'wt'), [role, name, ...(o.ref ? [o.ref] : [])], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], cwd: P }).trim().split('\n').pop()
-  const cdir = execFileSync('node', [path.join(P, 'bin', 'lib', 'claude.mjs'), 'trust', W], { encoding: 'utf8', env: { ...E, MM_PROJECT: projectName() } }).trim()
+  const cdir = execFileSync('node', [path.join(P, 'bin', 'lib', 'claude.mjs'), 'trust', '--no-memory', W], { encoding: 'utf8', env: { ...E, MM_PROJECT: projectName() } }).trim()
   const project = projectName(), actor = `${role}/${name}`, model = o.model || s.model || 'claude/claude-opus-5-5'
   const prompt = `You are ${actor}, a worker of the ${role} lead of ${project}, for item ${o.item}. Your folder: ${W}. ` +
     'Follow ../CLAUDE.md (the worker brief): your final reply is your report, and the lead reads only that.\n\nThe lead\'s brief:\n\n' + brief

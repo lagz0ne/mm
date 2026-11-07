@@ -19,12 +19,17 @@ case "${1:-}" in
       if [ "${3:-}" != --force ] && ! $G merge-base --is-ancestor "$2" main 2>/dev/null; then
         echo "wt: branch $2 has commits not on main (land it, or: wt rm $2 --force)" >&2; exit 1; fi
       $G worktree remove ${3:+--force} "$W" 2>/dev/null || $G worktree remove --force "$W"
-      $G branch -D -q "$2"; echo "removed $2" ;;
+      $G branch -D -q "$2"
+      node "$(dirname "$(readlink -f "$0")")/lib/claude.mjs" forget "$W" >/dev/null 2>&1 || true   # its trust and memory link (sy-0e5)
+      node "$(dirname "$(readlink -f "$0")")/lib/claude.mjs" prune >/dev/null 2>&1 || true
+      echo "removed $2" ;;
   ''|-h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) valid "$1"; W=$P/worktrees/$1
      if [ ! -d "$W" ]; then
        $G worktree add -q "$W" -b "$1" main 2>/dev/null || $G worktree add -q "$W" "$1"
-       node "$(dirname "$(readlink -f "$0")")/lib/claude.mjs" trust "$W" >/dev/null 2>&1 || true   # the worker's folder, trusted for this project's agents
+       # the folder, trusted for this project's agents; only a lead's own worktree shares the project's memory (sy-0e5)
+       case "$1" in lead-*) mem=;; *) mem=--no-memory;; esac
+       node "$(dirname "$(readlink -f "$0")")/lib/claude.mjs" trust $mem "$W" >/dev/null 2>&1 || true
        # commits show who made them: lead-<role> -> <role>, w-<item> -> code-worker
        case "$1" in lead-*) who=${1#lead-};; w-*) who=code-worker;; *) who=$1;; esac
        $G config extensions.worktreeConfig true
