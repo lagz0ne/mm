@@ -53,7 +53,7 @@ function pathLine(steps: Step[]) {
  *  mm doctor fails; onboard narrows it and says so. Only the group and other bits go; the owner's own stay. */
 function homeModes(steps: Step[]) {
   const uid = process.getuid?.() ?? 1000
-  for (const d of [HOME, `/run/user/${uid}`]) {
+  for (const d of [HOME, `/run/user/${uid}`, DIRS.mm]) { // and $MM_HOME (review sy-lud 1: the shim makes it with the umask)
     let m: number; try { m = statSync(d).mode & 0o777 } catch { continue }
     if ((m & 0o077) === 0) continue
     try { chmodSync(d, m & 0o700); steps.push({ step: `mode ${d.replace(HOME, '~')}`, status: 'fixed', detail: `0${m.toString(8)} -> 0${(m & 0o700).toString(8)} (the boxes share the owner's group)` }) }
