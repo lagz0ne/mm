@@ -26,6 +26,19 @@ export function machineHome(c: Config = loadConfig()): string {
   return paseoManaged(c) ? systemHome() : oldHome()
 }
 export const listen = (c: Config = loadConfig()) => String(getPath(c, 'paseo.listen') || DEFAULT_LISTEN)
+/**
+ * Review sy-11g #12, fix 1: the daemon that drives every agent of this user listens on loopback or a socket only. Why
+ * `l` is refused, or null: 127.0.0.1:<port>, [::1]:<port>, an absolute socket path or unix://<absolute path>; anything
+ * else (0.0.0.0, ::, a LAN address, a name) would put it on the network.
+ */
+export function listenRefusal(l: string): string | null {
+  const port = (p: string) => /^\d{1,5}$/.test(p) && +p >= 1 && +p <= 65535
+  if (/^unix:\/\/\//.test(l) || l.startsWith('/'))
+    return /[\s'"$`\\;&|<>()]/.test(l) ? `paseo.listen ${JSON.stringify(l)}: a socket path with spaces or shell characters` : null
+  const m = /^127\.0\.0\.1:(\d+)$/.exec(l) || /^\[::1\]:(\d+)$/.exec(l)
+  if (m) return port(m[1]) ? null : `paseo.listen ${JSON.stringify(l)}: the port is not 1-65535`
+  return `paseo.listen ${JSON.stringify(l)} is not loopback: only 127.0.0.1:<port>, [::1]:<port> or a socket path (the daemon drives every agent; never on the network)`
+}
 /** A tri-state key: undefined (the home's own config.json decides), else 'true' / 'false'. */
 const tri = (c: Config, k: string): 'true' | 'false' | undefined => { const v = getPath(c, k); return v === undefined || v === null || v === '' ? undefined : on(v) ? 'true' : 'false' }
 
@@ -137,6 +150,8 @@ export function daemonCheck(c: Config = loadConfig()): Check {
     if (exists) return row('warn', `${OLD_UNIT} (${active || 'unknown'}, ${enabled || 'unknown'}) runs the machine's Paseo from ${tilde(oldHome())}: not under mm yet: sy-11g`)
     return row('skip', `paseo.managed is off and there is no ${OLD_UNIT}`)
   }
+  const bad = listenRefusal(listen(c))
+  if (bad) return row('fail', `${bad}: mm.paseo does not start`, `mm config set paseo.listen ${DEFAULT_LISTEN}`)
   const fix = `systemctl --user disable --now ${OLD_UNIT}`
   if (enabled === 'enabled' || active === 'active' || active === 'activating')
     return row('fail', `paseo.managed is on but ${OLD_UNIT} is still ${[active === 'active' || active === 'activating' ? active : '', enabled === 'enabled' ? 'enabled' : ''].filter(Boolean).join(' and ')}`, fix)
