@@ -77,6 +77,65 @@ is "...with the token in its environment, its file's path not passed on" grep -q
 is "...as 'daemon run' on mm's home" grep -qF "home=$M/paseo/system args=daemon run" <<<"$out"
 is "...and the token's value is not on its command line" bash -c '! grep -qF "$1" <<<"$2"' _ "$MARK" "$(jq -r .command <<<"$p")"
 
+echo "== 2. mm paseo migrate"
+cfg 'layout: one-root' "paseo:" "  listen: 127.0.0.1:$PORT"
+O="$HOME/.paseo" S="$M/paseo/system"; rm -rf "$S"
+mkdir -p "$O/agents/claude" "$O/sessions/s1" "$O/hosts" "$O/open"
+for f in daemon-keypair.json local-credential config.json server-id agents/claude/a1.json sessions/s1/log.jsonl hosts/h.json open/readme.txt daemon.log; do printf '%s %s\n' "$MARK" "$f" >"$O/$f"; done
+head -c 5000 /dev/zero >>"$O/daemon.log"
+chmod 700 "$O" "$O/agents" "$O/agents/claude" "$O/sessions" "$O/sessions/s1" "$O/hosts"; chmod 755 "$O/open"
+chmod 600 "$O"/daemon-keypair.json "$O"/local-credential "$O"/daemon.log "$O"/agents/claude/a1.json "$O"/sessions/s1/log.jsonl "$O"/hosts/h.json
+chmod 644 "$O/config.json" "$O/server-id" "$O/open/readme.txt"
+ln -s config.json "$O/config.link"
+python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$O/daemon.sock"
+snap() { (cd "$1" && find . -printf '%p %y %m %s %l\n' | sort; find . -type f -exec sha256sum {} + | sort) | sha256sum; }
+before=$(snap "$O")
+mig() { "$BUN" "$SRC/src/cli.ts" paseo migrate "$@" >"$T/mig.out" 2>&1; echo $? >"$T/mig.rc"; }
+rc() { cat "$T/mig.rc"; }
+clean() { ! grep -qF "$MARK" "$T/mig.out"; }
+mig --dry-run
+is "dry run: exit 0" [ "$(rc)" = 0 ]
+is "...lists the keypair's path" grep -q "daemon-keypair.json" "$T/mig.out"
+is "...copies nothing" [ ! -e "$S" ] || [ -z "$(ls -A "$S")" ]
+is "...no contents printed" clean
+sleep 300 & live=$!; PIDS+=("$live")
+printf '{"pid":%s,"startedAt":"2026-01-01T00:00:00Z","hostname":"h","uid":1,"listen":"127.0.0.1:%s"}\n' "$live" "$PORT" >"$O/paseo.pid"
+mig
+is "a daemon on the old home: refused" [ "$(rc)" = 1 ] && grep -q "a Paseo daemon runs on ~/.paseo (pid $live)" "$T/mig.out"
+is "...nothing copied" [ ! -e "$S" ]
+printf '{"pid":%s,"startedAt":"2026-01-01T00:00:00Z","hostname":"h","uid":1,"listen":null,"bootId":"another-boot"}\n' "$live" >"$O/paseo.pid"
+mkdir -p "$S"; chmod 700 "$S"
+printf '{"pid":%s,"startedAt":"2026-01-01T00:00:00Z","hostname":"h","uid":1,"listen":null}\n' "$live" >"$S/paseo.pid"
+mig
+is "a daemon on mm's home: refused" [ "$(rc)" = 1 ] && grep -q "a Paseo daemon runs on ~/.mm/paseo/system" "$T/mig.out"
+rm -f "$S/paseo.pid"
+python3 -I -m http.server "$PORT" --bind 127.0.0.1 --directory "$T/bin" >/dev/null 2>&1 & srv=$!; PIDS+=("$srv")
+for _ in $(seq 50); do curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$PORT/" && break; sleep 0.1; done
+mig
+is "something answers on the listen address: refused" [ "$(rc)" = 1 ] && grep -q "answers on 127.0.0.1:$PORT" "$T/mig.out"
+kill "$srv"; wait "$srv" 2>/dev/null
+mig
+is "copy (a pid lock from another boot doesn't count): exit 0" [ "$(rc)" = 0 ] || cat "$T/mig.out"
+is "...every file with its size and mode" grep -q "copied: 9/9 file(s)" "$T/mig.out"
+is "...the keypair present" grep -q "keypair: daemon-keypair.json present" "$T/mig.out"
+is "...no contents printed" clean
+for f in daemon-keypair.json local-credential config.json daemon.log agents/claude/a1.json sessions/s1/log.jsonl hosts/h.json open/readme.txt; do
+  [ "$(stat -c '%a %s' "$O/$f")" = "$(stat -c '%a %s' "$S/$f")" ] || bad "mode/size of $f: $(stat -c '%a %s' "$S/$f")"; done
+ok "...modes and sizes of the files kept (0600 keys, 0644 config)"
+is "...folder modes kept (0700, a 0755 one stays 0755); the target 0700" [ "$(stat -c %a "$S/agents/claude") $(stat -c %a "$S/open") $(stat -c %a "$S")" = "700 755 700" ]
+is "...the link copied as a link" [ "$(readlink "$S/config.link")" = config.json ]
+is "...the pid lock and the socket left out" [ ! -e "$S/paseo.pid" ] && [ ! -e "$S/daemon.sock" ]
+is "...the contents the same" cmp -s "$O/sessions/s1/log.jsonl" "$S/sessions/s1/log.jsonl"
+rm -f "$O/paseo.pid"
+is "the source untouched" [ "$(snap "$O")" = "$before" ]
+mig
+is "a non-empty target: refused" [ "$(rc)" = 1 ] && grep -q "is not empty" "$T/mig.out"
+mig --force
+is "--force copies over it" [ "$(rc)" = 0 ] && clean
+rm -rf "$O.gone"; mv "$O" "$O.gone"; mig
+is "no old home: refused" [ "$(rc)" = 1 ] && grep -q "no Paseo home at ~/.paseo" "$T/mig.out"
+mv "$O.gone" "$O"
+
 echo
 echo "mm-paseo: $pass passed, $fail failed"
 [ "$fail" = 0 ]

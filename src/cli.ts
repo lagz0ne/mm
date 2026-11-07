@@ -287,6 +287,16 @@ program.command('restore [source]').description('an archived project (<tarball>.
       print(r.steps, o); process.exit(r.ok ? 0 : 1)
     } catch (e) { console.error(`mm restore: ${(e as Error).message}`); process.exit(1) }
 })
+const paseoCmd = program.command('paseo').description("the machine's Paseo (the agent daemon): mm runs it as mm.paseo once paseo.managed is on (sy-11g)")
+paseoCmd.command('migrate').description('copy ~/.paseo into $MM_HOME/paseo/system (keys, agents, sessions, hosts; modes kept): never moves it, so ~/.paseo stays as the rollback. Refused while a Paseo daemon runs, or when the target is not empty')
+  .option('--dry-run', 'list what it would copy (paths, sizes, modes), copy nothing')
+  .option('--force', 'copy over a target that is not empty (its other files stay)')
+  .action(async (opts: { dryRun?: boolean; force?: boolean }) => {
+    const { migrate } = await import('./paseo')
+    const r = migrate({ dryRun: opts.dryRun, force: opts.force })
+    for (const l of r.lines) (r.ok ? console.log : console.error)(l)
+    process.exit(r.ok ? 0 : 1)
+  })
 const sys = program.command('system').description('the system project: the machine\'s own board and leads (ops, review, platform, setup), in the brain\'s system folder (~/brain/system, or $MM_HOME/system on a one-root box)')
 sys.command('init').description('make the system project (profile system) next to the brain')
   .option('--name <host>', 'machine name (default: hostname -s)')

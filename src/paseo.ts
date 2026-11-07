@@ -38,3 +38,82 @@ export function daemonEnv(c: Config = loadConfig()): Record<string, string> {
   return e
 }
 
+const bootId = () => { try { return readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() } catch { return '' } }
+/** The daemon running on this home, by its pid lock (paseo.pid: pid, listen, bootId): its pid, or null. */
+export function daemonIn(home: string): { pid: number; listen: string | null } | null {
+  let lock: { pid?: unknown; listen?: unknown; bootId?: unknown }
+  try { lock = JSON.parse(readFileSync(join(home, 'paseo.pid'), 'utf8')) } catch { return null }
+  const pid = Number(lock.pid); if (!Number.isInteger(pid) || pid <= 0) return null
+  const b = bootId(); if (typeof lock.bootId === 'string' && b && lock.bootId !== b) return null   // a lock from before this boot
+  if (!existsSync(`/proc/${pid}`)) return null
+  try { if (/^\d+ \([^)]*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8'))) return null } catch {}
+  return { pid, listen: typeof lock.listen === 'string' ? lock.listen : null }
+}
+/** Something answers HTTP on a host:port address (a Paseo daemon, or anything else holding it). */
+export function answers(addr: string): boolean {
+  if (addr.startsWith('/') || addr.startsWith('unix://')) { const p = addr.replace(/^unix:\/\//, ''); try { return statSync(p).isSocket() } catch { return false } }
+  return run(['curl', '-s', '-o', '/dev/null', '--max-time', '2', `http://${addr}/`], { timeoutMs: 5000 }).ok
+}
+
+// ---------- mm paseo migrate ----------
+/** Runtime state of a daemon, not copied: its pid lock (a stopped daemon's), sockets and fifos. */
+const SKIP_NAMES = new Set(['paseo.pid'])
+interface Entry { rel: string; kind: 'dir' | 'file' | 'link' | 'skip'; mode: number; size: number }
+function walk(root: string): Entry[] {
+  const out: Entry[] = []
+  const go = (d: string) => {
+    for (const n of readdirSync(d).sort()) {
+      const p = join(d, n), s = lstatSync(p), rel = relative(root, p)
+      if (s.isSymbolicLink()) out.push({ rel, kind: 'link', mode: 0, size: 0 })
+      else if (s.isDirectory()) { out.push({ rel, kind: 'dir', mode: s.mode & 0o7777, size: 0 }); go(p) }
+      else if (s.isFile() && !(d === root && SKIP_NAMES.has(n))) out.push({ rel, kind: 'file', mode: s.mode & 0o7777, size: s.size })
+      else out.push({ rel, kind: 'skip', mode: 0, size: 0 })
+    }
+  }
+  go(root)
+  return out
+}
+export interface MigrateResult { ok: boolean; lines: string[] }
+/**
+ * Copy the old home into mm's (keys, agents, sessions, hosts), never move it. Refuses while a Paseo daemon runs on
+ * either home (its pid lock) or answers on the listen address, and when the target is not empty (unless force). Modes
+ * are kept (the target folder and $MM_HOME/paseo are 0700 whatever the source's). Prints paths and counts only.
+ */
+export function migrate(o: { dryRun?: boolean; force?: boolean; from?: string; to?: string } = {}): MigrateResult {
+  const from = o.from || oldHome(), to = o.to || systemHome(), lines: string[] = []
+  const no = (why: string): MigrateResult => ({ ok: false, lines: [...lines, `refused: ${why}`] })
+  let src: ReturnType<typeof lstatSync>
+  try { src = lstatSync(from) } catch { return no(`no Paseo home at ${tilde(from)}`) }
+  if (!src.isDirectory()) return no(`${tilde(from)} is not a folder`)
+  for (const h of [from, to]) { const d = daemonIn(h); if (d) return no(`a Paseo daemon runs on ${tilde(h)} (pid ${d.pid}): stop it first`) }
+  const addr = listen()
+  if (answers(addr)) return no(`something answers on ${addr} (a Paseo daemon?): stop it first`)
+  let targetEntries: string[] = []; try { targetEntries = readdirSync(to) } catch {}
+  if (targetEntries.length && !o.force) return no(`${tilde(to)} is not empty (${targetEntries.length} entr${targetEntries.length === 1 ? 'y' : 'ies'}); --force copies over it`)
+  const all = walk(from)
+  const files = all.filter((e) => e.kind === 'file'), dirs = all.filter((e) => e.kind === 'dir'), links = all.filter((e) => e.kind === 'link'), skipped = all.filter((e) => e.kind === 'skip')
+  const bytes = files.reduce((n, e) => n + e.size, 0)
+  lines.push(`from ${tilde(from)} to ${tilde(to)}: ${files.length} file(s), ${dirs.length} folder(s), ${links.length} link(s), ${bytes} bytes; ${skipped.length} left out (pid lock, sockets)`)
+  if (o.dryRun) {
+    for (const e of all) lines.push(`  ${e.kind === 'skip' ? 'skip' : e.kind.padEnd(4)} ${e.rel}${e.kind === 'file' ? `  ${e.size} B  0${e.mode.toString(8)}` : e.kind === 'dir' ? `/  0${e.mode.toString(8)}` : ''}`)
+    lines.push('dry run: nothing copied')
+    return { ok: true, lines }
+  }
+  const parent = join(to, '..')
+  mkdirSync(parent, { recursive: true, mode: 0o700 }); if (parent === join(DIRS.mm, 'paseo')) chmodSync(parent, 0o700)
+  mkdirSync(to, { recursive: true, mode: 0o700 }); chmodSync(to, 0o700)
+  for (const e of dirs) { const p = join(to, e.rel); mkdirSync(p, { recursive: true, mode: 0o700 }) }
+  for (const e of files) { const p = join(to, e.rel); try { unlinkSync(p) } catch {} copyFileSync(join(from, e.rel), p); chmodSync(p, e.mode) }
+  for (const e of links) { const p = join(to, e.rel); try { unlinkSync(p) } catch {} symlinkSync(readlinkSync(join(from, e.rel)), p) }
+  for (const e of dirs.reverse()) chmodSync(join(to, e.rel), e.mode)   // last: a read-only folder still takes its files first
+  // the check: every file there with its size and mode, the keypair present
+  const bad = files.filter((e) => { try { const s = lstatSync(join(to, e.rel)); return !s.isFile() || s.size !== e.size || (s.mode & 0o7777) !== e.mode } catch { return true } })
+  const copied = walk(to).filter((e) => e.kind === 'file').length
+  const key = existsSync(join(to, 'daemon-keypair.json'))
+  lines.push(`copied: ${files.length - bad.length}/${files.length} file(s) with their sizes and modes; ${copied} file(s) in ${tilde(to)}`)
+  for (const e of bad.slice(0, 10)) lines.push(`  differs: ${e.rel}`)
+  lines.push(key ? 'keypair: daemon-keypair.json present' : 'keypair: daemon-keypair.json MISSING')
+  lines.push(`${tilde(from)} left as it was (the rollback)`)
+  return { ok: !bad.length && key && (o.force || copied === files.length), lines }
+}
+
