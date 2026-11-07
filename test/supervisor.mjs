@@ -26,8 +26,11 @@ fs.mkdirSync(path.join(SYS, 'bin'), { recursive: true }); fs.mkdirSync(path.join
 fs.copyFileSync(path.join(SRC, 'template/profiles/system/bin/supervisor'), path.join(SYS, 'bin/supervisor'))
 fs.cpSync(path.join(SRC, 'template/bin/lib'), path.join(SYS, 'bin/lib'), { recursive: true })
 fs.writeFileSync(path.join(SYS, 'leads/roles.json'), JSON.stringify({ roles: [{ id: 'ops' }, { id: 'review' }, { id: 'platform' }] }))
-// this timeline runs on shorter windows than the defaults (stall 60, handoff 30: test/supervisor-digest.mjs), through the config
-fs.writeFileSync(path.join(SYS, 'supervisor.json'), JSON.stringify({ minutes: { stall: 30, handoff: 10 } }))
+// this timeline runs on shorter windows than the defaults (stall 60, handoff 30: test/supervisor-digest.mjs), through the
+// config; and its t2 items set blocked by hand (sy-12) are not about blocked lines (those: test/supervisor-digest.mjs), so
+// config ignore leaves them out (it applies to a digest line's key)
+const BASE_CONF = JSON.stringify({ minutes: { stall: 30, handoff: 10 }, ignore: ['^blocked:'] })
+fs.writeFileSync(path.join(SYS, 'supervisor.json'), BASE_CONF)
 
 // ---------- stub paseo (agents/<role>.json = that lead; paseo.fail = it breaks) and stub mm (ls.json) ----------
 const AG = path.join(T, 'agents'); fs.mkdirSync(AG)
@@ -295,7 +298,7 @@ git(MMR, ['commit', '-q', '--allow-empty', '-m', 'landed t2 work', '-m', 'sy-11 
 const CONFIG = path.join(SYS, 'supervisor.json')
 fs.writeFileSync(CONFIG, JSON.stringify({ approvers: ['platform'], ignore: ['^t2-unapproved:'] }))
 ok('exit 0', (await supervise()) === 0)
-fs.rmSync(CONFIG)
+fs.writeFileSync(CONFIG, BASE_CONF) // this timeline's own config again
 const T2 = (id) => `t2-unapproved:${id}`
 ok('open: t2-unapproved for sy-11 (claimed), sy-12 and sy-18 (approved by a lead), sy-14 (migration applied), sy-17 (applied, then closed), sy-20 (no tier line: tier 2); not sy-13 (bridge), sy-15 (not applied), sy-16 (t1), sy-19 (tier-1 migration)',
   openKeys() === `${DIRTY} ${T2('sy-11')} ${T2('sy-12')} ${T2('sy-14')} ${T2('sy-17')} ${T2('sy-18')} ${T2('sy-20')}`)
@@ -433,7 +436,7 @@ item('sy-40', { title: 't2, approved by the bridge before an upgrade', priority:
 update('sy-40', { labels: ['t2', 'approved'] }, 'bridge')
 clock = T0 + 456 * MIN
 ok('exit 0', (await supervise()) === 0)
-ok('the state carries its version', JSON.parse(fs.readFileSync(STATE, 'utf8')).v === 2)
+ok('the state carries its version', JSON.parse(fs.readFileSync(STATE, 'utf8')).v === 3)
 // as an older Supervisor left it: no version, its position at the head, and no summary of sy-40's approval
 { const s = JSON.parse(fs.readFileSync(STATE, 'utf8')); delete s.v; delete s.items['sy-40']; fs.writeFileSync(STATE, JSON.stringify(s)) }
 migration('1800000024-fw', 'open a port (sy-40)', true)

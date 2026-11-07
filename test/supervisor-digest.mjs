@@ -47,6 +47,8 @@ function item(id, f, actor = 'ops', t = clock) {
 }
 function comment(id, author, text, t = clock) { const i = items.get(id), c = { author, text, created_at: iso(t) }; i.comments.push(c); i.updated_at = iso(t); record('comment', i, author, t, c) }
 function update(id, f, actor, t = clock) { const i = items.get(id); Object.assign(i, f, { updated_at: iso(t) }); record(f.status === 'closed' ? 'close' : 'update', i, actor, t) }
+/** bd dep add|remove <id> <target> (a `blocks` edge), as the journal records it */
+const dep = (op, id, target, actor = 'platform') => events.push({ seq: ++seq, op, issue_id: id, actor, ts: iso(clock), issue: snap(items.get(id)), dep: { kind: 'blocks', target } })
 const srv = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x')
   let body = ''; for await (const ch of req) body += ch
@@ -85,7 +87,7 @@ try {
   item('sy-2', { status: 'in_progress', priority: 1, assignee: 'platform' }, 'platform')
   item('sy-3', { status: 'in_progress', priority: 1, assignee: 'platform', labels: ['needs-you'] }, 'platform')
   item('sy-4', { assignee: 'platform' }, 'platform'); update('sy-4', { assignee: 'review' }, 'platform')
-  item('sy-5', { assignee: 'platform' }, 'platform'); update('sy-5', { assignee: 'review', status: 'blocked' }, 'platform')
+  item('sy-5', { assignee: 'platform' }, 'platform'); update('sy-5', { assignee: 'review', status: 'blocked' }, 'platform'); dep('dep_add', 'sy-5', 'sy-4') // blocked by sy-4
   item('sy-6', { assignee: 'platform', labels: ['needs-you'] }, 'platform'); update('sy-6', { assignee: 'review' }, 'platform')
   // an item of an earlier Supervisor (one per finding)
   item('sy-old', { title: 'Stalled: sy-9', labels: ['supervisor'], assignee: 'ops', description: 'old\n\nsupervisor key: `stall:sy-9`' }, 'watchdog')
@@ -131,6 +133,28 @@ try {
   at(102); await supervise()
   const R2 = openOf('digest:review')
   ok('a new line (sy-7\'s handoff): a new digest:review with both lines', R2 && R2.id !== R.id && /sy-4/.test(R2.description) && /sy-7/.test(R2.description))
+
+  console.log('== "blocked" comes from dependencies: blocked by hand with nothing it waits on is one line in the digest')
+  item('sy-20', { status: 'blocked', assignee: 'platform' }, 'platform') // by hand, waits on nothing
+  item('sy-21', { status: 'blocked', assignee: 'platform' }, 'platform'); item('sy-22', { assignee: 'ops' }, 'ops'); dep('dep_add', 'sy-21', 'sy-22') // an open blocker
+  item('sy-23', { status: 'blocked', assignee: 'platform', labels: ['needs-you'] }, 'platform') // waits on a person
+  item('sy-24', { status: 'blocked', assignee: 'platform' }, 'platform'); items.get('sy-24').dependencies = [{ depends_on_id: 'sy-22', type: 'blocks' }] // bd's own list
+  item('sy-26', { status: 'closed', assignee: 'ops' }, 'ops')
+  item('sy-25', { status: 'blocked', assignee: 'platform' }, 'platform'); dep('dep_add', 'sy-25', 'sy-26') // its only blocker is closed
+  at(110); await supervise()
+  ok('under 10 min blocked: not yet', !openOf('digest:platform'))
+  at(113); await supervise()
+  const B = openOf('digest:platform')
+  ok('digest:platform: sy-20 and sy-25 "blocked with nothing it waits on"', /^- blocked with nothing it waits on: sy-20 /m.test(B?.description) && /^- blocked with nothing it waits on: sy-25 /m.test(B?.description))
+  ok('...not sy-21 (an open blocker in the journal), sy-24 (in its dependencies), sy-23 (needs-you)', !/sy-21|sy-23|sy-24/.test(B?.description))
+  ok('...only such lines: P2, and it says what to do', B?.priority === 2 && /bd dep add/.test(B.description))
+  ok('no item of its own for a blocked item', sup().filter((i) => i.status !== 'closed').length === 2 && openKeys() === 'digest:platform digest:review')
+  at(118); await supervise()
+  ok('reported once: the same item, no comment, unchanged', openOf('digest:platform')?.id === B.id && B.comments.length === 0 && byKey('digest:platform').filter((i) => i.status !== 'closed').length === 1)
+  dep('dep_remove', 'sy-21', 'sy-22'); dep('dep_add', 'sy-20', 'sy-22')
+  at(123); await supervise()
+  const B2 = openOf('digest:platform')
+  ok('a blocker removed (sy-21) adds its line; a blocker added (sy-20) drops one', B2?.id === B.id && /: sy-21 /.test(B2.description) && !/: sy-20 /.test(B2.description) && B2.comments.length === 0)
 } finally {
   srv.close()
   if (fail) console.log(out.slice(-3000))

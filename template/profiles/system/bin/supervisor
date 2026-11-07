@@ -9,7 +9,10 @@
 //                        not one: wake requeues it and says so on the item)
 //       handoff waits    an item reassigned to a role (`bd update -a <role>`) with no act from that role after 30 min
 //       idle             a lead not working (idle, closed, gone) for 10 min while ready P0 work waits for it
-//                        An item blocked or labelled needs-you (it waits on a person by design) is never a line.
+//                        An item blocked or labelled needs-you (it waits by design) is never one of those lines.
+//       blocked with nothing it waits on   an item blocked by hand for 10 min with no open blocker (a `blocks`
+//                        dependency) and no needs-you: "blocked" comes from dependencies. Its own line, once (P2
+//                        when the digest has only such lines)
 //                        (stall:<item>, handoff:<item>, idle:<role>: the keys of earlier Supervisors, closed as cleared)
 //     dirty:<worktree>   uncommitted files, none touched for 30 min (git worktrees of the mm repo and of each project) P2
 //     t2-unapproved:<item> a live step for a t2 item with no `approved` from an approver (read from the event journal
@@ -46,7 +49,7 @@
 // The board is the truth for which items are open (label `supervisor`, line "supervisor key: `<key>`"); .supervisor.json
 // keeps the journal position and a summary per item, notes, mutes, and when leads were seen running or idle.
 // Optional config supervisor.json (this board's root):
-//   { "assignee": "ops", "ignore": ["<regex on a key>"], "minutes": { "stall": 60, "handoff": 30, "idle": 10, "dirty": 30 },
+//   { "assignee": "ops", "ignore": ["<regex on a key>"], "minutes": { "stall": 60, "handoff": 30, "idle": 10, "blocked": 10, "dirty": 30 },
 //     "repos": ["<more git repos to watch; the mm repo is ~/mm, the template's place for it>"] }
 // Env (tests): SUPERVISOR_STATE, SUPERVISOR_CONFIG, SUPERVISOR_NOW (ms), SUPERVISOR_APPROVERS, BRAIN_STATE, MM_BIN,
 // SVC_URL_BD_SERVE, PASEO_BIN, PASEO_NO_SDK.
@@ -67,7 +70,7 @@ const CONF = (() => { try { return JSON.parse(fs.readFileSync(E.SUPERVISOR_CONFI
 const MM = E.MM_BIN || 'mm'
 const HOME = E.HOME || os.homedir()
 const ASSIGNEE = CONF.assignee || 'ops'
-const MIN = { stall: 60, handoff: 30, idle: 10, dirty: 30, ...(CONF.minutes || {}) }
+const MIN = { stall: 60, handoff: 30, idle: 10, blocked: 10, dirty: 30, ...(CONF.minutes || {}) }
 const IGNORE = (CONF.ignore || []).map((r) => new RegExp(r)) // never applied to t2-unapproved keys (sy-1jmi)
 const BD = requireUrl('bd-serve')
 const ACTOR = 'watchdog' // a system author for wake and the lead briefs (not a human, not a lead)
@@ -105,7 +108,8 @@ state.seq ||= 0
 // the summary's version: when what is folded from the journal changes (approvals and t2 labels per item, sy-7xq0; closed
 // items kept), a summary from an older Supervisor misses what happened before the upgrade (sy-m5qr: an approval by the
 // bridge at 16:36 never seen after 17:00). So a new version reads the whole journal again, from the start.
-const STATE_V = 2
+// v3: each item's `blocks` edges (bk, sy-28ev).
+const STATE_V = 3
 if (state.v !== STATE_V) { state.seq = 0; state.items = {}; state.v = STATE_V }
 state.t2since ||= NOW // closed items: only migrations applied since this check first ran (no flood from older ones)
 
@@ -133,8 +137,8 @@ const issues = once(async () => {
   return [...all.values()]
 })
 // The event journal since the last run, folded into a summary per item: the last change by a person or lead (act),
-// the latest reassign to each role (ho: {seq, at}), the last thing each role did on it (re: seq), and the item's
-// assignee and status as of the last event (as, st: what a change is read against).
+// the latest reassign to each role (ho: {seq, at}), the last thing each role did on it (re: seq), the items it waits on
+// (bk: its `blocks` edges), and the item's assignee and status as of the last event (as, st: what a change is read against).
 const journal = once(async () => {
   for (let page = 0; page < 200; page++) {
     const r = await bd('GET', `/v0/beads/events?since=${state.seq}&limit=500`)
@@ -156,6 +160,11 @@ const journal = once(async () => {
         if (s.lb?.includes('t2') && !labels.includes('t2')) s.t2off = { by: String(e.actor || ''), at: t }
         if (labels.includes('t2')) delete s.t2off
         s.lb = labels
+      }
+      // its `blocks` edges (bd dep add|remove <id> <target>; a kind left out is blocks, as bd reads it), by anyone
+      if ((e.op === 'dep_add' || e.op === 'dep_remove') && e.dep?.target && (!e.dep.kind || e.dep.kind === 'blocks')) {
+        const bk = (s.bk ||= []).filter((x) => x !== e.dep.target)
+        s.bk = e.op === 'dep_add' ? [...bk, e.dep.target] : bk
       }
       if (!who || SYSTEM.has(who)) continue
       s.act = Math.max(s.act, t)
@@ -257,15 +266,33 @@ async function idle() {
   return lines
 }
 
+// "blocked" comes from dependencies: an item blocked by hand, with no open item it waits on (a `blocks` edge, from the
+// item's dependencies or the journal) and no needs-you, waits on nothing. One line in its role's digest, after it has
+// been so for MIN.blocked.
+async function blocked() {
+  const [all, sum] = await Promise.all([issues(), journal()])
+  const byId = new Map(all.map((i) => [i.id, i])), openId = (id) => !!id && byId.has(id) && byId.get(id).status !== 'closed'
+  const lines = []
+  for (const i of all) {
+    if (i.status !== 'blocked' || mine(i) || (i.labels || []).includes('needs-you') || NOW - ms(i.updated_at) < MIN.blocked * 60000) continue
+    const deps = (i.dependencies || []).filter((d) => (d.type || d.dependency_type || 'blocks') === 'blocks').map((d) => d.depends_on_id || d.id)
+    if ([...deps, ...(sum[i.id]?.bk || [])].some(openId)) continue
+    lines.push({ role: roleOf(i.assignee) || ASSIGNEE, k: `blocked:${i.id}`, low: true,
+      line: `blocked with nothing it waits on: ${i.id} (P${i.priority}, ${i.assignee || 'nobody'}): no open item blocks it, and no needs-you` })
+  }
+  return lines
+}
+
 const HOW = {
   stall: 'stalled: find out why (ask on the item, look at the lead), and get it moving or set it back to open or blocked',
   handoff: 'handoff waits: check that the role was woken and can work (its lead, wake)',
   idle: 'idle: check wake (it should have woken the lead) and the lead itself (`bin/lead`, Paseo)',
+  blocked: 'blocked with nothing it waits on: name what it waits on (`bd dep add <item> <blocker>`), label it needs-you if a person must act, or set it back to open',
 }
 /** One "Supervisor digest" per role from the flow checks' lines. A check that fails keeps its lines from the last run
  * (its part of each digest is left as it is), and is reported as supervisor:<check>. */
 async function digest() {
-  const checks = { stall, handoff, idle }, byRole = {}, prev = state.lines || {}
+  const checks = { stall, handoff, idle, blocked }, byRole = {}, prev = state.lines || {}
   state.lines = {}
   for (const [name, fn] of Object.entries(checks)) {
     let got
@@ -277,13 +304,14 @@ async function digest() {
   for (const role of Object.keys(byRole).sort()) {
     const ls = byRole[role].sort((a, b) => a.k.localeCompare(b.k) || a.line.localeCompare(b.line))
     const kinds = Object.keys(HOW).filter((c) => ls.some((l) => l.check === c))
-    problems.push({ key: `digest:${role}`, parts: ls.map((l) => `${l.k} ${l.role}`), priority: 1,
+    problems.push({ key: `digest:${role}`, parts: ls.map((l) => `${l.k} ${l.role}`), priority: ls.every((l) => l.low) ? 2 : 1,
       title: `Supervisor digest: ${role} (${ls.length} waiting)`, note: ls.map((l) => l.line).join('\n'),
       body: `What waits in the **${role}** role, as the Supervisor sees it (stalled: a P0/P1 in progress with nothing for ${MIN.stall} min; ` +
-        `handoff waits: no reply ${MIN.handoff} min after a handover; idle: a lead not working for ${MIN.idle} min while ready P0 work waits):\n\n` +
+        `handoff waits: no reply ${MIN.handoff} min after a handover; idle: a lead not working for ${MIN.idle} min while ready P0 work waits; ` +
+        `blocked with nothing it waits on: blocked by hand for ${MIN.blocked} min, with no open blocker and no needs-you):\n\n` +
         `${ls.map((l) => `- ${l.line}`).join('\n')}\n\nWhat to do:\n\n${kinds.map((c) => `- ${HOW[c]}`).join('\n')}\n\n` +
         'One item for the role, edited in place: a line drops off when it clears, and the item closes itself when none is left. ' +
-        'Items that wait on a person by design (blocked, needs-you) are left out.' })
+        'Items that wait by design (blocked by an open item, or labelled needs-you) are left out.' })
   }
   // the per-item keys of earlier Supervisors (stall:, handoff:, idle:): never found again, so they clear and close
   return [{ prefix: 'digest:', problems }, ...['stall:', 'handoff:', 'idle:'].map((prefix) => ({ prefix, problems: [] }))]
