@@ -387,6 +387,18 @@ function publicDown(project: string): Step[] {
 }
 
 /** `mm up` for a box project: network, egress proxy, the box. Idempotent: a running box is restarted with new config. */
+/** sy-duj0: why a box needs its mm up at boot (the process manager's mm.boxes), or null when it runs as mm made it: its
+ *  opened-secrets folder is there, this user's, and holds the box's Paseo password. After a boot it is gone (a tmpfs) or
+ *  Docker's (made empty as root when Docker brought the box back first). A plain restart of the process manager finds
+ *  it as it was, so a running box isn't restarted for nothing. */
+export function bootReason(project: string): string | null {
+  const d = join(vault.secretsBase(), project)
+  let st; try { st = statSync(d) } catch { return 'its secrets folder is missing' }
+  if (st.uid !== process.getuid?.()) return `its secrets folder belongs to uid ${st.uid} (Docker made it)`
+  if (!existsSync(join(d, 'paseo.password'))) return 'its secrets folder is empty'
+  return null
+}
+
 export function up(root: string): Step[] {
   const steps: Step[] = [], a = readAnswers(root), n = names(a.project), api = boxApi(a.project)
   const fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return steps }

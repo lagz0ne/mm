@@ -4,7 +4,7 @@
 //   public key), <name>.age (0600), digests.txt (sha256 of each sealed file: the drill's integrity check).
 import { spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { DIRS, run, secretsDir } from './env'
 
@@ -90,6 +90,13 @@ export const secretsBase = () => secretsDir().path
 function baseDir(sub: string) {
   const s = secretsDir(), d = join(s.path, sub)
   mkdirSync(d, { recursive: true, mode: 0o700 })
+  // sy-duj0: after a boot the base (a tmpfs) is empty, and Docker, starting a box before mm, makes the box's bind-mount
+  // source itself: root's, 0755, empty. An empty folder that isn't ours is made again; one with something in it is refused.
+  const me = process.getuid?.()
+  if (me !== undefined && statSync(d).uid !== me) {
+    if (readdirSync(d).length) throw new Error(`${d} belongs to uid ${statSync(d).uid}, not to this user, and is not empty: mm won't use it`)
+    rmdirSync(d); mkdirSync(d, { mode: 0o700 })
+  }
   if (s.from === 'default') chmodSync(dirname(s.path), 0o700)
   chmodSync(s.path, 0o700); chmodSync(d, 0o700)
   return d

@@ -43,6 +43,10 @@ export function writeBase() {
   if (apiConfigured() || personRunsConfigured()) processes['mm.api'] = { namespace: 'mm', command: `${mm} api serve`, environment: [`PATH=${servicePath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
     log_location: join(DIRS.pc, 'api.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
     readiness_probe: { exec: { command: `test -S ${join(DIRS.mm, 'api', 'approve.sock')}` }, period_seconds: 3, failure_threshold: 20 } } // never a test's MM_API_DIR
+  // sy-duj0: once at each start of the process manager (boot), every box project's full mm up, so no box runs as Docker
+  // alone brought it back (an empty secrets folder Docker made). Exits when done; not restarted.
+  processes['mm.boxes'] = { namespace: 'mm', command: `${mm} box boot`, environment: [`PATH=${servicePath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
+    log_location: join(DIRS.pc, 'boxes.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'no' } }
   Object.assign(processes, obsProcesses())
   mkdirSync(DIRS.pc, { recursive: true })
   writeLauncher()

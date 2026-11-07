@@ -194,6 +194,21 @@ const boxCmd = program.command('box').description('project boxes: each project i
 boxCmd.command('build').description('build the box image and the egress proxy image (pinned tools) from this mm').action(() => { const st = boxMod.build(); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })
 boxCmd.command('on <project>').description('move a host project into its own box (its host processes stop; the answers get box: true)').action((ref: string) => { const st = boxMod.on(findRoot(ref)); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })
 boxCmd.command('off <project>').description('move a box project back onto the host (the box stops; its files go back to the host owner)').action((ref: string) => { const st = boxMod.off(findRoot(ref)); print(st, fmt()); process.exit(st.some((x) => x.status === 'fail') ? 1 : 0) })
+// sy-duj0: the boot step (the machine process manager's one-shot mm.boxes). Docker brings a box back at boot by its
+// restart policy, before mm: with an empty secrets folder (a tmpfs) that Docker made itself. Every box project gets its
+// full `mm up` here, so it runs as mm prepares it. One box's failure doesn't stop the next.
+boxCmd.command('boot').description('mm up for every box project (the process manager runs it once at boot)').action(() => {
+  const o = fmt(); let bad = 0
+  for (const p of listProjects().filter((x) => x.box && x.root !== '?')) {
+    const why = boxMod.bootReason(p.project)
+    if (!why) { console.log(`== ${p.project}: runs as mm made it (nothing to do)`); continue }
+    let st: ReturnType<typeof up>
+    try { st = up(expandHome(p.root)) } catch (e) { st = [{ step: 'up', status: 'fail', detail: String((e as Error)?.message || e) }] }
+    console.log(`== ${p.project}: ${why}: mm up`); print(st, o)
+    if (st.some((x) => x.status === 'fail')) bad++
+  }
+  process.exit(bad ? 1 : 0)
+})
 // `mm shell <project> <cmd...>`: the command is the box's, options and all (`id -u`, `sh -c ...`, even `-q` or `-o`,
 // which are mm's own options anywhere else). So it is cut off before mm parses its options (see shellCmd at the end).
 const shellSplit = (argv: string[]) => {

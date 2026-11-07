@@ -85,8 +85,14 @@ export function secretModes(): Check {
   const projects = listProjects().filter((p) => p.root !== '?'), boxes = new Set(projects.filter((p) => p.box).map((p) => p.project))
   const base = vault.secretsBase()
   look(base, true)
-  try { for (const x of readdirSync(base)) { const d = join(base, x), box = boxes.has(x); look(d, true, box); filesIn(d, box) } } catch {}
+  // a project's opened-secrets folder that isn't the owner's (sy-duj0: Docker made it empty at boot, before mm): the box
+  // runs without its secrets, and only its mm up makes the folder again
+  const foreign: string[] = [], me = process.getuid?.()
+  try { for (const x of readdirSync(base)) { const d = join(base, x), box = boxes.has(x); look(d, true, box); filesIn(d, box); try { if (me !== undefined && statSync(d).isDirectory() && statSync(d).uid !== me) foreign.push(x) } catch {} } } catch {}
   for (const p of projects) { const d = join(expand(p.root), 'secrets'); look(d, true, !!p.box); filesIn(d, !!p.box) }
+  if (foreign.length) return { layer: 'secret', item: 'secret modes', status: 'fail',
+    detail: `opened-secrets folder(s) not yours (Docker made them at boot, before mm): ${foreign.join(', ')}; ${wide.length} too wide`,
+    fix: foreign.map((x) => `mm up ${x}`).join('; ') }
   if (!wide.length) return { layer: 'secret', item: 'secret modes', status: 'ok', detail: 'every secrets folder 0700, every secret file 0600 (or narrower)' }
   const shown = (p: string) => p.replace(HOME, '~')
   const fixes = new Map<string, string[]>()
