@@ -22,6 +22,13 @@ export function shipped(name: string): Lock {
 /** Where a lock's tree is installed, and the bin a direct dependency puts in its node_modules/.bin. */
 export const lockDir = (name: string) => join(DIRS.npm, name)
 export const lockBin = (name: string, bin: string) => join(lockDir(name), 'node_modules', '.bin', bin)
+/** The bin a service runs: the lock's once installed; until then the older `npm install -g` copy in npm/bin when it is
+ *  there, so an mm update that lands before `mm onboard` (which installs from the lock) leaves the running daemon's
+ *  binary as it is instead of pointing it at a missing file; doctor's row fails meanwhile (installedProblem). */
+export const serviceBin = (name: string, bin: string) => {
+  const l = lockBin(name, bin), old = join(DIRS.npm, 'bin', bin)
+  return !existsSync(l) && existsSync(old) ? old : l
+}
 
 type Pkg = { dependencies?: Record<string, string> }
 type LockFile = { lockfileVersion?: number; packages?: Record<string, { version?: string; resolved?: string; integrity?: string; link?: boolean; dependencies?: Record<string, string> }> }

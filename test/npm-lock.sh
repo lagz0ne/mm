@@ -92,7 +92,9 @@ is "a failed npm ci leaves the installed tree as it was" bash -c "
 echo "== 3. who finds Paseo"
 is "the process manager's mm.paseo runs the lock's bin" \
   [ "$(ev "import { lockBin } from './src/npmlock'; console.log(lockBin('paseo', 'paseo'))")" = "$D/node_modules/.bin/paseo" ]
-is "pc.ts uses it (not npm/bin/paseo)" bash -c "grep -q \"bin = lockBin('paseo', 'paseo')\" '$SRC/src/pc.ts' && ! grep -q \"DIRS.npm, 'bin', 'paseo'\" '$SRC/src/pc.ts'"
+is "pc.ts runs serviceBin (not npm/bin/paseo by name)" bash -c "grep -q \"bin = serviceBin('paseo', 'paseo')\" '$SRC/src/pc.ts' && ! grep -q \"DIRS.npm, 'bin', 'paseo'\" '$SRC/src/pc.ts'"
+sbin() { ev "import { serviceBin } from './src/npmlock'; console.log(serviceBin('paseo', 'paseo'))"; }
+is "serviceBin: the lock's bin once installed" [ "$(sbin)" = "$D/node_modules/.bin/paseo" ]
 sdk=$(cd "$T" && PASEO_URL=ws://127.0.0.1:1/ws PASEO_SDK= "$BUN" -e "import { sdkPath } from '$SRC/template/bin/lib/paseo.mjs'; console.log(sdkPath())" 2>&1)
 is "paseo.mjs sdkPath(): the client package of the same tree (got: $sdk)" [ "$sdk" = "$(realpath "$D")/node_modules/@getpaseo/client/dist/index.js" ]
 
@@ -121,6 +123,9 @@ is "MM_HOME/bin/paseo still the old copy: fail, it runs from elsewhere ($r)" jqo
 rm -rf "$D"
 r=$(doc)
 is "nothing installed from the lock: fail, fix mm onboard ($r)" jqok "$r" '.status == "fail" and (.detail | test("not installed from mm.s lock")) and (.fix | test("^mm onboard"))'
+is "serviceBin: an mm update before onboard keeps the old npm -g copy the daemon runs (not a missing file)" [ "$(sbin)" = "$MM_HOME/npm/bin/paseo" ]
+rm -f "$MM_HOME/npm/bin/paseo"
+is "serviceBin: neither there: the lock's path (doctor fails, onboard installs it)" [ "$(sbin)" = "$D/node_modules/.bin/paseo" ]
 
 echo "== 5. an unfit lock is refused"
 rm -rf "$MM_HOME/npm" "$MM_HOME/bin"; : >"$T/npm.calls"
