@@ -3,7 +3,7 @@
 # process-compose on PATH, a fake Paseo home with dummy files. Never the machine's Paseo: its listen address is set to a
 # free port here, so nothing calls the machine's daemon. Proves:
 #  1. writeBase: no mm.paseo while paseo.managed is off (nor PASEO_HOME for clients); on: the entry (namespace mm, mm's
-#     own npm's paseo, umask 077, PASEO_HOME $MM_HOME/paseo/system 0700, the listen address, restart always, a readiness
+#     the paseo of mm's lock, umask 077, PASEO_HOME $MM_HOME/paseo/system 0700, the listen address, restart always, a readiness
 #     probe, its log in $MM_HOME/pc), relay / web UI only when their keys are set; the command really runs under umask
 #     077 with the token's file read into the environment (and its path not passed on); clients get PASEO_HOME
 #  2. mm paseo migrate: dry run copies nothing and lists paths; refuses a daemon running on either home (its pid lock),
@@ -27,7 +27,7 @@ T=$(mktemp -d); PIDS=()
 cleanup() { for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $T" || rm -rf "$T"; }
 trap cleanup EXIT
 export HOME="$T/home" MM_HOME="$T/home/.mm" MM_OBS_TRACES="" MM_LAYOUT=one-root
-M="$MM_HOME"; mkdir -p "$M/bin" "$M/npm/bin" "$M/pc" "$T/bin"; chmod 700 "$HOME"
+M="$MM_HOME"; mkdir -p "$M/bin" "$M/npm/paseo/node_modules/.bin" "$M/pc" "$T/bin"; chmod 700 "$HOME"
 export PATH="$T/bin:$(dirname "$BUN"):/usr/bin:/bin"
 # a free port for the listen address (never the machine's 6767)
 PORT=$(python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
@@ -53,7 +53,7 @@ cfg 'layout: one-root' 'paseo:' '  managed: true' "  listen: 127.0.0.1:$PORT"
 r=$(base); p=$(jq -c .p <<<"$r")
 envv() { jq -r --arg k "$1" '.environment[] | select(startswith($k + "=")) | sub("^[^=]*="; "")' <<<"$p"; }
 is "on: mm.paseo in namespace mm" [ "$(jq -r .namespace <<<"$p")" = mm ]
-is "on: mm's own npm's paseo, daemon run" grep -qF "exec $M/npm/bin/paseo daemon run" <<<"$(jq -r .command <<<"$p")"
+is "on: the paseo of mm's lock (npm/paseo), daemon run" grep -qF "exec $M/npm/paseo/node_modules/.bin/paseo daemon run" <<<"$(jq -r .command <<<"$p")"
 is "on: umask 077" grep -qF "umask 077" <<<"$(jq -r .command <<<"$p")"
 is "on: PASEO_HOME is \$MM_HOME/paseo/system" [ "$(envv PASEO_HOME)" = "$M/paseo/system" ]
 is "on: PASEO_LISTEN from paseo.listen" [ "$(envv PASEO_LISTEN)" = "127.0.0.1:$PORT" ]
@@ -72,7 +72,7 @@ is "relay / web UI keys: PASEO_RELAY_ENABLED=true, PASEO_WEB_UI_ENABLED=false" [
 TOKF=$(envv MM_PASEO_TOKEN_FILE)
 is "the token's file is the machine input's path" [ "$TOKF" = "$HOME/.config/secrets/claude-oauth.token" ]
 mkdir -p "$(dirname "$TOKF")"; printf '%s' "$MARK" >"$TOKF"; chmod 600 "$TOKF"
-printf '#!/bin/sh\necho "umask=$(umask) token=${CLAUDE_CODE_OAUTH_TOKEN:+set} file=${MM_PASEO_TOKEN_FILE:-unset} home=$PASEO_HOME args=$*"\n' >"$M/npm/bin/paseo"; chmod +x "$M/npm/bin/paseo"
+printf '#!/bin/sh\necho "umask=$(umask) token=${CLAUDE_CODE_OAUTH_TOKEN:+set} file=${MM_PASEO_TOKEN_FILE:-unset} home=$PASEO_HOME args=$*"\n' >"$M/npm/paseo/node_modules/.bin/paseo"; chmod +x "$M/npm/paseo/node_modules/.bin/paseo"
 cmd=$(jq -r .command <<<"$p" | sed 's/\$\$/$/g')
 out=$(env -i $(jq -r '.environment[]' <<<"$p" | tr '\n' ' ') bash -c "$cmd")
 is "the daemon starts with umask 077" grep -q "umask=0077" <<<"$out"

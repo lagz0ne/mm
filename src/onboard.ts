@@ -83,7 +83,7 @@ export async function onboard(o: OnboardOpts): Promise<{ steps: Step[]; checks: 
     try { steps.push({ step: 'system packages', status: 'fixed', detail: installSystem(sys.map(([, t]) => (t.install as { packages: Record<string, string> }).packages[pm ?? 'dnf'])) }) }
     catch (e) { steps.push({ step: 'system packages', status: 'fail', detail: String((e as Error).message) }) }
   }
-  const order = (k: string) => (k === 'node-dist' ? 0 : k === 'npm' ? 2 : 1)
+  const order = (k: string) => (k === 'node-dist' ? 0 : k === 'npm' || k === 'npm-lock' ? 2 : 1)
   for (const [name, t] of missing.filter(([, t]) => t.install!.kind !== 'system').sort((a, b) => order(a[1].install!.kind) - order(b[1].install!.kind))) {
     try { steps.push({ step: `tool ${name}`, status: 'fixed', detail: await install(name, t.install!) }) }
     catch (e) { steps.push({ step: `tool ${name}`, status: 'fail', detail: String((e as Error).message).slice(0, 200) }) }

@@ -9,6 +9,7 @@ import { API_DIR } from './apistate'
 import { boxish, engineRefusal, listProjects } from './project'
 import { engineDrift } from './lifecycle'
 import { manifest, type Tool } from './manifest'
+import { directDeps, installedProblem, lockBin, shipped } from './npmlock'
 import * as vault from './vault'
 import { outsideChecks } from './outside'
 import { daemonCheck as paseoDaemonCheck } from './paseo'
@@ -56,12 +57,27 @@ export function checkTool(name: string, t: Tool, c: Config): Check {
     if (t.optional || t.needed_by) return row(t.optional ? 'skip' : 'warn', `not installed${t.needed_by ? ` (needed by ${t.needed_by})` : ' (optional)'}`)
     return row(t.required ? 'fail' : 'warn', 'not installed', t.install ? 'mm onboard' : `install ${name}`)
   }
+  if (t.install?.kind === 'npm-lock') {
+    // installed from mm's lock (sy-nli): the lock this mm ships, its direct dependencies' versions, and run from there
+    const bad = installedProblem(t.install.lock, path)
+    if (bad) return row('fail', bad, 'mm onboard (installs it from the lock)')
+  }
   if (!t.version) return row('ok', path.replace(HOME, '~'))
   const r = run(t.version, { timeoutMs: 15_000 })
   const v = parseVersion(r.out + r.err)
   if (!v) return row(t.min ? 'warn' : 'ok', `${path.replace(HOME, '~')} (version unreadable)`)
   if (t.min && !atLeast(v, t.min)) return row('fail', `${v} < ${t.min}`, 'mm onboard')
   return row('ok', `${v}  ${path.replace(HOME, '~')}`)
+}
+
+/** A tool now installed from mm's lock whose old `npm install -g` copy is still in ~/.mm/npm/bin (sy-nli): nothing of
+ *  mm runs it any more, an older unit may. Its own row, a warn: the tool's row stays ok, so onboard doesn't reinstall. */
+export function oldNpmCopy(name: string, t: Tool): Check | null {
+  if (t.install?.kind !== 'npm-lock') return null
+  const old = join(DIRS.npm, 'bin', name)
+  if (!existsSync(old)) return null
+  return { layer: 'tool', item: `${name} (old copy)`, status: 'warn', detail: `${tilde(old)} from mm's older npm install -g is still there; mm runs ${tilde(lockBin(t.install.lock, name))}`,
+    fix: `once nothing runs it: npm uninstall -g --prefix ${tilde(DIRS.npm)} ${Object.keys(directDeps(shipped(t.install.lock))).join(' ')}` }
 }
 
 /**
@@ -222,7 +238,7 @@ export function doctor(): Check[] {
   }
 
   // tools
-  for (const [name, t] of Object.entries(m.tools)) out.push(checkTool(name, t, c))
+  for (const [name, t] of Object.entries(m.tools)) { out.push(checkTool(name, t, c)); const o = oldNpmCopy(name, t); if (o) out.push(o) }
 
   // paths
   for (const [k, p] of Object.entries(m.paths)) {

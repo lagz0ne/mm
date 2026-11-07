@@ -1,9 +1,10 @@
 // Installers for the manifest's `install` kinds. Everything lands under ~/.mm except system packages.
 // Every download is checked against its published sha256 before use.
-import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { archNames, asRoot, DIRS, run, toolEnv, which } from './env'
 import type { Install } from './manifest'
+import { directDeps, lockDir, lockProblems, pinned, shipped } from './npmlock'
 
 const fill = (s: string) => s.replaceAll('{goarch}', archNames.goarch).replaceAll('{rustarch}', archNames.rustarch).replaceAll('{node}', archNames.node)
 
@@ -62,6 +63,38 @@ export async function claudeDist(version: string, base = CLAUDE_DIST): Promise<s
   return `claude ${version} -> ~/.mm/tools/claude/${version}`
 }
 
+/**
+ * An npm tool from the lock mm ships (src/npmlock.ts, sy-nli): package.json and package-lock.json into a fresh folder
+ * next to $MM_HOME/npm/<lock>, `npm ci` there (every package the lock's, checked against its integrity hash; no install
+ * script runs: Paseo's native part, node-pty, comes prebuilt), then swapped into place, so a running daemon never sees
+ * a half-made tree. The direct dependencies' bins are linked into bin/ (not every bin of the tree).
+ * A lock that is not fit (lockfileVersion 3, exact versions, integrity everywhere) is refused before anything is written.
+ */
+export function npmLock(name: string): string {
+  const l = shipped(name), bad = lockProblems(l)
+  if (bad.length) throw new Error(`mm's npm lock ${name} refused: ${bad.slice(0, 3).join('; ')}`)
+  if (!which('npm')) throw new Error('npm is needed first (node)')
+  const dir = lockDir(name), next = `${dir}.new-${process.pid}`, old = `${dir}.old-${process.pid}`
+  mkdirSync(DIRS.npm, { recursive: true })
+  rmSync(next, { recursive: true, force: true })
+  mkdirSync(next)
+  writeFileSync(join(next, 'package.json'), l.pkg)
+  writeFileSync(join(next, 'package-lock.json'), l.lock)
+  const r = run(['npm', 'ci', '--prefix', next, '--no-audit', '--no-fund', '--ignore-scripts'], { timeoutMs: 600_000, env: npmEnv() })
+  if (!r.ok) { rmSync(next, { recursive: true, force: true }); throw new Error(`npm ci (${name}): ${r.err.trim().split('\n').slice(-2).join(' ')}`) }
+  if (existsSync(dir)) renameSync(dir, old)
+  renameSync(next, dir)
+  rmSync(old, { recursive: true, force: true })
+  const deps = directDeps(l), bins: string[] = []
+  for (const d of Object.keys(deps)) {
+    let bin: unknown
+    try { bin = JSON.parse(readFileSync(join(dir, 'node_modules', d, 'package.json'), 'utf8')).bin } catch {}
+    const names = typeof bin === 'string' ? [d.split('/').pop()!] : bin && typeof bin === 'object' ? Object.keys(bin) : []
+    for (const b of names) { link(join(dir, 'node_modules', '.bin', b), b); bins.push(b) }
+  }
+  return `${Object.entries(deps).map(([d, v]) => `${d}@${v}`).join(' ')} (${pinned(l)} packages from mm's lock) -> ~/.mm/npm/${name}${bins.length ? `; bin: ${bins.join(' ')}` : ''}`
+}
+
 /** Package manager on this machine. */
 export function packageManager(): 'dnf' | 'apt' | 'apk' | null {
   if (which('dnf')) return 'dnf'
@@ -115,6 +148,7 @@ export async function install(name: string, spec: Install): Promise<string> {
       for (const b of existsSync(nbin) ? readdirSync(nbin) : []) link(join(nbin, b), b)
       return `${pkg} -> ~/.mm/npm`
     }
+    case 'npm-lock': return npmLock(spec.lock)
     case 'claude-dist': return await claudeDist(spec.version)
     case 'script': {
       const body = await download(spec.url)
