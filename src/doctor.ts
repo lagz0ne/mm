@@ -1,5 +1,5 @@
 // mm doctor: check this machine against the manifest. Never changes anything (`mm doctor --fix` is src/outside.ts).
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, type Stats, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { type Config, getPath, loadConfig, when } from './config'
 import { canon, configuredSecretsDir, DIRS, HOME, hasSystemdUser, isRoot, run, SECRETS_KEY, secretsDir, secretsDirKey, tilde, which } from './env'
@@ -92,6 +92,37 @@ export function secretModes(): Check {
   const fixes = new Map<string, string[]>()
   for (const w of wide) fixes.set(w.fix, [...(fixes.get(w.fix) || []), shown(w.path)])
   return { layer: 'secret', item: 'secret modes', status: 'fail',
+    detail: `${wide.length} too wide: ${wide.slice(0, 5).map((w) => `${shown(w.path)} 0${w.mode.toString(8)}`).join(', ')}${wide.length > 5 ? ', …' : ''}`,
+    fix: [...fixes].map(([m, ps]) => `chmod ${m} ${ps.join(' ')}`).join('; ') }
+}
+
+/**
+ * Who may enter mm's own home (review sy-lud 1): $MM_HOME and its paseo/, claude/ and run/ folders 0700 (Paseo's and
+ * Claude's state, the agents' activity, the runtime sockets); no socket of mm's (in $MM_HOME or run/) that the group or
+ * others may connect to (a socket connects by its write bit); Paseo's logs (*.log in paseo/, they hold agent activity)
+ * 0600. The owner's home at 0700 hides all this from other uids already; this holds when $MM_HOME is elsewhere too, and
+ * when the home is opened. Stat only.
+ */
+export function mmHomeModes(mm = DIRS.mm): Check {
+  const wide: { path: string; mode: number; fix: string }[] = []
+  const st = (p: string) => { try { return statSync(p) } catch { return undefined } }
+  const dirs = [mm, ...['paseo', 'claude', 'run'].map((d) => join(mm, d))]
+  for (const d of dirs) { const s = st(d); if (s?.isDirectory() && (s.mode & 0o077)) wide.push({ path: d, mode: s.mode & 0o777, fix: '700' }) }
+  const walk = (d: string, depth: number, each: (p: string, s: Stats) => void) => {
+    let names: string[] = []; try { names = readdirSync(d) } catch { return }
+    for (const n of names) {
+      const p = join(d, n), s = st(p); if (!s) continue
+      if (s.isDirectory()) { if (depth > 0) walk(p, depth - 1, each) } else each(p, s)
+    }
+  }
+  const sock = (p: string, s: Stats) => { if (s.isSocket() && (s.mode & 0o022)) wide.push({ path: p, mode: s.mode & 0o777, fix: 'go-w' }) }
+  walk(mm, 0, sock); walk(join(mm, 'run'), 2, sock)
+  walk(join(mm, 'paseo'), 2, (p, s) => { if (s.isFile() && p.endsWith('.log') && (s.mode & 0o077)) wide.push({ path: p, mode: s.mode & 0o777, fix: '600' }) })
+  const shown = (p: string) => p.replace(HOME, '~'), item = `mode ${shown(mm)}`
+  if (!wide.length) return { layer: 'machine', item, status: 'ok', detail: 'it and paseo/, claude/, run/ 0700; no socket others can connect to; Paseo logs 0600' }
+  const fixes = new Map<string, string[]>()
+  for (const w of wide) fixes.set(w.fix, [...(fixes.get(w.fix) || []), shown(w.path)])
+  return { layer: 'machine', item, status: 'fail',
     detail: `${wide.length} too wide: ${wide.slice(0, 5).map((w) => `${shown(w.path)} 0${w.mode.toString(8)}`).join(', ')}${wide.length > 5 ? ', …' : ''}`,
     fix: [...fixes].map(([m, ps]) => `chmod ${m} ${ps.join(' ')}`).join('; ') }
 }
@@ -261,6 +292,7 @@ export function doctor(): Check[] {
     out.push((m & 0o077) === 0 ? { layer: 'machine', item: `mode ${d.replace(HOME, '~')}`, status: 'ok', detail: `0${m.toString(8)}` }
       : { layer: 'machine', item: `mode ${d.replace(HOME, '~')}`, status: 'fail', detail: `0${m.toString(8)}: wider than 0700 (the boxes share the owner's group)`, fix: `chmod 700 ${d.replace(HOME, '~')}` })
   }
+  if (existsSync(DIRS.mm)) out.push(mmHomeModes())
   // a folder that neither the group nor others may enter (no g+x, no o+x: e.g. Claude's own 0700 /tmp/claude-<uid>) is a
   // wall too: what is under it is out of their reach, so it isn't listed (review sy-b15.16 #4)
   const loose = run(['find', '/tmp', '/var/tmp', '/dev/shm', '-xdev', '(', '-type', 'd', '-not', '-perm', '/011', '-prune', ')', '-o',

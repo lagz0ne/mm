@@ -119,7 +119,7 @@ export async function install(name: string, spec: Install): Promise<string> {
     case 'script': {
       const body = await download(spec.url)
       const file = join(DIRS.mm, `.install-${name}.sh`)
-      mkdirSync(DIRS.mm, { recursive: true })
+      mkdirSync(DIRS.mm, { recursive: true, mode: 0o700 })
       writeFileSync(file, body)
       const shell = which('bash') ? 'bash' : 'sh' // vendor install scripts assume bash
       const r = run(spec.root ? asRoot([shell, file]) : [shell, file], { timeoutMs: 900_000 })

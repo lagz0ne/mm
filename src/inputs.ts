@@ -69,7 +69,7 @@ export const secretPathsFile = () => join(DIRS.mm, 'secret-paths.json')
 /** Write the list (paths only), whole or not at all: a temp file renamed over the old one. */
 export function writeSecretPaths() {
   const f = secretPathsFile(), tmp = `${f}.${process.pid}.tmp`
-  mkdirSync(DIRS.mm, { recursive: true })
+  mkdirSync(DIRS.mm, { recursive: true, mode: 0o700 })
   writeFileSync(tmp, JSON.stringify({ ...machineSecretPaths(), about: 'the machine\'s secret paths (no values), from mm\'s manifest; config-check denies them to every role' }, null, 2) + '\n', { mode: 0o644 })
   renameSync(tmp, f)
 }
