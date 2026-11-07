@@ -52,7 +52,7 @@ machine:
                  for: "the paseo-telegram bridge (approvals and chat with agents)",
                  how: "@BotFather on Telegram: /newbot, or /token for an existing bot" }
     claude-oauth-token: { kind: secret, required: true, path: "~/.config/secrets/claude-oauth.token",
-                 for: "CLAUDE_CODE_OAUTH_TOKEN for agents (shell + paseo service); mm.ai's upstream too, when ai.upstream_key_input is claude-oauth-token (never in a box)",
+                 for: "CLAUDE_CODE_OAUTH_TOKEN for agents (shell + mm.paseo: from the vault once sealed there as claude-oauth-token, else this file); mm.ai's upstream too, when ai.upstream_key_input is claude-oauth-token (never in a box)",
                  how: "`claude setup-token` on any machine signed in to your Claude account" }
     ai-upstream-key: { kind: secret, when: "ai.enabled == true && ai.upstream_key_input != claude-oauth-token", path: "~/.config/secrets/ai-upstream.key",
                  for: "mm.ai, the AI gateway for project boxes: its key for the upstream (never in a box)",
@@ -63,6 +63,8 @@ machine:
     mastermind-deploy-key: { kind: secret, path: "~/.ssh/mastermind_deploy",
                  for: "pushes to your private mastermind repo (the machine's backup)",
                  how: "ssh-keygen -t ed25519 -N '' -f ~/.ssh/mastermind_deploy, then add the .pub to the repo as a deploy key with write access (or mm fill from your saved copy)" }
+    # Paseo's own files: the paths name the older install's home; once paseo.managed is on they live in mm.paseo's home
+    # ($MM_HOME/paseo/system, or paseo.home), and mm needs / doctor check them there (src/inputs.ts)
     paseo-keypair:    { kind: secret, managed_by: paseo, path: "~/.paseo/daemon-keypair.json", for: "the Paseo daemon's identity" }
     paseo-credential: { kind: secret, managed_by: paseo, path: "~/.paseo/local-credential", for: "local clients' credential for the Paseo daemon" }
     github:    { kind: account, check: ["gh", "auth", "status"],
@@ -136,7 +138,9 @@ machine:
     # list (`mm doctor`, "outside $MM_HOME"); portless' state is ~/.mm/portless, process-compose's settings ~/.mm/pc/config.
 
   services:                                   # machine-level (brain), today as systemd user units
-    paseo:          { unit: paseo.service }               # agent daemon
+    paseo:          { process: mm.paseo, under: mm-pc, home: "~/.mm/paseo/system", unit: paseo.service }
+                    # the agent daemon: mm.paseo in mm-pc once paseo.managed is on (src/paseo.ts; its home there, or
+                    # paseo.home); `unit` is only the older install's, on a machine not managed yet (home ~/.paseo)
     paseo-telegram: { unit: paseo-telegram.service }      # Telegram -> Paseo bridge
     preview-http:   { unit: preview-http.service }        # static review pages (~/.local/share/preview)
     brain-snapshot: { unit: brain-snapshot.timer }

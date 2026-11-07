@@ -155,6 +155,11 @@ export function openForRun(name: string): string {
   return f
 }
 
+/** `mm vault run`'s scope for the machine's own secrets (sy-nli: mm.paseo's Claude token), in place of a project. A
+ *  project id starts with a letter (apistate PROJECT_ID), so no project is ever called this. Its values are opened
+ *  with openForRun (one new file each in `_run/`, never a folder a box mounts) and removed when the run ends. */
+export const MACHINE_SCOPE = '_machine'
+
 /** Names, sizes and whether each sealed file still matches its digest. Never a value. */
 export function list() {
   const d = digests()

@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 // mm: set up the stack on a machine, and stamp projects from the template.
-import { existsSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { Command, Option } from 'commander'
 import { getPath, loadConfig, saveConfig, setPath, unsetPath } from './config'
 import { doctor, throwawayOnly } from './doctor'
 import { DIRS, HOME, run, tilde } from './env'
-import { expand as expandHome, fill, needs, unmet } from './inputs'
+import { expand as expandHome, fill, machineInputs, needs, unmet } from './inputs'
 import { manifest } from './manifest'
 import { onboard } from './onboard'
 import { moveOutside } from './outside'
@@ -500,14 +500,39 @@ const vaultCmd = program.command('vault').description('sealed secrets (age): two
 const notInAgent = (what: string) => {
   if (process.env.CLAUDECODE || process.env.PASEO_AGENT_ID) { console.error(`mm vault ${what}: refused in an agent's shell. It is the owner's, or the process manager's at a service's start.`); process.exit(1) }
 }
+// `mm vault run _machine <names> -- cmd` (sy-nli): the machine's own sealed inputs (mm.paseo's Claude token), each
+// opened into a new file in the memory-backed `_run/` folder for this run only, cmd started with <NAME>_FILE set, every
+// file removed when cmd ends (cmd may remove it sooner: mm.paseo's reads it and removes it at once). Only a machine
+// secret input mm fills itself (no managed_by), sealed under its own name; never a value on argv or in the output.
+async function machineRun(names: string, cmd: string[]) {
+  const files: string[] = []
+  const clean = () => { for (const f of files) rmSync(f, { force: true }) }
+  try {
+    const list = names.split(',').filter(Boolean), inputs = machineInputs()
+    if (!list.length || !cmd.length) throw new Error(`usage: mm vault run ${vaultMod.MACHINE_SCOPE} <names> -- <cmd...>`)
+    const env: Record<string, string> = { ...process.env as Record<string, string> }
+    for (const n of list) {
+      const i = inputs[n]
+      if (!i || i.kind !== 'secret' || i.managed_by || !/^[a-z][a-z0-9-]{1,63}$/.test(n)) throw new Error(`${n} is not a machine secret input (mm needs)`)
+      if (!vaultMod.sealed(n)) throw new Error(`${n} is not sealed in the vault`)
+      const f = vaultMod.openForRun(n); files.push(f)
+      env[`${n.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_FILE`] = f
+    }
+    const p = Bun.spawn(cmd, { env, stdio: ['inherit', 'inherit', 'inherit'] })
+    for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(sig, () => p.kill(sig))
+    const code = await p.exited
+    clean(); process.exit(code)
+  } catch (e) { clean(); console.error(`mm vault run: ${(e as Error).message}`); process.exit(1) }
+}
 vaultCmd.command('init').description("make this machine's vault key and record the human's recovery PUBLIC key (age1…)")
   .requiredOption('--recovery <age1…>', "the recovery key's public half (keep its secret half offline)")
   .action((o) => { notInAgent('init'); try { const r = vaultMod.init(o.recovery); console.log(`vault ready: sealed to this machine (${r.machine.slice(0, 16)}…) and the recovery key (${r.recovery.slice(0, 16)}…). Keep the recovery key's secret half offline.`) } catch (e) { console.error(`mm vault: ${(e as Error).message}`); process.exit(1) } })
 vaultCmd.command('ls').description('what is sealed (names, sizes, digests; never a value)').action(() => { const o = fmt(); print(vaultMod.list() as unknown as Record<string, unknown>[], o) })
 vaultCmd.command('check').description('modes and digests (doctor runs it too)').action(() => { const r = vaultMod.check(); for (const x of r) console.log(`${x.ok ? 'ok  ' : 'FAIL'} ${x.detail}`); process.exit(r.every((x) => x.ok) ? 0 : 1) })
-vaultCmd.command('run <project> <names> [cmd...]').description('(used by mm up) open the named secrets for <project>, then run cmd with <NAME>_FILE set')
+vaultCmd.command('run <project> <names> [cmd...]').description(`(used by mm up and mm.paseo) open the named secrets for <project>, or the machine's own for ${vaultMod.MACHINE_SCOPE}, then run cmd with <NAME>_FILE set`)
   .action(async (project: string, names: string, cmd: string[]) => {
     notInAgent('run')
+    if (project === vaultMod.MACHINE_SCOPE) return machineRun(names, cmd)
     try {
       const list = names.split(',').filter(Boolean)
       const files = vaultMod.openFor(project, list.map((n) => vaultMod.projectSecretName(project, n)))
