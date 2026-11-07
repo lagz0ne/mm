@@ -3,7 +3,9 @@
 // The SDK is loaded at runtime from the Paseo install itself (the client package the installed CLI ships, so it matches
 // the daemon), never compiled into anything: it declares no licence. Order: PASEO_SDK (a path to its entry file), then
 // the installed CLI's own copy. If it can't load or connect, every call falls back to the CLI, so nothing breaks.
-// Address: PASEO_URL, else .run/endpoints.json "paseo", else the daemon's default. Leads never use this module (their
+// Address (address()): PASEO_URL, else .run/endpoints.json "paseo" (mm writes it: a socket by default, sy-nli), else
+// the daemon's pid lock in PASEO_HOME, else Paseo's own default; a socket is reached through the SDK's node entry
+// (connection()). The CLI fallback finds the daemon by PASEO_HOME itself. Leads never use this module (their
 // Paseo use stays the CLI, under the guard and their permission rules).
 // A brake on that (sy-e5i): in an agent's shell (CLAUDECODE or PASEO_AGENT_ID set), the calls that change an agent
 // (send, archive) refuse, unless the process is one of the engine's own services that make them (ENGINE: wake). The
@@ -27,7 +29,31 @@ function engineOnly(what) {
   throw new Error(`bin/lib/paseo.mjs ${what}: refused in an agent's shell (the engine's services make this call; an agent uses the paseo CLI, under its permission rules)`)
 }
 const BIN = E.PASEO_BIN || 'paseo'
-const URL_ = E.PASEO_URL || endpoints().paseo || 'ws://127.0.0.1:6767/ws'
+/** A listen address as a client's: unix:///path for a socket (a bare /path too), ws://host:port/ws for host:port; a
+ *  ws(s):// or unix:// one as it is. */
+const asClient = (l) => (/^(wss?|unix):\/\//.test(l) ? l : l.startsWith('/') ? `unix://${l}` : `ws://${l}/ws`)
+/** Where the machine's Paseo answers (sy-nli): PASEO_URL, else .run/endpoints.json "paseo" (the address mm gave its
+ *  daemon), else the address in the pid lock of the daemon on PASEO_HOME (as the CLI finds it), else Paseo's own
+ *  default. Never a port of its own. */
+export function address() {
+  if (E.PASEO_URL) return asClient(E.PASEO_URL)
+  const ep = endpoints().paseo; if (typeof ep === 'string' && ep) return asClient(ep)
+  try {
+    const l = JSON.parse(fs.readFileSync(path.join(E.PASEO_HOME || path.join(E.HOME || '', '.paseo'), 'paseo.pid'), 'utf8')).listen
+    if (typeof l === 'string' && l) return asClient(l)
+  } catch {}
+  return 'ws://127.0.0.1:6767/ws'
+}
+/** The client's connection settings for an address: a socket (unix://) goes through the SDK's node entry
+ *  (dist/node/index.js next to the entry sdkPath() finds), whose transport speaks WebSocket over the socket; the URL
+ *  is then the SDK's placeholder for it. Anything else: the URL. */
+export async function connection(url, entry = sdkPath()) {
+  if (!url.startsWith('unix://')) return { url }
+  if (!entry) throw new Error('no Paseo SDK found')
+  const { createHostTransportFactory } = await import(pathToFileURL(path.join(path.dirname(entry), 'node', 'index.js')).href)
+  return { url: 'ws://host-connector/ws', transportFactory: createHostTransportFactory(url) }
+}
+const URL_ = address()
 let client = null, connecting = null, sdkFailed = ''
 
 function which(cmd) {
@@ -59,7 +85,7 @@ async function sdk() {
   connecting ||= (async () => {
     const f = sdkPath(); if (!f) throw new Error('no Paseo SDK found')
     const { createPaseoClient } = await import(pathToFileURL(f).href)
-    const c = createPaseoClient({ url: URL_, clientId: `mm-${path.basename(process.argv[1] || 'engine')}`, reconnect: { enabled: true } })
+    const c = createPaseoClient({ ...(await connection(URL_, f)), clientId: `mm-${path.basename(process.argv[1] || 'engine')}`, reconnect: { enabled: true } })
     let timer
     try { await Promise.race([c.connect(), new Promise((_, no) => { timer = setTimeout(() => no(new Error('connect timeout')), 8000) })]) }
     catch (e) { try { await c.close() } catch {} throw e } // no half-made client left reconnecting next to the retry's

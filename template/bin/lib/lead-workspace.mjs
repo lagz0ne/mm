@@ -14,8 +14,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { sdkPath } from './paseo.mjs'
-import { endpoints } from './svc.mjs'
+import { address, connection, sdkPath } from './paseo.mjs'
 
 const argv = process.argv.slice(2), tidy = argv[0] === '--tidy'
 const [root, dir, title, name] = tidy ? [argv[1]] : argv
@@ -29,8 +28,8 @@ const R = real(root)
 async function client() {
   const f = sdkPath(); if (!f) throw new Error('no Paseo client found')
   const { DaemonClient } = await import(pathToFileURL(path.join(path.dirname(f), 'daemon-client.js')).href)
-  const url = process.env.PASEO_URL || endpoints().paseo || 'ws://127.0.0.1:6767/ws'
-  const c = new DaemonClient({ url, clientId: 'mm-lead', clientType: 'cli' })
+  // the address paseo.mjs picks (PASEO_URL, endpoints.json "paseo", the pid lock); a socket through the SDK's node entry
+  const c = new DaemonClient({ ...(await connection(address(), f)), clientId: 'mm-lead', clientType: 'cli' })
   await Promise.race([c.connect(), new Promise((_, no) => setTimeout(() => no(new Error('connect timeout')), 8000))])
   return c
 }

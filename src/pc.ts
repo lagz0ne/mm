@@ -1,14 +1,14 @@
 // The machine's one process-compose: API on ~/.mm/pc.sock, started at boot by one systemd user unit (mm-pc.service).
 // Projects are added as namespaces later (`mm new` / `mm up`); it starts empty and stays up (--keep-project).
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { apiConfigured } from './apistate'
 import { personRunsConfigured } from './personruns'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, hasSystemdUser, portlessDir, run, servicePath, toolEnv, which } from './env'
 import { MM_LOG_CONFIG, obsProcesses } from './obs'
 import { expand, machineInputs } from './inputs'
-import { daemonEnv, homeRefusal, listenRefusal, managedHome, paseoManaged } from './paseo'
+import { daemonEnv, homeRefusal, listenRefusal, managedHome, paseoManaged, socketPath } from './paseo'
 import { frontEnabled } from './front'
 
 const BASE = join(DIRS.pc, 'base.yaml'), PROJECTS = join(DIRS.pc, 'projects')
@@ -66,7 +66,12 @@ export function writeBase() {
     const home = managedHome(), env = daemonEnv(), bin = join(DIRS.npm, 'bin', 'paseo'), badHome = homeRefusal(home)
     if (!badHome) { mkdirSync(home, { recursive: true, mode: 0o700 }); chmodSync(join(home, '..'), 0o700); chmodSync(home, 0o700) }
     const token = expand(String(machineInputs()['claude-oauth-token']?.path || ''))
-    const l = env.PASEO_LISTEN, sock = l.startsWith('/') || l.startsWith('unix://')
+    const l = env.PASEO_LISTEN, sockFile = socketPath(l), sock = !!sockFile
+    // its socket's folder (sy-nli): mm's run/ (the default) made 0700, as mm doctor's `mode ~/.mm` wants it; a socket
+    // configured elsewhere under mm gets its folder made 0700 too; one outside mm is the machine's to make
+    if (sockFile && !listenRefusal(l) && !relative(DIRS.mm, dirname(sockFile)).startsWith('..')) {
+      mkdirSync(dirname(sockFile), { recursive: true, mode: 0o700 }); chmodSync(dirname(sockFile), 0o700)
+    }
     // a listen address off loopback, or a home outside mm's paseo/ folder, is refused (review sy-11g #12): the process
     // only says so (a fixed text, never the configured value on a command line) and stops; mm doctor's paseo row names
     // the value and the fix
@@ -78,7 +83,7 @@ export function writeBase() {
       command: `sh -c 'umask 077; [ -r "$$MM_PASEO_TOKEN_FILE" ] && export CLAUDE_CODE_OAUTH_TOKEN="$$(cat "$$MM_PASEO_TOKEN_FILE")"; unset MM_PASEO_TOKEN_FILE; exec ${bin} daemon run'`,
       environment: Object.entries({ PATH: servicePath(), HOME, MM_HOME: DIRS.mm, ...env, MM_PASEO_TOKEN_FILE: token }).map(([k, v]) => `${k}=${v}`),
       log_location: join(DIRS.pc, 'paseo.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
-      readiness_probe: { exec: { command: sock ? `test -S ${l.replace(/^unix:\/\//, '')}` : `curl -s -o /dev/null --max-time 2 http://${l}/` }, period_seconds: 3, failure_threshold: 40 } }
+      readiness_probe: { exec: { command: sock ? `test -S ${sockFile}` : `curl -s -o /dev/null --max-time 2 http://${l}/` }, period_seconds: 3, failure_threshold: 40 } }
   }
   // sy-duj0: once at each start of the process manager (boot), every box project's full mm up, so no box runs as Docker
   // alone brought it back (an empty secrets folder Docker made). Exits when done; not restarted.
