@@ -119,7 +119,7 @@ function changeLine(f: Frame) {
 function DesignView({ d }: { d: DesignsData }) {
   if (!d.frames.length) return <p className="text-xs text-muted-foreground">No designs on this item itself. See the Requirement view for its parts.</p>
   return (
-    <div className="grid gap-5">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
       {d.frames.map((f) => <FrameCard key={f.id} f={f} />)}
     </div>
   )
@@ -189,13 +189,13 @@ function Thumbs({ frames }: { frames: Frame[] }) {
 function RequirementView({ d, onOpen }: { d: DesignsData; onOpen: (id: string) => void }) {
   const kids = d.children || []
   return (
-    <div className="grid gap-3">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-3">
       <div>
         <h4 className="mb-1 text-[11px] font-semibold">This item · {d.frames.length} design{d.frames.length === 1 ? '' : 's'}</h4>
         {d.frames.length ? <Thumbs frames={d.frames} /> : <p className="text-xs text-muted-foreground">None linked here.</p>}
       </div>
       {kids.length > 0 && (
-        <div className="grid gap-2">
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-2">
           <h4 className="text-[11px] font-semibold">Its parts</h4>
           {kids.map((c) => (
             <div key={c.id} className="border-t pt-2">
@@ -216,7 +216,7 @@ function RequirementView({ d, onOpen }: { d: DesignsData; onOpen: (id: string) =
 function QaView({ d, built }: { d: DesignsData; built: BuiltFile[] }) {
   if (!d.frames.length) return <p className="text-xs text-muted-foreground">No designs on this item itself.</p>
   return (
-    <div className="grid gap-4">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
       {!built.length && <p className="text-xs text-muted-foreground">No built screen on this item yet. Files that commits naming this item add under code/ show here next to the design.</p>}
       {d.frames.map((f) => (
         <div key={f.id} className="min-w-0">
@@ -238,7 +238,7 @@ function SummaryView({ d }: { d: DesignsData }) {
   const openCount = d.frames.reduce((n, f) => n + (f.comments?.length || 0), 0)
   const last = d.frames.filter((f) => f.updatedAt).sort((a, b) => (b.updatedAt! > a.updatedAt! ? 1 : -1))[0]
   return (
-    <div className="grid gap-3">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-3">
       <dl className="grid grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] border border-foreground text-xs">
         {[['Designs', all.length], ['Ready to build', by('ready_for_dev')], ['Need review', by('needs_review')], ['Open comments', openCount], ['Wait for you', waiting.length]].map(([k, n]) => (
           <div key={k} className="border-l px-2 py-1.5 first:border-l-0">
@@ -252,9 +252,9 @@ function SummaryView({ d }: { d: DesignsData }) {
       {waiting.length > 0 && (
         <div>
           <h4 className="mb-1 text-[11px] font-semibold">Comments waiting for you</h4>
-          <ol className="grid gap-1.5">
+          <ol className="grid grid-cols-[minmax(0,1fr)] gap-1.5">
             {waiting.map(({ f, t }) => (
-              <li key={t.id} className="grid gap-0.5">
+              <li key={t.id} className="grid grid-cols-[minmax(0,1fr)] gap-0.5">
                 <span className="text-[11px] text-muted-foreground">on {f.name} {f.open && <a href={f.open} target="_blank" rel="noreferrer" className="font-semibold text-foreground hover:underline">answer in Doop</a>}</span>
                 <ol><ThreadRow t={t} /></ol>
               </li>

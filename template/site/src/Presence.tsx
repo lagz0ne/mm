@@ -126,8 +126,8 @@ function NowLine({ b, onOpen }: { b: Busy; onOpen: (id: string) => void }) {
   const { p, name } = useLabel(b)
   return (
     <li>
-      <button onClick={() => b.item && onOpen(b.item)} className="typing-in grid w-full grid-cols-[1.25rem_1fr] items-center gap-x-2 px-4 py-1.5 text-left text-xs hover:bg-muted">
-        <Avatar actor={b.actor} size="sm" />
+      <button onClick={() => b.item && onOpen(b.item)} className="typing-in grid w-full grid-cols-[1.25rem_minmax(0,1fr)] items-center gap-x-2 px-4 py-1.5 text-left text-xs hover:bg-muted max-md:py-2.5">
+        <span className="flex size-5"><Avatar actor={b.actor} size="sm" /></span>
         <span className="min-w-0">
           <span className="flex items-center gap-1.5"><b style={{ color: p?.color }}>{name}</b><TypingDots color={p?.color} />
             {b.item && <span className="font-mono text-[11px] text-muted-foreground">{b.item}</span>}</span>
