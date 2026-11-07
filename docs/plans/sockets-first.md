@@ -1,6 +1,14 @@
 # Sockets first: HTTP services on unix sockets, one front by name (spike)
 
-Status: **spike, facts and a plan; no code changed.** Refs: sy-onx.
+Status: **steps 1-3 built, behind `front.enabled` (default off: portless as before, the rollback); 4-9 not yet.**
+Refs: sy-onx.
+
+Built: step 1 `listen: unix` and the socket paths in `resolve()` (`test/sockets.sh`); step 2 `mm.front`
+(`src/front.ts`, `mm front serve|ls`; `test/front.sh`); step 3 the mm-given ports (`local_port`, recorded in
+`.run/services.json`) and mm.front in place of mm.portless when `front.enabled` is on (`test/front.sh`, in a container:
+`test/front-container.sh`). The front's table is `$MM_HOME/front/routes/<project>.json`, written by `mm up` from
+`resolve()`. It binds 127.0.0.1 and ::1 only, serves `.localhost` names only, and refuses a `-public` socket or a
+gated public port as a target (review's conditions 1 and 2). A box keeps its own portless (step 9).
 
 The goal: every HTTP service that can (the boards, VictoriaMetrics/Logs/Traces, Paseo) listens on a unix socket under
 `$MM_HOME/run` (folders 0700, sockets 0600). One front listener routes by name to them, for browsers and for the web
@@ -251,6 +259,10 @@ Dolt                 ► <root>/.dolt/mysql.sock + 127.0.0.1:<dolt_port> (port r
 - **The local side is still open to every local uid through the front on 1355,** exactly as through portless today.
   The 0600 socket closes only the direct way in. To close the front too, local browsing would go through the sign-in
   (Q2).
+  **Who is every local user** (who reaches 127.0.0.1 / ::1, so the front): the machine's user (every agent, every
+  project's services, mm itself), the owner's admin account, the signer's user (later), and the system services.
+  Nothing a box runs is on the host's loopback: a box has its own network namespace, and reaches the host only through
+  the forwarders mm gives it.
 - **Traefik's targets change** (one front port in place of one port per service): an ops migration with a rollback
   (old routes and forwarders back). Until it lands, a board's public side must still be reachable: steps 4 and 5
   ship together for public boards, or the board keeps `BOARD_PUBLIC_PORT` until step 5.

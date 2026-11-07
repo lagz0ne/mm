@@ -1,4 +1,5 @@
 // Project lifecycle after `mm new`: update from the template (three-way merge), restart, archive (clean removal).
+import { removeRoutes } from './front'
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative } from 'node:path'
 import { forgetGranted, granted } from './apistate'
@@ -295,6 +296,7 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   steps.push({ step: 'stop', status: s.ok || /not found|no process/i.test(short(s)) ? 'ok' : 'fail', detail: s.ok ? `namespace ${a.project}` : short(s) })
   const pf = join(PROJECTS_PC, `${a.project}.yaml`)
   if (existsSync(pf)) rmSync(pf)
+  removeRoutes(a.project) // its local names leave the front (src/front.ts)
   rmSync(join(BOXES, `${a.project}.yaml`), { force: true }) // a box's registration
   if (a.box) rmSync(join(DIRS.mm, 'box', a.project), { recursive: true, force: true }) // and what mm kept for it (src/box.ts hostDir)
   // its opened secrets (the memory-backed folder mm opens them in, vault.runtimeDir): nothing of an archived project stays

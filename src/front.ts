@@ -26,7 +26,7 @@ export const FRONT_HOSTS = ['127.0.0.1', '::1'] as const
 
 export type Route = { host: string; port?: number; socket?: string }
 /** One project's file: its local names, and the ports of its gated public sides (never a target, whoever names them). */
-export type RouteFile = { project: string; routes: Route[]; public_ports?: number[] }
+export type RouteFile = { project: string; routes: Route[]; public_ports?: number[]; held_ports?: number[] }
 
 const LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
 const LOCAL_NAME = new RegExp(`^(?:${LABEL}\\.)+localhost$`)
@@ -68,6 +68,15 @@ export function writeRoutes(rf: RouteFile, dir = frontDir()) {
   try { if (readFileSync(f, 'utf8') === body) return } catch {}
   const tmp = join(dir, `.${rf.project}.${randomBytes(6).toString('hex')}.tmp`)
   try { writeFileSync(tmp, body, { mode: 0o644 }); renameSync(tmp, f) } catch (e) { rmSync(tmp, { force: true }); throw e }
+}
+/** The ports other projects hold (their route files' held_ports, routes and public ports): mm gives none of them out. */
+export function heldPorts(except: string, dir = frontDir()): number[] {
+  const out: number[] = []
+  for (const f of existsSync(dir) ? readdirSync(dir).filter((x) => x.endsWith('.json') && x !== `${except}.json`) : []) {
+    try { const j = JSON.parse(readFileSync(join(dir, f), 'utf8')) as RouteFile
+      out.push(...[...(j.held_ports || []), ...(j.public_ports || []), ...(j.routes || []).map((r) => r.port)].filter((x): x is number => Number.isInteger(x))) } catch {}
+  }
+  return out
 }
 export function removeRoutes(project: string, dir = frontDir()) { rmSync(join(dir, `${project}.json`), { force: true }) }
 

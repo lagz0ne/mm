@@ -9,6 +9,7 @@ import { DIRS, HOME, hasSystemdUser, portlessDir, run, servicePath, toolEnv, whi
 import { MM_LOG_CONFIG, obsProcesses } from './obs'
 import { expand, machineInputs } from './inputs'
 import { daemonEnv, paseoManaged, systemHome } from './paseo'
+import { frontEnabled } from './front'
 
 const BASE = join(DIRS.pc, 'base.yaml'), PROJECTS = join(DIRS.pc, 'projects')
 const UNIT_DIR = join(HOME, '.config', 'systemd', 'user')
@@ -18,7 +19,16 @@ export const answering = () => run(['process-compose', '-U', '-u', DIRS.socket, 
 /** Machine-level processes (namespace mm): the portless proxy that gives every project's HTTP services their names. */
 export function writeBase() {
   const pp = Number(getPath(loadConfig(), 'portless_port') ?? 1355)
-  const processes: Record<string, unknown> = which('portless') ? {
+  const mm = which('mm') || join(DIRS.bin, 'mm')
+  // front.enabled: mm's own front (src/front.ts) takes portless_port, on 127.0.0.1 and ::1 only; portless is not
+  // started. Off (the default): portless, as before (the rollback)
+  const processes: Record<string, unknown> = frontEnabled() ? {
+    'mm.front': {
+      namespace: 'mm', command: `${mm} front serve --port ${pp}`, environment: [`PATH=${servicePath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
+      log_location: join(DIRS.pc, 'front.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
+      readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${pp}/` }, period_seconds: 3, failure_threshold: 20 },
+    },
+  } : which('portless') ? {
     'mm.portless': {
       namespace: 'mm', command: `portless proxy start --foreground --port ${pp} --no-tls`,
       environment: [`PATH=${servicePath()}`, 'PORTLESS_SYNC_HOSTS=0', `PORTLESS_STATE_DIR=${portlessDir()}`],
@@ -26,7 +36,6 @@ export function writeBase() {
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${pp}/` }, period_seconds: 3, failure_threshold: 20 },
     },
   } : {}
-  const mm = which('mm') || join(DIRS.bin, 'mm')
   processes['mm.cron'] = { namespace: 'mm', command: `${mm} cron`, environment: [`PATH=${servicePath()}`], log_location: join(DIRS.pc, 'cron.log'), log_configuration: MM_LOG_CONFIG,
     availability: { restart: 'always', backoff_seconds: 5 } }   // every project's schedules (process-compose has no scheduler)
   // the sign-in gateway for every board (docs/auth-gateway.md); its state is under $MM_HOME/auth. Off until the machine

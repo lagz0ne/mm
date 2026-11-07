@@ -23,7 +23,11 @@ mkdir -p "$T/stub" "$MM_HOME/pc/projects" "$MM_HOME/run/acme-shop"
 for c in systemctl process-compose; do printf '#!/bin/sh\nexit 1\n' >"$T/stub/$c"; chmod +x "$T/stub/$c"; done
 export PATH="$T/stub:$PATH:/usr/sbin"
 RD="$MM_HOME/front/routes"; mkdir -p "$RD"
-freeport() { local p; while :; do p=$(( 20000 + RANDOM % 30000 )); ss -Htln | grep -q ":$p\b" || { echo "$p"; return; }; done; }
+# the listening TCP sockets on a port, from the kernel's own tables (no ss needed: a box image has none): "4 <addr>" or
+# "6 <addr>", the address as /proc writes it (127.0.0.1 = 0100007F, ::1 = 00000000000000000000000001000000)
+listeners() { local h; h=$(printf '%04X' "$1"); for v in 4 6; do f=/proc/net/tcp; [ $v = 6 ] && f=/proc/net/tcp6
+  [ -r $f ] && awk -v h="$h" -v v=$v 'NR > 1 && $4 == "0A" { n = split($2, a, ":"); if (a[n] == h) print v, a[1] }' $f; done | LC_ALL=C sort | tr '\n' ' '; }
+freeport() { local p; while :; do p=$(( 20000 + RANDOM % 30000 )); [ -z "$(listeners "$p")" ] && { echo "$p"; return; }; done; }
 
 # the fake services: echo what they got; /events: three SSE events 300 ms apart; /gz: a gzip body
 cat >"$T/svc.mjs" <<'EOF'
@@ -104,15 +108,106 @@ for _ in $(seq 1 40); do [ "$(c -o /dev/null -w '%{http_code}' -H 'Host: app.acm
 is "its file gone: 404 again" test "$(c -o /dev/null -w '%{http_code}' -H 'Host: app.acme-two.localhost' "$F/")" = 404
 
 echo '== step 2: where it listens (review condition 1)'
-L=$(ss -Htlnp | grep "pid=$FP_PID," | awk '{print $4}' | LC_ALL=C sort | tr '\n' ' ')
+L=$(listeners "$FP")
 V6=$(grep -c '^0\{31\}1 ' /proc/net/if_inet6 2>/dev/null || true)
-if [ "${V6:-0}" -gt 0 ]; then is "listeners: exactly 127.0.0.1:$FP and [::1]:$FP ($L)" test "$L" = "127.0.0.1:$FP [::1]:$FP "
+if [ "${V6:-0}" -gt 0 ]; then is "listeners on its port: exactly 127.0.0.1 and ::1 ($L)" test "$L" = "4 0100007F 6 00000000000000000000000001000000 "
   is "...and it answers on ::1" test "$(c -o /dev/null -w '%{http_code}' -H 'Host: bd-serve.acme-shop.localhost' "http://[::1]:$FP/")" = 200
-else is "listeners: exactly 127.0.0.1:$FP (no ::1 on this host) ($L)" test "$L" = "127.0.0.1:$FP "; fi
+else is "listeners on its port: exactly 127.0.0.1 (no ::1 on this host) ($L)" test "$L" = "4 0100007F "; fi
 EXT=$(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}')
+[ -z "$EXT" ] && EXT=$(hostname -i 2>/dev/null | tr ' ' '\n' | grep -vE '^(127\.|::1$|$)' | grep -v : | head -1)
 if [ -n "$EXT" ]; then is "nothing answers on a non-loopback address ($EXT:$FP)" bash -c "! curl -s --max-time 2 -o /dev/null -H 'Host: bd-serve.acme-shop.localhost' 'http://$EXT:$FP/'"
 else ok "no non-loopback address on this host: nothing to try"; fi
-is "no 0.0.0.0 / [::] listener of the front" bash -c "! ss -Htlnp | grep 'pid=$FP_PID,' | awk '{print \$4}' | grep -qE '^(0\.0\.0\.0|\*|\[::\]):'"
+is "no 0.0.0.0 / [::] listener on its port" bash -c '[[ -n "$1" && " $1" != *" 4 00000000 "* && " $1" != *" 6 00000000000000000000000000000000 "* ]]' _ "$L"
 kill "$FP_PID" 2>/dev/null; wait "$FP_PID" 2>/dev/null; FP=
+
+# ---------- step 3: front.enabled ----------
+# a host project as mm reads it: a board with its gated public side (its server.mjs knows BOARD_PUBLIC_PORT), bd-serve,
+# an open app slot, and a service on its socket; and a box project
+echo '== step 3: front.enabled off (the default): portless, as before'
+printf '#!/bin/sh\nexit 0\n' >"$T/stub/portless"; chmod +x "$T/stub/portless"
+conf() { printf 'access: domain\ndomain: example.org\nbind_host: 127.0.0.1\n%b' "${1:-}" >"$MM_HOME/config.yaml"; }
+proj() { # <dir> <project> [box]
+  mkdir -p "$1/site" "$1/release"; echo 'process.env.BOARD_PUBLIC_PORT' >"$1/site/server.mjs"
+  printf 'client: acme\nname: shop\nproject: %s\nshort: x\nroot: %s\ntemplate_version: test\ncreated: test\n%s' "$2" "$1" "${3:+box: true
+}" >"$1/.mm-answers.yaml"
+  cat >"$1/services.yaml" <<'EOF'
+services:
+  bd-serve:
+    command: "exec node {home}/svc.mjs $PORT bd"
+    port: http
+    ready: { http: /healthz }
+  board:
+    command: "true"
+    port: http
+    public: { name: "board-{project}", auth: required }
+    ready: { http: /api/whoami }
+  app:
+    optional: true
+    command: "true"
+    port: http
+    public: { name: "app-{project}", auth: none }
+  sock:
+    command: "true"
+    port: http
+    listen: unix
+    ready: { http: /healthz }
+EOF
+  echo "# from $1/services.yaml" >"$MM_HOME/pc/projects/$2.yaml"; }
+cp "$T/svc.mjs" "$HOME/svc.mjs"
+proj "$T/p1" acme-shop; proj "$T/p2" acme-two; proj "$T/bx" acme-box box
+js() { (cd "$T" && bun -e "import * as P from '$SRC/src/project.ts'; import * as PC from '$SRC/src/pc.ts'; $1" 2>&1); }
+base() { js "PC.writeBase()" >/dev/null; bun -e "const y = Bun.YAML.parse(await Bun.file('$MM_HOME/pc/base.yaml').text()); console.log(Object.keys(y.processes).filter((k) => /portless|front/.test(k)).join(' ') + ' | ' + (y.processes['mm.front']?.command || ''))"; }
+svcs() { js "const s = P.resolve('$1').services; console.log(JSON.stringify(s))"; }
+proc() { js "const r = P.resolve('$1'); const s = r.services; console.log(JSON.stringify(P.serviceProcess('$1', r.answers.project, '$2', s['$2'], s, { env: {}, socket: '/x', pdeath: '', claim: '/c.mjs' })))"; }
+export -f js svcs proc base; export T SRC
+rm -f "$RD"/*.json
+conf
+is "writeBase: mm.portless, no mm.front" test "$(base)" = "mm.portless | "
+S=$(svcs "$T/p1")
+is "resolve: no mm port for any service (local_port), no PORT; the app keeps PORTLESS_APP_PORT" \
+  test "$(jq -c '[[.[] | .local_port // empty], [.[] | .env.PORT // empty], (.app.env.PORTLESS_APP_PORT == (.app.public_port | tostring))]' <<<"$S")" = '[[],[],true]'
+is "serviceProcess: the portless wrapper and the probe through the name, as before" \
+  test "$(proc "$T/p1" bd-serve | jq -r '.command + " # " + .readiness_probe.exec.command')" = "node '/c.mjs' bd-serve.acme-shop && exec portless bd-serve.acme-shop --force sh -c 'exec node $HOME/svc.mjs \$\$PORT bd' # curl -sf -o /dev/null --max-time 3 http://bd-serve.acme-shop.localhost:1355/healthz"
+js "P.writeRunFiles('$T/p1', '$T/pc.sock')" >/dev/null
+is "writeRunFiles: no route file for the front" test ! -e "$RD/acme-shop.json"
+
+echo '== step 3: front.enabled on'
+conf 'front:\n  enabled: true\n'
+is "writeBase: mm.front on portless_port, no mm.portless (portless is on PATH)" test "$(base)" = "mm.front | $(command -v true >/dev/null; echo "$(cd "$T" && bun -e "import { which } from '$SRC/src/env.ts'; import { DIRS } from '$SRC/src/env.ts'; import { join } from 'node:path'; console.log(which('mm') || join(DIRS.bin, 'mm'))") front serve --port 1355")"
+S=$(svcs "$T/p1")
+BD=$(jq -r '."bd-serve".local_port' <<<"$S")
+is "bd-serve: an mm port in 38100-38999, as its PORT ($BD)" bash -c "[ '$BD' -ge 38100 ] && [ '$BD' -le 38999 ] && [ \"\$(jq -r '.\"bd-serve\".env.PORT' <<<'$S')\" = '$BD' ]"
+is "board: its own local port, not its public side's" test "$(jq -r '(.board.local_port != .board.public_port) and (.board.env.PORT == (.board.local_port | tostring)) and (.board.env.BOARD_PUBLIC_PORT == (.board.public_port | tostring))' <<<"$S")" = true
+is "app (an open public side): its PORT is its public port, no PORTLESS_APP_PORT" test "$(jq -r '(.app.local_port == .app.public_port) and (.app.env.PORT == (.app.public_port | tostring)) and (.app.env.PORTLESS_APP_PORT == null)' <<<"$S")" = true
+is "sock (listen: unix): MM_SOCKET, no port" test "$(jq -r '[.sock.env.MM_SOCKET, .sock.local_port // "-", .sock.env.PORT // "-"] | join(" ")' <<<"$S")" = "$MM_HOME/run/acme-shop/sock.sock - -"
+is "every port this project holds is distinct (dolt, public, local; the app's local port is its public one)" bash -c "js \"const r = P.resolve('$T/p1'); const p = [r.dport, ...Object.values(r.services).flatMap((s) => [s.public_port, s.local_port]).filter(Boolean)]; console.log(new Set(p).size === p.length - 1 ? 'ok' : p.join(','))\" | grep -qx ok"
+P=$(proc "$T/p1" bd-serve)
+is "serviceProcess: no portless wrapper, the command as written" test "$(jq -r .command <<<"$P")" = "exec node $HOME/svc.mjs \$\$PORT bd"
+is "...its probe goes to mm's port, with its name as Host (curl --connect-to)" test "$(jq -r .readiness_probe.exec.command <<<"$P")" = "curl -sf -o /dev/null --max-time 3 --connect-to ::127.0.0.1:$BD http://bd-serve.acme-shop.localhost:1355/healthz"
+is "a socket service's probe: curl --unix-socket" test "$(proc "$T/p1" sock | jq -r .readiness_probe.exec.command)" = "curl -sf -o /dev/null --max-time 3 --unix-socket '$MM_HOME/run/acme-shop/sock.sock' http://sock.acme-shop.localhost:1355/healthz"
+js "P.writeRunFiles('$T/p1', '$T/pc.sock')" >/dev/null
+RF="$RD/acme-shop.json"
+is "writeRunFiles: the project's route file, every HTTP service by name" test "$(jq -c '[.routes[] | .host] | sort' "$RF" 2>/dev/null)" = '["app.acme-shop.localhost","bd-serve.acme-shop.localhost","board.acme-shop.localhost","sock.acme-shop.localhost"]'
+is "...bd-serve to its port, sock to its socket" test "$(jq -r '[(.routes[] | select(.host == "bd-serve.acme-shop.localhost") | .port), (.routes[] | select(.host == "sock.acme-shop.localhost") | .socket)] | join(" ")' "$RF")" = "$BD $MM_HOME/run/acme-shop/sock.sock"
+is "...the board's public port is listed as never a target, and is no route" test "$(jq -r --argjson p "$(jq .board.public_port <<<"$S")" '(.public_ports == [$p]) and ([.routes[].port] | index($p) == null)' "$RF")" = true
+is "...the ports are recorded (.run/services.json local_port): the same at the next resolve" test "$(jq -r '.services."bd-serve".local_port' "$T/p1/.run/services.json"):$(svcs "$T/p1" | jq -r '."bd-serve".local_port')" = "$BD:$BD"
+S2=$(svcs "$T/p2"); js "P.writeRunFiles('$T/p2', '$T/pc.sock')" >/dev/null
+is "a second project gets none of the first one's ports" bash -c "comm -12 <(jq -r '.held_ports[]' '$RD/acme-shop.json' | sort) <(jq -r '.held_ports[]' '$RD/acme-two.json' | sort) | grep -q . && exit 1 || exit 0"
+is "a box project: no mm ports, the portless wrapper (its own portless in the box)" bash -c "[ \"\$(svcs '$T/bx' | jq -c '[.[] | .local_port // empty]')\" = '[]' ] && proc '$T/bx' bd-serve | jq -r .command | grep -q 'exec portless bd-serve.acme-box --force'"
+js "P.up('$T/p1')" >/dev/null
+is "mm up: the process file has no portless at all" bash -c "! grep -q portless '$MM_HOME/pc/projects/acme-shop.yaml' && grep -q 'PORT=$BD' '$MM_HOME/pc/projects/acme-shop.yaml'"
+
+echo '== step 3: end to end (the front on the project route file, the service on mm`s port, the probe)'
+FP=$(freeport)
+(cd "$HOME" && PORT=$BD exec node "$HOME/svc.mjs" "$BD" bd) &
+(cd "$T" && exec bun "$SRC/src/cli.ts" front serve --port "$FP") >"$T/front2.log" 2>&1 &
+FP_PID=$!
+for _ in $(seq 1 100); do curl -s -o /dev/null "http://127.0.0.1:$FP/" && curl -s -o /dev/null "http://127.0.0.1:$BD/" && break; sleep 0.1; done
+is "bd-serve.acme-shop.localhost through the front: the service on mm's port" test "$(curl -s -H 'Host: bd-serve.acme-shop.localhost' "http://127.0.0.1:$FP/healthz" | jq -r .mark)" = bd
+is "the readiness probe as mm wrote it: passes, and the service saw its name as Host" bash -c "$(jq -r .readiness_probe.exec.command <<<"$P") && [ \"\$(curl -s --connect-to ::127.0.0.1:$BD http://bd-serve.acme-shop.localhost:1355/ | jq -r .host)\" = bd-serve.acme-shop.localhost:1355 ]"
+is "a public name through the front: 404" test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: board-acme-shop.example.org' "http://127.0.0.1:$FP/")" = 404
+kill "$FP_PID" 2>/dev/null; wait "$FP_PID" 2>/dev/null; FP=
+conf
+is "front.enabled off again (the rollback): writeBase has mm.portless again" test "$(base)" = "mm.portless | "
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]

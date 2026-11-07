@@ -13,6 +13,7 @@ import { nameClash, publicKeyPem } from './auth'
 import { type NamesMode, namesMode, routeName } from './names'
 import { pcRunning, writeBase } from './pc'
 import { rendered, renderTo, template, templateCommit } from './template'
+import { frontEnabled, heldPorts, removeRoutes, writeRoutes } from './front'
 import pkg from '../package.json'
 import portlessClaim from './portless-claim.mjs' with { type: 'text' }
 
@@ -84,10 +85,11 @@ export function readAnswers(root: string): Answers {
 }
 const portlessPort = () => Number(getPath(loadConfig(), 'portless_port') ?? 1355)
 /** A stable port for <key>: hash in 38100-38999, stepping past ports already in use (Dolt's TCP, public services). */
-export function hashPort(key: string): number {
+export function hashPort(key: string, taken: Set<number> = new Set()): number {
   let p = 38100 + (parseInt(createHash('sha256').update(key).digest('hex').slice(0, 8), 16) % 900)
   const used = run(['ss', '-Hltn']).out
-  while (new RegExp(`:${p}\\b`).test(used)) p = p === 38999 ? 38100 : p + 1
+  // also past ports given out but not listening now (`taken`: this project's, and what other projects' route files hold)
+  for (let i = 0; i < 900 && (new RegExp(`:${p}\\b`).test(used) || taken.has(p)); i++) p = p === 38999 ? 38100 : p + 1
   return p
 }
 
@@ -242,7 +244,7 @@ export function resolve(root: string, o: { names?: NamesMode } = {}) {
   const spec = Bun.YAML.parse(readFileSync(join(root, 'services.yaml'), 'utf8')) as { services: Record<string, Svc>; schedules?: Record<string, { every: string; command: string }> }
   // ports already given out stay put across reloads (the old process may still hold them while we decide)
   // for a box, from the host's copy (a box can write its .run/: review sy-b15.17 4); and only a port number is taken
-  let prev: { services?: Record<string, { public_port?: number }>; dolt_port?: number } = {}
+  let prev: { services?: Record<string, { public_port?: number; local_port?: number }>; dolt_port?: number } = {}
   try { prev = JSON.parse(readFileSync(prevPortsFile(root, a), 'utf8')) } catch {}
   const okPort = (p: unknown) => Number.isInteger(p) && (p as number) >= 1024 && (p as number) <= 65535 ? p as number : undefined
   const pp = portlessPort(), socket = join(root, '.dolt', 'mysql.sock'), dport = okPort(prev.dolt_port) ?? hashPort(`${a.project}/dolt`)
@@ -252,7 +254,12 @@ export function resolve(root: string, o: { names?: NamesMode } = {}) {
     .replace(/\{socket:([\w-]+)\}/g, (_m, s) => sockPath(a.project, s))
   const c = loadConfig(), access = String(getPath(c, 'access') ?? ''), domain = String(getPath(c, 'domain') ?? '')
   const bindHost = String(getPath(c, 'bind_host') ?? '127.0.0.1'), mode = o.names ?? namesMode(c)
-  const services: Record<string, Svc & { url?: string; public_url?: string; public_port?: number; public_bind?: string; socket?: string; public_socket?: string }> = {}
+  const services: Record<string, Svc & { url?: string; public_url?: string; public_port?: number; public_bind?: string; socket?: string; public_socket?: string; local_port?: number }> = {}
+  // front.enabled (src/front.ts): mm gives a host project's HTTP services their loopback ports (what portless gave
+  // them as PORT), stable and recorded like public_port; mm.front routes the names. A box keeps its own portless.
+  const front = frontEnabled() && !a.box
+  // ports not to hand out again: this project's recorded ones, and what other projects' route files hold
+  const taken = new Set<number>(front ? [dport, ...Object.values(prev.services || {}).flatMap((x) => [okPort(x?.public_port), okPort(x?.local_port)]).filter((x): x is number => !!x), ...heldPorts(a.project)] : [])
   // a box with the project API on (src/api.ts): its app slot runs only the build the owner approved (release/<build>),
   // from the host's record of the grant, never from what the box put in release/ by itself; the same whoever writes
   // the box's file (boxApi: an mm without a test's API env still sees the store that governs the box, sy-jm5)
@@ -277,21 +284,33 @@ export function resolve(root: string, o: { names?: NamesMode } = {}) {
     // would be on the public port. An open one (the app slot) serves the port itself.
     const side = s.public?.auth === 'required' ? publicSide(root, n) : null
     if (s.public && access === 'domain' && domain && (side || s.public.auth !== 'required' || n === 'board')) {
-      const port = okPort(prev.services?.[n]?.public_port) ?? hashPort(`${a.project}/${n}`)
-      Object.assign(env, side ? { [side]: String(port) } : { PORTLESS_APP_PORT: String(port) })
+      const port = okPort(prev.services?.[n]?.public_port) ?? hashPort(`${a.project}/${n}`, taken)
+      taken.add(port)
+      // with the front, mm gives the app slot's PORT itself (below): the same port, no PORTLESS_APP_PORT
+      Object.assign(env, side ? { [side]: String(port) } : front ? {} : { PORTLESS_APP_PORT: String(port) })
       pub = { public_url: `https://${pname}.${domain}`, public_port: port, public_bind: bindHost }
     }
     // the route table (sockets-first): an HTTP service that says `listen: unix` gets its socket path (and one for a gated
     // public side). Nothing listens there yet: the path is what mm and the front will use. A box's sockets live in the
     // box (a later step): none here for a box project.
     if (s.listen !== undefined && s.listen !== 'unix' && s.listen !== 'tcp') throw new Error(`${a.project}.${n}: listen: "${s.listen}" is not one of unix, tcp`)
-    const sock = s.listen === 'unix' && s.port === 'http' && !a.box
+    const sock: { socket?: string; public_socket?: string } = s.listen === 'unix' && s.port === 'http' && !a.box
       ? { socket: sockPath(a.project, n), ...(s.public?.auth === 'required' ? { public_socket: sockPath(a.project, n, 'public') } : {}) } : {}
-    services[n] = { ...s, command: fill(s.command), workdir: s.workdir && fill(s.workdir), env, ...(s.ready?.exec ? { ready: { ...s.ready, exec: fill(s.ready.exec) } } : {}), ...(s.port === 'http' ? { url: url(n) } : {}), ...sock, ...pub,
+    // the front on: a service on its socket gets its paths in env (MM_SOCKET, MM_PUBLIC_SOCKET) and no port; any other
+    // HTTP service its own loopback port as PORT (an open public side serves its public port itself: that one)
+    let local: { local_port?: number } = {}
+    if (front && s.port === 'http') {
+      if (sock.socket) Object.assign(env, { MM_SOCKET: sock.socket, ...(sock.public_socket ? { MM_PUBLIC_SOCKET: sock.public_socket } : {}) })
+      else {
+        const lp = pub.public_port && !side ? pub.public_port : okPort(prev.services?.[n]?.local_port) ?? hashPort(`${a.project}/${n}/local`, taken)
+        taken.add(lp); env.PORT = String(lp); local = { local_port: lp }
+      }
+    }
+    services[n] = { ...s, command: fill(s.command), workdir: s.workdir && fill(s.workdir), env, ...(s.ready?.exec ? { ready: { ...s.ready, exec: fill(s.ready.exec) } } : {}), ...(s.port === 'http' ? { url: url(n) } : {}), ...sock, ...local, ...pub,
       ...(s.public ? { public: { ...s.public, name: pname } } : {}) }
   }
   const schedules = Object.fromEntries(Object.entries(spec.schedules || {}).map(([k, v]) => [k, { ...v, command: fill(v.command) }]))
-  return { answers: a, services, schedules, socket, url, pp, dport }
+  return { answers: a, services, schedules, socket, url, pp, dport, front }
 }
 
 type SvcResolved = ReturnType<typeof resolve>['services'][string]
@@ -313,10 +332,14 @@ export function serviceProcess(root: string, project: string, n: string, s: SvcR
   // check (o.claim, src/portless-claim.mjs) drops a record whose pid is now another process, so that one is never
   // signalled (sy-1qkv); `exec` keeps the wrapper on the pid process-compose started
   const q = (x: string) => `'${x.replaceAll("'", `'"'"'`)}'`
-  if (s.port === 'http') cmd = `${o.claim ? `node ${q(o.claim)} ${n}.${project} && exec ` : ''}portless ${n}.${project} --force ${o.pdeath}sh -c ${q(cmd)}`
+  // with the front (s.local_port or s.socket): no wrapper; the service gets its PORT (or socket) from mm
+  const own = !!(s.local_port || s.socket)
+  if (s.port === 'http' && !own) cmd = `${o.claim ? `node ${q(o.claim)} ${n}.${project} && exec ` : ''}portless ${n}.${project} --force ${o.pdeath}sh -c ${q(cmd)}`
   // ready.exec: a command that says the service answers (dolt: bin/dolt-ready runs a query, sy-5ku 1), not that its
   // socket file exists; a dependent with `ready` waits for it
-  const probe = s.ready?.http ? { exec: { command: `curl -sf -o /dev/null --max-time 3 ${s.url}${s.ready.http}` } }
+  // with the front: straight to the service (its socket, or mm's port), with its name as Host as through the front
+  const via = s.socket ? `--unix-socket ${q(s.socket)} ` : s.local_port ? `--connect-to ::127.0.0.1:${s.local_port} ` : ''
+  const probe = s.ready?.http ? { exec: { command: `curl -sf -o /dev/null --max-time 3 ${via}${s.url}${s.ready.http}` } }
     : s.ready?.exec ? { exec: { command: s.ready.exec } }
     : s.ready?.socket ? { exec: { command: `test -S ${o.socket}` } } : undefined
   return {
@@ -370,7 +393,13 @@ export function containersCfg() {
     doop_tag: DOOP_TAG, doop_source: doopSource() }
 }
 export function writeRunFiles(root: string, pcSocket: string) {
-  const { answers: a, services, schedules, dport } = resolve(root)
+  const { answers: a, services, schedules, dport, front } = resolve(root)
+  // the front's table (src/front.ts): this project's local names, from mm's own resolve(), never from its .run/
+  if (front) writeRoutes({ project: a.project,
+    routes: Object.entries(services).filter(([, s]) => s.url && (s.socket || s.local_port)).map(([n, s]) => ({ host: `${n}.${a.project}.localhost`, ...(s.socket ? { socket: s.socket } : { port: s.local_port }) })),
+    // a gated public side's port: never a target (review's condition 2); held: every port this project holds
+    public_ports: Object.values(services).flatMap((s) => s.public_port && s.public_port !== s.local_port ? [s.public_port] : []),
+    held_ports: [dport, ...Object.values(services).flatMap((s) => [s.public_port, s.local_port].filter((x): x is number => !!x))] })
   writeInProject(root, '.run/services.json', JSON.stringify({ project: a.project, dolt_port: dport, services, schedules }, null, 2))
   const f = prevPortsFile(root, a)
   if (f !== join(root, '.run', 'services.json')) { // the host's copy of the ports (review sy-b15.17 4), in a folder the box never sees
@@ -601,7 +630,7 @@ export function up(root: string): Step[] {
   // never moves a folder outside $MM_HOME (sy-8w1: only mm onboard and mm doctor --fix do; a test's mm up must not move
   // live folders): it uses what portlessDir() finds, the old ~/.portless while that is still a real folder
   if (boxHook.up && readAnswers(root).box) return boxHook.up(root)
-  const { answers: a, services, schedules, socket, pp, dport } = resolve(root)
+  const { answers: a, services, schedules, socket, pp, dport, front } = resolve(root)
   // its public hosts are its own, before it is registered (sy-b15.3: two projects never get one host)
   const clash = nameClash(root); if (clash) return [{ step: 'public names', status: 'fail', detail: `refused: ${clash}` }]
   const steps: Step[] = []
@@ -609,7 +638,7 @@ export function up(root: string): Step[] {
   // the folder of its sockets, the project's alone (0700): a socket in it is reached only by this user
   if (Object.values(services).some((s) => s.socket)) { mkdirSync(runDir(a.project), { recursive: true, mode: 0o700 }); chmodSync(runDir(a.project), 0o700) }
   const obs = obsEndpoints() as { traces?: string; metrics?: string }
-  const env = { PATH: servicePath(), MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0', PORTLESS_STATE_DIR: portlessDir(),
+  const env = { PATH: servicePath(), MM_PROJECT: a.project, ...(front ? {} : { PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0', PORTLESS_STATE_DIR: portlessDir(), }), // the front: no portless
     ...(obs.traces ? { MM_OBS_TRACES: obs.traces, MM_OBS_METRICS: obs.metrics } : {}) }
   const processes: Record<string, unknown> = {}
   const pdeath = run(['sh', '-c', 'command -v setpriv']).ok ? 'setpriv --pdeathsig TERM ' : ''
@@ -861,7 +890,7 @@ export function leaveHost(root: string, project: string, waitMs = 10_000): { ok:
   try { defs = (Bun.YAML.parse(readFileSync(pf, 'utf8')) as { processes?: typeof defs })?.processes || {} } catch {}
   const was = processes(project).filter((p) => Object.hasOwn(defs, p.name) && Number(p.pid) > 0).map((p) => ({ name: p.name, pid: Number(p.pid) }))
   run(['process-compose', '-U', '-u', DIRS.socket, 'namespace', 'stop', project], { timeoutMs: 120_000 })
-  rmSync(pf, { force: true })
+  rmSync(pf, { force: true }); removeRoutes(project) // its names leave the host's front (a box has its own names)
   const left = () => was.filter((p) => procAlive(p.pid)), stopped: string[] = []
   const wrapper = (p: { name: string; pid: number }) => {
     const cmd = String(defs[p.name]?.command ?? ''), w = wrapperCommand(cmd), argv = procArgv(p.pid)
