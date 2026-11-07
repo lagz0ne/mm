@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { Avatar, PersonaContext, personaOf } from '@/lib/persona'
 import { ThreadPresence } from '@/Presence'
 import { Designs } from '@/Designs'
+import { usePhone } from '@/lib/phone'
 
 const STATUSES = ['open', 'in_progress', 'blocked', 'deferred'] as const
 const NONE = '_none'
@@ -21,6 +22,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   id: string | null; tick: number; byId: Map<string, Issue>; creator?: string
   onClose: () => void; onOpen: (id: string) => void; onChanged: () => void
 }) {
+  const phone = usePhone()
   const [issue, setIssue] = useState<Issue | null>(null)
   const [title, setTitle] = useState('')
   const [desc, setDesc] = useState('')
@@ -102,10 +104,17 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                 <span>{i.id}</span><span>{i.issue_type}</span><span>by {i.created_by || i.owner || creator || '—'}</span><span>{ago(i.updated_at)} ago</span>
               </SheetDescription>
               <SheetTitle className="sr-only">{i.title}</SheetTitle>
+              {phone ? (
+                // a phone: the whole title, wrapped (a one-line input cuts it); Enter still saves, no new line
+                <Textarea data-big value={title} onChange={(e) => setTitle(e.target.value.replace(/\n/g, ' '))} rows={1}
+                  onBlur={() => title.trim() && title !== i.title && run(() => api.patch(i.id, { title: title.trim() }))}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() } }}
+                  aria-label="Title" className="mt-1 min-h-0 resize-none border-0 px-0 py-1 text-xl leading-snug font-bold tracking-tight shadow-none [field-sizing:content] focus-visible:ring-0 dark:bg-transparent" />
+              ) : (
               <Input data-big value={title} onChange={(e) => setTitle(e.target.value)}
                 onBlur={() => title.trim() && title !== i.title && run(() => api.patch(i.id, { title: title.trim() }))}
                 onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-                aria-label="Title" className="mt-1 h-auto border-0 px-0 text-xl md:text-xl font-bold tracking-tight shadow-none focus-visible:ring-0 dark:bg-transparent" />
+                aria-label="Title" className="mt-1 h-auto border-0 px-0 text-xl md:text-xl font-bold tracking-tight shadow-none focus-visible:ring-0 dark:bg-transparent" />)}
             </div>
 
             <div className="grid border-b md:grid-cols-3">
