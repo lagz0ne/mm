@@ -6,6 +6,12 @@ is signed in to the boards opens it with no second login. Doop is AGPL, so this 
 
 - `0001-gateway-assertion.patch`: the change, against Doop 0.12.0 (the source in the pinned image
   `sha256:4062eea5…`). It applies with `git am` (or `git apply`).
+- `0002-source-link.patch` (sy-9a30, on top of 0001: tag `v0.12.0-mm.2`): every HTML page of the gateway side gets a
+  small "Source" link (bottom left), to `DOOP_SOURCE_URL`, the fork's source at its tag (the AGPL's section 13). mm
+  makes it from `doop.source` in its config (the fork's repository, `https://…`; `{tag}` in it is the tag, else
+  `/tree/<tag>` is added) and its pin `DOOP_TAG` (`src/project.ts`), and `bin/doop-run` passes it with
+  `DOOP_SOURCE_TAG`. No `doop.source`: the link goes to `/.mm-source/<tag>` on the gateway side, a page that names the
+  tag, upstream's version and these patches (no account is named anywhere in mm). The loopback side is unchanged.
 - `Dockerfile`, `build.sh`: the fork as an image, built on the pinned image (only `server/` and `shared/` change).
 - `test/doop-gateway.sh` (in mm): the proof, in throwaway containers.
 
@@ -38,6 +44,7 @@ Its settings (environment):
 | `MM_GATEWAY_PUBLIC_KEY_FILE` | the gateway's public key (PEM, Ed25519); or `MM_GATEWAY_PUBLIC_KEY` with the PEM itself |
 | `MM_GATEWAY_HOST` | Doop's public host, the one the assertions name (required with a key) |
 | `MM_GATEWAY_PORT` | the gateway listener (default 4401) |
+| `DOOP_SOURCE_TAG`, `DOOP_SOURCE_URL` | the fork's tag, and its source at that tag (the "Source" link; 0002) |
 
 A key without a host, or a host without a key, stops Doop at boot.
 
@@ -64,7 +71,9 @@ prints the new image's id. Nothing is pulled or pushed.
    starts at upstream's 0.12.0 (check: its `server/` and `shared/` are the pinned image's, `diff -r` is empty).
 2. **The commit:** `git am box/doop/0001-gateway-assertion.patch` on that branch; add this README's "What the patch
    does" to the fork's README (the AGPL's notice of the change), keep upstream's LICENSE.
-3. **The tag:** `v0.12.0-mm.1` on that commit; push the branch and the tag.
+3. **The tag:** `v0.12.0-mm.1` on that commit; push the branch and the tag. Each later patch is one more commit
+   (`git am box/doop/0002-source-link.patch`) and the next tag (`v0.12.0-mm.2`), the value of `DOOP_TAG` in
+   `src/project.ts`; then `mm config set doop.source https://<the fork's repository>` on the machine.
 4. **The image:** `box/doop/build.sh mm-doop:0.12.0-mm.1` (the same server code as the tag, on the pinned image); or
    upstream's own Dockerfile at the tag. Then `MM_DOOP_GW_IMAGE=<its id> test/doop-gateway.sh` must pass. If it goes
    to a registry, its digest is `<registry>/doop@sha256:<64 hex>`.

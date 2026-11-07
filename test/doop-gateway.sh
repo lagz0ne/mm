@@ -6,7 +6,9 @@
 # expired, other-host or unknown-role one is refused); a person's Doop account is made on their first visit with no
 # second login and no cookie; owner and designer edit, member and viewer only look; Doop's own login is off there and
 # a client's cookie or agent key counts for nothing; the loopback side (the design lead's account, its agent key, the
-# MCP) is unchanged; without the gateway's key there is no public side. Throwaway image, containers and networks only.
+# MCP) is unchanged; without the gateway's key there is no public side. Every page of the public side has a "Source"
+# link to the fork at the tag mm pins (sy-9a30), or to its own page about the source when no repository is configured;
+# the loopback side's pages have none. Throwaway image, containers and networks only.
 # Through mm's Docker wrapper only (test/lib/docker.sh: the installed one; MM_DOCKER_BIN for this checkout's copy).
 #   test/doop-gateway.sh [base image]        (base: mm-doop:0.12.0, the pinned one)
 #   MM_DOOP_GW_IMAGE=sha256:<id> test/doop-gateway.sh    an image built already (ops' publish step), instead of a
@@ -40,9 +42,9 @@ echo "== the fork's image: the pinned image's source, the patch, built on it"
 IMAGE=$(DOCKER=$DOCKER "$HERE/box/doop/build.sh" "$TAG" "$BASE" 2>"$T/build.err")
 check "box/doop/build.sh: the patch applies to the pinned image's own source and builds ($IMAGE)" bash -c "echo '$IMAGE' | grep -Eq '^sha256:[0-9a-f]{64}\$' || { cat '$T/build.err'; exit 1; }"
 check "...a moved tag is refused (the base must be the image the patch is for)" bash -c "! DOCKER='$DOCKER' '$HERE/box/doop/build.sh' '$TAG-x' '$TAG' 2>&1 | grep -q '^sha256:'"
-# the patch's own unit test (tests/ is not in the image), run in the image against its patched server/
-mkdir -p "$T/src"; git -C "$T/src" apply --include='tests/*' "$HERE/box/doop/0001-gateway-assertion.patch"
-check "the fork's own unit test passes in it (vitest, no network)" bash -c "D run --rm --network none --user 210000:$(id -g) --cap-drop ALL --read-only --tmpfs /tmp -e HOME=/tmp -e NO_COLOR=1 -v '$T/src/tests:/app/tests:ro' --entrypoint sh '$IMAGE' -c 'cd /app && node_modules/.bin/vitest run tests/mmGateway.test.ts --cache=false' >'$T/unit.out' 2>&1; grep -E 'Tests +[0-9]+ passed' '$T/unit.out' && ! grep -q failed '$T/unit.out'"
+# the patches' own unit tests (tests/ is not in the image), run in the image against its patched server/
+mkdir -p "$T/src"; for p in "$HERE"/box/doop/[0-9][0-9][0-9][0-9]-*.patch; do git -C "$T/src" apply --include='tests/*' "$p"; done
+check "the fork's own unit tests pass in it (vitest, no network: the assertion, the source link)" bash -c "D run --rm --network none --user 210000:$(id -g) --cap-drop ALL --read-only --tmpfs /tmp -e HOME=/tmp -e NO_COLOR=1 -v '$T/src/tests:/app/tests:ro' --entrypoint sh '$IMAGE' -c 'cd /app && node_modules/.bin/vitest run tests/mmGateway.test.ts tests/mmSource.test.ts --cache=false' >'$T/unit.out' 2>&1; grep -E 'Tests +[0-9]+ passed' '$T/unit.out' && ! grep -q failed '$T/unit.out'"
 fi
 
 # the project, as mm stamps it (only what doop-run reads), with a test key in the gateway's place
@@ -56,8 +58,13 @@ const [dir] = process.argv.slice(2)
 for (const n of ['gw', 'other']) { const k = generateKeyPairSync('ed25519'); fs.writeFileSync(`${dir}/${n}.key`, k.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 }); fs.writeFileSync(`${dir}/${n}.pub`, k.publicKey.export({ type: 'spki', format: 'pem' })) }
 EOF
 node "$T/keys.mjs" "$T"
-ep() { node -e "const [f,d,i,k,u]=process.argv.slice(1);require('fs').writeFileSync(f,JSON.stringify({containers:{docker:d,doop_image:i},...(k?{auth:{public_key:require('fs').readFileSync(k,'utf8')}}:{}),services:{doop:{url:'$URL',public:u}}}))" "$P/.run/endpoints.json" "$DOCKER" "$IMAGE" "$@"; }
-ep "$T/gw.pub" "https://$HOST"
+# the fork's source (sy-9a30): the tag mm pins (src/project.ts DOOP_TAG), and its URL as mm makes it from a repository
+# in its config (doopSource; a throwaway HOME, so no machine config is read)
+DTAG=$(sed -n "s/^export const DOOP_TAG = '\([^']*\)'.*/\1/p" "$HERE/src/project.ts")
+srcurl() { HOME="$T/home" MM_HOME="$T/home/mm" bun -e "import { doopSource } from '$HERE/src/project.ts'; process.stdout.write(doopSource(process.argv[1]))" "$@"; }
+SRC=$(srcurl "https://git.example.test/someone/doop.git")
+ep() { node -e "const [f,d,i,s,t,k,u]=process.argv.slice(1);require('fs').writeFileSync(f,JSON.stringify({containers:{docker:d,doop_image:i,doop_tag:t,doop_source:s},...(k?{auth:{public_key:require('fs').readFileSync(k,'utf8')}}:{}),services:{doop:{url:'$URL',public:u}}}))" "$P/.run/endpoints.json" "$DOCKER" "$IMAGE" "$SRCURL" "$DTAG" "$@"; }
+SRCURL=$SRC; ep "$T/gw.pub" "https://$HOST"
 # an assertion as mm's gateway signs it (src/auth.ts signAssertion): base64url(JSON {u, r, h, exp, n}) "." Ed25519
 cat >"$T/sign.mjs" <<'EOF'
 import { createPrivateKey, randomBytes, sign } from 'node:crypto'
@@ -126,6 +133,20 @@ check "...many requests at once on a first visit (carol): one account" bash -c "
 check "the page itself (the app shell) for alice" bash -c "[ \"\$(code -H \"\$(A alice designer)\" $PB/)\" = 200 ] && grep -qi '<html' '$T/body'"
 check "a WebSocket with alice's assertion: 101" bash -c "[ \"\$(node '$T/ws.mjs' $PUB \"\$(as alice designer)\")\" = 101 ]"
 
+echo "== the source link (AGPL section 13): on the gateway side's pages, to the fork at the pinned tag"
+H='accept: text/html,application/xhtml+xml,*/*;q=0.8'
+href() { grep -o '<a id="mm-source" href="[^"]*"' "$1" | sed 's/.*href="//; s/"$//'; }
+export -f href; export H SRC DTAG
+check "mm makes the URL from the fork's repository (config) and the pinned tag ($DTAG)" bash -c "[ -n '$DTAG' ] && [ '$SRC' = 'https://git.example.test/someone/doop/tree/$DTAG' ]"
+check "...a repository with {tag} in it, and nothing for no repository or one that is not https" bash -c "[ \"\$(HOME='$T/home' MM_HOME='$T/home/mm' bun -e \"import { doopSource } from '$HERE/src/project.ts'; console.log([doopSource('https://git.example.test/x/doop/-/tree/{tag}'), doopSource(''), doopSource(undefined), doopSource('http://git.example.test/x'), doopSource('https://git.example.test/x y')].join('|'))\")\" = 'https://git.example.test/x/doop/-/tree/$DTAG||||' ]"
+check "doop-run gives Doop the tag and the URL" bash -c "grep -qx 'DOOP_SOURCE_TAG=$DTAG' '$P/secrets/doop.env' && grep -qx 'DOOP_SOURCE_URL=$SRC' '$P/secrets/doop.env'"
+check "the page (alice): one Source link, to the fork's source, its URL ends with the pinned tag" bash -c "[ \"\$(code -D '$T/hs' -H \"\$H\" -H \"\$(A alice designer)\" $PB/)\" = 200 ] && [ \"\$(grep -c 'id=\"mm-source\"' '$T/body')\" = 1 ] && [ \"\$(href '$T/body')\" = '$SRC' ] && case \"\$(href '$T/body')\" in */'$DTAG') ;; *) exit 1 ;; esac && grep -q '>Source</a>' '$T/body' && cp '$T/body' '$T/page.gw'"
+check "...its length is the page's, no ETag (a page cached without the link is not reused)" bash -c "[ \"\$(tr -d '\r' <'$T/hs' | sed -n 's/^content-length: *//Ip')\" = \"\$(wc -c <'$T/body' | tr -d ' ')\" ] && ! grep -qi '^etag:' '$T/hs'"
+check "...on every page: a canvas's address, a browser asking gzip, a revalidation (If-None-Match)" bash -c "for p in /c/$CID '/?x=1'; do [ \"\$(code -H \"\$H\" -H \"\$(A alice designer)\" $PB\$p)\" = 200 ] && [ \"\$(href '$T/body')\" = '$SRC' ] || { echo \$p; exit 1; }; done; [ \"\$(code -H \"\$H\" -H 'accept-encoding: gzip, deflate, br' -H \"\$(A alice designer)\" $PB/)\" = 200 ] && [ \"\$(href '$T/body')\" = '$SRC' ] && [ \"\$(code -H \"\$H\" -H 'if-none-match: *' -H \"\$(A alice designer)\" $PB/)\" = 200 ] && [ \"\$(href '$T/body')\" = '$SRC' ]"
+check "...for a viewer too (bob)" bash -c "[ \"\$(code -H \"\$H\" -H \"\$(A bob viewer)\" $PB/)\" = 200 ] && [ \"\$(href '$T/body')\" = '$SRC' ]"
+check "...an API answer is unchanged (no link in JSON)" bash -c "[ \"\$(code -H \"\$H\" -H \"\$(A alice designer)\" $PB/api/me)\" = 200 ] && ! grep -q mm-source '$T/body' && node -e \"JSON.parse(require('fs').readFileSync('$T/body','utf8'))\""
+check "the loopback side's page is unchanged: no link, the same page as the gateway side's without it" bash -c "[ \"\$(code -H \"\$H\" $B/)\" = 200 ] && ! grep -q mm-source '$T/body' && sed 's|<a id=\"mm-source\"[^>]*>Source</a>||' '$T/page.gw' | cmp -s - '$T/body'"
+
 echo "== the role, as the gateway says"
 check "designer alice sees the project's canvas (the design lead's) and edits it" bash -c "[ \"\$(code -H \"\$(A alice designer)\" $PB/api/canvases)\" = 200 ] && grep -q '$CID' '$T/body' && [ \"\$(code -X PATCH -H \"\$(A alice designer)\" -H 'content-type: application/json' -d '{\"name\":\"Renamed by alice\"}' $PB/api/canvases/$CID)\" = 200 ] && code -H \"\$(A alice designer)\" $PB/api/canvases/$CID >/dev/null && grep -q 'Renamed by alice' '$T/body' && grep -q '\"role\":\"edit\"' '$T/body'"
 check "...and makes a canvas" bash -c "[ \"\$(code -X POST -H \"\$(A alice designer)\" -H 'content-type: application/json' -d '{\"name\":\"Alice canvas\"}' $PB/api/canvases)\" = 200 ]"
@@ -147,6 +168,16 @@ check "an assertion means nothing there (no gateway on loopback): 401" bash -c "
 check "the design lead's cookie works there" bash -c "[ \"\$(code -H \"cookie: \$(cat '$T/lead.cookie')\" $B/api/me)\" = 200 ] && grep -q 'Design lead' '$T/body'"
 check "Doop's own sign-up refuses the gateway's domain there (nobody takes a gateway name's account)" bash -c "[ \"\$(code -X POST -H 'origin: $URL' -H 'content-type: application/json' -d '{\"email\":\"dave@gateway.mm.invalid\",\"password\":\"long-enough-password\",\"name\":\"dave\"}' $B/api/auth/sign-up/email)\" != 200 ]"
 check "the log names who got an account, never a key or a cookie" bash -c "D logs '$C' 2>&1 | grep -q 'new account for alice' && ! D logs '$C' 2>&1 | grep -qE 'BEGIN|session_token|dpk_'"
+
+echo "== no repository configured: the link goes to the gateway side's own page about the source"
+stoprun
+SRCURL=""; ep "$T/gw.pub" "https://$HOST"
+PORT=$PORT DOOP_URL=$URL DOOP_PUBLIC_PORT=$PUB "$P/bin/doop-run" >"$T/run3.log" 2>&1 & RUN=$!
+check "the loopback side answers" upl
+check "...doop-run gives Doop the tag, no URL" bash -c "grep -qx 'DOOP_SOURCE_TAG=$DTAG' '$P/secrets/doop.env' && ! grep -q DOOP_SOURCE_URL '$P/secrets/doop.env'"
+check "the page's Source link: /.mm-source/<the pinned tag>" bash -c "for i in \$(seq 1 30); do [ \"\$(code -H \"\$H\" -H \"\$(A alice designer)\" $PB/)\" = 200 ] && break; sleep 1; done; [ \"\$(href '$T/body')\" = '/.mm-source/$DTAG' ]"
+check "...that page names the tag, upstream's version and mm's patches; no account, no host" bash -c "[ \"\$(code -H \"\$H\" -H \"\$(A bob viewer)\" $PB/.mm-source/$DTAG)\" = 200 ] && grep -q '<code>$DTAG</code>' '$T/body' && grep -q 'box/doop/0001-gateway-assertion.patch' '$T/body' && grep -q 'box/doop/0002-source-link.patch' '$T/body' && ! grep -qiE 'github|$HOST' '$T/body'"
+check "...and it needs the gateway's assertion like any other (401 without)" bash -c "[ \"\$(code $PB/.mm-source/$DTAG)\" = 401 ]"
 
 echo "== without the gateway's key: no public side"
 stoprun

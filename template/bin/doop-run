@@ -135,11 +135,17 @@ if [ -n "${DOOP_PUBLIC_PORT:-}" ]; then
     *) chmod 644 "$GWKEY" ;; # a public key: Doop's uid reads it through the read-only mount
   esac
 fi
+# the fork's tag and its source's URL, as mm wrote them (plain characters only: a line of the env file each)
+SRCTAG=$(cfg doop_tag); SRCURL=$(cfg doop_source)
+case "$SRCTAG" in [A-Za-z0-9]*) case "$SRCTAG" in *[!A-Za-z0-9._+-]*) SRCTAG="" ;; esac ;; *) SRCTAG="" ;; esac
+case "$SRCURL" in https://*) case "$SRCURL" in *[!A-Za-z0-9._~:/?#@%+=\&-]*) SRCURL="" ;; esac ;; *) SRCURL="" ;; esac
 # the container's env, in a file only docker reads (never on a command line)
 { echo "NODE_ENV=production"; echo "PORT=4400"; echo "HOME=/tmp"
   echo "BETTER_AUTH_URL=$DOOP_URL"; echo "TRUSTED_ORIGINS=$DOOP_URL${GWHOST:+,https://$GWHOST}"
   echo "BETTER_AUTH_SECRET=$(cat "$S/doop-auth-secret")"; echo "SIGNUP_EMAIL_DOMAINS=$(cat "$S/doop-signup-domain")"
-  [ -z "$GWHOST" ] || { echo "MM_GATEWAY_PUBLIC_KEY_FILE=/run/mm-gateway.pem"; echo "MM_GATEWAY_HOST=$GWHOST"; echo "MM_GATEWAY_PORT=4401"; }
+  [ -z "$GWHOST" ] || { echo "MM_GATEWAY_PUBLIC_KEY_FILE=/run/mm-gateway.pem"; echo "MM_GATEWAY_HOST=$GWHOST"; echo "MM_GATEWAY_PORT=4401"
+    # the public side's "Source" link (sy-9a30): the fork's tag mm pins, its source there (none: Doop's own page)
+    echo "DOOP_SOURCE_TAG=$SRCTAG"; [ -z "$SRCURL" ] || echo "DOOP_SOURCE_URL=$SRCURL"; }
 } >"$S/doop.env"
 # a Doop left over (its wrapper was killed): stopped the clean way first, so its database closes and its files regroup
 $DOCKER stop -t 20 "$NAME" >/dev/null 2>&1 || true; $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true

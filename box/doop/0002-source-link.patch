@@ -1,0 +1,316 @@
+From 022a7ebae5f24ff50e14756a9eaff098324949f6 Mon Sep 17 00:00:00 2001
+From: platform <platform@system.local>
+Date: Sat, 7 Nov 2026 03:24:38 +0000
+Subject: [PATCH] mm: a "Source" link on every page of the gateway side (AGPL
+ section 13)
+
+People use this Doop over the network through mm's sign-in gateway, so
+the gateway side offers them the source of the version they run: every
+HTML page it serves gets a small "Source" link, just before </body>, to
+DOOP_SOURCE_URL (the fork's source at the tag the image is built from,
+DOOP_SOURCE_TAG; mm sets both from its pin). The page is not compressed
+for that, asked in full (no 304 of a page without the link), sent without
+ETag/Last-Modified, and a Content-Security-Policy gets the link's style
+hash where it would refuse it.
+
+Without a URL (or with one that is not http(s), or has credentials), the
+link goes to /.mm-source/<tag> on the gateway side: a page that names the
+tag, the upstream version and mm's patches. Doop's own listener (PORT) is
+unchanged.
+---
+ server/mmGateway.ts    | 185 ++++++++++++++++++++++++++++++++++++++++-
+ tests/mmSource.test.ts |  56 +++++++++++++
+ 2 files changed, 239 insertions(+), 2 deletions(-)
+ create mode 100644 tests/mmSource.test.ts
+
+diff --git a/server/mmGateway.ts b/server/mmGateway.ts
+index 8b94b27..fe3caf2 100644
+--- a/server/mmGateway.ts
++++ b/server/mmGateway.ts
+@@ -26,9 +26,15 @@
+  *     and every canvas at 'view' at most).
+  * Doop's own listener (PORT) is unchanged: its own login, agent keys, MCP.
+  * Without a gateway key there is no second listener and Doop is as before.
++ *
++ * Every page of the public side shows a small "Source" link (the AGPL's
++ * section 13: the people who use this Doop over the network are offered its
++ * source): DOOP_SOURCE_URL, the fork's source at the tag this image is built
++ * from (DOOP_SOURCE_TAG); mm sets both. Without a URL, the link goes to a
++ * page of this side that says what is known: the tag, upstream, mm's patches.
+  */
+ import { AsyncLocalStorage } from 'node:async_hooks'
+-import { createPublicKey, verify, type KeyObject } from 'node:crypto'
++import { createHash, createPublicKey, verify, type KeyObject } from 'node:crypto'
+ import { readFileSync } from 'node:fs'
+ import http from 'node:http'
+ import type { Duplex } from 'node:stream'
+@@ -53,6 +59,7 @@ export interface GatewayConfig {
+   key: KeyObject
+   host: string
+   port: number
++  source: Source
+ }
+ 
+ /** The gateway side's config, or null when no gateway is configured. A key without a host (or the other way round)
+@@ -69,7 +76,175 @@ export function loadGatewayConfig(e: NodeJS.ProcessEnv = process.env): GatewayCo
+   if (!host) throw new Error('a gateway key needs MM_GATEWAY_HOST: the public host its assertions must name')
+   const port = Number(e.MM_GATEWAY_PORT || 4401)
+   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`MM_GATEWAY_PORT is not a port: "${e.MM_GATEWAY_PORT}"`)
+-  return { key, host, port }
++  return { key, host, port, source: sourceOf(e) }
++}
++
++/* ------------------------------------------- the source (AGPL sec. 13) */
++
++/** Where the source link of the public side goes: the fork at its tag, or this side's own page about it. */
++export interface Source {
++  tag: string
++  url: string
++}
++const TAG = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/
++/** The public side's own page about the source, when no URL is configured (not one of Doop's own routes). */
++export const SOURCE_PAGE = '/.mm-source'
++
++/** DOOP_SOURCE_TAG (the fork's tag, as mm pins it) and DOOP_SOURCE_URL (its source at that tag: http or https, no
++ *  credentials). No URL, or not such a one: the link goes to SOURCE_PAGE, which says what is known. */
++export function sourceOf(e: NodeJS.ProcessEnv = process.env): Source {
++  const t = (e.DOOP_SOURCE_TAG || '').trim(), tag = TAG.test(t) ? t : 'unknown'
++  const raw = (e.DOOP_SOURCE_URL || '').trim()
++  let url = ''
++  if (raw) {
++    try {
++      const u = new URL(raw)
++      if ((u.protocol === 'https:' || u.protocol === 'http:') && !u.username && !u.password) url = u.href
++    } catch {}
++    if (!url) console.warn("[mm-gateway] DOOP_SOURCE_URL is not an http(s) URL: the source link goes to this side's own page")
++  }
++  return { tag, url: url || `${SOURCE_PAGE}/${encodeURIComponent(tag)}` }
++}
++
++const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
++/** The link's look: small and plain, in a corner, over the app (an attribute: a strict CSP gets its hash). */
++export const LINK_STYLE =
++  'position:fixed;left:8px;bottom:6px;z-index:2147483647;font:11px/1.5 system-ui,sans-serif;color:#555;' +
++  'background:rgba(255,255,255,.85);padding:0 6px;border-radius:4px;text-decoration:none'
++const LINK_STYLE_HASH = `'sha256-${createHash('sha256').update(LINK_STYLE).digest('base64')}'`
++
++export function sourceLink(href: string): string {
++  return `<a id="mm-source" href="${esc(href)}" target="_blank" rel="noopener" title="The source of this Doop (AGPL-3.0)" style="${LINK_STYLE}">Source</a>`
++}
++
++/** The page with the source link, just before its </body> (or at its end). */
++export function withSourceLink(html: string, href: string): string {
++  const i = html.toLowerCase().lastIndexOf('</body')
++  return i < 0 ? html + sourceLink(href) : html.slice(0, i) + sourceLink(href) + html.slice(i)
++}
++
++/** A Content-Security-Policy that lets the link's style attribute through: its hash where style attributes are
++ *  checked (style-src-attr, else style-src, else default-src), unless 'unsafe-inline' already counts there. */
++export function allowLinkStyle(csp: string): string {
++  const dirs = csp.split(';').map((d) => d.trim()).filter(Boolean)
++  const at = (n: string) => dirs.findIndex((d) => d.split(/\s+/)[0].toLowerCase() === n)
++  let i = at('style-src-attr')
++  if (i < 0) i = at('style-src')
++  if (i < 0) {
++    const d = at('default-src')
++    if (d < 0) return csp
++    dirs.push(`style-src-attr ${dirs[d].split(/\s+/).slice(1).join(' ')}`.trim())
++    i = dirs.length - 1
++  }
++  const [name, ...vals] = dirs[i].split(/\s+/), low = vals.map((v) => v.toLowerCase())
++  const inlineCounts = low.includes("'unsafe-inline'") && !low.some((v) => /^'(nonce-|sha(256|384|512)-|strict-dynamic)/.test(v))
++  if (inlineCounts) return dirs.join('; ')
++  const kept = vals.filter((v) => v.toLowerCase() !== "'none'")
++  dirs[i] = [name, ...kept, ...(low.includes("'unsafe-hashes'") ? [] : ["'unsafe-hashes'"]), LINK_STYLE_HASH].join(' ')
++  return dirs.join('; ')
++}
++
++/** This side's own page about the source (no URL configured): the tag, upstream, mm's patches. */
++function sourcePage(res: http.ServerResponse, source: Source, method: string) {
++  const up = /^v?(\d+\.\d+\.\d+)-mm\./.exec(source.tag)?.[1]
++  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Source of this Doop</title></head><body>
++<h1>Source of this Doop</h1>
++<p>This is Doop (AGPL-3.0) as mm runs it: the mm fork, tag <code>${esc(source.tag)}</code>. It is upstream Doop${up ? ` ${esc(up)}` : ''}
++with mm's patches on it, in mm's repository: <code>box/doop/0001-gateway-assertion.patch</code> and
++<code>box/doop/0002-source-link.patch</code> (they are the whole change, applied in that order).</p>
++<p>No repository address for the fork is configured here, so this page is what this server knows. The operator of
++this site gives you the complete source of this version on request.</p>
++</body></html>
++`
++  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-length': Buffer.byteLength(body) })
++  res.end(method === 'HEAD' ? undefined : body)
++}
++
++/** The largest page the link is put into (the app shell is a few kB); anything bigger passes as it is. */
++const MAX_PAGE = 2 * 1024 * 1024
++
++/** A browser's page request: asked in full and not compressed, so the link can go in (and a page cached without it,
++ *  or with an older link, is not reused). */
++function wantsPage(req: http.IncomingMessage) {
++  if ((req.method || 'GET').toUpperCase() !== 'GET' || !/text\/html/i.test(String(req.headers.accept || ''))) return
++  delete req.headers['accept-encoding']
++  delete req.headers['if-none-match']
++  delete req.headers['if-modified-since']
++}
++
++/** Every HTML page this response carries (GET, 200, text/html, not encoded) gets the source link: its head is held
++ *  back until its end, then sent with the new length, no ETag/Last-Modified, and a CSP that lets the link's style in. */
++function addSourceLink(req: http.IncomingMessage, res: http.ServerResponse, href: string) {
++  if ((req.method || 'GET').toUpperCase() !== 'GET') return
++  const writeHead = res.writeHead.bind(res) as (...a: unknown[]) => http.ServerResponse
++  const write = res.write.bind(res) as (...a: unknown[]) => boolean
++  const end = res.end.bind(res) as (...a: unknown[]) => http.ServerResponse
++  let state: 'undecided' | 'pass' | 'page' = 'undecided', head: unknown[] = [], size = 0
++  const chunks: Buffer[] = []
++  /* the headers writeHead was given, into the response's own (so they can still change) */
++  const absorb = (a: unknown[]) => {
++    const status = Number(a[0]) || res.statusCode
++    let msg: string | undefined, h: unknown
++    if (typeof a[1] === 'string') {
++      msg = a[1]
++      h = a[2]
++    } else h = a[1]
++    if (Array.isArray(h)) {
++      if (h.length && Array.isArray(h[0])) for (const [k, v] of h as unknown[][]) res.setHeader(String(k), v as string)
++      else for (let j = 0; j + 1 < h.length; j += 2) res.setHeader(String(h[j]), h[j + 1] as string)
++    } else if (h && typeof h === 'object') {
++      for (const [k, v] of Object.entries(h)) if (v !== undefined) res.setHeader(k, v as string)
++    }
++    return msg === undefined ? [status] : [status, msg]
++  }
++  const flushAsIs = () => {
++    state = 'pass'
++    writeHead(...head)
++    for (const c of chunks) write(c)
++    chunks.length = 0
++  }
++  res.writeHead = ((...a: unknown[]) => {
++    if (state !== 'undecided') return state === 'page' ? res : writeHead(...a)
++    head = absorb(a)
++    const type = String(res.getHeader('content-type') || ''), enc = res.getHeader('content-encoding')
++    state = head[0] === 200 && /^\s*text\/html\b/i.test(type) && (!enc || enc === 'identity') ? 'page' : 'pass'
++    return state === 'pass' ? writeHead(...head) : res
++  }) as typeof res.writeHead
++  const take = (chunk: unknown, encoding: unknown) => {
++    if (chunk === undefined || chunk === null || typeof chunk === 'function') return
++    const b = Buffer.isBuffer(chunk)
++      ? chunk
++      : chunk instanceof Uint8Array
++        ? Buffer.from(chunk)
++        : Buffer.from(String(chunk), typeof encoding === 'string' ? (encoding as BufferEncoding) : 'utf8')
++    chunks.push(b)
++    size += b.length
++    if (size > MAX_PAGE) flushAsIs()
++  }
++  res.write = ((...a: unknown[]) => {
++    if (state === 'undecided') res.writeHead(res.statusCode)
++    if (state !== 'page') return write(...a)
++    take(a[0], a[1])
++    const cb = a.find((x) => typeof x === 'function') as (() => void) | undefined
++    if (cb) process.nextTick(cb)
++    return true
++  }) as typeof res.write
++  res.end = ((...a: unknown[]) => {
++    if (state === 'undecided') res.writeHead(res.statusCode)
++    if (state !== 'page') return end(...a)
++    take(a[0], a[1])
++    const cb = a.find((x) => typeof x === 'function')
++    if (state !== 'page') return cb ? end(cb) : end() // too big: passed as it is
++    const body = Buffer.from(withSourceLink(Buffer.concat(chunks).toString('utf8'), href))
++    res.removeHeader('etag')
++    res.removeHeader('last-modified')
++    res.setHeader('content-length', body.length)
++    const csp = res.getHeader('content-security-policy')
++    if (csp) res.setHeader('content-security-policy', Array.isArray(csp) ? csp.map((c) => allowLinkStyle(String(c))) : allowLinkStyle(String(csp)))
++    state = 'pass'
++    writeHead(...head)
++    return cb ? end(body, cb) : end(body)
++  }) as typeof res.end
+ }
+ 
+ /* --------------------------------------------------------- assertion */
+@@ -275,6 +450,11 @@ export function startGatewaySide(
+       .then((a) => {
+         if (!a.ok) return refuse(res, a.status, a.message)
+         dropSetCookie(res)
++        /* the source (AGPL sec. 13): this side's own page about it, and the link on every page */
++        const p = pathOf(req.url), method = (req.method || 'GET').toUpperCase()
++        if ((p === SOURCE_PAGE || p.startsWith(`${SOURCE_PAGE}/`)) && (method === 'GET' || method === 'HEAD')) return sourcePage(res, cfg.source, method)
++        wantsPage(req)
++        addSourceLink(req, res, cfg.source.url)
+         app(req, res)
+       })
+       .catch((err) => {
+@@ -297,6 +477,7 @@ export function startGatewaySide(
+   })
+   server.listen(cfg.port, () => {
+     console.log(`⟡ mm gateway side   http://localhost:${cfg.port} for ${cfg.host}: the gateway's assertion on every request; Doop's own sign-in off here`)
++    console.log(`⟡ mm gateway side   source link: ${cfg.source.url} (tag ${cfg.source.tag})`)
+   })
+   return server
+ }
+diff --git a/tests/mmSource.test.ts b/tests/mmSource.test.ts
+new file mode 100644
+index 0000000..5568b33
+--- /dev/null
++++ b/tests/mmSource.test.ts
+@@ -0,0 +1,56 @@
++import { createHash, generateKeyPairSync } from 'node:crypto'
++import { describe, expect, it } from 'vitest'
++import { LINK_STYLE, SOURCE_PAGE, allowLinkStyle, loadGatewayConfig, sourceLink, sourceOf, withSourceLink } from '../server/mmGateway.ts'
++
++/* mm fork: the public side's "Source" link (the AGPL's section 13; server/mmGateway.ts) */
++const TAG = 'v0.12.0-mm.2'
++const URL_AT_TAG = `https://git.example.test/someone/doop/tree/${TAG}`
++const HASH = `'sha256-${createHash('sha256').update(LINK_STYLE).digest('base64')}'`
++
++describe('sourceOf', () => {
++  it('takes the URL and the tag mm gives', () => {
++    expect(sourceOf({ DOOP_SOURCE_URL: URL_AT_TAG, DOOP_SOURCE_TAG: TAG })).toEqual({ tag: TAG, url: URL_AT_TAG })
++  })
++  it('without a URL: this side\'s own page, named by the tag', () => {
++    expect(sourceOf({ DOOP_SOURCE_TAG: TAG })).toEqual({ tag: TAG, url: `${SOURCE_PAGE}/${TAG}` })
++    expect(sourceOf({}).url).toBe(`${SOURCE_PAGE}/unknown`)
++  })
++  it('refuses a URL that is not http(s), or carries credentials, and a tag that is not plain', () => {
++    for (const u of ['javascript:alert(1)', 'data:text/html,x', 'https://u:p@git.example.test/x', 'not a url']) {
++      expect(sourceOf({ DOOP_SOURCE_URL: u, DOOP_SOURCE_TAG: TAG }).url).toBe(`${SOURCE_PAGE}/${TAG}`)
++    }
++    expect(sourceOf({ DOOP_SOURCE_TAG: '"><script>' }).tag).toBe('unknown')
++  })
++  it('is part of the gateway config', () => {
++    const pem = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }) as string
++    const c = loadGatewayConfig({ MM_GATEWAY_PUBLIC_KEY: pem, MM_GATEWAY_HOST: 'doop.example.test', DOOP_SOURCE_URL: URL_AT_TAG, DOOP_SOURCE_TAG: TAG })
++    expect(c?.source).toEqual({ tag: TAG, url: URL_AT_TAG })
++  })
++})
++
++describe('the link in a page', () => {
++  it('goes just before </body>, once, escaped', () => {
++    const page = withSourceLink('<!doctype html><html><body><div id="root"></div></BODY></html>', URL_AT_TAG)
++    expect(page).toMatch(new RegExp(`<a id="mm-source" href="${URL_AT_TAG}"[^>]*>Source</a></BODY></html>$`))
++    expect(page.match(/mm-source/g)?.length).toBe(1)
++    expect(sourceLink('https://x.test/?a="b"&c<d>')).toContain('href="https://x.test/?a=&#34;b&#34;&#38;c&#60;d&#62;"')
++  })
++  it('at the end of a page with no </body>', () => {
++    expect(withSourceLink('<p>x</p>', '/x')).toMatch(/<p>x<\/p><a id="mm-source"/)
++  })
++})
++
++describe('allowLinkStyle', () => {
++  it('leaves a policy alone where the style attribute already passes, or nothing checks it', () => {
++    expect(allowLinkStyle("script-src 'self'")).toBe("script-src 'self'")
++    expect(allowLinkStyle("default-src 'self'; style-src 'self' 'unsafe-inline'")).toBe("default-src 'self'; style-src 'self' 'unsafe-inline'")
++  })
++  it('adds the hash to style-src (or style-src-attr), and to a copy of default-src', () => {
++    expect(allowLinkStyle("default-src 'self'; style-src 'self'")).toBe(`default-src 'self'; style-src 'self' 'unsafe-hashes' ${HASH}`)
++    expect(allowLinkStyle("style-src 'self'; style-src-attr 'none'")).toBe(`style-src 'self'; style-src-attr 'unsafe-hashes' ${HASH}`)
++    expect(allowLinkStyle("default-src 'self'")).toBe(`default-src 'self'; style-src-attr 'self' 'unsafe-hashes' ${HASH}`)
++  })
++  it("with a nonce or hash, 'unsafe-inline' does not count: the hash goes in", () => {
++    expect(allowLinkStyle("style-src 'self' 'unsafe-inline' 'nonce-abc'")).toBe(`style-src 'self' 'unsafe-inline' 'nonce-abc' 'unsafe-hashes' ${HASH}`)
++  })
++})
+-- 
+2.52.0
+

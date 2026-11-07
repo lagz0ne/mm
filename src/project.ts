@@ -22,6 +22,18 @@ const ID = /^[a-z][a-z0-9-]{0,30}$/
 export const PROJECTS_PC = join(DIRS.pc, 'projects')
 /** The mm fork of Doop, v0.12.0-mm.1 (box/doop), by digest: the default when mm's config has no doop.image (sy-3yz). */
 export const DOOP_IMAGE = 'sha256:dd22179d19bd264ede9190cd4347fcedff5db59916a726d8ef280176eb6e9c72'
+/** The fork's tag: box/doop's patches, all of them, as one commit each on upstream (sy-9a30). Its public side links to
+ *  the fork's source at this tag (the AGPL's section 13; doopSource). It moves with the patches and the image. */
+export const DOOP_TAG = 'v0.12.0-mm.2'
+/** The fork's source at DOOP_TAG, from the fork's repository in mm's config (doop.source: an https URL; `{tag}` in it
+ *  is the tag, else `/tree/<tag>` is added). Empty without one, or for one that is not a plain https URL: Doop's
+ *  public side then links to its own page about the source (box/doop/README.md). Never an account in mm's files. */
+export function doopSource(repo: unknown = getPath(loadConfig(), 'doop.source'), tag = DOOP_TAG): string {
+  const r = String(repo ?? '').trim()
+  if (!r || !/^https:\/\/[A-Za-z0-9._~:/?#@%+=&{}-]+$/.test(r)) return ''
+  const url = r.includes('{tag}') ? r.replaceAll('{tag}', tag) : `${r.replace(/\/+$/, '').replace(/\.git$/, '')}/tree/${tag}`
+  try { const u = new URL(url); return u.protocol === 'https:' && !u.username && !u.password ? u.href : '' } catch { return '' }
+}
 /** Project boxes: one file each (`# from <root>/services.yaml`), so mm, the gateway and the sentinel find them; never
  *  loaded into the host's process manager (a box runs its own). */
 export const BOXES = join(DIRS.pc, 'boxes')
@@ -332,7 +344,9 @@ export function containersCfg() {
   return { docker: String(process.env.MM_DOCKER || getPath(loadConfig(), 'box.docker') || 'docker'),
     // the mm fork of Doop (box/doop: one sign-in with the boards), v0.12.0-mm.1, pinned by digest (sy-3yz); a machine
     // that builds it again (box/doop/build.sh) gets the same id only from the same base, so it sets doop.image itself
-    doop_image: String(process.env.MM_DOOP_IMAGE || getPath(loadConfig(), 'doop.image') || DOOP_IMAGE) }
+    doop_image: String(process.env.MM_DOOP_IMAGE || getPath(loadConfig(), 'doop.image') || DOOP_IMAGE),
+    // its source, for the "Source" link of its public side (sy-9a30): the tag mm pins, and the URL at that tag
+    doop_tag: DOOP_TAG, doop_source: doopSource() }
 }
 export function writeRunFiles(root: string, pcSocket: string) {
   const { answers: a, services, schedules, dport } = resolve(root)

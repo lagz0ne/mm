@@ -1,7 +1,7 @@
 #!/bin/sh
-# build.sh — the mm fork of Doop as an image (sy-3yz): the pinned upstream image's own source, the patch on it
-# (0001-gateway-assertion.patch, with git apply), and the result built on that image (Dockerfile here). Nothing is
-# pulled or pushed. Prints the new image's id (sha256:<64 hex>), which doop.image takes.
+# build.sh — the mm fork of Doop as an image (sy-3yz): the pinned upstream image's own source, the patches on it
+# (0001-gateway-assertion.patch, 0002-source-link.patch, in order, with git apply), and the result built on that image
+# (Dockerfile here). Nothing is pulled or pushed. Prints the new image's id (sha256:<64 hex>), which doop.image takes.
 #   box/doop/build.sh <tag> [base image]      (tag: mm-doop:<version>; base: mm-doop:0.12.0)
 # Through mm's Docker wrapper (sy-e6t3; DOCKER, default "sudo -n /usr/local/libexec/mm-docker"): the source comes out
 # of a stopped, labelled container with no mounts as a tar stream (cp ... -), and the build's folder is named as the
@@ -22,7 +22,8 @@ C="mm-doop-dbuild-$$"
 $DOCKER create --name "$C" --label "mm.project=dbuild-$$" --network none --user "210000:$(id -g)" --cap-drop ALL "$BASE_ID" >/dev/null
 for d in package.json server shared; do $DOCKER cp "$C:/app/$d" - | tar -x -C "$W"; done
 $DOCKER rm -f "$C" >/dev/null; C=""
-git -C "$W" apply --whitespace=nowarn "$HERE/0001-gateway-assertion.patch"
+# the fork's commits, in order (0001-gateway-assertion, 0002-source-link, ...)
+for p in "$HERE"/[0-9][0-9][0-9][0-9]-*.patch; do git -C "$W" apply --whitespace=nowarn "$p"; done
 cp "$HERE/Dockerfile" "$W/Dockerfile"
 $DOCKER build -q -t "$TAG" --build-arg BASE="$BASE" -f "$W/Dockerfile" "$W" >/dev/null
 $DOCKER image inspect -f '{{.Id}}' "$TAG"
