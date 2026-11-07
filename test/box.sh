@@ -333,7 +333,7 @@ check "release qa1: pending" sh -c "echo '$OUT' | jq -e '.status == \"pending\"'
 check "...approved: the box's app slot runs it, in the box (its own process manager loads it; the box keeps running)" sh -c "CODE '$QR' | mm api approve '$QR' --hash ${QRH:0:12} >/dev/null && for i in \$(seq 1 40); do IN 'curl -sf --max-time 3 http://app.$PROJECT.localhost:1355/' | grep -q QA-APP-OK && exit 0; sleep 2; done; exit 1"
 check "...as the box user, and not on the host's process manager" sh -c "[ \"\$(IN 'ps -o uid= -p \$(pgrep -f \"node server.js\" | head -1)' | tr -d ' ')\" -ge 200000 ] && ! process-compose -U -u $HOME/.mm/pc.sock process list -o json | jq -e '.[] | select(.name == \"$PROJECT.app\")'"
 check "...mm api undo: the build leaves the app slot" sh -c "mm api undo '$QR' >/dev/null && for i in \$(seq 1 30); do IN 'curl -sf --max-time 3 http://app.$PROJECT.localhost:1355/' 2>/dev/null | grep -q QA-APP-OK || exit 0; sleep 2; done; exit 1"
-# the app the host ran, carried over at box on (sy-im89): made by the host's owner, its data folder 0700 (as playground's),
+# the app the host ran, carried over at box on (sy-im89): made by the host's owner, its data folder 0700 (as one project's),
 # and an app that sets its own data folder's mode at start (EPERM unless the box's user owns it)
 # (in place, as box on records it: release/ itself, build `.`; sy-jif0)
 mkdir -p "$ROOT/release/data"; chmod 700 "$ROOT/release/data"

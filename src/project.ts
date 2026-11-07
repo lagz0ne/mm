@@ -64,7 +64,7 @@ export function parseRef(ref: string): { client: string; name: string } {
 }
 export const rootOf = (client: string, name: string) => join(DIRS.projects, client, name)
 /** A project's folder from `client/name` or its project id: the usual place, else any folder one or two levels under
- *  ~/projects whose .mm-answers.yaml says so (projects that predate mm keep their folder, e.g. ~/projects/playground). */
+ *  ~/projects whose .mm-answers.yaml says so (projects that predate mm keep their folder, e.g. ~/projects/<name>). */
 export function findRoot(ref: string): string {
   const m = /^([a-z][a-z0-9-]{0,30})\/([a-z][a-z0-9-]{0,30})$/.exec(ref || '')
   if (m && existsSync(join(rootOf(m[1], m[2]), '.mm-answers.yaml'))) return rootOf(m[1], m[2])

@@ -445,7 +445,7 @@ export function up(root: string): Step[] {
   const bp = writePc(root, n.proxy, net.ip)
   // 4. what the box may know: its Paseo password, and the vault's values its services declare, in a tmpfs folder on
   // the host that the box sees read-only (gone at the host's reboot; mm opens it again at every up)
-  // the box's own user (review sy-b15.15 1): never the host's owner (rocky, who has sudo). uid 200000 + its subnet index,
+  // the box's own user (review sy-b15.15 1): never the host's owner (who has sudo). uid 200000 + its subnet index,
   // with the host owner's group, so the host's tools still reach what the box writes (umask 002 in the box). An escape,
   // or a file the box leaves behind, is an unprivileged uid on the host.
   const id = boxIds(net.subnet), gid = process.getgid?.() ?? 1000
@@ -815,7 +815,7 @@ export function carryHostApp(root: string): Step[] {
 }
 /**
  * The carried-over build's files become the box user's (with the box stopped: up() runs this before the box starts).
- * Only a file's owner may change its mode, and the app the host ran sets its own (a data folder 0700, as playground's
+ * Only a file's owner may change its mode, and the app the host ran sets its own (a data folder 0700, as one project's
  * does). Without root and without chown: the host's owner opens its own files there to the group (folders setgid),
  * then a short container as the box's uid (no network, no capabilities, release/ its only mount) copies the build (the
  * copy is its own), renames the old one aside and the copy into its place, and the host removes the old one. Nothing is

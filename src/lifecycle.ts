@@ -35,7 +35,7 @@ function updMoved(root: string, git: ReturnType<typeof gitIn>): string | null {
 // ---------- engine drift (sy-h5se) ----------
 // A project adopted in place (mm update --adopt) took a template render as its merge base without taking its files.
 // Where its own copy of an engine file lacked something the base has, every later three-way merge reads that as "the
-// project removed it" and keeps it out, so the file never catches up (playground's bin/lib/svc.mjs lost serviceLogs).
+// project removed it" and keeps it out, so the file never catches up (one project's bin/lib/svc.mjs lost serviceLogs).
 // Drift: an engine file (bin/, site/) that differs from the template's render for this project although no commit of
 // the project's own changed it since mm took its baseline. Those are mm's to put back; a file a project commit changed
 // is the project's (its setup agent decides).

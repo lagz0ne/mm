@@ -38,13 +38,13 @@ echo "== a project, as mm new leaves it"
 check "laid out (template, config repo, mm-template)" bun "$T/stamp.ts" "$ROOT"
 check "mm update --drift: nothing (exit 0)" sh -c "mm update acme/shop --drift >'$T/d.out' 2>&1; [ \$? = 0 ] && ! grep -q 'bin/' '$T/d.out'"
 
-echo "== drift as playground got it: an mm update that kept a function out, and the project's own edit of another file"
+echo "== drift as a real project got it: an mm update that kept a function out, and the project's own edit of another file"
 SVC=bin/lib/svc.mjs
 check "the template's svc.mjs has serviceLogs" grep -q 'export function serviceLogs' "$ROOT/$SVC"
 sed -i '/^\/\*\* Recent log lines of one service/,/^}/d' "$ROOT/$SVC"
 G commit -q -am 'mm update: template 0.1.1+aaaa -> 0.1.1+bbbb'
 echo '# our own backup tweak' >>"$ROOT/bin/backup"; G commit -q -am 'backup: keep 30 days'
-check "...svc.mjs lost it (as playground's did)" sh -c "! grep -q 'export function serviceLogs' '$ROOT/$SVC'"
+check "...svc.mjs lost it (as a real project's did)" sh -c "! grep -q 'export function serviceLogs' '$ROOT/$SVC'"
 mm update acme/shop --drift >"$T/d.out" 2>&1; RC=$?
 check "mm update --drift: exit 1 (mm has a file to put back)" [ "$RC" = 1 ]
 check "...svc.mjs: baseline (mm update --reset puts it back)" grep -q "$SVC  *baseline" "$T/d.out"
