@@ -13,6 +13,7 @@
 //       blocked with nothing it waits on   an item blocked by hand for 10 min with no open blocker (a `blocks`
 //                        dependency) and no needs-you: "blocked" comes from dependencies. Its own line, once (P2
 //                        when the digest has only such lines)
+//       two leads        a role with two (or more) lead agents on two passes in a row (wake keeps one: sy-p8pc)
 //                        (stall:<item>, handoff:<item>, idle:<role>: the keys of earlier Supervisors, closed as cleared)
 //     dirty:<worktree>   uncommitted files, none touched for 30 min (git worktrees of the mm repo and of each project) P2
 //     t2-unapproved:<item> a live step for a t2 item with no `approved` from an approver (read from the event journal
@@ -287,12 +288,13 @@ const HOW = {
   stall: 'stalled: find out why (ask on the item, look at the lead), and get it moving or set it back to open or blocked',
   handoff: 'handoff waits: check that the role was woken and can work (its lead, wake)',
   idle: 'idle: check wake (it should have woken the lead) and the lead itself (`bin/lead`, Paseo)',
+  twoleads: 'two leads: wake keeps the newest lead of a role and archives each older one when it is not in a turn; check wake (its log says which it left and why) and the agents (`bin/lead ls`)',
   blocked: 'blocked with nothing it waits on: name what it waits on (`bd dep add <item> <blocker>`), label it needs-you if a person must act, or set it back to open',
 }
 /** One "Supervisor digest" per role from the flow checks' lines. A check that fails keeps its lines from the last run
  * (its part of each digest is left as it is), and is reported as supervisor:<check>. */
 async function digest() {
-  const checks = { stall, handoff, idle, blocked }, byRole = {}, prev = state.lines || {}
+  const checks = { stall, handoff, idle, blocked, twoleads }, byRole = {}, prev = state.lines || {}
   state.lines = {}
   for (const [name, fn] of Object.entries(checks)) {
     let got
@@ -308,7 +310,7 @@ async function digest() {
       title: `Supervisor digest: ${role} (${ls.length} waiting)`, note: ls.map((l) => l.line).join('\n'),
       body: `What waits in the **${role}** role, as the Supervisor sees it (stalled: a P0/P1 in progress with nothing for ${MIN.stall} min; ` +
         `handoff waits: no reply ${MIN.handoff} min after a handover; idle: a lead not working for ${MIN.idle} min while ready P0 work waits; ` +
-        `blocked with nothing it waits on: blocked by hand for ${MIN.blocked} min, with no open blocker and no needs-you):\n\n` +
+        `blocked with nothing it waits on: blocked by hand for ${MIN.blocked} min, with no open blocker and no needs-you; two leads: two lead agents of the role on two passes in a row):\n\n` +
         `${ls.map((l) => `- ${l.line}`).join('\n')}\n\nWhat to do:\n\n${kinds.map((c) => `- ${HOW[c]}`).join('\n')}\n\n` +
         'One item for the role, edited in place: a line drops off when it clears, and the item closes itself when none is left. ' +
         'Items that wait by design (blocked by an open item, or labelled needs-you) are left out.' })
@@ -520,6 +522,24 @@ async function overcap() {
   if (withWorkers.length && pcap && t > pcap + p0) problems.push({ key: 'overcap:board', priority: 2, title: `Over the cap: this board holds ${t} places, its cap is ${pcap}`,
     note: `${t} of ${pcap}`, body: `Over all roles, this board holds ${t} places (workers and items in progress no worker works on); the cap (\`wake.cap\`) is ${pcap}${p0 ? ', and one more while a P0 is held' : ''}.\n\nThis item closes itself when the board is within its cap again.` })
   return { prefix: 'overcap:', problems }
+}
+
+// Two leads of one role (sy-p8pc): wake archives an older lead on each of its passes (one in a turn when the turn
+// ends), so two seen on two passes in a row mean that is not happening. A line in the role's digest. A worker
+// (role=<role>-worker) is not listed here, and a person's run (label person, or its title "(for <person>)") is not a
+// lead of this kind.
+async function twoleads() {
+  const lines = [], seen = (state.twoleads ||= {})
+  for (const role of ROLES) {
+    const ls = (await paseo.list({ project: SELF, role })).filter((a) => !a.labels?.person && !/\(for [a-z][a-z0-9._-]*\)$/.test(a.name || ''))
+    if (ls.length < 2) { delete seen[role]; continue }
+    const ids = ls.map((a) => a.shortId || a.id).sort()
+    seen[role] = { n: (seen[role]?.n || 0) + 1, since: seen[role]?.since || NOW }
+    if (seen[role].n < 2) continue
+    lines.push({ role, k: `twoleads:${role}`, line: `two leads: the ${role} role has ${ls.length} lead agents at once (since ${at(seen[role].since)}): ${ids.join(', ')}` })
+  }
+  for (const r of Object.keys(seen)) if (!ROLES.includes(r)) delete seen[r]
+  return lines
 }
 
 // ---------- reconcile with the board (as the sentinel does) ----------

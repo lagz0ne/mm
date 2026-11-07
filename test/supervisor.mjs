@@ -206,7 +206,7 @@ clock = T0 + 46 * MIN
 fs.writeFileSync(path.join(T, 'paseo.fail'), '')
 write(path.join(WT, 'again.ts'), 'x\n', clock - 31 * MIN)
 ok('exit 0 (the failure is on the board)', (await supervise()) === 0)
-ok('supervisor:stall and supervisor:idle opened; dirty still found', openKeys() === `${DIRTY} supervisor:idle supervisor:stall`)
+ok('supervisor:stall, supervisor:idle and supervisor:twoleads opened; dirty still found', openKeys() === `${DIRTY} supervisor:idle supervisor:stall supervisor:twoleads`)
 fs.rmSync(path.join(T, 'paseo.fail'))
 clock = T0 + 51 * MIN
 ok('exit 0', (await supervise()) === 0)
@@ -527,6 +527,26 @@ else {
   ok('mode right again: the ledger finding, sy-61 and sy-63 clear; sy-65 clears with its second migration signed',
     !['ledger', 'sy-61', 'sy-63', 'sy-65'].some((k) => openKeys().split(' ').includes(T2(k))) && openKeys().split(' ').includes(T2('sy-60')))
   delete ENV.MM_APPROVE_CONF
+}
+
+step('run 9n (+500..510 min): two leads of one role on two passes in a row: a line in its digest (sy-p8pc)')
+{
+  const line = (role) => (openOf(`digest:${role}`)?.description || '').split('\n').find((l) => l.startsWith('- two leads:')) || ''
+  fs.writeFileSync(path.join(AG, 'platform.json'), JSON.stringify([{ id: 'agent-platform-0001', shortId: 'agplatform', status: 'idle', cwd: SYS },
+    { id: 'agent-platform-0002', shortId: 'agplatform2', status: 'idle', cwd: SYS }]))
+  fs.writeFileSync(path.join(AG, 'review.json'), JSON.stringify([{ id: 'agent-review-0001', shortId: 'agreview', status: 'idle', cwd: SYS },
+    { id: 'agent-review-0009', shortId: 'agrun', status: 'idle', cwd: SYS, title: 'sysqa · review lead (for sam)' }])) // a person's run
+  clock = T0 + 500 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('one pass with two platform leads: no line yet (wake may archive the older one on its next pass)', !line('platform'))
+  clock = T0 + 505 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('the second pass in a row: a "two leads" line in digest:platform (P1), naming both agents', /the platform role has 2 lead agents at once .*agplatform, agplatform2/.test(line('platform')) && openOf('digest:platform')?.priority === 1)
+  ok("a person's run next to the review lead is not a second lead", !line('review'))
+  lead('platform', 'idle'); lead('review', 'idle')
+  clock = T0 + 510 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('one lead again: the line drops off', !line('platform'))
 }
 
 step('run 10: the board is down: exit non-zero, nothing written')
