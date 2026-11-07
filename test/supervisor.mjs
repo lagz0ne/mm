@@ -463,12 +463,21 @@ else {
   // the signer (box/mm-approve) in test mode: its home a throwaway folder, this test's user as its user, a stub plan command
   const AP = path.join(SRC, 'box/mm-approve'), AD = path.join(T, 'approve'), APUB = path.join(T, 'approve-pub'), ACONF = path.join(T, 'mm-approve.conf')
   fs.mkdirSync(AD, { mode: 0o755 }); fs.mkdirSync(APUB, { mode: 0o755 }); fs.chmodSync(AD, 0o755); fs.chmodSync(T, 0o755)
-  fs.writeFileSync(path.join(T, 'plan'), `#!/bin/sh\necho "the plan of $1"\n`, { mode: 0o755 })
+  // the stub plan command prints the item's blocks (sy-4py1: the signer takes the subjects only from them)
+  const PLANS = path.join(T, 'plans'); fs.mkdirSync(PLANS)
+  fs.writeFileSync(path.join(T, 'plan'), `#!/bin/sh\necho "the plan of $1"\ncat "${PLANS}/$1" 2>/dev/null || true\n`, { mode: 0o755 })
   fs.writeFileSync(ACONF, `verifier = ledger\nuser = ${os.userInfo().username}\ndir = ${AD}\npublic_key = ${APUB}/key.pub\nplan_command = ${path.join(T, 'plan')}\nowner_telegram_id = 4242\n`)
   const signer = (args) => execFileSync(AP, args, { env: { PATH: process.env.PATH, MM_APPROVE_CONF: ACONF }, encoding: 'utf8' })
   signer(['keygen']); fs.copyFileSync(path.join(AD, 'key.pub'), path.join(APUB, 'key.pub')); fs.chmodSync(path.join(APUB, 'key.pub'), 0o644)
-  const approve = (id, subjects) => signer(['tap', JSON.parse(signer(['offer', id, ...subjects.flatMap((s) => ['--subject', s])])).offer, '4242'])
   const subjectOf = (name) => signer(['subject', 'migration', path.join(MIGS, `${name}.sh`), path.join(MIGS, `${name}.rollback.sh`)]).trim()
+  // approve(item, [git:<head> | a migration's name]): the plan shows each as a block, the owner taps
+  const block = (s) => s.startsWith('git:') ? `=== mm-approve head ${s.slice(4)} range ${'0'.repeat(40)}..${s.slice(4)}\n`
+    : signer(['block', 'migration', s, path.join(MIGS, `${s}.sh`), path.join(MIGS, `${s}.rollback.sh`)])
+  const offer = (sign, id, refs) => {
+    fs.writeFileSync(path.join(PLANS, id), refs.map(block).join(''))
+    return JSON.parse(sign(['offer', id, ...refs.flatMap((s) => ['--subject', s.startsWith('git:') ? s : subjectOf(s)])])).offer
+  }
+  const approve = (id, refs) => signer(['tap', offer(signer, id, refs), '4242'])
   ENV.MM_APPROVE_CONF = ACONF
   clock = T0 + 481 * MIN
   item('sy-60', { title: 't2 in progress, approved by the bridge, no ledger line', priority: 2, assignee: 'ops', labels: ['t2'] })
@@ -478,16 +487,16 @@ else {
   item('sy-62', { title: 't2, migration applied, a line for another subject', priority: 2, assignee: 'ops', labels: ['t2'] })
   migration('1800000014-fw', 'a port (sy-62)', true); approve('sy-62', ['git:' + 'b'.repeat(40)])
   item('sy-63', { title: 't2, migration applied, a line for its subject', priority: 2, assignee: 'ops', labels: ['t2'] })
-  migration('1800000015-fw', 'a port (sy-63)', true); approve('sy-63', [subjectOf('1800000015-fw')])
+  migration('1800000015-fw', 'a port (sy-63)', true); approve('sy-63', ['1800000015-fw'])
   item('sy-64', { title: 't1, approved label by the bridge, no line', priority: 2, assignee: 'ops', labels: ['t1'] })
   update('sy-64', { labels: ['t1', 'approved'] }, 'bridge')
   item('sy-65', { title: 't2, a line for its subject, then a second migration naming it', priority: 2, assignee: 'ops', labels: ['t2'] })
-  migration('1800000016-a', 'step a (sy-65)', true); approve('sy-65', [subjectOf('1800000016-a')]); migration('1800000017-b', 'step b (sy-65)', true)
+  migration('1800000016-a', 'step a (sy-65)', true); approve('sy-65', ['1800000016-a']); migration('1800000017-b', 'step b (sy-65)', true)
   // a forged line: well formed, signed by another key, for sy-60 (the ledger's owner may append; it doesn't count)
   const FD = path.join(T, 'forger'); fs.mkdirSync(FD, { mode: 0o755 }); fs.chmodSync(FD, 0o755)
   const FCONF = path.join(T, 'forger.conf'); fs.writeFileSync(FCONF, fs.readFileSync(ACONF, 'utf8').replace(AD, FD).replace(`${APUB}/key.pub`, `${FD}/key.pub`))
   const forger = (args) => execFileSync(AP, args, { env: { PATH: process.env.PATH, MM_APPROVE_CONF: FCONF }, encoding: 'utf8' })
-  forger(['keygen']); forger(['tap', JSON.parse(forger(['offer', 'sy-60', '--subject', 'git:' + 'c'.repeat(40)])).offer, '4242'])
+  forger(['keygen']); forger(['tap', offer(forger, 'sy-60', ['git:' + 'c'.repeat(40)]), '4242'])
   fs.appendFileSync(path.join(AD, 'ledger.jsonl'), fs.readFileSync(path.join(FD, 'ledger.jsonl')))
   ok('exit 0', (await supervise()) === 0)
   const keys = openKeys().split(' ')
@@ -504,7 +513,7 @@ else {
   // (sy-61 is only in progress, with nothing live: under sy-0cvx's rule that waits quietly, signed or not)
   ok('a ledger anyone can write: t2-unapproved:ledger, and sy-63 (its applied migration) opens too: nothing counts', ['ledger', 'sy-63'].every((k) => openKeys().split(' ').includes(T2(k))) && !openKeys().split(' ').includes(T2('sy-61')))
   fs.chmodSync(path.join(AD, 'ledger.jsonl'), 0o644)
-  approve('sy-65', [subjectOf('1800000017-b')])
+  approve('sy-65', ['1800000017-b'])
   clock = T0 + 491 * MIN
   ok('exit 0', (await supervise()) === 0)
   ok('mode right again: the ledger finding, sy-61 and sy-63 clear; sy-65 clears with its second migration signed',

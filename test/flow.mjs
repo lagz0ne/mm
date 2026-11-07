@@ -314,14 +314,16 @@ if (fs.existsSync('/etc/mm-approve.conf')) console.log('  skip: this machine has
 else {
   const AP = path.join(SRC, 'box/mm-approve'), AD = path.join(T, 'approve'), ACONF = path.join(T, 'mm-approve.conf')
   fs.mkdirSync(AD, { mode: 0o755 }); fs.chmodSync(AD, 0o755)
-  fs.writeFileSync(path.join(T, 'plan'), '#!/bin/sh\necho "the plan of $1"\n', { mode: 0o755 })
+  // the plan shows its block (sy-4py1: the signer takes the subjects only from the plan's blocks)
+  const HEADSHA = 'a'.repeat(40)
+  fs.writeFileSync(path.join(T, 'plan'), `#!/bin/sh\necho "the plan of $1"\necho "=== mm-approve head ${HEADSHA} range ${'0'.repeat(40)}..${HEADSHA}"\n`, { mode: 0o755 })
   fs.writeFileSync(ACONF, `verifier = ledger\nuser = ${os.userInfo().username}\ndir = ${AD}\npublic_key = ${AD}/key.pub\nplan_command = ${path.join(T, 'plan')}\nowner_telegram_id = 4242\n`)
   const signer = (args) => execFileSync(AP, args, { env: { PATH: process.env.PATH, MM_APPROVE_CONF: ACONF }, encoding: 'utf8' })
   signer(['keygen'])
   ENV.MM_APPROVE_CONF = ACONF
   wait = await approvalWait('alex')
   ok('the owner\'s label with no ledger line does not count (the wait runs to the close)', wait === 'paused_seconds ops sy-o approval @640 = 1800', wait)
-  signer(['tap', JSON.parse(signer(['offer', 'sy-o', '--subject', `git:${'a'.repeat(40)}`])).offer, '4242'])
+  signer(['tap', JSON.parse(signer(['offer', 'sy-o', '--subject', `git:${HEADSHA}`])).offer, '4242'])
   wait = await approvalWait('')
   ok('...a signed line of sy-o: the label counts, even with no owner_name (10 min)', wait === 'paused_seconds ops sy-o approval @640 = 600', wait)
   fs.chmodSync(path.join(AD, 'ledger.jsonl'), 0o666)
