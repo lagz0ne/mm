@@ -13,6 +13,7 @@ check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 P=$T/proj; mkdir -p "$P/bin/lib" "$P/leads/qa" "$T/st"
 cp "$SRC/template/bin/lead" "$P/bin/lead"; chmod +x "$P/bin/lead"
+cp "$SRC/template/bin/lib/paseo.mjs" "$SRC/template/bin/lib/svc.mjs" "$P/bin/lib/" # the daemon's worker (sy-vsh5)
 printf 'project: acme-shop\n' >"$P/.mm-answers.yaml"
 printf 'Hello {name}, you are the {role} lead of {project}.\n' >"$P/leads/START.md"
 printf '{"roles":[{"id":"qa"}]}\n' >"$P/leads/roles.json"
@@ -33,7 +34,8 @@ case "\$1" in
     if [ -n "\$force" ]; then [ -e "\$S/stuck" ] && { echo "daemon refused: agent \$id is locked" >&2; exit 1; }
     elif [ "\$b" != 0 ]; then [ "\$b" -gt 0 ] && echo \$((b - 1)) >"\$S/busy"; echo "agent \$id is running (use --force)" >&2; exit 1; fi
     grep -vx "\$id" "\$S/agents" >"\$S/a.tmp"; mv "\$S/a.tmp" "\$S/agents"; echo "\$id" >>"\$S/archived" ;;
-  run) for a in "\$@"; do last=\$a; done; printf '%s' "\$last" >"\$S/prompt"
+  daemon) [ -e "\$S/noworker" ] && { echo "no daemon" >&2; exit 1; }; echo '{"workerPid":$$}' ;;
+  run) for a in "\$@"; do last=\$a; done; printf '%s' "\$last" >"\$S/prompt"; printf '%s\\n' "\$@" >"\$S/args"
     # an old lead Paseo resumed meanwhile (sy-p8pc): \$S/appear holds its id; the new agent is listed then too
     [ -e "\$S/appear-busy" ] && echo -1 >"\$S/busy"
     [ -e "\$S/appear" ] && { echo new-agent >>"\$S/agents"; cat "\$S/appear" >>"\$S/agents"; }
@@ -67,6 +69,12 @@ check "titles in the first prompt (handover, LEAD_NEXT): in fenced blocks marked
 rm -f "$T/st/items.json"
 printf 'old-1\nold-2\n' >"$T/st/agents"
 check "two old leads of the role (the sy-8n1 state): both archived, then one starts" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && [ \"\$(grep -c 'archived previous qa lead' '$T/out')\" = 2 ] && ! test -s '$T/st/agents'"
+
+echo '== start: the label of the daemon worker it is made on (sy-vsh5)'
+reset old-1 0
+check "the lead is labelled paseo-worker=<the daemon's worker pid>.<its start>" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && grep -qx -- '--label' '$T/st/args' && grep -Eqx 'paseo-worker=$$\\.[0-9]+' '$T/st/args' && grep -qx 'role=qa' '$T/st/args'"
+reset old-1 0; touch "$T/st/noworker"
+check "...the daemon can't say its worker: the lead still starts, without that label" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && test -s '$T/st/prompt' && ! grep -q '^paseo-worker=' '$T/st/args' && grep -qx 'role=qa' '$T/st/args'"
 
 echo '== start: an older lead that shows up during the start (sy-p8pc)'
 reset old-1 0; echo old-9 >"$T/st/appear"
