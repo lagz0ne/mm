@@ -31,7 +31,7 @@
       "Bash(mm update *)",
       "Bash(mm update)",
       "Bash(mm new *)",
-      "Bash(mm archive *)",
+      "Bash(mm archive qa/*)",
       "Bash(mm restore *)",
       "Bash(mm up *)",
       "Bash(mm restart *)",
