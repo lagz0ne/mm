@@ -33,6 +33,9 @@ check "a broken .claude.json: replaced, with the trust" sh -c "cd '$PWD' && bun 
 echo '[1,2]' > "$C/.claude.json"
 check "a JSON array: replaced by an object" sh -c "cd '$PWD' && bun -e \"import { seedTrust } from './src/box.ts'; if (seedTrust('$C', '$R').status !== 'ok') process.exit(1)\" && jq -e 'type == \"object\"' '$C/.claude.json'"
 
+echo '{"box":"state"}' > "$C/.claude.json"; chmod 000 "$C/.claude.json"
+check "the box's own file, unreadable by the host: skipped, left as it is" sh -c "cd '$PWD' && bun -e \"import { seedTrust } from './src/box.ts'; const s = seedTrust('$C', '$R'); if (s.status !== 'skip') { console.log(s); process.exit(1) }\" && [ \"\$(stat -c %a '$C/.claude.json')\" = 0 ] && chmod 600 '$C/.claude.json' && [ \"\$(cat '$C/.claude.json')\" = '{\"box\":\"state\"}' ]"
+
 echo "== the box's Paseo gives its agents that folder"
 check "src/box.ts: the box's Paseo process has CLAUDE_CONFIG_DIR = mm's claude/<project>" grep -q "CLAUDE_CONFIG_DIR: join(DIRS.mm, 'claude', a.project)" src/box.ts
 check "...and mm up seeds the trust before the box starts" grep -q "steps.push(seedTrust(claude, root))" src/box.ts

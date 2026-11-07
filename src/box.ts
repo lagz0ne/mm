@@ -294,7 +294,11 @@ export function seedTrust(claude: string, root: string): Step {
   try {
     const st = lstatSync(f)
     if (st.isFile() && st.size < 8 << 20) { const v = JSON.parse(readFileSync(f, 'utf8')); if (v && typeof v === 'object' && !Array.isArray(v)) j = v }
-  } catch {}
+  } catch (e) {
+    // the box's own file (Claude Code rewrites it 0600 as the box user once an agent ran there): left as it is, never
+    // replaced by one that would drop its state; its leads trust their folders at each start (bin/lead)
+    if ((e as NodeJS.ErrnoException).code === 'EACCES') return { step: 'claude trust', status: 'skip', detail: "the box's own Claude config (the host can't read it): left as it is; its leads trust their folders at start" }
+  }
   const projects: Record<string, Record<string, unknown>> = j.projects && typeof j.projects === 'object' && !Array.isArray(j.projects) ? j.projects : {}
   let added = 0
   for (const p of folders) {
@@ -443,7 +447,14 @@ export function bootReason(project: string): string | null {
   return null
 }
 
+/** A box's mm up. Under umask 022 whoever runs it (sy-vsh5's run: an agent's shell has 077, and the box's pc.yaml,
+ *  passwd, group and portless claim came out 0600, unreadable by the box user, so its process manager never started).
+ *  Every file the box must not read is written with its own mode and chmod (secrets 0640/0600, the Paseo password). */
 export function up(root: string): Step[] {
+  const was = process.umask(0o022)
+  try { return upUnder022(root) } finally { process.umask(was) }
+}
+function upUnder022(root: string): Step[] {
   const steps: Step[] = [], a = readAnswers(root), n = names(a.project), api = boxApi(a.project)
   const fail = (step: string, detail: string) => { steps.push({ step, status: 'fail', detail }); return steps }
   if (!docker('image', 'inspect', IMAGE()).ok || !docker('image', 'inspect', EGRESS_IMAGE()).ok) return fail('image', `missing ${IMAGE()} or ${EGRESS_IMAGE()}: mm box build`)
