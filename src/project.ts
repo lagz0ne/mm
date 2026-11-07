@@ -302,7 +302,11 @@ export function resolve(root: string, o: { names?: NamesMode } = {}) {
     if (front && s.port === 'http') {
       if (sock.socket) Object.assign(env, { MM_SOCKET: sock.socket, ...(sock.public_socket ? { MM_PUBLIC_SOCKET: sock.public_socket } : {}) })
       else {
-        const lp = pub.public_port && !side ? pub.public_port : okPort(prev.services?.[n]?.local_port) ?? hashPort(`${a.project}/${n}/local`, taken)
+        // a remembered local port is kept, unless it is now this service's own public port: a project made from an
+        // older template served its public side on its local port (no `side`); after its update the board listens on
+        // both, and the old number would make it listen twice on one port (EADDRINUSE; sy-tkmc's lifecycle, flag on)
+        const was = okPort(prev.services?.[n]?.local_port), keep = was && !(side && was === pub.public_port) ? was : undefined
+        const lp = pub.public_port && !side ? pub.public_port : keep ?? hashPort(`${a.project}/${n}/local`, taken)
         taken.add(lp); env.PORT = String(lp); local = { local_port: lp }
       }
     }

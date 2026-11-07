@@ -184,6 +184,12 @@ S=$(svcs "$T/p1")
 BD=$(jq -r '."bd-serve".local_port' <<<"$S")
 is "bd-serve: an mm port in 38100-38999, as its PORT ($BD)" bash -c "[ '$BD' -ge 38100 ] && [ '$BD' -le 38999 ] && [ \"\$(jq -r '.\"bd-serve\".env.PORT' <<<'$S')\" = '$BD' ]"
 is "board: its own local port, not its public side's" test "$(jq -r '(.board.local_port != .board.public_port) and (.board.env.PORT == (.board.local_port | tostring)) and (.board.env.BOARD_PUBLIC_PORT == (.board.public_port | tostring))' <<<"$S")" = true
+# a project from an older template: its board served its public side on its local port; after its update the board
+# knows BOARD_PUBLIC_PORT and listens on both, so the remembered local port must not be its public port (sy-tkmc)
+proj "$T/p3" acme-old; echo 'an older board' >"$T/p3/site/server.mjs"; mkdir -p "$T/p3/.run"
+js "const s = P.resolve('$T/p3').services; require('fs').writeFileSync('$T/p3/.run/services.json', JSON.stringify({ services: s }))" >/dev/null
+O=$(svcs "$T/p3"); echo 'process.env.BOARD_PUBLIC_PORT' >"$T/p3/site/server.mjs"; N=$(svcs "$T/p3")
+is "an older board: its local port was its public port; after the update, a port of its own (no EADDRINUSE)" test "$(jq -r '.board.local_port == .board.public_port' <<<"$O") $(jq -r '(.board.local_port != .board.public_port) and (.board.env.PORT != .board.env.BOARD_PUBLIC_PORT)' <<<"$N")" = "true true"
 is "app (an open public side): its PORT is its public port, no PORTLESS_APP_PORT" test "$(jq -r '(.app.local_port == .app.public_port) and (.app.env.PORT == (.app.public_port | tostring)) and (.app.env.PORTLESS_APP_PORT == null)' <<<"$S")" = true
 is "sock (listen: unix): MM_SOCKET, no port" test "$(jq -r '[.sock.env.MM_SOCKET, .sock.local_port // "-", .sock.env.PORT // "-"] | join(" ")' <<<"$S")" = "$MM_HOME/run/acme-shop/sock.sock - -"
 is "every port this project holds is distinct (dolt, public, local; the app's local port is its public one)" bash -c "js \"const r = P.resolve('$T/p1'); const p = [r.dport, ...Object.values(r.services).flatMap((s) => [s.public_port, s.local_port]).filter(Boolean)]; console.log(new Set(p).size === p.length - 1 ? 'ok' : p.join(','))\" | grep -qx ok"
