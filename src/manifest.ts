@@ -27,7 +27,7 @@ export interface Manifest {
     inputs: Record<string, Input>
     tools: Record<string, Tool>
     paths: Record<string, { path?: string; dir?: 'brain' | 'projects' | 'mm' | 'backups'; legacy?: string; git?: string }>
-    services: Record<string, { unit?: string; socket?: string; status?: string }>
+    services: Record<string, { unit?: string; socket?: string; status?: string; process?: string; under?: string; home?: string }>
   }
   project: Record<string, unknown>
 }

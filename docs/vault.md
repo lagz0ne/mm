@@ -31,6 +31,12 @@ waits on `age` being installed** (a signed system package; the manifest lists it
   start, removes any there older than a minute (left by an mm killed in between). It also warns when the callers disagree (`secrets folder callers`): the
   key (or the default), this call's `MM_SECRETS_DIR`, an `MM_SECRETS_DIR` in mm-pc's unit, launcher or base file, and
   the mm-docker wrapper's own `secrets` line (`docs/mm-docker.md`).
+- **The machine's own** (sy-nli): `mm vault run _machine <names> -- <cmd>` opens machine secret inputs sealed under
+  their own name (only ones mm fills itself: no `managed_by`) for one run, each into a new file in `<secrets>/_run/`,
+  sets `<NAME>_FILE`, and removes the files when cmd ends. `_machine` is never a project (a project id starts with a
+  letter). mm.paseo starts this way once `claude-oauth-token` is sealed: its shell reads the file into the daemon's
+  `CLAUDE_CODE_OAUTH_TOKEN` and removes it at once; else it reads the input's file, as before. `mm doctor`'s
+  `claude-oauth-token` row says which (the base file's, and the next `mm up`'s when they differ).
 - Nothing prints a value: `mm vault ls` shows names, sizes, digests and which services use them.
 
 ## Restore (whole machine)

@@ -113,6 +113,18 @@ export interface Outside {
   use: 'allowed' | 'move' | 'old' | 'later' | 'theirs'
   to?: string; link?: boolean; note?: string
 }
+/** The old Paseo home (sy-nli). Not managed yet: still the daemon's (the brain's paseo.service), its move is mm.paseo's.
+ *  Managed: mm.paseo runs on mm's home; a link from here to it is allowed (one home), a real folder left here is the old
+ *  copy (`mm paseo migrate` never moves it: the rollback) and stays a warn until it is removed. Gone: no row. */
+function paseoOld(path: string): Outside {
+  const p = paseoRaw(), home = p.home || join(MM, 'paseo', 'system'), what = "the Paseo daemon's old home"
+  if (!p.managed) return { id: 'Paseo home', path, what: "the Paseo daemon's home (the brain's paseo.service today)", use: 'later', to: home, note: 'moves with mm.paseo (paseo.managed, mm paseo migrate)' }
+  let link = false, same = false
+  try { link = lstatSync(path).isSymbolicLink(); same = realpathSync(path) === realpathSync(home) } catch {}
+  if (link && same) return { id: 'Paseo home', path, what: `a link to mm.paseo's home ${tilde(home)} (one home)`, use: 'allowed' }
+  if (link) return { id: 'Paseo home', path, what: `${what}, a link that is not to mm.paseo's home ${tilde(home)}`, use: 'old', note: 'nothing of mm\'s uses it' }
+  return { id: 'Paseo home', path, what: `${what}, left as the rollback`, use: 'old', note: `mm.paseo runs on ${tilde(home)}; remove it once mm.paseo has run well a while` }
+}
 export function outsidePaths(): Outside[] {
   const h = (...p: string[]) => join(HOME, ...p)
   const legacy = one ? [] : (['projects', 'brain', 'system', 'backups', 'archive'] as const).map((k): Outside => ({
@@ -130,7 +142,7 @@ export function outsidePaths(): Outside[] {
     ...['node', 'process-compose', 'merman-cli', 'victoria-metrics', 'victoria-logs', 'victoria-traces'].map((t): Outside => ({
       id: `tool store ${t}`, path: h('.local', 'share', t), what: `${t} from an older install`, use: 'old', to: join(DIRS.tools, t),
       note: `mm runs its own from ${tilde(DIRS.tools)} (mm onboard installs it); remove it once nothing runs from it` })),
-    { id: 'Paseo home', path: h('.paseo'), what: "the Paseo daemon's home (the brain's paseo.service today)", use: 'later', to: join(MM, 'paseo'), note: 'moves with mm.paseo (sy-nli)' },
+    paseoOld(h('.paseo')),
     { id: 'Claude folder', path: h('.claude'), what: "the human's own Claude folder", use: 'theirs', note: `mm's agents use ${tilde(join(MM, 'claude'))}/<project>` },
     { id: 'claude (old install)', path: h('.local', 'bin', 'claude'), what: "the claude the install script put there (the human's own)", use: 'theirs', note: `mm runs its own from ${tilde(join(DIRS.tools, 'claude'))}` },
     ...legacy,

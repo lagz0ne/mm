@@ -8,6 +8,7 @@ import { granted } from './apistate'
 import { type Config, getPath, loadConfig, saveConfig, setPath, when } from './config'
 import { DIRS, HOME, run, secretsDir } from './env'
 import { manifest } from './manifest'
+import { baseTokenSource, machineHome, paseoManaged, TOKEN_INPUT, tokenSource, type TokenSource } from './paseo'
 import * as vault from './vault'
 
 export interface Input {
@@ -105,9 +106,30 @@ function machineNeed(name: string, i: Input, c: Config): Need {
     const r = run(i.check, { timeoutMs: 15_000, env: { XDG_STATE_HOME: join(DIRS.mm, 'state'), GH_NO_UPDATE_NOTIFIER: '1' } })
     return { ...base, status: r.ok ? 'filled' : 'missing', fill: '', detail: r.ok ? `${i.check.join(' ')}: ok` : `${i.check.join(' ')} failed` }
   }
+  if (i.managed_by) {
+    // Paseo's own files: the manifest names the old home (~/.paseo); the machine's Paseo keeps them in its home now
+    // (mm's once paseo.managed is on, or paseo.home), so the row checks that one (sy-nli)
+    const p = i.managed_by === 'paseo' ? i.path!.replace(/^~\/\.paseo(?=\/)/, machineHome(c)) : i.path!
+    const f = secretFile(p)
+    return { ...base, status: f.status === 'filled' ? 'managed' : f.status, fill: '', detail: `${f.detail} (made by ${i.managed_by})` }
+  }
   const f = secretFile(i.path!)
-  if (i.managed_by) return { ...base, status: f.status === 'filled' ? 'managed' : f.status, fill: '', detail: `${f.detail} (made by ${i.managed_by})` }
+  if (name === TOKEN_INPUT) return tokenNeed(base, f, c)
   return { ...base, status: f.status, fill: f.status === 'filled' ? '' : `mm fill ${name}`, detail: f.detail }
+}
+/** claude-oauth-token's row (sy-nli): its file, and once paseo.managed is on, where mm.paseo gives its agents the token
+ *  from (the vault or this file; the base file's mm.paseo, and what the next mm up writes when that differs). Sealed,
+ *  the vault answers for it even when the file is gone. Never the value. */
+function tokenNeed(base: Omit<Need, 'status' | 'fill'>, f: { status: Status; detail: string }, c: Config): Need {
+  const inVault = vault.sealed(TOKEN_INPUT)
+  const status: Status = inVault && f.status === 'missing' ? 'sealed' : f.status
+  let detail = inVault ? `${f.status === 'missing' ? 'no file' : f.detail}; sealed (vault/${TOKEN_INPUT}.age)` : f.detail
+  if (paseoManaged(c)) {
+    const now = baseTokenSource(), next = tokenSource()
+    const says = (s: TokenSource) => (s === 'vault' ? 'the vault' : 'its file')
+    detail += now ? `; mm.paseo reads it from ${says(now)}${now !== next ? ` (the next mm up: from ${says(next)})` : ''}` : `; mm.paseo will read it from ${says(next)}`
+  }
+  return { ...base, status, fill: status === 'filled' || status === 'sealed' ? '' : `mm fill ${TOKEN_INPUT}`, detail }
 }
 
 interface ProjectSecret { name: string; secret?: boolean; for?: string; about?: string; how?: string }

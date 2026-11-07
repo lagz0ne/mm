@@ -8,7 +8,8 @@ import { getPath, loadConfig } from './config'
 import { DIRS, HOME, hasSystemdUser, portlessDir, run, servicePath, toolEnv, which } from './env'
 import { MM_LOG_CONFIG, obsProcesses } from './obs'
 import { expand, machineInputs } from './inputs'
-import { daemonEnv, homeRefusal, listenRefusal, managedHome, paseoManaged, socketPath } from './paseo'
+import { daemonEnv, homeRefusal, listenRefusal, managedHome, paseoManaged, socketPath, TOKEN_INPUT, tokenSource } from './paseo'
+import { MACHINE_SCOPE } from './vault'
 import { frontEnabled } from './front'
 
 const BASE = join(DIRS.pc, 'base.yaml'), PROJECTS = join(DIRS.pc, 'projects')
@@ -57,21 +58,28 @@ export function writeBase() {
   // the machine's Paseo (src/paseo.ts, sy-11g): the agent daemon the host leads run on, from mm's own npm, its home
   // $MM_HOME/paseo/system (0700; `mm paseo migrate` copies an older ~/.paseo there). Off until the machine turns it on
   // (`mm config set paseo.managed true`, with the old unit stopped: ops, in a window with the owner). umask 077: its
-  // logs and state hold agent activity. The agents' login: the machine's Claude token, read from its file at the start
-  // (the old unit had it in its environment); each lead's CLAUDE_CONFIG_DIR comes with its start (bin/lead). No relay,
+  // logs and state hold agent activity. The agents' login: the machine's Claude token, from the vault once sealed there,
+  // else read from its file at the start (the old unit had it in its environment); each lead's CLAUDE_CONFIG_DIR comes with its start (bin/lead). No relay,
   // web UI or listen setting is forced unless paseo.relay / paseo.web_ui / paseo.listen say so: the home's config.json
   // (the old daemon's, copied) keeps deciding, and the app can still change them.
   if (paseoManaged()) {
     // its home: paseo.home (an existing home under mm, used as is) or mm's paseo/system (sy-11g #14)
     const home = managedHome(), env = daemonEnv(), bin = join(DIRS.npm, 'bin', 'paseo'), badHome = homeRefusal(home)
     if (!badHome) { mkdirSync(home, { recursive: true, mode: 0o700 }); chmodSync(join(home, '..'), 0o700); chmodSync(home, 0o700) }
-    const token = expand(String(machineInputs()['claude-oauth-token']?.path || ''))
     const l = env.PASEO_LISTEN, sockFile = socketPath(l), sock = !!sockFile
     // its socket's folder (sy-nli): mm's run/ (the default) made 0700, as mm doctor's `mode ~/.mm` wants it; a socket
     // configured elsewhere under mm gets its folder made 0700 too; one outside mm is the machine's to make
     if (sockFile && !listenRefusal(l) && !relative(DIRS.mm, dirname(sockFile)).startsWith('..')) {
       mkdirSync(dirname(sockFile), { recursive: true, mode: 0o700 }); chmodSync(dirname(sockFile), 0o700)
     }
+    // the agents' Claude token (sy-nli): sealed in the vault, `mm vault run _machine` opens it into a new memory-backed
+    // file for each start and the shell removes it once read; else the input's file, read at each start, as before.
+    // Either way only a path is passed (the vault's: made at the start, never in this file), the value only in the
+    // daemon's environment
+    const vaulted = tokenSource() === 'vault', tokVar = vaulted ? 'CLAUDE_OAUTH_TOKEN_FILE' : 'MM_PASEO_TOKEN_FILE'
+    const tokenEnv = vaulted ? {} : { MM_PASEO_TOKEN_FILE: expand(String(machineInputs()[TOKEN_INPUT]?.path || '')) }
+    const readToken = `[ -r "$$${tokVar}" ] && export CLAUDE_CODE_OAUTH_TOKEN="$$(cat "$$${tokVar}")";${vaulted ? ` rm -f "$$${tokVar}";` : ''} unset ${tokVar}`
+    const daemon = `sh -c 'umask 077; ${readToken}; exec ${bin} daemon run'`
     // a listen address off loopback, or a home outside mm's paseo/ folder, is refused (review sy-11g #12): the process
     // only says so (a fixed text, never the configured value on a command line) and stops; mm doctor's paseo row names
     // the value and the fix
@@ -80,8 +88,8 @@ export function writeBase() {
       environment: [`PATH=${servicePath()}`],
       log_location: join(DIRS.pc, 'paseo.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'no' } }
     else processes['mm.paseo'] = { namespace: 'mm',
-      command: `sh -c 'umask 077; [ -r "$$MM_PASEO_TOKEN_FILE" ] && export CLAUDE_CODE_OAUTH_TOKEN="$$(cat "$$MM_PASEO_TOKEN_FILE")"; unset MM_PASEO_TOKEN_FILE; exec ${bin} daemon run'`,
-      environment: Object.entries({ PATH: servicePath(), HOME, MM_HOME: DIRS.mm, ...env, MM_PASEO_TOKEN_FILE: token }).map(([k, v]) => `${k}=${v}`),
+      command: vaulted ? `${mm} vault run ${MACHINE_SCOPE} ${TOKEN_INPUT} -- ${daemon}` : daemon,
+      environment: Object.entries({ PATH: servicePath(), HOME, MM_HOME: DIRS.mm, ...env, ...tokenEnv }).map(([k, v]) => `${k}=${v}`),
       log_location: join(DIRS.pc, 'paseo.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
       readiness_probe: { exec: { command: sock ? `test -S ${sockFile}` : `curl -s -o /dev/null --max-time 2 http://${l}/` }, period_seconds: 3, failure_threshold: 40 } }
   }

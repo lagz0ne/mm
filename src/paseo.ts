@@ -11,6 +11,7 @@ import { join, relative } from 'node:path'
 import { getPath, loadConfig, type Config } from './config'
 import { DIRS, HOME, hasSystemdUser, run, tilde } from './env'
 import type { Check } from './doctor'
+import { MACHINE_SCOPE, sealed } from './vault'
 
 export const OLD_UNIT = 'paseo.service'
 /** Paseo's own default (the old unit's): where an unmanaged daemon listens. */
@@ -200,4 +201,22 @@ export function daemonCheck(c: Config = loadConfig()): Check {
   if (!p) return row('fail', 'paseo.managed is on but the process manager has no mm.paseo', 'the next mm up of any project reloads the base file (or mm onboard)')
   if (p.status !== 'Running') return row('fail', `mm.paseo is ${p.status} (${p.restarts} restart(s); see ${tilde(join(DIRS.pc, 'paseo.log'))})`)
   return row('ok', `mm.paseo runs (home ${tilde(home)}, ${listen(c)}); no other Paseo daemon`)
+}
+
+// ---------- the agents' Claude token (sy-nli) ----------
+// mm.paseo gives its agents the machine's Claude token (machine input claude-oauth-token): from the vault once it is
+// sealed there (`mm vault run _machine`: a memory-backed file, removed as soon as the daemon's shell has read it), else
+// from the input's file, as the old unit did. Never on a command line, in the base file or in a log; doctor says which.
+export const TOKEN_INPUT = 'claude-oauth-token'
+export type TokenSource = 'vault' | 'file'
+/** Where the next mm.paseo (the next writeBase) reads the token from. */
+export const tokenSource = (): TokenSource => (sealed(TOKEN_INPUT) ? 'vault' : 'file')
+/** Where the mm.paseo in the process manager's base file reads it from (its command names the way, never the value);
+ *  null when there is none there, or one that refuses to start. */
+export function baseTokenSource(): TokenSource | null {
+  try {
+    const y = Bun.YAML.parse(readFileSync(join(DIRS.pc, 'base.yaml'), 'utf8')) as { processes?: Record<string, { command?: string }> } | null
+    const cmd = String(y?.processes?.['mm.paseo']?.command || '')
+    return cmd.includes(` vault run ${MACHINE_SCOPE} ${TOKEN_INPUT} `) ? 'vault' : cmd.includes('MM_PASEO_TOKEN_FILE') ? 'file' : null
+  } catch { return null }
 }
