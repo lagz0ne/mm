@@ -11,6 +11,7 @@ import { engineDrift } from './lifecycle'
 import { manifest, type Tool } from './manifest'
 import * as vault from './vault'
 import { outsideChecks } from './outside'
+import { daemonCheck as paseoDaemonCheck } from './paseo'
 import { loadConf as approveConf, problems as ledgerProblems } from '../template/bin/lib/ledger.mjs'
 
 export type Status = 'ok' | 'warn' | 'fail' | 'skip'
@@ -340,11 +341,12 @@ export function doctor(): Check[] {
 
   // brain-owned machine services (reported, not managed by mm)
   for (const [name, s] of Object.entries(m.services)) {
-    if (name === 'mm-pc' || !s.unit) continue
+    if (name === 'mm-pc' || name === 'paseo' || !s.unit) continue   // paseo: its own row, below
     if (!systemd) { out.push({ layer: 'service', item: name, status: 'skip', detail: 'no systemd user session' }); continue }
     const a = run(['systemctl', '--user', 'is-active', s.unit], { timeoutMs: 5000 }).out.trim()
     out.push({ layer: 'service', item: name, status: a === 'active' ? 'ok' : 'warn', detail: `${s.unit} ${a || 'missing'} (brain-owned)` })
   }
+  out.push(paseoDaemonCheck(c))   // one Paseo daemon, and mm's once paseo.managed is on (sy-11g)
 
   // access mode
   const access = String(getPath(c, 'access') ?? '')

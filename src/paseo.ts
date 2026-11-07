@@ -117,3 +117,33 @@ export function migrate(o: { dryRun?: boolean; force?: boolean; from?: string; t
   return { ok: !bad.length && key && (o.force || copied === files.length), lines }
 }
 
+// ---------- mm doctor ----------
+/** mm.paseo in the machine's process manager (not project.ts processes(): pc.ts imports this file). */
+function mmPaseo(): { status: string; restarts: number } | undefined {
+  const r = run(['process-compose', '-U', '-u', DIRS.socket, 'process', 'list', '-o', 'json'], { timeoutMs: 15_000 })
+  if (!r.ok) return undefined
+  try { const j = JSON.parse(r.out); return Array.isArray(j) ? j.find((x) => x && x.name === 'mm.paseo') : undefined } catch { return undefined }
+}
+/** One Paseo daemon on the machine, and mm's once paseo.managed is on (sy-11g). */
+export function daemonCheck(c: Config = loadConfig()): Check {
+  const row = (status: Check['status'], detail: string, fix?: string): Check => ({ layer: 'service', item: 'paseo', status, detail, fix })
+  const sd = hasSystemdUser()
+  const unit = (verb: string) => (sd ? run(['systemctl', '--user', verb, OLD_UNIT], { timeoutMs: 5000 }).out.trim() : '')
+  const load = sd ? run(['systemctl', '--user', 'show', OLD_UNIT, '-p', 'LoadState', '--value'], { timeoutMs: 5000 }).out.trim() : ''
+  const exists = load !== '' && load !== 'not-found'
+  const enabled = exists ? unit('is-enabled') : '', active = exists ? unit('is-active') : ''
+  const oldD = daemonIn(oldHome()), sysD = daemonIn(systemHome())
+  if (!paseoManaged(c)) {
+    if (exists) return row('warn', `${OLD_UNIT} (${active || 'unknown'}, ${enabled || 'unknown'}) runs the machine's Paseo from ${tilde(oldHome())}: not under mm yet: sy-11g`)
+    return row('skip', `paseo.managed is off and there is no ${OLD_UNIT}`)
+  }
+  const fix = `systemctl --user disable --now ${OLD_UNIT}`
+  if (enabled === 'enabled' || active === 'active' || active === 'activating')
+    return row('fail', `paseo.managed is on but ${OLD_UNIT} is still ${[active === 'active' || active === 'activating' ? active : '', enabled === 'enabled' ? 'enabled' : ''].filter(Boolean).join(' and ')}`, fix)
+  if (oldD && sysD && oldD.pid !== sysD.pid) return row('fail', `two Paseo daemons: pid ${oldD.pid} on ${tilde(oldHome())}, pid ${sysD.pid} on ${tilde(systemHome())}`, `stop the one on ${tilde(oldHome())} (kill ${oldD.pid})`)
+  if (oldD) return row('fail', `a Paseo daemon (pid ${oldD.pid}) still runs on ${tilde(oldHome())}`, `kill ${oldD.pid}`)
+  const p = mmPaseo()
+  if (!p) return row('fail', 'paseo.managed is on but the process manager has no mm.paseo', 'the next mm up of any project reloads the base file (or mm onboard)')
+  if (p.status !== 'Running') return row('fail', `mm.paseo is ${p.status} (${p.restarts} restart(s); see ${tilde(join(DIRS.pc, 'paseo.log'))})`)
+  return row('ok', `mm.paseo runs (home ${tilde(systemHome())}, ${listen(c)}); no other Paseo daemon`)
+}

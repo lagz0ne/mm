@@ -136,6 +136,50 @@ rm -rf "$O.gone"; mv "$O" "$O.gone"; mig
 is "no old home: refused" [ "$(rc)" = 1 ] && grep -q "no Paseo home at ~/.paseo" "$T/mig.out"
 mv "$O.gone" "$O"
 
+echo "== 3. mm doctor's paseo row"
+# fake systemctl: FAKE_UNIT is none | on (enabled, active) | off (disabled, inactive); fake process-compose: FAKE_PC
+cat >"$T/bin/systemctl" <<'EOF'
+#!/bin/sh
+case "$*" in
+  "--user is-system-running") echo running ;;
+  *"show paseo.service -p LoadState --value") [ "$FAKE_UNIT" = none ] && echo not-found || echo loaded ;;
+  *"is-enabled paseo.service") case "$FAKE_UNIT" in on) echo enabled ;; off) echo disabled ;; *) echo not-found; exit 1 ;; esac ;;
+  *"is-active paseo.service") case "$FAKE_UNIT" in on) echo active ;; *) echo inactive; exit 3 ;; esac ;;
+  *) exit 1 ;;
+esac
+EOF
+cat >"$T/bin/process-compose" <<'EOF'
+#!/bin/sh
+case "$FAKE_PC" in
+  running) echo '[{"name":"mm.paseo","namespace":"mm","status":"Running","restarts":0}]' ;;
+  none) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$T/bin/systemctl" "$T/bin/process-compose"
+cat >"$T/row.ts" <<EOF
+import { daemonCheck } from '$SRC/src/paseo'
+console.log(JSON.stringify(daemonCheck()))
+EOF
+want() { # <description> <status> [text the row must have]
+  local r; r=$("$BUN" "$T/row.ts"); local st; st=$(jq -r .status <<<"$r")
+  if [ "$st" = "$2" ] && { [ -z "${3:-}" ] || grep -qF -- "$3" <<<"$r"; }; then ok "$1"; else bad "$1: $r"; fi; }
+rm -f "$O/paseo.pid" "$S/paseo.pid"
+cfg 'layout: one-root'
+FAKE_UNIT=on FAKE_PC=none want "off, the old unit there: warn naming it" warn "paseo.service (active, enabled) runs the machine's Paseo from ~/.paseo: not under mm yet: sy-11g"
+FAKE_UNIT=none FAKE_PC=none want "off, no old unit: skip" skip
+cfg 'layout: one-root' 'paseo:' '  managed: true' "  listen: 127.0.0.1:$PORT"
+FAKE_UNIT=on FAKE_PC=running want "on, the old unit enabled and active: fail, the fix disables it" fail '"fix":"systemctl --user disable --now paseo.service"'
+FAKE_UNIT=none FAKE_PC=none want "on, no mm.paseo in the process manager: fail" fail "no mm.paseo"
+FAKE_UNIT=off FAKE_PC=running want "on, the old unit disabled, mm.paseo runs: ok" ok "mm.paseo runs"
+printf '{"pid":%s,"startedAt":"2026-01-01T00:00:00Z","hostname":"h","uid":1,"listen":null}\n' "$live" >"$O/paseo.pid"
+sleep 300 & live2=$!; PIDS+=("$live2")
+printf '{"pid":%s,"startedAt":"2026-01-01T00:00:00Z","hostname":"h","uid":1,"listen":null}\n' "$live2" >"$S/paseo.pid"
+FAKE_UNIT=off FAKE_PC=running want "on, a daemon on each home: fail (two daemons)" fail "two Paseo daemons: pid $live on ~/.paseo, pid $live2"
+rm -f "$S/paseo.pid"
+FAKE_UNIT=none FAKE_PC=running want "on, a daemon still on the old home (no unit): fail" fail "still runs on ~/.paseo"
+rm -f "$O/paseo.pid"
+
 echo
 echo "mm-paseo: $pass passed, $fail failed"
 [ "$fail" = 0 ]
