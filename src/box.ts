@@ -28,6 +28,7 @@ import pkg from '../package.json'
 import * as vault from './vault'
 import { boxRoute } from './names'
 import { nameClash, publicKeyPem } from './auth'
+import { machineHome as machinePaseoHome } from './paseo'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
 const short = (r: { out: string; err: string }) => (r.err || r.out).trim().split('\n').slice(-3).join(' ').slice(0, 240)
@@ -81,7 +82,7 @@ export function paseoJoin(project: string, address: string | null): Step {
   let cli = realpathSync(bin)
   while (cli !== dirname(cli) && !(existsSync(join(cli, 'package.json')) && /"@getpaseo\/cli"/.test(readFileSync(join(cli, 'package.json'), 'utf8')))) cli = dirname(cli)
   if (cli === dirname(cli)) return { step: 'machine paseo', status: 'fail', detail: `can't find Paseo's package from ${bin}` }
-  const home = process.env.MM_PASEO_JOIN_HOME || String(getPath(loadConfig(), 'paseo.home') || join(HOME, '.paseo'))
+  const home = process.env.MM_PASEO_JOIN_HOME || machinePaseoHome()
   const dir = mkdtempSync(join(tmpdir(), 'mm-paseo-join-')), script = join(dir, 'join.mjs')
   try {
     writeFileSync(script, paseoJoinScript, { mode: 0o600 })

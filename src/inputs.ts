@@ -34,7 +34,7 @@ export const machineInputs = () => manifest.machine.inputs as Record<string, Inp
  * covered without a template change. Paths only, never a value.
  */
 export function machineSecretPaths(): { files: string[]; dirs: string[] } {
-  const files = new Set<string>([join(HOME, '.claude', '.credentials.json')]), dirs = new Set<string>([join(HOME, '.paseo')])
+  const files = new Set<string>([join(HOME, '.claude', '.credentials.json')]), dirs = new Set<string>([join(HOME, '.paseo'), join(DIRS.mm, 'paseo', 'system')]) // the old home, and mm.paseo's (sy-11g)
   for (const i of Object.values(machineInputs())) {
     if (i.kind !== 'secret' || !i.path) continue
     const all = /^\{brain\}(\/|$)/.test(i.path) ? BRAINS.map((b) => i.path!.replace(/^\{brain\}/, b)) : [expand(i.path)]

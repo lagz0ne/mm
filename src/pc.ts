@@ -1,12 +1,14 @@
 // The machine's one process-compose: API on ~/.mm/pc.sock, started at boot by one systemd user unit (mm-pc.service).
 // Projects are added as namespaces later (`mm new` / `mm up`); it starts empty and stays up (--keep-project).
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { apiConfigured } from './apistate'
 import { personRunsConfigured } from './personruns'
 import { getPath, loadConfig } from './config'
 import { DIRS, HOME, hasSystemdUser, portlessDir, run, servicePath, toolEnv, which } from './env'
 import { MM_LOG_CONFIG, obsProcesses } from './obs'
+import { expand, machineInputs } from './inputs'
+import { daemonEnv, paseoManaged, systemHome } from './paseo'
 
 const BASE = join(DIRS.pc, 'base.yaml'), PROJECTS = join(DIRS.pc, 'projects')
 const UNIT_DIR = join(HOME, '.config', 'systemd', 'user')
@@ -43,6 +45,24 @@ export function writeBase() {
   if (apiConfigured() || personRunsConfigured()) processes['mm.api'] = { namespace: 'mm', command: `${mm} api serve`, environment: [`PATH=${servicePath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],
     log_location: join(DIRS.pc, 'api.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
     readiness_probe: { exec: { command: `test -S ${join(DIRS.mm, 'api', 'approve.sock')}` }, period_seconds: 3, failure_threshold: 20 } } // never a test's MM_API_DIR
+  // the machine's Paseo (src/paseo.ts, sy-11g): the agent daemon the host leads run on, from mm's own npm, its home
+  // $MM_HOME/paseo/system (0700; `mm paseo migrate` copies an older ~/.paseo there). Off until the machine turns it on
+  // (`mm config set paseo.managed true`, with the old unit stopped: ops, in a window with the owner). umask 077: its
+  // logs and state hold agent activity. The agents' login: the machine's Claude token, read from its file at the start
+  // (the old unit had it in its environment); each lead's CLAUDE_CONFIG_DIR comes with its start (bin/lead). No relay,
+  // web UI or listen setting is forced unless paseo.relay / paseo.web_ui / paseo.listen say so: the home's config.json
+  // (the old daemon's, copied) keeps deciding, and the app can still change them.
+  if (paseoManaged()) {
+    const home = systemHome(), env = daemonEnv(), bin = join(DIRS.npm, 'bin', 'paseo')
+    mkdirSync(home, { recursive: true, mode: 0o700 }); chmodSync(join(home, '..'), 0o700); chmodSync(home, 0o700)
+    const token = expand(String(machineInputs()['claude-oauth-token']?.path || ''))
+    const l = env.PASEO_LISTEN, sock = l.startsWith('/') || l.startsWith('unix://')
+    processes['mm.paseo'] = { namespace: 'mm',
+      command: `sh -c 'umask 077; [ -r "$$MM_PASEO_TOKEN_FILE" ] && export CLAUDE_CODE_OAUTH_TOKEN="$$(cat "$$MM_PASEO_TOKEN_FILE")"; unset MM_PASEO_TOKEN_FILE; exec ${bin} daemon run'`,
+      environment: Object.entries({ PATH: servicePath(), HOME, MM_HOME: DIRS.mm, ...env, MM_PASEO_TOKEN_FILE: token }).map(([k, v]) => `${k}=${v}`),
+      log_location: join(DIRS.pc, 'paseo.log'), log_configuration: MM_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
+      readiness_probe: { exec: { command: sock ? `test -S ${l.replace(/^unix:\/\//, '')}` : `curl -s -o /dev/null --max-time 2 http://${l}/` }, period_seconds: 3, failure_threshold: 40 } }
+  }
   // sy-duj0: once at each start of the process manager (boot), every box project's full mm up, so no box runs as Docker
   // alone brought it back (an empty secrets folder Docker made). Exits when done; not restarted.
   processes['mm.boxes'] = { namespace: 'mm', command: `${mm} box boot`, environment: [`PATH=${servicePath()}`, `HOME=${HOME}`, `MM_HOME=${DIRS.mm}`],

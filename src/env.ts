@@ -84,7 +84,15 @@ export const toolEnv = (): Record<string, string> => ({
   PC_CLIENT_LOG_FILE: join(DIRS.pc, 'client.log'), // a client call's log; else /tmp/process-compose-<user>-client.log
   npm_config_cache: join(DIRS.npm, '.cache'),      // npm's cache and logs (a board's npm ci, mm's installs); else ~/.npm
   npm_config_update_notifier: 'false',             // else ~/.npm/_update-notifier-last-checked
+  // the machine's Paseo once mm runs it (paseo.managed, src/paseo.ts): a `paseo` client finds its daemon by the pid lock
+  // in PASEO_HOME (default ~/.paseo), so mm's own calls, every process under the process manager (wake, the board) and
+  // the agents the daemon starts (they inherit its environment) look in mm's home. A box's services set their own.
+  ...(paseoManagedRaw() ? { PASEO_HOME: join(MM, 'paseo', 'system') } : {}),
 })
+/** config.yaml's paseo.managed, read here without config.ts (it imports this file); src/paseo.ts has the real one. */
+function paseoManagedRaw(): boolean {
+  try { const v = (Bun.YAML.parse(readFileSync(join(MM, 'config.yaml'), 'utf8')) as { paseo?: { managed?: unknown } } | null)?.paseo?.managed; return v === true || v === 'true' } catch { return false }
+}
 for (const [k, v] of Object.entries(toolEnv())) process.env[k] ||= v
 
 /**
