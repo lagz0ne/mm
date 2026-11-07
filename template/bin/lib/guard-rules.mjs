@@ -216,6 +216,18 @@ export const RULES = // BEGIN RULES
       "why": "changes SSH keys or access (~/.ssh): a lead never does; ask the owner on the board."
     },
     {
+      "id": "person-asks",
+      "on": "bash",
+      "re": "{{WRITE}}[^;&|]*(?:{{MMDIR}}/person-asks(?:/|(?![\\w.-]))|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*person-asks/)|\\b(?:cd|pushd)\\s+['\"]?\\S*person-asks/?['\"]?(?=[\\s;&|)]|$)[^\\n]*?{{WRITE}}",
+      "why": "changes mm's record of person-run asks: wake starts a run on that person's own token from it (sy-2edw). Only mm (the gateway's Runs for you page, mm run-asks) changes it; reading it is fine."
+    },
+    {
+      "id": "person-asks-file",
+      "on": "file-write",
+      "re": "{{MMDIR}}/person-asks(?:/|$)",
+      "why": "mm's record of person-run asks: wake starts a run on that person's own token from it (sy-2edw). Only mm changes it."
+    },
+    {
       "id": "approval-file",
       "on": "file-write",
       "re": "{{APPROVAL}}",
