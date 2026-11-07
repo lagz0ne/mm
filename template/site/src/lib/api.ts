@@ -83,7 +83,15 @@ export interface Meta {
 
 export const api = {
   meta: () => fetch('/api/meta').then((r) => (r.ok ? r.json() : Promise.reject(new Error(`meta ${r.status}`))) as Promise<Meta>),
-  whoami: () => fetch('/api/whoami').then((r) => r.json() as Promise<{ actor: string; source: 'gateway' | 'self' | 'default' }>),
+  // role: on the public side; approval: the owner's only, how the T2 go is given (the label, or a tap on Telegram)
+  whoami: () => fetch('/api/whoami').then((r) => r.json() as Promise<{ actor: string; source: 'gateway' | 'self' | 'default'; role?: string; approval?: 'label' | 'telegram' }>),
+  // with the ledger on: the board sends the item to the bridge, which offers it on the owner's Telegram (signs nothing here)
+  approveOnTelegram: async (item: string) => {
+    const r = await fetch('/api/approve', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ item }) })
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(d.title || `${r.status}`)
+    return d as { ok: true; title: string }
+  },
   identify: async (name: string) => {
     const r = await fetch('/api/whoami', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) })
     const d = await r.json().catch(() => ({}))

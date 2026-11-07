@@ -37,6 +37,11 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   const [wide, setWide] = useState(() => localStorage.getItem('detail-wide') === '1')
   const toggleWide = () => setWide((w) => { localStorage.setItem('detail-wide', w ? '0' : '1'); return !w })
   const [content, setContent] = useState<ContentFile[]>([])
+  // how the owner gives the T2 go here (the public side only): the label, or a tap on Telegram (the ledger on)
+  const [approval, setApproval] = useState<'label' | 'telegram' | undefined>()
+  const [sent, setSent] = useState<string | null>(null)
+  useEffect(() => { api.whoami().then((w) => setApproval(w.approval)).catch(() => {}) }, [])
+  useEffect(() => setSent(null), [id])
 
   // Live updates reload the item; unsaved edits in the title or description are kept.
   const loaded = useRef<Issue | null>(null)
@@ -77,6 +82,8 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
     (x.dependencies || []).some((d) => d.type === 'blocks' && d.depends_on_id === i.id)) : []
   const children = i ? [...byId.values()].filter((x) => x.parent === i.id) : []
   const closed = i?.status === 'closed'
+  // the T2 go, for the owner on the public side: a signed-off t2 without approved
+  const approvable = !!i && !!approval && !!i.labels?.includes('t2') && !!i.labels?.includes('signed-off') && !i.labels?.includes('approved')
 
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
@@ -136,10 +143,17 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                   {i.status !== 'in_progress' && <Button size="sm" disabled={busy} onClick={() => run(() => api.patch(i.id, { status: 'in_progress' }))}>Start</Button>}
                   {i.status !== 'blocked' && <Button size="sm" variant="outline" disabled={busy} onClick={() => run(() => api.patch(i.id, { status: 'blocked' }))}>Block</Button>}
                   {i.status !== 'open' && <Button size="sm" variant="outline" disabled={busy} onClick={() => run(() => api.patch(i.id, { status: 'open' }))}>Back to open</Button>}
+                  {approvable && approval === 'telegram' && <Button size="sm" disabled={busy} title="With the ledger on, only your tap on Telegram signs the T2 go: this sends the item there"
+                    onClick={() => run(async () => { setSent(null); const d = await api.approveOnTelegram(i.id); setSent(d.title); toast.success(d.title) })}>Approve on Telegram</Button>}
                   <Button size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => run(() => api.close(i.id, 'Closed from board'))}>Close</Button>
                 </>
               )}
             </div>
+            {approvable && approval === 'telegram' && (
+              <p className="border-b px-5 py-2 text-[11px] text-muted-foreground">
+                {sent || 'The approval is signed on Telegram: Approve sends this item to your Telegram, and your tap there is the T2 go. Nothing is approved here.'}
+              </p>
+            )}
 
             <Section label="Description" action={!editing && <button className="text-[11px] font-semibold hover:underline" onClick={() => setEditing(true)}>Edit</button>}>
               {editing ? (

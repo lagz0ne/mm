@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process'
 
 export const ETC = '/etc/mm-approve.conf'
 const VERSION = 'mm-approve/1'
-const ITEM = /^[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*$/, HEX64 = /^[0-9a-f]{64}$/, SUBJECT = /^(?:sha256:[0-9a-f]{64}|git:[0-9a-f]{40}(?:[0-9a-f]{24})?)$/
+export const ITEM = /^[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*$/, HEX64 = /^[0-9a-f]{64}$/, SUBJECT = /^(?:sha256:[0-9a-f]{64}|git:[0-9a-f]{40}(?:[0-9a-f]{24})?)$/
 const APPROVER = /^telegram:[0-9]{1,20}$/, OFFER = /^[0-9a-f]{32}$/, TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/
 const FIELDS = ['v', 'item', 'plan', 'subjects', 'approver', 'time', 'offer', 'sig']
 
@@ -58,6 +58,7 @@ export function loadConf({ etc = ETC, env = process.env } = {}) {
     c.dir = kv.dir || '/var/lib/mm-approve'
     c.public_key = kv.public_key || '/etc/mm-approve.pub'
     c.ledger = path.join(c.dir, 'ledger.jsonl')
+    c.bridge_socket = kv.bridge_socket || null // the bridge's endpoint for the board's web Approve (sy-4py1); none: no web approval
     c.uid = uidOf(c.user)
     if (c.uid === null) c.problems.push(`user = ${c.user} has no account`)
   } finally { fs.closeSync(fd) }
@@ -87,6 +88,23 @@ function parents(p, uids) {
     if (d === '/') return null
     d = path.dirname(d)
   }
+}
+
+/**
+ * The bridge's socket for the board's web Approve (sy-4py1 condition 5): { path } or { why }. Only in ledger mode, from
+ * a config with no problems. The socket must be the signer user's (the bridge runs as it), in folders only it or root
+ * can change, so nobody else can stand in for the bridge and receive the owner's assertion.
+ */
+export function bridgeSocket(c = loadConf()) {
+  if (c.verifier !== 'ledger') return { why: 'the verifier is actor' }
+  if (c.problems?.length || c.uid === null || c.uid === undefined) return { why: `the approval config has problems: ${(c.problems || []).join('; ')}` }
+  if (!c.bridge_socket) return { why: 'no bridge_socket in the approval config' }
+  if (!path.isAbsolute(c.bridge_socket)) return { why: `bridge_socket = ${c.bridge_socket}: not an absolute path` }
+  let st; try { st = fs.lstatSync(c.bridge_socket) } catch (e) { return { why: `the bridge socket ${c.bridge_socket}: ${e.code}` } }
+  if (!st.isSocket()) return { why: `the bridge socket ${c.bridge_socket} is not a socket` }
+  if (st.uid !== c.uid) return { why: `the bridge socket ${c.bridge_socket} belongs to uid ${st.uid}, not ${c.user} (${c.uid})` }
+  const p = parents(c.bridge_socket, new Set([c.uid])); if (p) return { why: p }
+  return { path: c.bridge_socket }
 }
 
 /** Why the ledger, its folder or the public key can't be trusted (condition 8), or []. */

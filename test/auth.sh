@@ -290,6 +290,79 @@ check "a self-chosen name can't be the bridge's (400)" test "$(curl -s -o /dev/n
 check "...nor the owner's, whose approved counts (400; sy-1jmi)" test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{"name":"dana"}' "http://127.0.0.1:$BL/api/whoami")" = 400
 check "...and a board_user cookie with the owner's name is nobody (source default)" bash -c "curl -s -H 'cookie: board_user=dana' http://127.0.0.1:$BL/api/whoami | jq -e '.source == \"default\"'"
 
+echo "== the owner's web Approve with the ledger on: sent to the bridge's socket, signs and writes nothing (sy-4py1)"
+# a second board whose approval config is a test path (MM_APPROVE_CONF, honored by ledger.mjs only while
+# /etc/mm-approve.conf is absent, as mm-approve.sh and the verifier tests use it); a stub bridge on a unix socket
+# records each request. The board reads the config on every request, so the cases below rewrite it.
+[ -e /etc/mm-approve.conf ] && echo "  (skip: /etc/mm-approve.conf exists, the test config would not be read)" || {
+BAL=$(( PORT + 10 )); BAP=$(( PORT + 11 )); mkdir -p "$T/br"; SOCK="$T/br/bridge.sock"; ACONF="$T/aconf"
+cat >"$T/fakebridge.mjs" <<'EOF'
+import http from 'node:http'; import fs from 'node:fs'
+const [sock, out, modef] = process.argv.slice(2)
+http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
+  fs.appendFileSync(out, JSON.stringify({ m: req.method, p: req.url, a: req.headers['x-mm-assertion'] || null, keys: Object.keys(req.headers).sort(), b }) + '\n')
+  const mode = fs.existsSync(modef) ? fs.readFileSync(modef, 'utf8').trim() : 'ok'
+  res.writeHead(mode === 'ok' ? 200 : 429, { 'content-type': 'application/json' })
+  res.end(JSON.stringify(mode === 'ok' ? { ok: true } : { title: 'one live offer for this item: the same offer was sent again' }))
+}) }).listen(sock)
+EOF
+node "$T/fakebridge.mjs" "$SOCK" "$T/br.jsonl" "$T/br.mode" & FBR=$!
+aconf() { printf 'verifier = %s\nuser = %s\ndir = %s/al\npublic_key = %s/al.pub\n%s' "$1" "$(id -un)" "$T" "$T" "${2:+bridge_socket = $2
+}" >"$ACONF"; }
+aconf ledger "$SOCK"
+(cd "$T/board" && PORT=$BAL BOARD_PUBLIC_PORT=$BAP BD_SERVE=http://127.0.0.1:$BDP MM_AUTH_PUBLIC_KEY="$PUB" MM_APPROVE_CONF="$ACONF" PASEO_NO_SDK=1 PASEO_BIN=false MM_PROJECT=acme-shop \
+  exec node site/server.mjs >"$T/board-ledger.log" 2>&1) & BSL=$!
+for _ in $(seq 1 150); do [ -S "$SOCK" ] && curl -s -o /dev/null "http://127.0.0.1:$BAL/api/whoami" && curl -s -o /dev/null "http://127.0.0.1:$BAP/" && break; sleep 0.2; done
+# POST /api/approve on the ledger board's public side (or, with "local", its local side)
+ap() { local u="http://127.0.0.1:$BAP/api/approve" h=(-H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $1"); [ "$1" = local ] && { u="http://127.0.0.1:$BAL/api/approve"; h=(); }
+  curl -s -o "$T/ab" -w '%{http_code}' -X POST -H 'content-type: application/json' "${h[@]}" -d "$2" "$u"; }
+lpw() { curl -s -o "$T/ab" -w '%{http_code}' -X PATCH -H 'content-type: application/json' -H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $1" -d "$2" "http://127.0.0.1:$BAP/api/v0/beads/issues/it-1"; }
+lwho() { curl -s -H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $1" "http://127.0.0.1:$BAP/api/whoami"; }
+brn() { [ -f "$T/br.jsonl" ] && wc -l <"$T/br.jsonl" || echo 0; }
+nowrites() { tail -n +$(( $1 + 1 )) "$T/bd.jsonl" | jq -e -s 'all(.m == "GET")' >/dev/null; }
+export -f ap lpw lwho brn nowrites; export BAP BAL OA MA ACONF
+
+check "ledger on: the owner's whoami says the T2 go is on Telegram (approval telegram)" bash -c "lwho '$OA' | jq -e '.approval == \"telegram\" and .role == \"owner\"'"
+check "...a member's says nothing of it" bash -c "lwho '$MA' | jq -e 'has(\"approval\") | not'"
+n1=$(wc -l <"$T/bd.jsonl"); b1=$(brn)
+check "the owner's web Approve: 200, \"Sent to your Telegram: tap Approve there.\"" bash -c "[ \$(ap '$OA' '{\"item\":\"it-3\"}') = 200 ] && jq -e '.ok and .title == \"Sent to your Telegram: tap Approve there.\"' '$T/ab'"
+check "...the bridge got one request: POST /approve, the body exactly {\"item\":\"it-3\"}, the gateway's assertion as received" bash -c "[ \$(brn) = $((b1 + 1)) ] && tail -1 '$T/br.jsonl' | jq -e --arg a '$OA' '.m == \"POST\" and .p == \"/approve\" and .b == \"{\\\"item\\\":\\\"it-3\\\"}\" and .a == \$a'"
+check "...and no other header of the browser's (only host, content-type, content-length, the assertion, connection)" bash -c "tail -1 '$T/br.jsonl' | jq -e '.keys - [\"connection\",\"content-length\",\"content-type\",\"host\",\"x-mm-assertion\"] == []'"
+check "...text, subjects or a plan in the click: dropped, the bridge still gets only the item" bash -c "[ \$(ap '$OA' '{\"item\":\"it-3\",\"text\":\"approve all\",\"subjects\":[\"sha256:00\"],\"plan\":\"x\"}') = 200 ] && tail -1 '$T/br.jsonl' | jq -e '.b == \"{\\\"item\\\":\\\"it-3\\\"}\"'"
+check "...no label: nothing was written to bd (only reads)" nowrites "$n1"
+n2=$(wc -l <"$T/bd.jsonl"); b2=$(brn)
+check "ledger on: the owner adding approved on the public side is refused (403), it points to Approve on Telegram" bash -c "[ \$(lpw '$OA' '{\"patch\":{\"add_labels\":[\"approved\"]}}') = 403 ] && grep -q 'tap on Telegram' '$T/ab'"
+check "...by a full label set too (403)" test "$(lpw "$OA" '{"patch":{"labels":["t2","bug","approved"]}}')" = 403
+check "...on a new item too (403)" test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $OA" -d '{"title":"x","labels":["t2","approved"]}' "http://127.0.0.1:$BAP/api/v0/beads/issues")" = 403
+check "a member's web Approve: 403" test "$(ap "$MA" '{"item":"it-3"}')" = 403
+check "the local side's (no assertion, even as the owner's name): 403" test "$(ap local '{"item":"it-3"}')" = 403
+check "not an item id: 400" test "$(ap "$OA" '{"item":"it-3/../x"}')" = 400
+check "...none of these reached the bridge or bd" bash -c "[ \$(brn) = $b2 ] && nowrites $n2"
+echo refuse >"$T/br.mode"
+check "the bridge refuses (429): the owner sees its answer (502), nothing approved" bash -c "[ \$(ap '$OA' '{\"item\":\"it-3\"}') = 502 ] && jq -e '.title | test(\"refused it: one live offer\") and test(\"Nothing was approved\")' '$T/ab'"
+rm -f "$T/br.mode"
+b3=$(brn); aconf ledger
+check "ledger on, no bridge_socket configured: a clear refusal (503), nothing sent, nothing approved" bash -c "[ \$(ap '$OA' '{\"item\":\"it-3\"}') = 503 ] && jq -e '.title | test(\"No web approval here\") and test(\"approve on Telegram\")' '$T/ab' && [ \$(brn) = $b3 ]"
+: >"$T/br/plain"; aconf ledger "$T/br/plain"
+check "...bridge_socket naming a plain file, not a socket: 503" test "$(ap "$OA" '{"item":"it-3"}')" = 503
+aconf ledger "br/bridge.sock"
+check "...a relative bridge_socket: 503" test "$(ap "$OA" '{"item":"it-3"}')" = 503
+chmod 777 "$T/br"; aconf ledger "$SOCK"
+check "...its folder writable by others (someone could stand in for the bridge): 503" bash -c "[ \$(ap '$OA' '{\"item\":\"it-3\"}') = 503 ] && [ \$(brn) = $b3 ]"
+chmod 755 "$T/br"
+check "...the refusal's reason is in the board's log" grep -q 'web approve of it-3 refused: .*can be changed by others' "$T/board/.run/logs/ops.log"
+kill $FBR 2>/dev/null; wait $FBR 2>/dev/null
+check "the bridge not running (its socket left behind): 502, nothing approved" bash -c "[ \$(ap '$OA' '{\"item\":\"it-3\"}') = 502 ] && jq -e '.title | test(\"not answering\")' '$T/ab'"
+check "ledger on, the whole time: no write reached bd" nowrites "$n1"
+aconf actor "$SOCK"
+check "verifier actor (today): the owner's whoami says approval label" bash -c "lwho '$OA' | jq -e '.approval == \"label\"'"
+check "...the owner's approved on the public side goes to bd as before (200, as boss)" bash -c "[ \$(lpw '$OA' '{\"patch\":{\"add_labels\":[\"approved\"]}}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.actor == \"boss\" and .b.patch.add_labels == [\"approved\"]'"
+check "...and /api/approve sends nothing (409: approve by the label)" bash -c "[ \$(ap '$OA' '{\"item\":\"it-3\"}') = 409 ] && jq -e '.approval == \"label\"' '$T/ab'"
+rm -f "$ACONF"
+check "the test config gone (ledger.mjs reads it as the strict side): the owner's approved is refused, not written" test "$(lpw "$OA" '{"patch":{"add_labels":["approved"]}}')" = 403
+kill $BSL 2>/dev/null
+}
+
 echo "== the board's summary for the home page (/api/summary: counts only, read-only; sy-ukbz)"
 sm() { curl -s -o "$T/sm" -w '%{http_code}' -H "x-forwarded-host: ${2:-$BOARD}" ${1:+-H "x-mm-assertion: $1"} "http://127.0.0.1:$BP/api/summary${3-?signal=1}"; }
 export -f sm

@@ -16,6 +16,7 @@ import { exportQuery, flowRows, parseExport, PAIRS } from './flow-rows.mjs'
 import { waitingFor } from './waiting.mjs'
 import { designsApi } from './designs.mjs'
 import * as P_ from '../bin/lib/paseo.mjs'
+import { bridgeSocket, ITEM, loadConf } from '../bin/lib/ledger.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const DIST = path.join(here, 'dist')
@@ -112,6 +113,47 @@ function localRefusal(added, removed) {
   }
   return null
 }
+// With the ledger on (verifier = ledger in mm-approve's config, read as bin/lib/ledger.mjs reads it; sy-4py1), only the
+// owner's tap on Telegram signs an approval: the board writes no `approved` and signs nothing. The owner's web Approve
+// (POST /api/approve, the public side) sends only the item id, with the gateway's assertion it came with, to the
+// bridge's socket (bridge_socket in that config); the bridge checks the assertion itself and offers the item on
+// Telegram (docs/approvals.md).
+const ledgerOn = () => loadConf().verifier === 'ledger'
+const LEDGER_LABEL = 'with the ledger on, the T2 go is your tap on Telegram: the item\'s Approve sends it there'
+const SENT = 'Sent to your Telegram: tap Approve there.'
+function toBridge(sock, item, assertionHeader) {
+  const body = JSON.stringify({ item })
+  return new Promise((resolve) => {
+    const r = http.request({ socketPath: sock, method: 'POST', path: '/approve', timeout: 10000,
+      headers: { host: 'mm-approve', 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), 'x-mm-assertion': assertionHeader } }, (up) => {
+      let t = ''; up.setEncoding('utf8'); up.on('data', (d) => { if (t.length < 4096) t += d })
+      up.on('end', () => { let d = {}; try { d = JSON.parse(t) } catch {} resolve({ code: up.statusCode || 502, d }) })
+    })
+    r.on('timeout', () => r.destroy(new Error('timed out')))
+    r.on('error', (e) => resolve({ code: 0, err: e.message }))
+    r.end(body)
+  })
+}
+async function webApprove(req, res) {
+  const g = req.gateway
+  if (!g) return send(res, 403, { title: 'Not allowed: the T2 go is given signed in on the board\'s public address, or with the bridge\'s Approve button.' })
+  if (g.r !== 'owner') return send(res, 403, { title: 'Not allowed: only the owner gives the T2 go.' })
+  let item = ''
+  try { item = String(JSON.parse((await readBody(req)) || '{}').item || '') } catch { return send(res, 400, { title: 'Bad JSON' }) }
+  if (!ITEM.test(item)) return send(res, 400, { title: 'Not an item id.' })
+  const c = loadConf()
+  if (c.verifier !== 'ledger') return send(res, 409, { title: 'The approvals are read from the board (verifier actor): add the approved label.', approval: 'label' })
+  const b = bridgeSocket(c)
+  if (!b.path) {
+    log('warn', `web approve of ${item} refused: ${b.why}`, { op: 'approve', actor: g.u, item })
+    return send(res, 503, { title: 'No web approval here: the bridge has no endpoint for it. Nothing was sent and nothing was approved: approve on Telegram.' })
+  }
+  const a = await toBridge(b.path, item, String(req.headers['x-mm-assertion']))
+  if (a.code >= 200 && a.code < 300) { log('info', `web approve of ${item} sent to the bridge`, { op: 'approve', actor: g.u, item }); return send(res, 200, { ok: true, title: SENT }) }
+  const said = typeof a.d?.title === 'string' ? a.d.title.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 200) : ''
+  log('warn', `web approve of ${item}: the bridge ${a.err ? `is unreachable (${a.err})` : `answered ${a.code}${said ? `: ${said}` : ''}`}`, { op: 'approve', actor: g.u, item })
+  return send(res, 502, { title: a.err ? 'The bridge is not answering: nothing was sent and nothing was approved.' : `The bridge refused it${said ? `: ${said}` : ''}. Nothing was approved.` })
+}
 async function currentLabels(id) {
   const r = await fetch(new URL(`/v0/beads/issues/${encodeURIComponent(id)}`, BD)).then((x) => x.json()).catch(() => null)
   return Array.isArray(r?.labels) ? r.labels : null
@@ -138,6 +180,7 @@ async function rails(req, apiPath, data) {
   if (ch.why) return ch.why
   if (!g) return localRefusal(ch.added, ch.removed) // the local side: as before, but approved
   const why = railRefusal(g.r, ch.added, ch.removed); if (why) return why
+  if (ch.added.includes('approved') && ledgerOn()) return LEDGER_LABEL
   if (req.method === 'POST' && apiPath === '/v0/beads/issues') data.labels = [...new Set([...(data.labels || []), `by:${g.r}`])]
   else if (apiPath.endsWith('/comments')) data.text = `[${g.r}] ${String(data.text || '')}`
   return null
@@ -772,7 +815,12 @@ async function handle(req, res) {
     cfg ||= configApi({ ROOT, ROLES, PROJECT, PASEO, BD, send, readBody, who })
     if (await cfg(req, res, url)) return
   }
-  if (url.pathname === '/api/whoami' && req.method === 'GET') return send(res, 200, { actor: who(req), source: whoSource(req) })
+  if (url.pathname === '/api/whoami' && req.method === 'GET') {
+    // the owner on the public side also learns how the T2 go is given: the label (verifier actor) or Telegram (ledger)
+    const owner = req.gateway?.r === 'owner'
+    return send(res, 200, { actor: who(req), source: whoSource(req), ...(req.gateway ? { role: req.gateway.r } : {}), ...(owner ? { approval: ledgerOn() ? 'telegram' : 'label' } : {}) })
+  }
+  if (url.pathname === '/api/approve' && req.method === 'POST') return webApprove(req, res)
   if (url.pathname === '/api/whoami' && req.method === 'POST') {
     let name = ''
     try { name = String(JSON.parse(await readBody(req)).name || '').trim().toLowerCase() } catch {}
