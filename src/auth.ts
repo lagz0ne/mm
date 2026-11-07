@@ -970,11 +970,14 @@ button.quiet:hover{border-bottom-color:var(--swiss);color:var(--swiss)}
 code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}
 .tok{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;margin:1rem 0}
 .tok label{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-.tok input{font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;width:100%;max-width:34rem;min-height:44px;padding:.5rem;border:1px solid var(--fg);border-radius:0;background:var(--bg);color:var(--fg)}
+.tok input{font:inherit;font-size:16px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;width:100%;max-width:34rem;min-height:44px;padding:.5rem;border:1px solid var(--fg);border-radius:0;background:var(--bg);color:var(--fg)}
 .w-none,.w-note{margin:.6rem 0 0;font-size:13px;color:var(--muted)}
+@media (max-width:47.99rem){.top nav{gap:0 1.25rem;font-size:14px}.top nav a,.top nav .here,.top nav .who,.top nav button.quiet{display:inline-flex;align-items:center;min-height:44px}.top nav .here{padding-bottom:0}.code{font-size:2rem}}
 @media (min-width:48rem){.w-list a{grid-template-columns:12rem minmax(0,1fr) 9rem 7rem 4.5rem;grid-template-areas:"ask title board id age";align-items:baseline}.w-where{display:contents}.w-board{grid-area:board;overflow-wrap:anywhere}.w-id{grid-area:id}}
 @media (min-width:40rem){.top{padding:1rem 1.5rem .75rem}.wrap{padding:2rem 1.5rem 3rem}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:64rem){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}`
+/** The pages on their own, for the phone check (test/board-phone.mjs): no server, no account. */
+export const pagesForTest = { home: homePage, code: codePage, continue: continuePage, account: tokenPage, runs: runsPage, message: page, css: APP_CSS }
 function codePage(code: string, board: string) {
   return shell('Sign in', SIGN_IN_NAV, `${board ? `<p class="label">Board</p><p>${esc(board)}</p>` : ''}
 <p>Give this code to the owner to approve, or open the sign-in link they sent you:</p>
