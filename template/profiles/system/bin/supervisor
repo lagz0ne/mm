@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 // supervisor — watches how the work flows on this board (profile system; every 5 min under mm cron). It reads; it never
 // builds, never signs off, never accepts, and starts no agent. One item per finding (a stable key, label `supervisor`,
-// for ops), commented when the finding changes, closed when it clears:
-//     stall:<item>       a P0/P1 in progress with no comment, commit or agent turn for 30 min (an expired claim is
-//                        not one: wake requeues it and says so on the item)                                      P1
-//     handoff:<item>     an item reassigned to a role (`bd update -a <role>`) with no act from that role after 10 min P1
-//     idle:<role>        a lead not working (idle, closed, gone) for 10 min while ready P0 work waits for it   P1
+// for ops), commented when the finding changes, closed when it clears; but the flow findings of a role are lines of one
+// item, its digest:
+//     digest:<role>      "Supervisor digest": one open item per role, edited in place (no comment), a line dropping off
+//                        when it clears, closed (no comment) when none is left. Its lines:                       P1
+//       stalled          a P0/P1 in progress with no comment, commit or agent turn for 60 min (an expired claim is
+//                        not one: wake requeues it and says so on the item)
+//       handoff waits    an item reassigned to a role (`bd update -a <role>`) with no act from that role after 30 min
+//       idle             a lead not working (idle, closed, gone) for 10 min while ready P0 work waits for it
+//                        An item blocked or labelled needs-you (it waits on a person by design) is never a line.
+//                        (stall:<item>, handoff:<item>, idle:<role>: the keys of earlier Supervisors, closed as cleared)
 //     dirty:<worktree>   uncommitted files, none touched for 30 min (git worktrees of the mm repo and of each project) P2
 //     t2-unapproved:<item> a live step for a t2 item with no `approved` from an approver (read from the event journal
 //                        with its actor, never from the label alone): an applied tier-2 brain migration names it in its
@@ -41,7 +46,7 @@
 // The board is the truth for which items are open (label `supervisor`, line "supervisor key: `<key>`"); .supervisor.json
 // keeps the journal position and a summary per item, notes, mutes, and when leads were seen running or idle.
 // Optional config supervisor.json (this board's root):
-//   { "assignee": "ops", "ignore": ["<regex on a key>"], "minutes": { "stall": 30, "handoff": 10, "idle": 10, "dirty": 30 },
+//   { "assignee": "ops", "ignore": ["<regex on a key>"], "minutes": { "stall": 60, "handoff": 30, "idle": 10, "dirty": 30 },
 //     "repos": ["<more git repos to watch; the mm repo is ~/mm, the template's place for it>"] }
 // Env (tests): SUPERVISOR_STATE, SUPERVISOR_CONFIG, SUPERVISOR_NOW (ms), SUPERVISOR_APPROVERS, BRAIN_STATE, MM_BIN,
 // SVC_URL_BD_SERVE, PASEO_BIN, PASEO_NO_SDK.
@@ -62,7 +67,7 @@ const CONF = (() => { try { return JSON.parse(fs.readFileSync(E.SUPERVISOR_CONFI
 const MM = E.MM_BIN || 'mm'
 const HOME = E.HOME || os.homedir()
 const ASSIGNEE = CONF.assignee || 'ops'
-const MIN = { stall: 30, handoff: 10, idle: 10, dirty: 30, ...(CONF.minutes || {}) }
+const MIN = { stall: 60, handoff: 30, idle: 10, dirty: 30, ...(CONF.minutes || {}) }
 const IGNORE = (CONF.ignore || []).map((r) => new RegExp(r)) // never applied to t2-unapproved keys (sy-1jmi)
 const BD = requireUrl('bd-serve')
 const ACTOR = 'watchdog' // a system author for wake and the lead briefs (not a human, not a lead)
@@ -203,60 +208,85 @@ const commits = once(async () => {
 const mine = (i) => (i.labels || []).includes('supervisor')
 
 // ---------- checks: each returns { prefix, problems: [{ key, title, priority, body, note }] } or throws ----------
+// The flow checks (stall, handoff, idle) give lines, not items: [{ role, k (stable), line }]. digest() folds them into
+// one item per role ("Supervisor digest", key digest:<role>), edited in place. An item that waits on a person by design
+// (blocked, or labelled needs-you) is never a line.
+const waitsOnPerson = (i) => i.status === 'blocked' || (i.labels || []).includes('needs-you')
 async function stall() {
   const [all, sum, ls, cs, ws] = await Promise.all([issues(), journal(), leads(), commits(), workers()])
-  const problems = [], window = MIN.stall * 60000
+  const lines = [], window = MIN.stall * 60000
   for (const i of all) {
-    if (i.status === 'closed' || mine(i)) continue
-    if (i.status !== 'in_progress' || !(i.priority <= 1)) continue
+    if (i.status !== 'in_progress' || mine(i) || !(i.priority <= 1) || waitsOnPerson(i)) continue
     const s = sum[i.id], lead = ls[i.assignee]
     const lastAct = s?.act || ms(i.updated_at) // no journal record of it: the item's own time
     const turn = lead?.status === 'running' || ws.some((w) => w.item === i.id && w.status === 'running') ? NOW : state.running[i.assignee] || 0
     const last = Math.max(lastAct, cs[i.id] || 0, turn)
     if (NOW - last < window) continue
-    problems.push({ key: `stall:${i.id}`, priority: 1, title: `Stalled: ${i.id} (P${i.priority}, in progress, ${i.assignee || 'nobody'}) has no comment, commit or agent turn for ${MIN.stall} min`,
-      note: `assignee ${i.assignee || 'none'}, P${i.priority}, in progress`,
-      body: `**${i.id}** "${i.title}" is in progress at P${i.priority}, and nothing moved for ${MIN.stall} min or more:\n\n` +
-        `- last comment or change by a person or lead: ${at(lastAct)}\n- last commit naming it: ${cs[i.id] ? at(cs[i.id]) : `none in the last ${MIN.stall} min`}\n` +
-        `- the ${i.assignee || '(no assignee)'} lead: ${lead ? lead.status : 'not a lead'}${state.running[i.assignee] ? `, last seen working ${at(state.running[i.assignee])}` : ''}\n\n` +
-        `Find out why (ask on ${i.id}, look at the lead), and get it moving or set it back to open or blocked. This item closes itself when ${i.id} moves again or leaves in progress.` })
+    lines.push({ role: roleOf(i.assignee) || ASSIGNEE, k: `stall:${i.id}`,
+      line: `stalled: ${i.id} (P${i.priority}, in progress, ${i.assignee || 'nobody'}): no comment, commit or agent turn since ${at(last)}; its lead ${lead ? lead.status : 'is not a lead'}` })
   }
-  return { prefix: 'stall:', problems }
+  return lines
 }
 
 async function handoff() {
   const [all, sum] = await Promise.all([issues(), journal()])
-  const problems = []
+  const lines = []
   for (const i of all) {
-    if (i.status === 'closed' || mine(i) || !sum[i.id]) continue
+    if (i.status === 'closed' || mine(i) || !sum[i.id] || waitsOnPerson(i)) continue
     const s = sum[i.id]
-    const waiting = Object.entries(s.ho).filter(([role, h]) => !((s.re[role] || 0) > h.seq) && NOW - h.at >= MIN.handoff * 60000).sort(([a], [b]) => a.localeCompare(b))
-    if (!waiting.length) continue
-    const roles = waiting.map(([r]) => r).join(', ')
-    problems.push({ key: `handoff:${i.id}`, priority: 1, title: `Handoff waits: ${i.id} was handed to ${roles}, no reply for ${MIN.handoff} min`,
-      note: waiting.map(([r, h]) => `handed to ${r} at ${at(h.at)}`).join('\n'),
-      body: `**${i.id}** "${i.title}" was reassigned (handed over), with no reply or change from that role since:\n\n${waiting.map(([r, h]) => `- ${r}: handed over ${at(h.at)} (${ago(h.at)} ago)`).join('\n')}\n\n` +
-        `Check that the role was woken and can work (its lead, wake). This item closes itself when the role comments on or changes ${i.id}, or ${i.id} is closed.` })
+    for (const [role, h] of Object.entries(s.ho).sort(([a], [b]) => a.localeCompare(b))) {
+      if ((s.re[role] || 0) > h.seq || NOW - h.at < MIN.handoff * 60000) continue
+      lines.push({ role, k: `handoff:${i.id}`, line: `handoff waits: ${i.id} was handed to ${role} at ${at(h.at)}, no reply or change from ${role} since` })
+    }
   }
-  return { prefix: 'handoff:', problems }
+  return lines
 }
 
 async function idle() {
   const [ready, ls] = await Promise.all([bd('GET', '/v0/beads/ready?limit=500'), leads()])
-  const problems = []
+  const lines = []
   for (const role of ROLES) {
-    const p0 = (ready.items || []).filter((i) => i.assignee === role && i.priority === 0 && i.status === 'open' && !(i.labels || []).includes('needs-you') && !mine(i)).map((i) => i.id).sort()
+    const p0 = (ready.items || []).filter((i) => i.assignee === role && i.priority === 0 && i.status === 'open' && !waitsOnPerson(i) && !mine(i)).map((i) => i.id).sort()
     const st = ls[role]?.status || 'gone'
     if (!p0.length || st === 'running') { delete state.idle[role]; continue }
     state.idle[role] ||= NOW
     if (NOW - state.idle[role] < MIN.idle * 60000) continue
-    problems.push({ key: `idle:${role}`, priority: 1, title: `Idle: the ${role} lead is not working while ready P0 work waits for it`,
-      note: `lead ${st}; ready P0: ${p0.join(' ')}`,
-      body: `The **${role}** lead is ${st} (seen so since ${at(state.idle[role])}), and ready P0 work waits for it: ${p0.join(', ')}.\n\n` +
-        `Check wake (it should have woken the lead) and the lead itself (\`bin/lead\`, Paseo). This item closes itself when the lead works or no ready P0 waits for it.` })
+    lines.push({ role, k: `idle:${role}`, line: `idle: the ${role} lead is ${st} (since ${at(state.idle[role])}) while ready P0 work waits for it: ${p0.join(', ')}` })
   }
   for (const r of Object.keys(state.idle)) if (!ROLES.includes(r)) delete state.idle[r]
-  return { prefix: 'idle:', problems }
+  return lines
+}
+
+const HOW = {
+  stall: 'stalled: find out why (ask on the item, look at the lead), and get it moving or set it back to open or blocked',
+  handoff: 'handoff waits: check that the role was woken and can work (its lead, wake)',
+  idle: 'idle: check wake (it should have woken the lead) and the lead itself (`bin/lead`, Paseo)',
+}
+/** One "Supervisor digest" per role from the flow checks' lines. A check that fails keeps its lines from the last run
+ * (its part of each digest is left as it is), and is reported as supervisor:<check>. */
+async function digest() {
+  const checks = { stall, handoff, idle }, byRole = {}, prev = state.lines || {}
+  state.lines = {}
+  for (const [name, fn] of Object.entries(checks)) {
+    let got
+    try { got = (await fn()).map((l) => ({ ...l, check: name })) } catch (e) { failed.push(failure(name, e)); got = prev[name] || [] }
+    state.lines[name] = got
+    for (const l of got) if (!IGNORE.some((re) => re.test(l.k))) (byRole[l.role] ||= []).push(l) // config ignore: on a line's key (stall:<item> ...)
+  }
+  const problems = []
+  for (const role of Object.keys(byRole).sort()) {
+    const ls = byRole[role].sort((a, b) => a.k.localeCompare(b.k) || a.line.localeCompare(b.line))
+    const kinds = Object.keys(HOW).filter((c) => ls.some((l) => l.check === c))
+    problems.push({ key: `digest:${role}`, parts: ls.map((l) => `${l.k} ${l.role}`), priority: 1,
+      title: `Supervisor digest: ${role} (${ls.length} waiting)`, note: ls.map((l) => l.line).join('\n'),
+      body: `What waits in the **${role}** role, as the Supervisor sees it (stalled: a P0/P1 in progress with nothing for ${MIN.stall} min; ` +
+        `handoff waits: no reply ${MIN.handoff} min after a handover; idle: a lead not working for ${MIN.idle} min while ready P0 work waits):\n\n` +
+        `${ls.map((l) => `- ${l.line}`).join('\n')}\n\nWhat to do:\n\n${kinds.map((c) => `- ${HOW[c]}`).join('\n')}\n\n` +
+        'One item for the role, edited in place: a line drops off when it clears, and the item closes itself when none is left. ' +
+        'Items that wait on a person by design (blocked, needs-you) are left out.' })
+  }
+  // the per-item keys of earlier Supervisors (stall:, handoff:, idle:): never found again, so they clear and close
+  return [{ prefix: 'digest:', problems }, ...['stall:', 'handoff:', 'idle:'].map((prefix) => ({ prefix, problems: [] }))]
 }
 
 /** `git status -z` entries of a worktree: [{ xy, file }]. */
@@ -471,8 +501,9 @@ for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')
   if (k && it.status !== 'closed') open[k] = it
 }
 const results = [], failed = []
-for (const [name, fn] of Object.entries({ stall, handoff, idle, dirty, t2, overcap })) {
-  try { results.push(...[await fn()].flat()) } catch (e) { failed.push({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) }) }
+const failure = (name, e) => ({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) })
+for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap })) {
+  try { results.push(...[await fn()].flat()) } catch (e) { failed.push(failure(name, e)) }
 }
 await paseo.close()
 results.push({ prefix: 'supervisor:', problems: failed.map((f) => ({ key: `supervisor:${f.name}`, priority: 2, title: `Supervisor cannot run its ${f.name} check`, note: f.err.replace(/\d+/g, '#'),
@@ -482,7 +513,14 @@ let opened = 0, updated = 0, closed = 0, keyFailed = 0
 for (const src of results) {
   const present = new Map(src.problems.filter((p) => p.key.startsWith('t2-unapproved:') || !IGNORE.some((re) => re.test(p.key))).map((p) => [p.key, p]))
   for (const p of present.values()) try { // one key's failed call never ends the run (sy-pp2a)
-    const it = open[p.key]
+    const it = open[p.key], desc = `${p.body}\n\nsupervisor key: \`${p.key}\``
+    if (it && p.parts) { // a digest: edited in place (title, text, priority), never commented
+      if (it.description !== desc || it.title !== p.title.slice(0, 200) || it.priority !== p.priority) {
+        await bd('PATCH', `/v0/beads/issues/${it.id}`, { patch: { title: p.title.slice(0, 200), description: desc, priority: p.priority }, actor: ACTOR })
+        updated++
+      }
+      state.notes[p.key] = p.note; continue
+    }
     if (it) { // open: comment when the finding changed
       if (state.notes[p.key] === undefined) { state.notes[p.key] = p.note; continue } // state lost: adopt, say nothing
       if (state.notes[p.key] !== p.note) {
@@ -493,12 +531,14 @@ for (const src of results) {
     }
     // closed by someone while still there: quiet until it clears; but never an unapproved t2 change (sy-7xq0): only an
     // approver's approved or a rollback ends that one, so it opens again, and says it was closed
+    // A digest closed by hand is quiet for the lines it had then; a new line opens it again.
     const unmutable = p.key.startsWith('t2-unapproved:'), again = state.notes[p.key] !== undefined
-    if (unmutable) delete state.muted[p.key]
+    const fresh = p.parts && state.muted[p.key] && p.parts.some((x) => !(state.muted[p.key].parts || []).includes(x))
+    if (unmutable || fresh) delete state.muted[p.key]
     else if (state.muted[p.key]) continue
-    else if (again) { state.muted[p.key] = now; console.log(`${p.key}: closed by someone while still there; quiet until it clears`); continue }
+    else if (again) { state.muted[p.key] = p.parts ? { at: now, parts: p.parts } : now; console.log(`${p.key}: closed by someone while still there; quiet until it clears`); continue }
     const r = await bd('POST', '/v0/beads/issues', { title: p.title.slice(0, 200), issue_type: 'task', priority: p.priority, assignee: ASSIGNEE, labels: ['supervisor'],
-      actor: ACTOR, owner: ACTOR, description: `${p.body}${again ? '\n\nIts earlier item was closed while the finding was still there; a closed item does not end this finding.' : ''}\n\nsupervisor key: \`${p.key}\`` })
+      actor: ACTOR, owner: ACTOR, description: p.parts || !again ? desc : `${p.body}\n\nIts earlier item was closed while the finding was still there; a closed item does not end this finding.\n\nsupervisor key: \`${p.key}\`` })
     if (again && r.id) console.log(`${p.key}: closed by someone while still there; opened again`)
     if (r.id) { state.notes[p.key] = p.note; opened++; console.log(`${p.key}: opened ${r.id}`) }
   } catch (e) { keyFailed++; console.error(`${p.key}: its item could not be opened or updated (tried again next run): ${e.message}`) }
@@ -510,7 +550,8 @@ for (const src of results) {
       // with force, as bd refuses a close by another actor than the assignee (sy-pp2a). A failed call on this key is
       // logged and counted and the run goes on: it never stops the other keys' checks; the next run tries again.
       try {
-        await bd('POST', `/v0/beads/issues/${open[k].id}/comments`, { author: ACTOR, text: `Cleared at ${now}: the supervisor no longer sees it.` })
+        // a digest with nothing left closes with no comment (its lines dropped off as they cleared)
+        if (!k.startsWith('digest:')) await bd('POST', `/v0/beads/issues/${open[k].id}/comments`, { author: ACTOR, text: `Cleared at ${now}: the supervisor no longer sees it.` })
         await bd('POST', `/v0/beads/issues/${open[k].id}:close`, { actor: ACTOR, reason: 'cleared (supervisor)', force: true })
         closed++; console.log(`${k}: cleared; closed ${open[k].id}`)
       } catch (e) { keyFailed++; console.error(`${k}: clearing ${open[k].id} failed (tried again next run): ${e.message}`); continue }

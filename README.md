@@ -134,6 +134,7 @@ test/lifecycle.sh <old-template-dir>   # on a real machine: new -> update -> res
 test/needs-fill.sh           # mm needs / mm fill, hermetic (throwaway HOME)
 test/sentinel.sh             # the system profile's sentinel, on a throwaway board
 node test/supervisor.mjs     # the system profile's supervisor (stall, handoff, idle, dirty), hermetic (fake board, stub paseo)
+node test/supervisor-digest.mjs  # the supervisor's digest: one item per role for stalls, handoffs and idle leads, edited in place
 node test/upstream.mjs       # the system profile's upstream channel: project items labelled upstream:* mirrored here, answers back (fake boards)
 node test/wake-stall.mjs     # bin/wake recovers from an event stream that hangs (fake board, stub paseo)
 node test/wake-signals.mjs   # bin/wake: bd state changes (reassign, blocked, dep add, reopen, close) wake who acts next

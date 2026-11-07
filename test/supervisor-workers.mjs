@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // bin/supervisor (profile system) and a lead's workers (sy-asaw): a running worker on an item is an agent turn (no
-// stall:<item>); a role with workers over its capacity (each live worker one place, each item in progress no worker works
+// stall line in the role's digest); a role with workers over its capacity (each live worker one place, each item in progress no worker works
 // on one) opens overcap:<role>, which clears when a worker goes; while any role has workers, the board over its cap
 // (wake.cap) opens overcap:board; a role without workers holding more items than its capacity is left to wake (no item).
 // Hermetic: temp folder, a fake bd-serve, a stub paseo (leads and workers from files), a stub mm; a fake clock.
@@ -84,7 +84,7 @@ try {
   workers([['w1', 'sy-1', 'running']])
   console.log('== a running worker is an agent turn; platform over its capacity')
   await supervise()
-  ok('no stall:sy-1 (its worker is running), though nothing moved for an hour', !openOf('stall:sy-1'))
+  ok('no stall line for sy-1 (its worker is running), though nothing moved for an hour', !openOf('digest:platform'))
   ok('overcap:platform opened (2 places: worker w1 on sy-1, and sy-2 with no worker; capacity 1)', /worker\(s\) \(w1 on sy-1\), 1 item\(s\) in progress no worker works on \(sy-2\)/.test(openOf('overcap:platform')?.description || ''))
   ok('no overcap:ops (a role without workers is wake\'s business)', !openOf('overcap:ops'))
   ok('overcap:board opened: 4 places over all roles, the cap is 3', /holds 4 places, its cap is 3/.test(openOf('overcap:board')?.title || ''))
@@ -92,7 +92,7 @@ try {
   console.log('== the worker finishes (idle, still there): sy-1 may stall again; the places stay')
   workers([['w1', 'sy-1', 'idle']]); clock += 5 * MIN
   await supervise()
-  ok('stall:sy-1 opened (no turn: its worker is idle, and nothing moved for an hour)', !!openOf('stall:sy-1'))
+  ok('digest:platform opened with a stall line for sy-1 (no turn: its worker is idle, and nothing moved for 65 min)', /^- stalled: sy-1 /m.test(openOf('digest:platform')?.description || ''))
   ok('overcap:platform still open', !!openOf('overcap:platform'))
 
   console.log('== the lead stops the worker and hands sy-2 over: within capacity and the cap again')
@@ -100,7 +100,7 @@ try {
   await supervise()
   ok('overcap:platform cleared and closed', !openOf('overcap:platform'))
   ok('overcap:board cleared (3 places, cap 3)', !openOf('overcap:board'))
-  ok('open now: only stall:sy-1', openKeys().join(' ') === 'stall:sy-1')
+  ok('open now: only digest:platform', openKeys().join(' ') === 'digest:platform')
 } finally {
   srv.close()
   if (fail) console.log(out.slice(-3000))

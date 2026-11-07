@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // bin/supervisor (profile system) against a fake bd-serve, a stub paseo, a stub mm and throwaway git repos, step by step
-// on a fake clock (SUPERVISOR_NOW): each finding opens (stall, handoff, idle, dirty, t2-unapproved), a change becomes a comment, nothing
+// on a fake clock (SUPERVISOR_NOW): each finding opens (a role's digest of stalls, handoffs and idle leads, dirty, t2-unapproved), a change becomes a comment (a digest: an edit), nothing
 // is opened twice, each clears and closes; a comment, a commit or an agent turn each keeps an item from stalling; a
 // failing source, a lost state file and an item closed by someone. Hermetic: temp folder only; nothing live is touched.
 //   node test/supervisor.mjs            exit 0 = every check passed
@@ -26,6 +26,8 @@ fs.mkdirSync(path.join(SYS, 'bin'), { recursive: true }); fs.mkdirSync(path.join
 fs.copyFileSync(path.join(SRC, 'template/profiles/system/bin/supervisor'), path.join(SYS, 'bin/supervisor'))
 fs.cpSync(path.join(SRC, 'template/bin/lib'), path.join(SYS, 'bin/lib'), { recursive: true })
 fs.writeFileSync(path.join(SYS, 'leads/roles.json'), JSON.stringify({ roles: [{ id: 'ops' }, { id: 'review' }, { id: 'platform' }] }))
+// this timeline runs on shorter windows than the defaults (stall 60, handoff 30: test/supervisor-digest.mjs), through the config
+fs.writeFileSync(path.join(SYS, 'supervisor.json'), JSON.stringify({ minutes: { stall: 30, handoff: 10 } }))
 
 // ---------- stub paseo (agents/<role>.json = that lead; paseo.fail = it breaks) and stub mm (ls.json) ----------
 const AG = path.join(T, 'agents'); fs.mkdirSync(AG)
@@ -99,6 +101,7 @@ const srv = http.createServer(async (req, res) => {
   }
   if (req.method === 'POST' && u.pathname === '/v0/beads/issues') return json({ id: item(`sy-s${nextId++}`, { ...b, labels: b.labels }, b.actor).id })
   if (req.method === 'POST' && (m = /^\/v0\/beads\/issues\/([\w.-]+)\/comments$/.exec(u.pathname))) { comment(m[1], b.author, b.text); return json({}) }
+  if (req.method === 'PATCH' && (m = /^\/v0\/beads\/issues\/([\w.-]+)$/.exec(u.pathname))) { update(m[1], b.patch, b.actor); return json({ issue: snap(items.get(m[1])) }) }
   if (req.method === 'POST' && (m = /^\/v0\/beads\/issues\/([\w.-]+):close$/.exec(u.pathname))) {
     // as bd does: a close by another actor than the assignee is refused unless forced (sy-pp2a)
     const it = items.get(m[1])
@@ -147,27 +150,28 @@ ok('it names the file', D && D.description.includes('src.ts') && D.description.i
 ok('box projects are never read: no dirty finding for p3 (answers box) or p4 (host box folder) (review sy-futg)', !openKeys().includes('p3') && !openKeys().includes('p4'))
 ok('no repo config ran: no core.fsmonitor command in p3, p4 or p5 (review sy-futg)', [P3, P4, P5].every((p) => !fs.existsSync(canary(p))))
 
-step('run 2 (+12 min): handoff and idle')
+step('run 2 (+12 min): handoff and idle: two lines of one digest (review)')
 clock = T0 + 12 * MIN
 git(P1, ['add', 'fresh']); git(P1, ['commit', '-qm', 'fresh']) // p1's work got committed
 ok('exit 0', (await supervise()) === 0)
-ok('open: dirty, handoff:sy-4, idle:review (a reassign to a person, a HANDOFF comment line and P2 in progress are not watched)', openKeys() === `${DIRTY} handoff:sy-4 idle:review`)
-ok('handoff item names the role', openOf('handoff:sy-4')?.title.includes('review'))
-ok('idle item names the P0 item and the lead state', /sy-5/.test(openOf('idle:review')?.description) && /idle/.test(openOf('idle:review')?.description))
+ok('open: dirty and digest:review (a reassign to a person, a HANDOFF comment line and P2 in progress are not watched)', openKeys() === `digest:review ${DIRTY}`)
+const R = openOf('digest:review')
+ok('one digest, two lines: the handoff of sy-4 and the idle lead (sy-5)', /^- handoff waits: sy-4 was handed to review/m.test(R?.description) && /^- idle: the review lead is idle .*sy-5/m.test(R?.description) && /Supervisor digest: review \(2 waiting\)/.test(R?.title))
 
-step('run 3 (+17 min): nothing changed: no duplicate, no comment')
+step('run 3 (+17 min): nothing changed: no duplicate, no comment, no edit')
 clock = T0 + 17 * MIN
+const ev3 = events.length
 ok('exit 0', (await supervise()) === 0)
-ok('no duplicates', openKeys() === `${DIRTY} handoff:sy-4 idle:review` && sup().length === 3)
-ok('no comments on unchanged findings', sup().every((i) => i.comments.length === 0))
+ok('no duplicates', openKeys() === `digest:review ${DIRTY}` && sup().length === 2)
+ok('no comments, no edits on unchanged findings', sup().every((i) => i.comments.length === 0) && !events.slice(ev3).some((e) => e.actor === 'watchdog'))
 
-step('run 4 (+20 min): a finding changes -> one comment')
+step('run 4 (+20 min): a line changes -> the digest is edited in place, no comment')
 clock = T0 + 20 * MIN
 item('sy-6', { title: 'another ready P0 for review', priority: 0, assignee: 'review' }, 'alex')
 ok('exit 0', (await supervise()) === 0)
-const I = openOf('idle:review')
-ok('the idle item got one "Changed" comment naming sy-6', I.comments.length === 1 && /Changed/.test(I.comments[0].text) && I.comments[0].text.includes('sy-6'))
-ok('still one item per key', byKey('idle:review').length === 1 && sup().length === 3)
+const I = openOf('digest:review')
+ok('the digest names sy-6 now, with no comment', I.id === R.id && I.description.includes('sy-6') && I.comments.length === 0)
+ok('still one item per key', byKey('digest:review').length === 1 && sup().length === 2)
 
 step('run 5 (+35 min): stall; a commit and an agent turn each prevent one')
 clock = T0 + 30 * MIN
@@ -176,10 +180,10 @@ comment('sy-8', 'watchdog', 'a system note does not count') // and a P2 never st
 comment('sy-1', 'wake', 'Paused: a system author is not activity')
 clock = T0 + 35 * MIN
 ok('exit 0', (await supervise()) === 0)
-ok('stall:sy-1 opened; not sy-2 (commit 5 min ago), not sy-3 (ops lead running)', openKeys() === `${DIRTY} handoff:sy-4 idle:review stall:sy-1`)
-ok('stall item is P1 and says when it last moved', openOf('stall:sy-1')?.priority === 1 && openOf('stall:sy-1').description.includes(iso(T0).replace(/\.\d+Z$/, 'Z')))
+ok('digest:platform opened for sy-1; not sy-2 (commit 5 min ago), not sy-3 (ops lead running)', openKeys() === `digest:platform digest:review ${DIRTY}` && !/sy-2|sy-3/.test(openOf('digest:platform').description))
+ok('its stall line says when sy-1 last moved; the digest is P1', /^- stalled: sy-1 \(P1/m.test(openOf('digest:platform')?.description) && openOf('digest:platform').priority === 1 && openOf('digest:platform').description.includes(iso(T0).replace(/\.\d+Z$/, 'Z')))
 
-step('run 6 (+40 min): every finding clears -> closed with a comment')
+step('run 6 (+40 min): every finding clears -> closed; a digest with no comment')
 clock = T0 + 36 * MIN
 comment('sy-4', 'review/w1', 'Looking at 1a2b3c4.') // a worker of review answers the handoff
 comment('sy-1', 'alex', 'Any news?') // a human comment is activity
@@ -189,7 +193,8 @@ clock = T0 + 40 * MIN
 const before = sup().map((i) => i.id)
 ok('exit 0', (await supervise()) === 0)
 ok('no supervisor item open', openKeys() === '')
-ok('each closed one got a "Cleared" comment', before.every((id) => items.get(id).status === 'closed' && /Cleared/.test(items.get(id).comments.at(-1).text)))
+ok('all closed; the digests with no comment, the dirty one with "Cleared"', before.every((id) => items.get(id).status === 'closed') &&
+  sup().filter((i) => /digest:/.test(i.description)).every((i) => i.comments.length === 0) && /Cleared/.test(byKey(DIRTY)[0].comments.at(-1).text))
 
 update('sy-1', { status: 'closed' }, 'platform'); update('sy-2', { status: 'closed' }, 'platform')
 
@@ -210,7 +215,7 @@ clock = T0 + 56 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('the open item is adopted, not opened again', openKeys() === DIRTY && byKey(DIRTY).filter((i) => i.status !== 'closed').length === 1)
 ok('no comment made up after state loss', openOf(DIRTY).comments.length === 0)
-ok('old handoffs from the journal are read again, and stay answered', !openKeys().includes('handoff'))
+ok('old handoffs from the journal are read again, and stay answered', !openKeys().includes('digest'))
 
 step('run 9 (+61 min): someone closes an item while its finding is there: muted until it clears')
 const D2 = openOf(DIRTY)
