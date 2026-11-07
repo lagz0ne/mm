@@ -881,6 +881,27 @@ const procCwd = (pid: number) => { try { return readlinkSync(`/proc/${pid}/cwd`)
 /** Running (a zombie has ended: its parent just hasn't reaped it yet). */
 const procAlive = (pid: number) => { try { const st = readFileSync(`/proc/${pid}/stat`, 'utf8'); return st.slice(st.lastIndexOf(')') + 2, st.lastIndexOf(')') + 3) !== 'Z' } catch { return false } }
 /**
+ * sy-avky: bd starts its Dolt proxy (`bd db-proxy-child --root <.beads/dolt>`) detached, outside the process manager,
+ * with no idle timeout. One the host started while the project ran here outlives the stop, holds the proxy's state in
+ * the project's .beads/dolt, and the box's bd then waits for a proxy it can't reach (its board never gets Ready). So it
+ * is stopped here: only this user's processes whose program is the project's own tools/bd, run as `db-proxy-child`,
+ * with a --root inside the project. TERM, then KILL. Returns the pids stopped.
+ */
+export function stopBdProxies(root: string): number[] {
+  const me = process.getuid?.(), bd = join(root, 'tools', 'bd'), hit: number[] = []
+  let pids: string[] = []; try { pids = readdirSync('/proc').filter((d) => /^\d+$/.test(d)) } catch {}
+  for (const d of pids) {
+    const pid = Number(d)
+    try { if (lstatSync(`/proc/${d}`).uid !== me) continue } catch { continue }
+    const a = procArgv(pid), r = a.indexOf('--root')
+    if (a[0] === bd && a[1] === 'db-proxy-child' && r > 1 && a[r + 1] && within(a[r + 1], root)) hit.push(pid)
+  }
+  for (const p of hit) try { process.kill(p, 'SIGTERM') } catch {}
+  for (let i = 0; i < 30 && hit.some(procAlive); i++) Bun.sleepSync(100)
+  for (const p of hit) if (procAlive(p)) try { process.kill(p, 'SIGKILL') } catch {}
+  return hit
+}
+/**
  * `mm box on` (sy-pfbr): the project's processes stop and leave the host's process manager. A process that ignores
  * TERM (a portless wrapper in a container) stays Terminating, and process-compose's next project update waits for it
  * past its timeout. So, after the stop, a wrapper that still runs is stopped by mm: TERM, then KILL (its service gets
@@ -912,6 +933,8 @@ export function leaveHost(root: string, project: string, waitMs = 10_000): { ok:
     return hit.length
   }
   stopWrappers(waitMs)
+  const proxies = stopBdProxies(root)
+  if (proxies.length) stopped.push(...proxies.map((p) => `bd's Dolt proxy (pid ${p})`))
   let l = loadAll(), n = left().length
   for (let i = 0; i < 5 && !l.ok; i++) {
     // a reload that got no answer waits on a process: again only once something has stopped since
