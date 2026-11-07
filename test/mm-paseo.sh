@@ -180,6 +180,24 @@ rm -f "$S/paseo.pid"
 FAKE_UNIT=none FAKE_PC=running want "on, a daemon still on the old home (no unit): fail" fail "still runs on ~/.paseo"
 rm -f "$O/paseo.pid"
 
+echo "== 4. the listen address: loopback or a socket only (review sy-11g #12, fix 1)"
+cat >"$T/lr.ts" <<EOF
+import { listenRefusal } from '$SRC/src/paseo'
+for (const l of process.argv.slice(2)) console.log(listenRefusal(l) === null ? 'ok' : 'refused')
+EOF
+lr() { "$BUN" "$T/lr.ts" "$@" | tr '\n' ' ' | sed 's/ $//'; }
+is "allowed: 127.0.0.1:6767, [::1]:6767, a socket path, unix:///path" [ "$(lr 127.0.0.1:6767 '[::1]:6767' /run/x/paseo.sock unix:///run/x/p.sock)" = "ok ok ok ok" ]
+is "refused: 0.0.0.0, ::, a LAN address, a name, localhost, a bare port, port 0 or 70000" [ "$(lr 0.0.0.0:6767 '[::]:6767' 192.168.1.5:6767 myhost:6767 localhost:6767 6767 127.0.0.1:0 127.0.0.1:70000)" = "refused refused refused refused refused refused refused refused" ]
+is "refused: 127.0.0.2 and a look-alike (127.0.0.1.evil:1)" [ "$(lr 127.0.0.2:6767 127.0.0.1.evil:1)" = "refused refused" ]
+is "refused: a socket path with shell characters" [ "$(lr '/tmp/a b' '/tmp/$(x)' '/tmp/a;b')" = "refused refused refused" ]
+cfg 'layout: one-root' 'paseo:' '  managed: true' '  listen: 0.0.0.0:6767'
+p=$(base | jq -c .p)
+is "paseo.listen 0.0.0.0:6767: mm.paseo does not start the daemon" bash -c '! grep -q "daemon run" <<<"$1"' _ "$(jq -r .command <<<"$p")"
+is "...it says why and stops (restart no)" grep -q "mm.paseo refused: paseo.listen is not" <<<"$(jq -r .command <<<"$p" | sed 's/\$\$/$/g' | bash 2>&1)" && [ "$(jq -r .availability.restart <<<"$p")" = no ]
+is "...the configured value is not on its command line" bash -c '! grep -qF "0.0.0.0" <<<"$1"' _ "$(jq -r .command <<<"$p")"
+FAKE_UNIT=off FAKE_PC=running want "...and doctor fails, naming the address and the fix" fail 'paseo.listen \"0.0.0.0:6767\" is not loopback'
+FAKE_UNIT=off FAKE_PC=running want "...its fix: back to 127.0.0.1:6767" fail '"fix":"mm config set paseo.listen 127.0.0.1:6767"'
+
 echo
 echo "mm-paseo: $pass passed, $fail failed"
 [ "$fail" = 0 ]
