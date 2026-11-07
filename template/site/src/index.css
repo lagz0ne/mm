@@ -171,3 +171,12 @@
 @keyframes typing-in { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
 .typing-in { animation: typing-in .25s ease-out both; }
 @media (prefers-reduced-motion: reduce) { .typing-dot, .presence-ring, .typing-in { animation: none } }
+
+/* Phones (below md, sy-81dm). Unlayered on purpose: these beat every utility, so no component can undo them.
+   Inputs at 16px (iOS zooms on focus below that); a 44px tap target for every control a thumb uses. */
+@media (max-width: 47.99rem) {
+  input:not([type=checkbox]):not([type=radio]):not([data-big]), textarea, select, [data-slot=select-trigger] { font-size: 16px; }
+  input:not([type=checkbox]):not([type=radio]), [data-slot=select-trigger], [data-slot=button], [data-slot=toggle-group-item], [role=tab] { min-height: 44px; }
+  [data-slot=button][data-size^=icon] { min-width: 44px; }
+  [data-slot=select-item] { min-height: 40px; font-size: 15px; }
+}
