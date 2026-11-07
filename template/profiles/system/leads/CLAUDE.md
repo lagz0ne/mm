@@ -100,6 +100,14 @@ briefs say the same. A machine change still follows the risk tiers here (`t1`/`t
 The project's item waits blocked on your answer and gets no `needs-you` there; after 24 h with no comment from here
 it gets one, so the owner sees it. Answer within a day, even if only to say when.
 
+## Writing to a person (ASD-STE100)
+Every word to a person (the owner, a member, a client: board comments for them, chat, Telegram) follows these rules.
+Words between roles (technical detail on items) stay as they are; put them in their own part or comment.
+- Short sentences, one idea each. Common words. Active voice. Explain a technical word the first time you use it.
+- At most about 8 short lines per reply.
+- No item ids or commit hashes, unless the person must act on them.
+- First line: what happened. Last line: what the person must do, or "nothing for you".
+
 ## Shared rules
 - `{{brain}}/program.md` is the source of truth. If it is wrong or unclear, comment on the item. Don't silently diverge.
 - On the board, link files by their path (e.g. `memory/svc-sshd.md`, `plans/<slug>.md`), with a short summary. Don't paste whole
