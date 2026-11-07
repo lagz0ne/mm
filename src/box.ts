@@ -277,6 +277,44 @@ export function egressReload(root: string): Step {
 }
 
 /** What every program in the box gets (its services, and the jobs mm cron runs there): its names, its Paseo, its proxy. */
+/**
+ * sy-vsh5: the box's Claude folder trusts the project's own folders before its Paseo starts any agent: the root, each
+ * leads/<role> and setup/ (real folders only, never a link). Leads add their own folder again when they start
+ * (bin/lead); this is for any agent the box's Paseo starts without them (the Paseo app). Written by mm itself, never by
+ * the project's bin/lib/claude.mjs: the box can write the project's files, and the host must not run them. The box can
+ * write this folder too, so .claude.json is read as data only, and replaced through a new file (O_EXCL) and a rename:
+ * a link planted at either name is replaced, never followed.
+ */
+export function seedTrust(claude: string, root: string): Step {
+  const isDir = (p: string) => { try { return lstatSync(p).isDirectory() } catch { return false } }
+  const leads = join(root, 'leads')
+  const folders = [root, ...(isDir(leads) ? readdirSync(leads).filter((r) => !r.startsWith('.')).sort().map((r) => join(leads, r)) : []), join(root, 'setup')].filter(isDir)
+  const f = join(claude, '.claude.json')
+  let j: { projects?: Record<string, Record<string, unknown>> } & Record<string, unknown> = {}
+  try {
+    const st = lstatSync(f)
+    if (st.isFile() && st.size < 8 << 20) { const v = JSON.parse(readFileSync(f, 'utf8')); if (v && typeof v === 'object' && !Array.isArray(v)) j = v }
+  } catch {}
+  const projects: Record<string, Record<string, unknown>> = j.projects && typeof j.projects === 'object' && !Array.isArray(j.projects) ? j.projects : {}
+  let added = 0
+  for (const p of folders) {
+    const e = projects[p] && typeof projects[p] === 'object' ? projects[p] : {}
+    if (e.hasTrustDialogAccepted !== true) added++
+    projects[p] = { ...e, hasTrustDialogAccepted: true }
+  }
+  j.projects = projects
+  const t = `${f}.mm-${process.pid}-${randomBytes(4).toString('hex')}`
+  try {
+    const fd = openSync(t, fsc.O_WRONLY | fsc.O_CREAT | fsc.O_EXCL | fsc.O_NOFOLLOW, 0o660)
+    try { writeFileSync(fd, JSON.stringify(j, null, 1)) } finally { closeSync(fd) }
+    renameSync(t, f)
+  } catch (e) {
+    rmSync(t, { force: true })
+    return { step: 'claude trust', status: 'fail', detail: `could not write the box's Claude trust: ${(e as Error).message}` }
+  }
+  return { step: 'claude trust', status: 'ok', detail: `${folders.length} project folder(s) trusted for its agents${added ? ` (${added} new)` : ''}` }
+}
+
 function boxEnv(root: string): Record<string, string> {
   const { answers: a, pp } = resolve(root), px = names(a.project).proxy, out = `http://${px}:8888`, direct = `localhost,127.0.0.1,.localhost,${px}`
   return { PATH: BOX_PATH, HOME, MM_PROJECT: a.project, PORTLESS_PORT: String(pp), PORTLESS_HTTPS: '0', PORTLESS_SYNC_HOSTS: '0', PASEO_HOME: join(DIRS.mm, 'paseo', a.project),
@@ -301,8 +339,10 @@ function boxProcesses(root: string, proxy: string, ip = '') {
     // the box's own Paseo: runs the project's leads as the box user; only on the box network, with mm's password; no
     // relay and no web UI (only the system Paseo has the relay; review sy-b15.8)
     // its agents get the box's AI key from the file at start (never in a config file); none: no model
+    // every agent it starts (a lead, or one opened from the Paseo app) gets the project's Claude folder, where mm trusts
+    // the project's folders (sy-vsh5): the box's own HOME is a fresh tmpfs that trusts nothing and forgets at each start
     [`${a.project}.paseo`]: { namespace: a.project, command: `sh -c 'umask 007; [ -r /run/mm/secrets/ai.key ] && export ANTHROPIC_API_KEY="$$(cat /run/mm/secrets/ai.key)"; PASEO_PASSWORD="$$(cat /run/mm/secrets/paseo.password)" exec paseo daemon run'`,
-      environment: Object.entries({ ...env, PASEO_LISTEN: `0.0.0.0:${PASEO_PORT}`, PASEO_RELAY_ENABLED: 'false', PASEO_WEB_UI_ENABLED: 'false' }).map(([k, v]) => `${k}=${v}`),
+      environment: Object.entries({ ...env, CLAUDE_CONFIG_DIR: join(DIRS.mm, 'claude', a.project), PASEO_LISTEN: `0.0.0.0:${PASEO_PORT}`, PASEO_RELAY_ENABLED: 'false', PASEO_WEB_UI_ENABLED: 'false' }).map(([k, v]) => `${k}=${v}`),
       log_location: join(root, '.run', 'logs', 'paseo.log'), log_configuration: PROJECT_LOG_CONFIG, availability: { restart: 'always', backoff_seconds: 3 },
       readiness_probe: { exec: { command: `curl -s -o /dev/null --max-time 2 http://127.0.0.1:${PASEO_PORT}/` }, period_seconds: 3, failure_threshold: 40 } },
   }
@@ -485,6 +525,8 @@ export function up(root: string): Step[] {
   const apiDir = apiSocketDir(a.project), apiOn = api.on || personRunsOn()
   if (apiOn) { mkdirSync(apiDir, { recursive: true, mode: 0o750 }); chmodSync(apiDir, 0o750) }
   const paseoHome = join(DIRS.mm, 'paseo', a.project), claude = join(DIRS.mm, 'claude', a.project)
+  mkdirSync(claude, { recursive: true, mode: 0o2770 })
+  steps.push(seedTrust(claude, root))
   // what the box writes: group-writable (setgid folders keep the group), so the box's uid and the host's owner share it
   for (const d of [root, paseoHome, claude]) {
     mkdirSync(d, { recursive: true, mode: 0o2770 })

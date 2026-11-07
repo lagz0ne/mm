@@ -306,6 +306,15 @@ check "bin/lead start qa in the box: exit 0 (config-check, its Claude folder, it
 check "...the qa lead is an agent of the box's own Paseo" sh -c "for i in \$(seq 1 20); do BP ls -g --label role=qa --json 2>/dev/null | jq -e 'length >= 1' >/dev/null && exit 0; sleep 2; done; exit 1"
 for id in $(BP ls -g --label role=qa --json 2>/dev/null | jq -r '.[].id'); do BP archive --force "$id" >/dev/null 2>&1; done
 
+echo "== an agent the box's Paseo starts without mm (the Paseo app, sy-vsh5): the project's Claude folder, its folders trusted"
+CD="$MM_HOME_DIR/claude/$PROJECT"
+check "the box's Paseo daemon gives its agents the project's Claude folder (CLAUDE_CONFIG_DIR)" IN "tr '\\0' '\\n' </proc/\$(pgrep -f 'paseo daemon' | head -1)/environ | grep -qx 'CLAUDE_CONFIG_DIR=$CD'"
+check "...that folder trusts the root, each lead folder and setup before any lead starts there" sh -c "for d in '$ROOT' '$ROOT/setup' \$(find '$ROOT/leads' -mindepth 1 -maxdepth 1 -type d ! -name '.*'); do jq -e --arg p \"\$d\" '.projects[\$p].hasTrustDialogAccepted == true' '$CD/.claude.json' >/dev/null || { echo \"not trusted: \$d\"; exit 1; }; done"
+for at in "$ROOT" "$ROOT/leads/qa"; do
+  check "an agent run through the box's Paseo in ${at#$ROOT}/ (no env from mm) answers, with no trust prompt" sh -c "id=\$(BP run -q --no-wait --provider claude --mode default --title qa-trust --label qa=trust --cwd '$at' 'say hi' 2>/dev/null | tail -1); [ -n \"\$id\" ] && timeout 180 bash -c 'BP wait \"\$1\"' _ \"\$id\" >/dev/null 2>&1; BP logs \"\$id\" 2>/dev/null | grep -q QA-GATEWAY-ANSWER || { BP logs \"\$id\" 2>&1 | tail -5; exit 1; }"
+done
+for id in $(BP ls -g --label qa=trust --json 2>/dev/null | jq -r '.[].id'); do BP archive --force "$id" >/dev/null 2>&1; done
+
 echo "== the project API (sy-b15.8): the box asks on its own socket; only the owner decides, on the host"
 APS="$MM_HOME_DIR/box/$PROJECT/api/api.sock"
 for _ in $(seq 1 30); do [ -S "$APS" ] && IN 'test -S /run/mm/api/api.sock' && break; sleep 1; done
