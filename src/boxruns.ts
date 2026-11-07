@@ -20,7 +20,7 @@ import { join } from 'node:path'
 import type { Server } from 'bun'
 import { API_DIR } from './apistate'
 import { asksOf } from './personasks'
-import { personRunsOn } from './personruns'
+import { personRunsBoxesOn, personRunsOn } from './personruns'
 import { findRoot } from './project'
 import { startRun } from './runas'
 
@@ -102,11 +102,13 @@ const refused = (http: number, why: string, message: string) => json({ status: '
 export async function handle(req: Request, project: string, root: string | null, server: Server<undefined> | undefined, log: Log): Promise<Response> {
   if (req.method === 'GET') {
     if (!room('looks', project, LOOK_RATE)) return refused(429, 'rate', 'too many looks this hour')
-    return json(personRunsOn() ? { status: 'on', asks: Object.fromEntries(asksOf(project).map((a) => [a.item, a.person])) } : { status: 'off' })
+    return json(personRunsBoxesOn() ? { status: 'on', asks: Object.fromEntries(asksOf(project).map((a) => [a.item, a.person])) } : { status: 'off' })
   }
   if (req.method !== 'POST') return refused(404, 'unknown-call', 'GET or POST')
   const at = { box: project, call: CALL }
   if (!personRunsOn()) { log('warn', 'person run refused: person runs are off', at); return refused(403, 'off', "person runs are off on this machine (wake.person_runs): the box's leads run as before") }
+  // the owner's choice (a) on sy-otxx: on the host only for now; a box's needs its own switch
+  if (!personRunsBoxesOn()) { log('warn', 'person run refused: person runs are on the host only (wake.person_runs_boxes)', at); return refused(403, 'off', "person runs are on the host only (wake.person_runs_boxes is off): the box's leads run as before") }
   if (busy.has(project)) { log('warn', 'person run refused: one is starting already', at); return refused(429, 'busy', 'a run for this box is starting already: ask again soon') }
   if (!room('asks', project, RATE)) { log('warn', 'person run refused: rate limit', { ...at, limit: RATE }); return refused(429, 'rate', `more than ${RATE} asks for a run this hour: ask again later`) }
   let body: unknown = null

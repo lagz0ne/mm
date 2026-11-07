@@ -16,6 +16,10 @@ export const MODEL_HOST = 'api.anthropic.com'
 export const personRunsConfigured = () => { const v = getPath(loadConfig(), 'wake.person_runs'); return v === true || ['true', 'on', 'yes'].includes(String(v)) }
 /** The config is the only switch (sy-otxx 3): no environment turns it on. */
 export const personRunsOn = personRunsConfigured
+/** Person runs in a box need their own switch too (sy-otxx, the owner's choice (a), 2026-11-07): on the host only for
+ *  now. A box's run would sign with a person's subscription token through mm.ai; that waits for (b), each person's own
+ *  API key. `wake.person_runs_boxes: true` turns them on, and only with wake.person_runs. */
+export const personRunsBoxesOn = () => { const v = getPath(loadConfig(), 'wake.person_runs_boxes'); return personRunsOn() && (v === true || ['true', 'on', 'yes'].includes(String(v))) }
 /** How long a person's run in a box keeps its mm.ai key (`wake.person_run_hours`, 1 to 24; 4 as shipped). After that
  *  the key is refused and the box's wake deletes the run (its label run-expires); a new ask starts a new one. */
 export function runTtlMs(): number {

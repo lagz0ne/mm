@@ -32,7 +32,8 @@ mkdir -p "$MM_HOME/pc/projects" "$MM_HOME/pc/boxes" "$T/bin"
 printf '#!/bin/sh\nexec %s "$@"\n' "$MMC" >"$T/bin/mm"; chmod +x "$T/bin/mm"; export PATH="$T/bin:$PATH"
 PORT=$(( 42000 + RANDOM % 800 )); AUTH=auth.example.org
 CONF="domain: example.org\nlayout: one-root\nauth_port: $PORT\nbind_host: 127.0.0.1\nowner_name: boss\n"
-on()  { printf "${CONF}wake:\n  person_runs: true\n" >"$MM_HOME/config.yaml"; }
+on()  { printf "${CONF}wake:\n  person_runs: true\n  person_runs_boxes: true\n" >"$MM_HOME/config.yaml"; }
+hostonly() { printf "${CONF}wake:\n  person_runs: true\n" >"$MM_HOME/config.yaml"; }   # the owner's choice (a), sy-otxx
 off() { printf "$CONF" >"$MM_HOME/config.yaml"; }
 on
 tok() { printf 'sk-ant-oat01-%s' "$(head -c 72 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d '=')"; }
@@ -231,6 +232,9 @@ kill $AIS 2>/dev/null; AIS=""
 
 echo '== off unless wake.person_runs (the config only); the four calls off while only person runs keep mm.api up'
 off; n=$(runs)
+hostonly
+check "person runs on the host only (wake.person_runs on, wake.person_runs_boxes off): GET says off, a POST is refused (host only), no run" bash -c "[ \"\$(ask '$SOCK' http://box/person-run)\" = 200 ] && jq -e '.status == \"off\"' '$T/ans' && [ \"\$(run_for '[\"s-1\"]')\" = 403 ] && jq -e '.why == \"off\" and (.message | test(\"host only\"))' '$T/ans' && [ \"\$(runs)\" = \"$n\" ]"
+off
 check "person runs off: GET says off, a POST is refused (off), no run" bash -c "[ \"\$(ask '$SOCK' http://box/person-run)\" = 200 ] && jq -e '.status == \"off\"' '$T/ans' && [ \"\$(run_for '[\"s-1\"]')\" = 403 ] && jq -e '.why == \"off\"' '$T/ans' && [ \$(runs) = $n ]"
 on
 check "the project API off (api.enabled): its four calls are refused (api-off), and mm.api says so" bash -c "[ \"\$(ask '$SOCK' -d '{\"name\":\"shop\"}' http://box/route)\" = 403 ] && jq -e '.why == \"api-off\"' '$T/ans' && [ \"\$(ask '$SOCK' -d '{\"site\":\"example.com\"}' http://box/egress)\" = 403 ] && grep -q 'the project API is off' '$T/api.log'"
