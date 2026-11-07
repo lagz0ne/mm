@@ -51,6 +51,8 @@ run "bd update" 1 "Error: claim failed: sy-936h is held by ops; coordinate with 
 check "...the claim's other wording: refused" refused 1
 run "bd close" 1 "Error closing sy-936h: cannot close sy-936h: 2 open child issue(s); close children first or use --force to override"
 check "a close of an item with open children: refused" refused 1
+run "bd comments" 1 'bd: refused: a board write (bd comments add) needs an actor: pass --actor <name> or set BEADS_ACTOR (without one bd records "mm", which reads as a person)'
+check "bin/bd's own: a write with no actor (sy-28ev): refused" refused 1
 echo "== real failures stay errors"
 run "bd update" 1 "Error: lock busy: held by another process"
 check "a busy lock (held by another process): error" failed 1

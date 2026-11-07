@@ -46,7 +46,7 @@ check "mm.auth runs (its socket is there, 0600)" sh -c '[ "$(stat -c %a ~/.mm/ru
 GP=$(mm config get auth_port); G=http://127.0.0.1:$GP
 BP=$(jq -r '.services.board.public_port' ~/.mm/projects/acme/shop/.run/services.json)
 check "the board has a public port, and mm asked the router for its route" sh -c "[ '$BP' -gt 0 ] && grep -q 'board-shop-acme $BP' /tmp/expose.calls"
-cd ~/.mm/projects/acme/shop && bin/bd create "seen through the gateway" >/dev/null; cd ~
+cd ~/.mm/projects/acme/shop && bin/bd create "seen through the gateway" --actor qa >/dev/null; cd ~
 pub() { curl -s -o /tmp/pub.out -w '%{http_code}' -H "x-forwarded-host: $BOARD" "$@" "http://127.0.0.1:$BP/api/whoami"; }
 
 echo "== nothing without the gateway"

@@ -2,6 +2,26 @@
 # Project-local bd: finds its project from its own location; nothing outside the project is used.
 [ "${1:-}" = serve ] || [ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" "bd ${1:-}" -- "$0" "$@"  # bd serve is a service: not one span
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+# A board write names its writer (sy-28ev): --actor <name>, or BEADS_ACTOR / BD_ACTOR. Without one bd would record the
+# machine user (`mm`), which reads as a person. comment(s add), update, close, create, q, reopen, delete, assign, edit,
+# set-state, label add|remove, dep add|remove|relate|unrelate are refused with no actor; reads (list, show, ready,
+# comments <id>, label list, dep list|tree, ...) need none. Arguments after `--` are text, never read here.
+actor=${BEADS_ACTOR:-${BD_ACTOR:-}} cmd='' sub='' next=''
+for a in "$@"; do
+  if [ -n "$next" ]; then actor=$a; next=''; continue; fi
+  case "$a" in
+    --) break ;;
+    --actor) next=1 ;;
+    --actor=*) actor=${a#--actor=} ;;
+    -*) ;;
+    *) if [ -z "$cmd" ]; then cmd=$a; elif [ -z "$sub" ]; then sub=$a; fi ;;
+  esac
+done
+case "$cmd:$sub" in
+  comment:*|update:*|close:*|create:*|q:*|reopen:*|delete:*|assign:*|edit:*|set-state:*|comments:add|label:add|label:remove|dep:add|dep:remove|dep:rm|dep:relate|dep:unrelate)
+    [ -n "$actor" ] || { echo "bd: refused: a board write (bd $cmd${sub:+ $sub}) needs an actor: pass --actor <name> or set BEADS_ACTOR (without one bd records \"mm\", which reads as a person)" >&2; exit 1; } ;;
+esac
+unset actor cmd sub next
 export BEADS_DIR="$P/control/.beads" XDG_CONFIG_HOME="$P/.config" DOLT_ROOT_PATH="$P/.dolt-root" PATH="$P/tools:$PATH"
 # Talk to Dolt through its Unix socket when it runs with one (services.json); otherwise the TCP port in metadata.
 [ -S "$P/.dolt/mysql.sock" ] && export BEADS_DOLT_SERVER_SOCKET="$P/.dolt/mysql.sock"

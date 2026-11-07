@@ -68,7 +68,7 @@ check "with the board running: no ~/.npm (board build), ~/.portless, ~/.config/p
 check "with the board running: nothing of bd's outside ~/.mm (no ~/.beads, ~/.config/bd)" sh -c '! test -e ~/.beads && ! test -e ~/.config/bd'
 # what is still outside (the filled secret is an input's path)
 echo "     outside ~/.mm with the board running: $(cd ~ && find . -path ./.mm -prune -o ! -type d -print | sed 's|^\./||' | sort -u | tr '\n' ' ')"
-check "item on the board" sh -c 'cd ~/.mm/projects/acme/shop && bin/bd create "hello from a clean box" --json | grep -q "\"id\""'
+check "item on the board" sh -c 'cd ~/.mm/projects/acme/shop && bin/bd create "hello from a clean box" --json --actor qa | grep -q "\"id\""'
 check "item through the board API" sh -c 'curl -sf http://board.acme-shop.localhost:1355/api/v0/beads/issues?limit=10 | grep -q "hello from a clean box"'
 check "bd stays quiet on a fresh board: no-hooks, metrics off, no Dolt auto-start, no hook (sy-8s1, sy-a0ac, sy-nsnp)" sh -c 'cd ~/.mm/projects/acme/shop/control && [ "$(../bin/bd config get no-hooks | tail -1)" = true ] && ../bin/bd metrics | grep -qx "Anonymous usage metrics: OFF" && [ "$(../bin/bd config get dolt.auto-start | tail -1)" = false ] && mm doctor -o json | jq -e ".[] | select(.item == \"bd quiet acme/shop\") | .status == \"ok\""'
 check "update is a no-op" sh -c 'mm update acme/shop | grep -q "already at"'

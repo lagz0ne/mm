@@ -105,7 +105,7 @@ check "the board answers inside the box (by its name)" IN "curl -sf -o /dev/null
 check "...and every program resolves those names, not only curl (Node: bd-serve.$PROJECT.localhost is 127.0.0.1)" IN "node -e \"require('dns').lookup('bd-serve.$PROJECT.localhost',{family:4},(e,a)=>process.exit(e||a!=='127.0.0.1'?1:0))\""
 sleep 10   # wake's first board call comes a few seconds after the board is ready
 check "wake runs in the box (Running, no restarts)" sh -c "mm inspect '$REF' | awk '\$1==\"wake\"' | grep -qE 'Running +[^ ]+ +0( |\$)'"
-check "bd works in the box (an item, over Dolt's socket)" IN "cd $ROOT && bin/bd create 'made in the box' --json | grep -q '\"id\"'"
+check "bd works in the box (an item, over Dolt's socket)" IN "cd $ROOT && bin/bd create 'made in the box' --json --actor qa | grep -q '\"id\"'"
 check "a lead's start step in the box: config-check --render passes as the box user (setup/ is read-only there; sy-7870)" IN "cd $ROOT && bin/config-check --render"
 
 echo "== the box user"

@@ -40,7 +40,7 @@ for n in $(mm needs -o json | jq -r '.[] | select(.required and .status == "miss
 mm new acme/shop >/tmp/new.out 2>&1 || { say "mm new failed"; tail -20 /tmp/new.out; exit 1; }
 for _ in $(seq 1 90); do mm inspect acme/shop 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
 cd ~/.mm/projects/acme/shop
-I1=$(bin/bd create "drill item one" --json | jq -r .id); bin/bd create "drill item two" >/dev/null; bin/bd comments add "$I1" "a comment that must come back" >/dev/null
+I1=$(bin/bd create "drill item one" --json --actor drill | jq -r .id); bin/bd create "drill item two" --actor drill >/dev/null; bin/bd comments add "$I1" "a comment that must come back" --actor drill >/dev/null
 # a project that changed its own tools.json (as a box could): the restore must take mm's pins, not these (sy-b15.17 6)
 jq '.bd["linux-x64"].url = "https://tools.evil.invalid/bd.tar.gz" | .bd["linux-x64"].sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' tools.json >tools.json.new && mv tools.json.new tools.json
 SETUP_HUMAN=1 git commit -qam "a project's own tools.json (drill: must not be used)" >/dev/null 2>&1
