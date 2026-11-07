@@ -832,8 +832,9 @@ async function closeIdle(role, a, own) {
 // make it faster), wake rebuilds what should happen from the board alone, so a restart or a missed event loses nothing:
 //   - an expired claim (in progress, no update for WAKE_LEASE_MS, 30 min; any comment or change renews it) goes back to
 //     its role's queue: status open, assignee the role, through bd's compare-and-set guard. Not while the role's lead is
-//     in a turn (it may be working on it), nor an item waiting for the human (needs-you). The Supervisor reports it
-//     (stall:). The 3rd expiry of one item labels it needs-you (counted in .wake-state.json `_expiries`).
+//     in a turn (it may be working on it), nor while a worker of the role runs on the item, nor an item waiting for the
+//     human (needs-you). The requeue's comment on the item is the only report (the Supervisor raises no finding for it).
+//     The 3rd expiry of one item labels it needs-you (counted in .wake-state.json `_expiries`).
 //   - each role's queue head(s), as many as it has free capacity (share()), are handed to it (a reason; again after
 //     WAKE_LEASE_MS while still unclaimed); the items after them wait.
 //   - a role with work it may be sent now, or items of its own in progress or blocked, and no running lead: started.
@@ -851,9 +852,12 @@ async function reconcile() {
 async function expire(b, running) {
   const st = readState(), counts = st._expiries || {}
   let changed = false
+  // a worker of the role running on the item holds its claim too (Paseo labels item=<id>; bin/lib/places.mjs)
+  const worked = new Set((b.workers || []).filter((w) => w.status === 'running' && w.item).map((w) => `${w.role} ${w.item}`))
   for (const i of b.all) {
     const role = leadOf(i.assignee), holder = i.assignee, t = Date.parse(i.updated_at || '')
     if (i.status !== 'in_progress' || !role || role === 'setup' || !t || Date.now() - t < LEASE || running.has(role) || (i.labels || []).includes('needs-you')) continue
+    if (worked.has(`${role} ${i.id}`)) continue
     const r = await bdStep(['update', i.id, '-s', 'open', '-a', role, '--if-assignee', i.assignee, '--if-status', 'in_progress'], `requeue ${i.id}`)
     if (r.code === 13) { log(`lease of ${i.id} expired, but it changed first (the guard): left as it is`); continue }
     if (!r.ok) continue // tried again on the next pass

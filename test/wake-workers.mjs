@@ -62,7 +62,8 @@ const srv = http.createServer((req, res) => {
 })
 await new Promise((r) => srv.listen(0, '127.0.0.1', r))
 const BD = `http://127.0.0.1:${srv.address().port}`
-fs.writeFileSync(path.join(PROJ, 'bin', 'bd'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+const BDLOG = path.join(T, 'bd.log')
+fs.writeFileSync(path.join(PROJ, 'bin', 'bd'), `#!/bin/sh\necho "$*" >>"${BDLOG}"\nexit 0\n`, { mode: 0o755 })
 fs.writeFileSync(path.join(PROJ, 'bin', 'lead'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
 // stub paseo: both leads idle; plat's workers are workers.json (the CLI's shape: no labels, the title says it)
 const SENT = path.join(T, 'sent.txt'), WJ = path.join(T, 'workers.json')
@@ -105,6 +106,16 @@ try {
   ok('"plat has 1 of 1": the stray worker holds its place', await until(() => /plat has 1 of 1 in progress \(the project 1 of its cap 2\): waiting in its queue p-2/.test(logs())))
   setWorkers([])
   ok('archived: p-2 is handed to plat', await until(() => /p-2 \(P\d\) is next in your queue/.test(to('plat'))))
+
+  console.log('== a worker running on an item keeps its claim alive (sy-28ev); an item no worker runs on expires')
+  const old = new Date(Date.now() - 120 * 60000).toISOString()
+  add('p-7', 'plat', { status: 'in_progress', updated_at: old }); add('p-8', 'plat', { status: 'in_progress', updated_at: old })
+  setWorkers([['w3', 'p-8', 'running']])
+  ok('p-7 (no worker, no update for 2 h): requeued', await until(() => /update p-7 -s open -a plat --if-assignee plat --if-status in_progress --actor wake/.test(read(BDLOG))))
+  await sleep(1500)
+  ok('p-8 (its worker w3 runs on it): kept, not requeued', !/update p-8 /.test(read(BDLOG)))
+  setWorkers([['w3', 'p-8', 'idle']])
+  ok('...its worker idle (its turn done): p-8 expires too', await until(() => /update p-8 -s open -a plat --if-assignee plat --if-status in_progress --actor wake/.test(read(BDLOG))))
 } finally {
   w.kill(); srv.close()
   if (fail && process.env.KEEP) console.log(`kept ${T}`); else fs.rmSync(T, { recursive: true, force: true })

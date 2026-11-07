@@ -228,17 +228,17 @@ clock = T0 + 71 * MIN
 await supervise()
 ok('it comes back: a new item', byKey(DIRTY).length === 3 && !!openOf(DIRTY))
 
-step('run 9b (+76 min): wake requeues an expired claim: a stall finding until its role acts')
-item('sy-9', { title: 'claimed, then quiet', status: 'in_progress', priority: 3, assignee: 'platform' }, 'platform', T0 + 20 * MIN)
+step('run 9b (+76 min): wake requeues an expired claim: no finding (wake\'s own comment on the item says it)')
+item('sy-9', { title: 'claimed, then quiet', status: 'in_progress', priority: 1, assignee: 'platform' }, 'platform', T0 + 20 * MIN)
 clock = T0 + 76 * MIN
 update('sy-9', { status: 'open' }, 'wake') // the requeue: status open, assignee the role, by wake
 comment('sy-9', 'wake', 'Requeued: its claim expired.')
 ok('exit 0', (await supervise()) === 0)
-ok('stall:sy-9 opened at any priority (P3), and says wake put it back', openKeys() === `${DIRTY} stall:sy-9` && /went back to the queue/.test(openOf('stall:sy-9')?.title))
+ok('no stall:sy-9 for the requeue (nor anything else for it)', openKeys() === DIRTY && !sup().some((i) => /sy-9/.test(i.description)))
 clock = T0 + 81 * MIN
 comment('sy-9', 'platform', 'Taking it again.')
 ok('exit 0', (await supervise()) === 0)
-ok('its role acted on it: cleared', openKeys() === DIRTY)
+ok('still nothing for it', openKeys() === DIRTY)
 
 step('run 9b2 (+82..84 min): an item a role took over still closes when it clears (sy-pp2a)')
 const D3 = openOf(DIRTY)

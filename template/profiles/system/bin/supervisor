@@ -2,8 +2,8 @@
 // supervisor — watches how the work flows on this board (profile system; every 5 min under mm cron). It reads; it never
 // builds, never signs off, never accepts, and starts no agent. One item per finding (a stable key, label `supervisor`,
 // for ops), commented when the finding changes, closed when it clears:
-//     stall:<item>       a P0/P1 in progress with no comment, commit or agent turn for 30 min, or any item wake
-//                        put back in its role's queue (its claim expired) that the role has not touched since    P1
+//     stall:<item>       a P0/P1 in progress with no comment, commit or agent turn for 30 min (an expired claim is
+//                        not one: wake requeues it and says so on the item)                                      P1
 //     handoff:<item>     an item reassigned to a role (`bd update -a <role>`) with no act from that role after 10 min P1
 //     idle:<role>        a lead not working (idle, closed, gone) for 10 min while ready P0 work waits for it   P1
 //     dirty:<worktree>   uncommitted files, none touched for 30 min (git worktrees of the mm repo and of each project) P2
@@ -28,7 +28,7 @@
 // workers (`<role>/...`) or a human; the system's own authors (wake, watchdog) do not count. A commit counts for an item
 // when its message names the item id (any branch). An agent turn is the assignee's lead running (now, or seen running
 // by an earlier check within the window), or a worker of its role on that item running now. A reassign to a person (the owner, a human) is left to needs-you, not watched
-// here. A requeue is wake's own change (in progress -> open, by `wake`): the one system change read here.
+// here.
 // The approvers (sy-44xa): the bridge's actor (`bridge`) and the owner's name (`owner_name` in .run/endpoints.json, when
 // mm writes it), never a list from this board's files (sy-1jmi 3: an agent could write one); env SUPERVISOR_APPROVERS
 // (comma list, tests) overrides both. Config `ignore` never silences a t2-unapproved finding. `approved` counts only
@@ -128,8 +128,8 @@ const issues = once(async () => {
   return [...all.values()]
 })
 // The event journal since the last run, folded into a summary per item: the last change by a person or lead (act),
-// the latest reassign to each role (ho: {seq, at}), the last thing each role did on it (re: seq), wake's latest requeue
-// (rq: {seq, at}), and the item's assignee and status as of the last event (as, st: what a change is read against).
+// the latest reassign to each role (ho: {seq, at}), the last thing each role did on it (re: seq), and the item's
+// assignee and status as of the last event (as, st: what a change is read against).
 const journal = once(async () => {
   for (let page = 0; page < 200; page++) {
     const r = await bd('GET', `/v0/beads/events?since=${state.seq}&limit=500`)
@@ -152,7 +152,6 @@ const journal = once(async () => {
         if (labels.includes('t2')) delete s.t2off
         s.lb = labels
       }
-      if (who === 'wake' && was.st === 'in_progress' && e.issue?.status === 'open') s.rq = { seq: e.seq, at: t } // a requeue
       if (!who || SYSTEM.has(who)) continue
       s.act = Math.max(s.act, t)
       const role = roleOf(who)
@@ -209,15 +208,6 @@ async function stall() {
   const problems = [], window = MIN.stall * 60000
   for (const i of all) {
     if (i.status === 'closed' || mine(i)) continue
-    const rq = sum[i.id]?.rq, role = roleOf(i.assignee)
-    if (rq && !((sum[i.id].re[role] || 0) > rq.seq)) { // wake put it back in the queue, and its role has not touched it since
-      problems.push({ key: `stall:${i.id}`, priority: 1, title: `Stalled: ${i.id} (P${i.priority}, ${i.assignee || 'nobody'}) went back to the queue: its claim expired`,
-        note: `requeued by wake at ${at(rq.at)}; assignee ${i.assignee || 'none'}, now ${i.status}`,
-        body: `**${i.id}** "${i.title}" was in progress, and nothing on the board moved for the lease time (wake's setting, 30 min by default). ` +
-          `wake set it back to open at ${at(rq.at)}, assigned to ${i.assignee || 'nobody'}, so it is in that role's queue again.\n\n` +
-          `Find out why it stopped (the lead, its worker), and get it claimed again. After 3 expiries wake labels it needs-you. This item closes itself when the ${i.assignee || 'assigned'} role acts on ${i.id}, or ${i.id} is closed.` })
-      continue
-    }
     if (i.status !== 'in_progress' || !(i.priority <= 1)) continue
     const s = sum[i.id], lead = ls[i.assignee]
     const lastAct = s?.act || ms(i.updated_at) // no journal record of it: the item's own time
