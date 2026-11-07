@@ -47,16 +47,30 @@ export function sdkPath() {
   return null
 }
 
+// A failed load or connect is tried again after a backoff (sy-aaq3): it was final, so a service that started while the
+// daemon was still coming up (a reboot) stayed on the CLI for good, a `paseo` process per call for its whole life.
+// PASEO_SDK_RETRY_MS: the first wait (default 30 s), doubled each failure up to 10 minutes. Meanwhile calls use the CLI.
+const RETRY0 = Number(E.PASEO_SDK_RETRY_MS || 30000), RETRY_MAX = 600000
+let retryAt = 0, retryGap = RETRY0
 async function sdk() {
   if (client) return client
-  if (sdkFailed || E.PASEO_NO_SDK === '1') return null
+  if (E.PASEO_NO_SDK === '1') return null
+  if (sdkFailed && !connecting && Date.now() < retryAt) return null
   connecting ||= (async () => {
     const f = sdkPath(); if (!f) throw new Error('no Paseo SDK found')
     const { createPaseoClient } = await import(pathToFileURL(f).href)
     const c = createPaseoClient({ url: URL_, clientId: `mm-${path.basename(process.argv[1] || 'engine')}`, reconnect: { enabled: true } })
-    await Promise.race([c.connect(), new Promise((_, no) => setTimeout(() => no(new Error('connect timeout')), 8000))])
+    let timer
+    try { await Promise.race([c.connect(), new Promise((_, no) => { timer = setTimeout(() => no(new Error('connect timeout')), 8000) })]) }
+    catch (e) { try { await c.close() } catch {} throw e } // no half-made client left reconnecting next to the retry's
+    finally { clearTimeout(timer) }
+    sdkFailed = ''; retryGap = RETRY0; connecting = null
     return (client = c)
-  })().catch((e) => { sdkFailed = e.message; connecting = null; return null })
+  })().catch((e) => {
+    sdkFailed = e.message; connecting = null
+    retryAt = Date.now() + retryGap; retryGap = Math.min(retryGap * 2, RETRY_MAX)
+    return null
+  })
   return connecting
 }
 /** How calls go right now: 'sdk' or 'cli (why)'. */

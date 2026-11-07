@@ -622,6 +622,7 @@ function summarise(line) {
 }
 // Presence, also refreshed in the background (every 3 s): for each running agent, its item and its latest activity.
 let presenceCache = { at: 0, data: [] }
+const TAIL_MS = Number(process.env.BOARD_TAIL_MS || 15000), tails = new Map() // agent id -> { at, line }
 async function pollPresence() {
   try {
     const l = agents.data
@@ -633,10 +634,19 @@ async function pollPresence() {
         ...Object.entries(l).filter(([k, a]) => k !== '_workers' && a && a.status === 'running').map(([role, a]) => ({ actor: role, kind: 'lead', id: a.id })),
         ...(l._workers || []).filter((w) => w.status === 'running').map((w) => ({ actor: `${w.role}/worker`, kind: 'worker', id: w.id, item: w.item })),
       ]
-      const tail = (id) => new Promise((ok) => execFile(PASEO, ['logs', id], { timeout: 8000, maxBuffer: 16 << 20, minMs: 2000 }, (e, out) => {
-        const lines = (e ? '' : out).split('\n').filter((x) => x.trim())
-        ok(lines[lines.length - 1] || '')
-      }))
+      // a `paseo logs` is a CLI process (~0.6 s of start-up): at most one per agent per TAIL_MS (sy-aaq3: one per running
+      // agent every 3 s was most of the boards' new processes); the poll itself stays at 3 s for who runs
+      const now = Date.now()
+      for (const id of tails.keys()) if (!running.some((r) => r.id === id)) tails.delete(id)
+      const tail = (id) => {
+        const t = tails.get(id)
+        if (t && now - t.at < TAIL_MS) return t.line
+        return new Promise((ok) => execFile(PASEO, ['logs', id], { timeout: 8000, maxBuffer: 16 << 20, minMs: 2000 }, (e, out) => {
+          const lines = (e ? '' : out).split('\n').filter((x) => x.trim())
+          const line = lines[lines.length - 1] || (t?.line ?? '')
+          tails.set(id, { at: Date.now(), line }); ok(line)
+        }))
+      }
       presenceCache = { at: Date.now(), data: await Promise.all(running.map(async (r) => {
         let item = r.item
         if (!item) { const w = wakeState[r.actor], act = meta.lastAct[r.actor]; item = act && (!w || act.at >= w.at) ? act.item : w?.items?.[0] }

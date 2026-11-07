@@ -36,6 +36,21 @@ ok('created is a date (or null) both ways', isDate(a) && isDate(b), `sdk ${a[0]?
 const order = (x) => [...x].filter((y) => y.created).sort((p, q) => Date.parse(q.created) - Date.parse(p.created))
 const far = (x) => order(x).filter((y, k, s) => k === 0 || Date.parse(s[k - 1].created) - Date.parse(y.created) > 2 * 864e5).map((y) => y.id).join(',')
 ok('agents days apart are in the same order both ways (newest first)', far(a) === far(b))
+// sy-aaq3: a daemon not up yet at the first call (a reboot) is tried again after the backoff, not left to the CLI for good.
+// The "daemon" here is a forwarder to the real one on a free port, opened only after the first try failed.
+const net = await import('node:net')
+const free = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)) }) })
+const late = await load({ PASEO_NO_SDK: '', PASEO_URL: `ws://127.0.0.1:${free}/ws`, PASEO_SDK_RETRY_MS: '3000' })
+const l1 = await late.list()
+ok('daemon not there yet: the call still answers (CLI) and says why', late.via().startsWith('cli (') && Array.isArray(l1), late.via())
+const fwd = net.createServer((c) => { const u = net.connect(6767, '127.0.0.1'); c.pipe(u); u.pipe(c); c.on('error', () => u.destroy()); u.on('error', () => c.destroy()) }).listen(free, '127.0.0.1')
+await late.list()
+ok('...within the backoff: no new try (still the CLI)', late.via().startsWith('cli'))
+await new Promise((r) => setTimeout(r, 3200))
+const l2 = await late.list()
+ok('...after the backoff, with the daemon up: back on the SDK', late.via() === 'sdk' && Array.isArray(l2), late.via())
+await late.close(); fwd.close()
+delete process.env.PASEO_URL; delete process.env.PASEO_SDK_RETRY_MS
 await sdk.close()
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
