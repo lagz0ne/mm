@@ -9,7 +9,7 @@ import { DIRS, HOME, run } from './env'
 import { expand, machineInputs } from './inputs'
 import { boxish, boxRecord, engineRefusal, listProjects, readAnswers } from './project'
 import * as vault from './vault'
-import { jobArgs, landBackup } from './box'
+import { jobArgs, landed } from './box'
 import pkg from '../package.json'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
@@ -116,9 +116,10 @@ function plan(work: string, steps: Step[]): Item[] {
       if (b.box) { // its backup runs in the box and lands in the machine's backups folder (as the nightly one); copy it
         const r = run(jobArgs(b.root, 'backup', join(b.root, 'bin', 'backup'), { MM_PROJECT: b.id }), { timeoutMs: 900_000 })
         if (!r.ok) throw new Error(`${b.id}: bin/backup in the box failed: ${short(r)}`)
-        const landed = landBackup(b.root), from = landed.split(' -> ').pop()!, made = landed.split(' -> ')[0].split(', ').pop()!
-        steps.push({ step: `backup ${b.id}`, status: 'ok', detail: `in the box; ${made}` })
-        return (bk = join(from, made))
+        // the newest folder it landed, by path (sy-0z58: never by splitting landBackup's text); Doop's data is in it
+        const l = landed(b.root)
+        steps.push({ step: `backup ${b.id}`, status: 'ok', detail: `in the box; ${l.newest.split('/').pop()}${l.doop === 'yes' ? ', with doop' : l.doop === 'skipped' ? ', doop skipped' : ''}` })
+        return (bk = l.newest)
       }
       // a project that was a box: its bin/ runs on the host only if it is mm's engine (review sy-b15.6 follow-up 2)
       const no = engineRefusal(b.root); if (no) throw new Error(`${b.id}: bin/backup not run: ${no}`)

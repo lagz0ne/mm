@@ -681,8 +681,14 @@ export function jobArgs(root: string, name: string, command: string, env: Record
   return [...dockerCmd(), 'exec', '-w', root, ...Object.entries(e).flatMap(([k, v]) => ['-e', `${k}=${v}`]), names(readAnswers(root).project).box, 'sh', '-c', script]
 }
 const STAMP = /^20\d\d-\d\d-\d\dT\d{4}Z$/
-/** After a box's backup: its new dated folder(s) go to <backups>/<project>/ as the host owner's; the newest 14 stay. */
-export function landBackup(root: string): string {
+/** What landBackup landed (sy-0z58: sync used to split the text, and Doop's ", doop" broke it): the folders it moved,
+ *  where to, the newest of them (with doop.tar.gz in it when Doop is on), whether Doop's data is in it, and the names
+ *  it refused. */
+export type Landed = { made: string[]; dest: string; newest: string; doop: 'yes' | 'skipped' | 'none'; refused: string[]; text: string }
+/** After a box's backup: its new dated folder(s) go to <backups>/<project>/ as the host owner's; the newest 14 stay.
+ *  The text, for cron's log; landed() gives the same as data. */
+export function landBackup(root: string): string { return landed(root).text }
+export function landed(root: string): Landed {
   const stage = backupStage(root), dest = join(DIRS.backups, readAnswers(root).project)
   const named = existsSync(stage) ? readdirSync(stage).filter((d) => STAMP.test(d) && lstatSync(join(stage, d)).isDirectory()) : []
   // the box names the folder (review sy-rjwg 8): only a real date, not ahead of the host's clock, lands
@@ -714,7 +720,9 @@ export function landBackup(root: string): string {
     else { chmodSync(out, 0o600); doop = ', doop' }
   }
   for (const d of readdirSync(dest).filter((x) => STAMP.test(x)).sort().slice(0, -14)) rmSync(join(dest, d), { recursive: true, force: true })
-  return `${got.join(', ')} -> ${dest}${doop}${said ? `; ${said}` : ''}`
+  const newest = [...got].sort().at(-1)!
+  return { made: got, dest, newest: join(dest, newest), doop: doop === ', doop' ? 'yes' : doop ? 'skipped' : 'none', refused: refused.map(([d, why]) => `${d} (${why})`),
+    text: `${got.join(', ')} -> ${dest}${doop}${said ? `; ${said}` : ''}` }
 }
 /** Why a box's backup folder name (STAMP's shape, YYYY-MM-DDTHHMMZ) can't land, or '' (review sy-rjwg 8): not a real
  *  date (2026-02-30, hour 25), or more than STAMP_AHEAD_MS (5 min) ahead of the host's clock. */
