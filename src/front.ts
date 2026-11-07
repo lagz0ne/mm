@@ -99,6 +99,7 @@ export function handler(get: () => Map<string, Route>) {
     const ip = srv.requestIP(req)?.address || ''
     // the front is the local side's first hop: it says what it saw, it does not pass on what a client claims
     const headers = strip(new Headers(req.headers))
+    for (const k of [...headers.keys()]) if (/^(forwarded|x-real-ip|x-forwarded-.+)$/i.test(k)) headers.delete(k) // a client's own claims (review, sy-tkmc)
     headers.set('host', hostHdr); headers.set('x-forwarded-host', hostHdr); headers.set('x-forwarded-proto', 'http')
     if (ip) headers.set('x-forwarded-for', ip); else headers.delete('x-forwarded-for')
     if ((req.headers.get('upgrade') || '').toLowerCase() === 'websocket') {
@@ -117,7 +118,8 @@ export function handler(get: () => Map<string, Route>) {
       return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out })
     } catch (e) {
       if (req.signal.aborted) return new Response(null, { status: 499 })
-      log('warn', `${name}: ${(e as Error).message}`)
+      // the error's code only: its message may name the target's path and query (review, sy-tkmc: no secrets in the log)
+      log('warn', `${name}: does not answer (${String((e as { code?: string }).code || (e as Error).name || 'error').replace(/[^\w.-]/g, '')})`)
       return new Response(`mm front: ${name} does not answer\n`, { status: 502, headers: { 'content-type': 'text/plain; charset=utf-8' } })
     }
   }

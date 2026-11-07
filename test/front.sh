@@ -41,7 +41,7 @@ const srv = http.createServer((q, r) => {
   }
   if (q.url === '/gz') { r.writeHead(200, { 'content-encoding': 'gzip', 'content-type': 'text/plain' }); r.end(zlib.gzipSync('squeezed')); return }
   let b = ''; q.on('data', (c) => (b += c)); q.on('end', () => { r.setHeader('content-type', 'application/json'); r.setHeader('x-mark', mark)
-    r.end(JSON.stringify({ mark, method: q.method, url: q.url, host: q.headers.host, xfh: q.headers['x-forwarded-host'], xfp: q.headers['x-forwarded-proto'], xff: q.headers['x-forwarded-for'], body: b })) })
+    r.end(JSON.stringify({ mark, method: q.method, url: q.url, host: q.headers.host, xfh: q.headers['x-forwarded-host'], xfp: q.headers['x-forwarded-proto'], xff: q.headers['x-forwarded-for'], fwd: q.headers['forwarded'] ?? null, xri: q.headers['x-real-ip'] ?? null, xfport: q.headers['x-forwarded-port'] ?? null, body: b })) })
 })
 if (/^\d+$/.test(where)) srv.listen(Number(where), '127.0.0.1'); else { process.umask(0o177); srv.listen(where) }
 EOF
@@ -70,10 +70,11 @@ c() { curl -s --max-time 5 "$@"; }
 F="http://127.0.0.1:$FP"
 
 echo '== step 2: routing'
-R=$(c -H 'Host: board.acme-shop.localhost:1355' -H 'x-forwarded-host: evil.example.org' -H 'x-forwarded-proto: https' "$F/api/whoami?x=1")
+R=$(c -H 'Host: board.acme-shop.localhost:1355' -H 'x-forwarded-host: evil.example.org' -H 'x-forwarded-proto: https' -H 'x-forwarded-for: 1.2.3.4' -H 'Forwarded: for=1.2.3.4;host=evil.example.org' -H 'X-Real-IP: 1.2.3.4' -H 'X-Forwarded-Port: 443' "$F/api/whoami?x=1")
 is "board.acme-shop.localhost -> the board's socket (path and query through)" test "$(jq -r '.mark + " " + .url' <<<"$R")" = "board /api/whoami?x=1"
 is "Host passed on as the client sent it" test "$(jq -r .host <<<"$R")" = "board.acme-shop.localhost:1355"
 is "x-forwarded-host / -proto / -for: what the front saw, not what the client claimed" test "$(jq -r '.xfh + " " + .xfp + " " + .xff' <<<"$R")" = "board.acme-shop.localhost:1355 http 127.0.0.1"
+is "...and a client's Forwarded, X-Real-IP and X-Forwarded-Port never reach the board" test "$(jq -c '[.fwd, .xri, .xfport]' <<<"$R")" = '[null,null,null]'
 R=$(c -H 'Host: bd-serve.acme-shop.localhost' -X POST --data-binary '{"a":1}' "$F/api/list")
 is "bd-serve.acme-shop.localhost -> its loopback port, POST and body through" test "$(jq -c '[.mark, .method, .body]' <<<"$R")" = '["bd","POST","{\"a\":1}"]'
 is "a name is case-blind, a trailing dot too" test "$(c -H 'Host: BD-Serve.Acme-Shop.LOCALHOST.' "$F/" | jq -r .mark)" = bd
@@ -96,6 +97,11 @@ is "a route to a board's -public socket: refused (404), and logged" bash -c "[ \
 is "a route to a gated public port: refused (404), and logged" bash -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: pubport.acme-shop.localhost' '$F/')\" = 404 ] && grep -q \"pubport.acme-shop.localhost: port $PUBP is a public side's\" '$T/front.log'"
 is "a route that is not a .localhost name: refused, logged" grep -q 'board-shop-acme.example.org: not a local name' "$T/front.log"
 is "a target that does not answer: 502" test "$(c -o /dev/null -w '%{http_code}' -H 'Host: gone.acme-shop.localhost' "$F/")" = 502
+# review, sy-tkmc: no secrets in the front's log (no request headers, no query strings), also when a target fails
+c -o /dev/null -H 'Host: gone.acme-shop.localhost' -H 'Authorization: Bearer hdr-secret-x' -H 'Cookie: s=cookie-secret-y' "$F/p?token=query-secret-z" >/dev/null
+c -o /dev/null -H 'Host: board.acme-shop.localhost' -H 'Authorization: Bearer hdr-secret-x' -H 'Cookie: s=cookie-secret-y' "$F/p?token=query-secret-z" >/dev/null
+sleep 0.3
+is "the log holds no request header, cookie or query (a 502 and a 200 with Authorization, Cookie and ?token)" bash -c "grep -q 'gone.acme-shop.localhost: does not answer' '$T/front.log' && ! grep -qE 'hdr-secret-x|cookie-secret-y|query-secret-z|/p\\?' '$T/front.log'"
 is "mm front ls: the table, the refusals on stderr" bash -c "cd '$T' && bun '$SRC/src/cli.ts' front ls -o json 2>'$T/ls.err' | jq -e 'map(.name) | sort == [\"bd-serve.acme-shop.localhost\",\"board.acme-shop.localhost\",\"gone.acme-shop.localhost\",\"ws.acme-shop.localhost\"]' >/dev/null && grep -q 'refused: acme-shop: pub.acme-shop.localhost' '$T/ls.err'"
 
 echo '== step 2: reload'
