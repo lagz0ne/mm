@@ -69,9 +69,21 @@ const matches = (a, labels) => Object.entries(labels || {}).every(([k, v]) => a.
 const HOME = E.HOME || ''
 /** One shape whichever path brought it: {id, shortId, name, status, cwd (absolute), labels, provider, thinking, created,
  *  updated (its last activity, when Paseo gives one), archived}. */
+/** A date Paseo gave: the SDK's ISO createdAt, or the CLI's relative `created` ("1 hours ago", "just now"): an ISO
+ *  date either way (the relative one to its unit), or null. wake orders a role's leads by it (sy-p8pc). */
+const UNIT = { second: 1e3, minute: 6e4, hour: 36e5, day: 864e5, week: 6048e5, month: 2592e6, year: 31536e6 }
+export function when(v, now = Date.now()) {
+  if (v == null || v === '') return null
+  if (typeof v === 'number') return new Date(v).toISOString()
+  const s = String(v).trim()
+  if (/^just now$/i.test(s)) return new Date(now).toISOString()
+  const m = /^(\d+|an?)\s+(second|minute|hour|day|week|month|year)s?\s+ago$/i.exec(s)
+  if (m) return new Date(now - (/^an?$/i.test(m[1]) ? 1 : Number(m[1])) * UNIT[m[2].toLowerCase()]).toISOString()
+  const t = Date.parse(s); return Number.isNaN(t) ? null : new Date(t).toISOString()
+}
 const norm = (a) => ({ id: a.id, shortId: a.shortId || String(a.id).slice(0, 7), name: a.title ?? a.name ?? null, status: a.status,
   cwd: String(a.cwd || '').replace(/^~(?=\/|$)/, HOME), labels: a.labels || {}, provider: a.provider ?? null,
-  thinking: a.thinking ?? a.thinkingOptionId ?? null, created: a.created ?? a.createdAt ?? null,
+  thinking: a.thinking ?? a.thinkingOptionId ?? null, created: when(a.createdAt) ?? when(a.created),
   updated: a.lastActivityAt ?? a.updatedAt ?? null, archived: !!(a.archivedAt || a.archived) })
 /** Agents (not archived unless `archived`), optionally only those with all these labels. */
 export async function list(labels = {}, { archived = false } = {}) {
