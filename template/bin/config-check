@@ -390,13 +390,16 @@ for (const f of WF) {
   }
 }
 // Words to a person (sy-dz7y, the owner): the leads' shared brief and the assistants' carry the ASD-STE100 rules;
-// and words between roles (sy-z29t, the owner): short comments, the substance in linked artifacts, diagrams.
-const WRITE_RULE = '## Writing to a person (ASD-STE100)', ARTIFACT_RULE = '## Short comments, the work in artifacts'
+// and words between roles (sy-z29t, the owner): the substance in linked artifacts, diagrams; and (sy-0gsw, the owner)
+// the leads' brief says how a message is written (bin/bd refuses a lead's comment that is not one).
+const WRITE_RULE = '## Writing to a person (ASD-STE100)', ARTIFACT_RULE = '## The work in artifacts'
+const MESSAGE_RULE = '## Messages between roles: one intent, one expectation'
 for (const f of [path.join(P, 'leads', 'CLAUDE.md'), path.join(ASSIST_ROOT, 'CLAUDE.md')]) {
   if (!fs.existsSync(f)) continue
   const brief = fs.readFileSync(f, 'utf8')
   if (!brief.includes(WRITE_RULE)) bad(`${path.relative(P, f)}: lost its "${WRITE_RULE}" section (how every lead and assistant writes to a person)`)
-  if (!brief.includes(ARTIFACT_RULE)) bad(`${path.relative(P, f)}: lost its "${ARTIFACT_RULE}" section (short comments; the substance in linked files)`)
+  if (!brief.includes(ARTIFACT_RULE)) bad(`${path.relative(P, f)}: lost its "${ARTIFACT_RULE}" section (the substance in linked files)`)
+  if (f.startsWith(path.join(P, 'leads')) && !brief.includes(MESSAGE_RULE)) bad(`${path.relative(P, f)}: lost its "${MESSAGE_RULE}" section (bin/bd refuses a lead's comment that is not a message)`)
 }
 // Asking the owner (sy-z5lz, the owner): the leads' shared brief carries the owner card rule (bd refuses needs-you
 // without a valid card; the brief says how to write one).

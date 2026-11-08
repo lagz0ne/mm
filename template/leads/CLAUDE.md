@@ -19,15 +19,15 @@ kind of work:
 ## Each time you are woken ("Board update" message)
 1. Read the update, then your items (ready, in progress, blocked) and any new comments.
 2. **Answer every human comment on your items in this turn**, even if only "noted, doing X next".
-3. Pulling a ready item (within your capacity, see below): `bd update ID --claim`, then comment what you understood and
-   your plan (2–4 lines). Never set `--status in_progress` by hand: your settings refuse it.
+3. Pulling a ready item (within your capacity, see below): `bd update ID --claim`, then a `NOTE` with what you
+   understood and your plan (2–4 lines). Never set `--status in_progress` by hand: your settings refuse it.
 4. Do the work. Post progress as comments at meaningful points, not every step, and at least every 30 min (that keeps
    your claim).
 5. Questions only the human can answer: comment the question, `label add needs-you`, `status blocked`, and stop working
    on that item. Prefer a stated, reasonable assumption over a question when the risk is low.
    A change only the machine's own board can make is not a question for the human: send it upstream (see below).
-6. Done: comment what you did, where it is (file paths, commit ids, URLs), and how to check it, then `close` with a
-   short reason.
+6. Done: a `DONE` message (what you did, where it is: paths, commit ids, URLs; Verify: how to check it), then
+   `close` with a short reason.
 7. End your turn. You will be woken again on the next change or comment; don't poll or sleep.
 
 ## Your queue and your capacity (the pull model)
@@ -59,7 +59,7 @@ you did and where (as in step 6), then make one of these changes:
   `bd reopen OTHER`. wake wakes its assignee.
 - **Done**: `bd close ID --reason "..."`, with the proof (tests, commit, URL) in your last comment. It wakes nobody;
   closing unblocks what waits on it.
-A comment line such as `HANDOFF review` changes nothing. A role is never woken by its own change, and lead-to-lead
+A message (even a `HANDOFF`) changes nothing by itself: the board change does. A role is never woken by its own change, and lead-to-lead
 wakes on one item stop after a few rounds without a human.
 
 ## Upstream: what only the machine can change
@@ -90,10 +90,52 @@ send the item to the machine's own board:
 - The code lead works through workers, one worktree each (see its brief).
 - Never edit `code/` directly. It is landed main, and the app runs from it.
 
-## Short comments, the work in artifacts
+## Messages between roles: one intent, one expectation
+Every comment you write on an item is one **message** (the owner, 2026-11-08: "more structured, with clear intention
+and expectation"). `bd` refuses a comment by a lead or its worker that is not one, and says why; `message check -`
+checks a draft from stdin. Write the message to a file and pass `-f <file>` when it has more than one line.
+```
+<INTENT> → <role> · re #<n>               (re: only when it answers a message)
+Head: <repo>@<sha>                          (when code or a migration is in play; required on a VERDICT)
+Expect: <role>: <one instruction, the verb first, at most 20 words>      (or: Expect: none)
+Done when: <the result anyone can see, one sentence>
+Verify: <the exact check> → <the expected output>
+By: <next wake | today | hh:mm UTC> · Else: <what happens if it is not done>
+<the intent's own keys, one line each>
+```
+| Intent | Says | Expect, Done when, Verify, By | Its own keys |
+|---|---|---|---|
+| `ASK` | I need something from you | yes | `Why` · `Options` |
+| `HANDOFF` | the work is yours now | yes | `Ready` · `Tests` (artifact link) · `Open` |
+| `VERDICT` | review's result | yes, and `Head` | `Result: signed off` or `Result: blocked` · `Must change` · `Notes` |
+| `ANSWER` | a reply to an ASK (`re #n` required) | `Expect: none` (Verify: the evidence), or a follow-up | `Answer` |
+| `DONE` | the unit is finished | `Expect: none`; Verify: the result | `Result` · `Follow-ups` · `Artifacts` |
+| `NOTE` | for the record (a plan, progress) | none | free text |
+- **One message, one intent.** Two intents are two messages. At most 500 characters: tables, logs and test output go
+  in an artifact (below), linked.
+- **Verify is a check both sides can run**, with its expected output: a test and its case, a command and its line, a
+  URL and its HTTP code, a board field and its value. "Looks good" is not a check.
+- **An ASK or a HANDOFF gets an answer** that names it (`re #n`): an ANSWER, a VERDICT or a DONE. The Supervisor
+  flags one with no answer after its `By` ("next wake": 60 min).
+- **A message never asks a person.** Ask the owner with an owner card (below). To answer a person, write
+  `NOTE → <their name>` and then the plain words (see "Writing to a person"); `ANSWER → <name> · re #n` is ok too.
+- **A message changes nothing on the board.** A HANDOFF still needs the handover (`bd update ID -a <role> ...`);
+  a DONE still needs `bd close`.
+Example:
+```
+HANDOFF → review
+Head: mm@56ebb96
+Expect: review: sign off or block this head.
+Done when: the item has signed-off and signed-head:mm@56ebb96, or a VERDICT blocked.
+Verify: bd show sy-wxzx → labels include signed-head:mm@56ebb96
+By: next wake · Else: ops waits; nothing rolls out
+Ready: the artifact command, the secret scan, the files route
+Tests: artifacts/sy-wxzx/gates-56ebb96.txt → 11 suites, 0 failed
+```
+
+## The work in artifacts
 An item's thread is a log, not the work. What must last, and be reviewed later in little space, goes in a file.
-- **A comment is at most about 10 lines:** what changed, the decision or the ask, the next step, and links. Don't
-  re-tell earlier comments: refer to them as #n.
+- **Don't re-tell earlier comments:** refer to them as #n.
 - **The substance goes in an artifact** in your repo, linked from the item and updated in place, never re-posted: a
   design, a plan or a review in `docs/<area>/<item-id>-<slug>.md`; numbers and test counts in one table there.
 - **Screenshots, before/after shots, logs and result tables** go on the item with `artifact <item-id> <file>...`
@@ -103,11 +145,11 @@ An item's thread is a log, not the work. What must last, and be reviewed later i
   that file (or in the item's description when it is small). The board draws it.
 - **The item's description is the current state** (goal, decision, status, links), edited in place with
   `bd update ID --body-file <file>`; the comments are the log.
-- **At close:** one summary comment with the artifact links.
+- **At close:** one DONE message with the artifact links.
 
 ## Writing to a person (ASD-STE100)
 Every word to a person (the owner, a member, a client: board comments for them, chat, Telegram) follows these rules.
-Words between roles (technical detail on items) stay as they are; put them in their own part or comment.
+Words between roles are messages (see "Messages between roles"); a reply to a person is its own `NOTE → <name>`.
 - Short sentences, one idea each. Common words. Active voice. Explain a technical word the first time you use it.
 - At most about 8 short lines per reply.
 - No item ids or commit hashes, unless the person must act on them.
