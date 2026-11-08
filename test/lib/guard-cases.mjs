@@ -512,6 +512,35 @@ export const APPROVER = [
   ['Bash', 'jq .services {root}/.run/endpoints.json', 'allow'],
 ]
 
+// only review signs off (sy-9bss): a session that is not review's never writes as review (or review/<worker>);
+// run as code (guard-run's default) and as another non-review actor
+export const REVIEWER = [
+  ['Bash', 'bd label add sy-1 signed-off --actor review', 'deny'],
+  ['Bash', 'bd --actor=review label add sy-1 signed-off', 'deny'],
+  ['Bash', 'bd update sy-1 --actor "review/w1" --add-label signed-head:mm@0a1b2c3', 'deny', 'a review worker'],
+  ['Bash', 'BEADS_ACTOR=review bd label add sy-1 signed-off', 'deny'],
+  ['Bash', 'export BEADS_ACTOR=review; bd label add sy-1 signed-off', 'deny'],
+  ['Bash', 'env BEADS_ACTOR=review/w2 bd comments add sy-1 "signed off"', 'deny'],
+  ['Bash', 'BD_ACTOR=review bd update sy-1 -s open', 'deny'],
+  ['Bash', 'env -u BEADS_ACTOR USER=review bd label add sy-1 signed-off', 'deny', 'bd falls back to $USER'],
+  ['Bash', 'git config user.name review', 'deny', 'bd falls back to git user.name'],
+  ['Bash', "BEADS_ACTOR=re\\view bd label add sy-1 signed-off", 'deny', 'escaped (sy-in54)'],
+  ['Bash', 'bd label add sy-1 signed-off', 'allow', 'as itself: bin/bd refuses it (the actor is not review)'],
+  ['Bash', 'bd comments add sy-1 x --actor reviewer', 'allow', 'not review'],
+  ['Bash', 'bd comments add sy-1 x --actor ops', 'allow'],
+  ['Bash', 'bd comments add sy-1 "ask review to sign off"', 'allow'],
+  ['Bash', 'bd update sy-1 -a review -s open --if-assignee ops', 'allow', 'handing an item to review'],
+  ['Bash', 'bd list --assignee review --json', 'allow'],
+]
+// a review session (review, or a review worker) may name itself; the approvers stay denied to it
+export const REVIEWER_SELF = [
+  ['Bash', 'bd label add sy-1 signed-off --actor review', 'allow'],
+  ['Bash', 'BEADS_ACTOR=review bd label add sy-1 signed-head:mm@0a1b2c3', 'allow'],
+  ['Bash', 'bd update sy-1 --actor review/w1 --add-label signed-off', 'allow'],
+  ['Bash', 'bd update x --actor bridge', 'deny'],
+  ['Bash', 'bd label add sy-1 approved', 'deny'],
+]
+
 // the same board with no owner_name in its run files: the bridge stays denied; a person's name is free
 export const APPROVER_NO_OWNER = [
   ['Bash', 'BEADS_ACTOR=alex bd comments add sy-1 x', 'allow'],
