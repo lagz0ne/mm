@@ -28,7 +28,9 @@ cat >"$T/paseo" <<EOF
 #!/bin/sh
 S=$T/st
 case "\$1" in
-  ls) cat "\$S/agents" 2>/dev/null ;;
+  ls) case "\$*" in *paseo-worker=*) cat "\$S/fresh" 2>/dev/null ;; *) cat "\$S/agents" 2>/dev/null ;; esac ;;
+  delete) [ -e "\$S/nodelete" ] && { echo "daemon refused delete" >&2; exit 1; }
+    grep -vx "\$2" "\$S/agents" >"\$S/a.tmp"; mv "\$S/a.tmp" "\$S/agents"; echo "\$2" >>"\$S/deleted" ;;
   archive) force=""; [ "\$2" = --force ] && { force=1; shift; }
     id=\$2; b=\$(cat "\$S/busy" 2>/dev/null || echo 0)
     if [ -n "\$force" ]; then [ -e "\$S/stuck" ] && { echo "daemon refused: agent \$id is locked" >&2; exit 1; }
@@ -55,7 +57,7 @@ reset old-1 1
 check "an old lead busy for a moment: waited for, archived without interrupting it" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && grep -qx 'archived previous qa lead old-1' '$T/out' && test -s '$T/st/prompt'"
 reset old-1 -1
 check "an old lead that stays busy: interrupted (--force) after the wait, and it says so" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && grep -q 'archived previous qa lead old-1 (interrupted' '$T/out' && test -s '$T/st/prompt'"
-reset old-1 -1; touch "$T/st/stuck"
+reset old-1 -1; touch "$T/st/stuck"; echo old-1 >"$T/st/fresh"   # on the current worker: never deleted
 check "an old lead that can't be archived: no second lead starts, exit 1, paseo's reason shown" bash -c "! '$P/bin/lead' start qa >'$T/out' 2>&1 && ! test -e '$T/st/prompt' && grep -q 'could not archive qa lead old-1: daemon refused' '$T/out' && grep -q 'not starting a second qa lead' '$T/out'"
 reset old-1 0; rm -f "$T/st/items.json"
 check "no open items: no handover in the prompt" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && test -s '$T/st/prompt' && ! grep -q Handover '$T/st/prompt'"
@@ -69,6 +71,16 @@ check "titles in the first prompt (handover, LEAD_NEXT): in fenced blocks marked
 rm -f "$T/st/items.json"
 printf 'old-1\nold-2\n' >"$T/st/agents"
 check "two old leads of the role (the sy-8n1 state): both archived, then one starts" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && [ \"\$(grep -c 'archived previous qa lead' '$T/out')\" = 2 ] && ! test -s '$T/st/agents'"
+
+echo '== start: a stale lead that refuses the archive is deleted (sy-jwzj)'
+reset old-1 -1; touch "$T/st/stuck"   # old-1 is not in fresh: made on another Paseo worker
+check "a stale lead that can't be archived: deleted, the new one starts, and it says why" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && grep -q 'deleted previous qa lead old-1: made on an older Paseo worker' '$T/out' && grep -qx old-1 '$T/st/deleted' && test -s '$T/st/prompt'"
+reset old-1 -1; touch "$T/st/stuck"; echo old-1 >"$T/st/fresh"
+check "...a lead on the current worker is never deleted: exit 1, as before" bash -c "! '$P/bin/lead' start qa >'$T/out' 2>&1 && ! test -e '$T/st/deleted' && grep -q 'could not archive qa lead old-1: daemon refused' '$T/out'"
+reset old-1 -1; touch "$T/st/stuck" "$T/st/noworker"
+check "...the daemon can't say its worker: nothing is deleted" bash -c "! '$P/bin/lead' start qa >'$T/out' 2>&1 && ! test -e '$T/st/deleted' && ! test -e '$T/st/prompt'"
+reset old-1 -1; touch "$T/st/stuck" "$T/st/nodelete"
+check "...the delete fails too: exit 1, both reasons shown" bash -c "! '$P/bin/lead' start qa >'$T/out' 2>&1 && grep -q 'could not archive qa lead old-1: daemon refused: agent old-1 is locked (delete: daemon refused delete)' '$T/out'"
 
 echo '== start: the label of the daemon worker it is made on (sy-vsh5)'
 reset old-1 0
@@ -85,7 +97,7 @@ check "...one in a turn is left (never --force), and it says so; the start still
 echo '== stop'
 reset old-1 0
 check "stop: archived" bash -c "'$P/bin/lead' stop qa >'$T/out' 2>&1 && grep -q 'archived qa lead old-1' '$T/out'"
-reset old-1 -1; touch "$T/st/stuck"
+reset old-1 -1; touch "$T/st/stuck"; echo old-1 >"$T/st/fresh"   # on the current worker: never deleted
 check "stop, and it can't be archived: exit 1, it says which lead is still there" bash -c "! '$P/bin/lead' stop qa >'$T/out' 2>&1 && grep -q 'qa lead(s) still there: old-1' '$T/out'"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"; [ "$fail" = 0 ]
