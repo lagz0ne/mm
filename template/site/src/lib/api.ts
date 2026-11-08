@@ -83,8 +83,8 @@ export interface Meta {
 
 /** The owner's own actions on an item (POST /api/<action>, the public side; the server checks the owner, the item, and
  *  that the request is same-origin JSON). */
-async function ownerAct(action: 'approve' | 'not-now', item: string) {
-  const r = await fetch(`/api/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ item }) })
+async function ownerAct(action: 'approve' | 'not-now' | 'reply' | 'done', item: string, more: Record<string, string> = {}) {
+  const r = await fetch(`/api/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...more, item }) })
   const d = await r.json().catch(() => ({}))
   if (!r.ok) throw new Error(d.title || `${r.status}`)
   return d as { ok: true; title: string; approved?: boolean }
@@ -100,6 +100,9 @@ export const api = {
   approve: (item: string) => ownerAct('approve', item),
   // the owner's "not now" on a t2 that waits for the go: a comment, and needs-you removed
   notNow: (item: string) => ownerAct('not-now', item),
+  // the owner's answer to a card that asks no go (sy-t9tg): a reply (a comment as the owner), or done (needs-you removed)
+  reply: (item: string, text: string) => ownerAct('reply', item, { text }),
+  done: (item: string) => ownerAct('done', item),
   identify: async (name: string) => {
     const r = await fetch('/api/whoami', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) })
     const d = await r.json().catch(() => ({}))

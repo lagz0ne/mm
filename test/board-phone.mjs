@@ -88,6 +88,11 @@ const issues = [
   issue('sy-1', { priority: 0, labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], assignee: 'ops', title: 'Rotate the gateway key (t2): plan, rollback, lockout safeguard',
     description: '## Owner\n- **What:** Rotate the gateway key.\n- **Why:** The old one is a year old.\n- **You:** Tap Approve\n- **If yes:** Ops rotates it tonight.\n- **If no:** The old key stays.\n- **Risk:** medium, a minute without sign-in\n- **Head:** mm@0a1b2c3\n\nThe plan, the rollback and the lockout safeguard.' }),
   issue('sy-2', { status: 'in_progress', assignee: 'platform' }),
+  // sy-t9tg: t2 cards that ask the owner something other than the go: their own action, never Approve or Not now
+  issue('sy-10', { labels: ['t2', 'signed-off', 'needs-you', 'signed-head:mm@0a1b2c3'], assignee: 'ops', title: 'Check the admin login (t2)',
+    description: '## Owner\n- **What:** Check the admin login before the plan.\n- **Why:** The plan needs sudo on that account.\n- **You:** Check: run ssh admin@host, then sudo -v, and say if it worked\n- **Head:** mm@0a1b2c3\n\nThe rest.' }),
+  issue('sy-11', { labels: ['t2', 'needs-you'], assignee: 'ops', title: 'Which account (t2)',
+    description: '## Owner\n- **What:** Pick the account the migration uses.\n- **Why:** The plan names it.\n- **You:** Reply: which account, admin or ops?\n\nThe rest.' }),
   issue('sy-3', { status: 'blocked', assignee: 'review', dependencies: [{ issue_id: 'sy-3', depends_on_id: 'sy-2', type: 'blocks' }] }),
   issue('sy-4', { assignee: 'setup' }),
   issue('sy-5', { assignee: '' }),
@@ -117,6 +122,7 @@ const meta = { project: 'system', leads: { ops: { id: 'a1', name: 'ops', status:
   states: { ops: { state: 'working', label: 'working on sy-1', item: 'sy-1' }, review: { state: 'waiting', label: 'waiting for you on sy-3', item: 'sy-3' } },
   creators: {}, last: { 'sy-1': { author: 'alex', at: iso(30) } }, panels: ['machine'], personas: null }
 
+const ownerPosts = [] // the item view's Reply and Done (sy-t9tg)
 const json = (res, d, s = 200) => { res.writeHead(s, { 'content-type': 'application/json' }); res.end(JSON.stringify(d)) }
 const TYPES = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json' }
 const srv = http.createServer((req, res) => {
@@ -141,6 +147,7 @@ const srv = http.createServer((req, res) => {
   if (p === '/api/v0/beads/ready') return json(res, { items: issues.filter((i) => i.status === 'open' && !i.dependencies), has_more: false })
   const m = /^\/api\/v0\/beads\/issues\/([^/:]+)$/.exec(p)
   if (m) { const i = [...issues, ...closed].find((x) => x.id === m[1]); return i ? json(res, { ...i, comments: i.id === 'sy-1' ? comments : [] }) : json(res, { title: 'no' }, 404) }
+  if (req.method === 'POST' && (p === '/api/done' || p === '/api/reply')) { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => { ownerPosts.push({ p, b }); json(res, { ok: true, title: 'said' }) }); return }
   if (p.startsWith('/api/')) return json(res, {})
   const f = path.join(DIST, path.normalize(p).replace(/^(\.\.[/\\])+/, ''))
   const file = fs.existsSync(f) && fs.statSync(f).isFile() ? f : path.join(DIST, 'index.html')
@@ -225,6 +232,31 @@ for (const [w, h] of [[390, 844], [375, 667]]) {
   const sheet = await page.locator('[data-slot=sheet-content]').boundingBox()
   ok(`item @${size}: the item opens full screen (${sheet && Math.round(sheet.width)}px)`, !!sheet && sheet.width >= w - 1 && sheet.x <= 1)
   shots.push(await check(page, 'item', size, ['Approve on Telegram', 'Close', { name: 'Status', loc: page.locator('[data-slot=select-trigger]').first() }]))
+  step(`a t2 item that asks no go at ${size} (sy-t9tg)`)
+  await page.goto(`${BASE}/?item=sy-10`)
+  await page.locator('[data-owner-card]').waitFor({ timeout: 10000 })
+  await page.waitForTimeout(700)
+  const noGo = async () => (await page.getByRole('button', { name: /^Approve/ }).count()) === 0 && (await page.getByRole('button', { name: 'Not now', exact: true }).count()) === 0
+  ok(`item sy-10 @${size}: a signed-off t2 whose You is Check: (with a signed head): no Approve, no Not now`, await noGo())
+  shots.push(await check(page, 'item-nongo-check', size, ['Done']))
+  const n0 = ownerPosts.length
+  await page.getByRole('button', { name: 'Done', exact: true }).click()
+  await page.waitForTimeout(400)
+  ok(`item sy-10 @${size}: Done posts /api/done for the item`, ownerPosts.length === n0 + 1 && ownerPosts.at(-1).p === '/api/done' && JSON.parse(ownerPosts.at(-1).b).item === 'sy-10', JSON.stringify(ownerPosts.slice(n0)))
+  await page.goto(`${BASE}/?item=sy-11`)
+  await page.locator('[data-owner-card]').waitFor({ timeout: 10000 })
+  await page.waitForTimeout(700)
+  ok(`item sy-11 @${size}: a t2 Reply: ask without sign-off or head: no Approve, no Not now, a reply box`, await noGo() && (await page.locator('[data-owner-answer="reply"] textarea').count()) === 1)
+  await page.locator('[data-owner-answer="reply"] textarea').fill('admin')
+  shots.push(await check(page, 'item-nongo-reply', size, [{ name: 'Send (the reply)', loc: page.locator('[data-owner-answer="reply"]').getByRole('button', { name: 'Send' }) }]))
+  const n1 = ownerPosts.length
+  await page.locator('[data-owner-answer="reply"]').getByRole('button', { name: 'Send' }).click()
+  await page.waitForTimeout(400)
+  ok(`item sy-11 @${size}: Send posts /api/reply with the text`, ownerPosts.length === n1 + 1 && ownerPosts.at(-1).p === '/api/reply' && JSON.parse(ownerPosts.at(-1).b).text === 'admin' && JSON.parse(ownerPosts.at(-1).b).item === 'sy-11', JSON.stringify(ownerPosts.slice(n1)))
+  await page.goto(`${BASE}/?item=sy-1`)
+  await page.getByText('Signed off.').first().waitFor({ timeout: 10000 })
+  await page.waitForTimeout(700)
+  ok(`item sy-1 @${size}: a go ask has no Reply or Done box`, (await page.locator('[data-owner-answer]').count()) === 0)
   const ta = page.getByPlaceholder(/Write to the lead/)
   await ta.scrollIntoViewIfNeeded()
   await ta.fill('From a phone.')
