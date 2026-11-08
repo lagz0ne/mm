@@ -67,7 +67,9 @@ const items = [{ id: 'ab-12', title: 'A long title on the item that waits for th
 w('home', P.home('Alex Example-Longname', [
   { project: 'a-rather-long-project-name-with-dashes', host: 'board.example.org', role: 'owner', s: sum, w: { items, more: 2 }, older: false },
   { project: 'second', host: 'board2.example.org', role: 'viewer', s: null, w: null, older: true }]))
-w('signin', P.code('ABCD-EFGH', 'a-rather-long-project-name-with-dashes'))
+w('signin', P.code('ABCD-EFGH', 'a-rather-long-project-name-with-dashes', 'mm_example_bot'))
+w('signin-nobot', P.code('ABCD-EFGH', 'a-rather-long-project-name-with-dashes', ''))
+fs.writeFileSync(out + '/app.js', P.js)
 w('continue', P.continue('tok', '/'))
 w('token', P.account('Alex Example-Longname', true, true, '2026-11-01T10:00:00Z', 'Saved.'))
 w('runs', P.runs('Alex Example-Longname', [{ project: 'second', item: 'ab-12', expires: Date.parse('2026-11-08T10:00:00Z') }], ['second'], false, ''))
@@ -117,6 +119,8 @@ const TYPES = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/htm
 const srv = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x'), p = u.pathname
   if (p === '/s/app.css') { res.writeHead(200, { 'content-type': 'text/css' }); return res.end(fs.readFileSync(path.join(GW, 'app.css'))) }
+  if (p === '/s/app.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(fs.readFileSync(path.join(GW, 'app.js'))) }
+  if (p === '/s/poll') return json(res, { state: 'pending' })
   if (p.startsWith('/gw/')) { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(fs.readFileSync(path.join(GW, `${path.basename(p)}.html`))) }
   if (p.startsWith('/img/')) { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(png) }
   if (p === '/api/meta') return json(res, meta)
@@ -231,10 +235,29 @@ for (const [w, h] of [[390, 844], [375, 667]]) {
   step(`the gateway at ${size}`)
   const g = await browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
   const gp = await g.newPage()
-  for (const [n, taps] of [['home', [{ name: 'Open the board', loc: gp.getByRole('link', { name: 'Open the board' }) }, 'Sign out']], ['signin', []], ['continue', []], ['token', ['Replace']], ['runs', ['Ask for runs']]]) {
+  for (const [n, taps] of [['home', [{ name: 'Open the board', loc: gp.getByRole('link', { name: 'Open the board' }) }, 'Sign out']],
+    ['signin', ['Copy code', { name: 'Open in Telegram', loc: gp.getByRole('link', { name: 'Open in Telegram' }) }]], ['signin-nobot', ['Copy code']],
+    ['continue', []], ['token', ['Replace']], ['runs', ['Ask for runs']]]) {
     await gp.goto(`${BASE}/gw/${n}`)
     shots.push(await check(gp, `gateway-${n}`, size, taps))
   }
+
+  step(`the sign-in code at ${size} (sy-2pv9)`)
+  await g.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE })
+  await gp.goto(`${BASE}/gw/signin`)
+  const href = await gp.getByRole('link', { name: 'Open in Telegram' }).getAttribute('href')
+  ok(`signin @${size}: the Telegram link carries the code (${href})`, href === 'https://t.me/mm_example_bot?start=ABCD-EFGH')
+  ok(`signin @${size}: the hint to send it to the bot`, await gp.getByText("Send this code to the bot in Telegram, then press 'This is me' there.").isVisible())
+  const code = await gp.locator('#code').evaluate((e) => { const s = getComputedStyle(e); return { sel: s.userSelect || s.webkitUserSelect, ws: s.whiteSpace, fs: parseFloat(s.fontSize) } })
+  ok(`signin @${size}: the code selects whole, on one line, ≥16px (${JSON.stringify(code)})`, code.sel === 'all' && code.ws === 'nowrap' && code.fs >= 16)
+  await gp.getByRole('button', { name: 'Copy code' }).click()
+  await gp.getByRole('button', { name: 'Copied' }).waitFor({ timeout: 3000 }).catch(() => {})
+  ok(`signin @${size}: Copy code says Copied`, (await gp.getByRole('button', { name: 'Copied' }).count()) === 1)
+  ok(`signin @${size}: the clipboard has the code`, (await gp.evaluate(() => navigator.clipboard.readText()).catch((e) => String(e))) === 'ABCD-EFGH')
+  await gp.waitForTimeout(2300)
+  ok(`signin @${size}: back to "Copy code" after 2 s`, (await gp.getByRole('button', { name: 'Copy code' }).count()) === 1)
+  await gp.goto(`${BASE}/gw/signin-nobot`)
+  ok(`signin @${size}: no bot name, no Telegram button`, (await gp.getByRole('link', { name: 'Open in Telegram' }).count()) === 0)
   await g.close()
 }
 await browser.close()
