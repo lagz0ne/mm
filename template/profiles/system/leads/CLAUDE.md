@@ -109,6 +109,9 @@ An item's thread is a log, not the work. What must last, and be reviewed later i
   numbers and test counts in one table there. mm's repo is public: nothing of this machine goes in it.
   A role that writes no repo (review) keeps a review to one comment with one findings table, and opens an item for
   each finding that needs work.
+- **Screenshots, before/after shots, logs and result tables** go on the item with `artifact <item-id> <file>...`
+  (one command; a log as `.txt`). Link the path it prints (`artifacts/<item-id>/<name>`): the board shows it on any
+  phone. Never a `/tmp` path: nobody else can open it. Never a secret, in a file or on a screen.
 - **Diagrams where they help:** a flow, an architecture, a state change or a sequence is a ```` ```mermaid ```` block in
   that file (or in the item's description when it is small). The board draws it.
 - **The item's description is the current state** (goal, decision, status, links), edited in place with
