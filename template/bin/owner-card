@@ -7,8 +7,9 @@
 //   owner-card gate -- <bd args>   bin/bd runs it when its arguments name needs-you: refuses (exit 1, the reasons) a
 //                                  call that adds needs-you (label add, update --add-label/-l/--set-labels, create/q
 //                                  -l/--labels) to an item whose description (the one in the call, else the item's own)
-//                                  has no valid card. With t2 (on the item or in the call) it also needs signed-off
-//                                  (sy-l9uc: plan -> review's sign-off -> needs-you); adding t2 to an item that has
+//                                  has no valid card. With t2 (on the item or in the call) a go ask (You: Tap
+//                                  Approve) also needs signed-off (sy-l9uc: plan -> review's sign-off -> needs-you); a
+//                                  non-go ask (Reply:/Check:/Nothing, sy-t9tg) does not; adding t2 to an item that has
 //                                  needs-you is checked the same way. When the card names a Head (sy-hzmu), review's
 //                                  sign-off must name that head too (label signed-head:<repo>@<sha>; headRefusal).
 //                                  Removing needs-you, or any other call: exit 0.
@@ -19,7 +20,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { FORMAT, SIGNED_HEAD, headRefusal, parseCard } from './lib/owner-card.mjs'
+import { FORMAT, SIGNED_HEAD, headRefusal, isGoAsk, parseCard } from './lib/owner-card.mjs'
 
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const LABEL = 'needs-you', T2 = 't2', SIGNED = 'signed-off'
@@ -120,6 +121,9 @@ function gate(argv) {
     if (!labels.includes(LABEL)) return
     const r = parseCard(description, labels, id)
     if (!r.ok) refuse([who], null, r)
+    // sy-t9tg: a t2 card that asks something other than the go (You: Reply:/Check:/Nothing) may wait on the owner
+    // before review's sign-off and before any head exists; it never gets the go (headRefusal refuses it there)
+    if (labels.includes(T2) && !isGoAsk(r.card)) return
     if (labels.includes(T2) && !labels.includes(SIGNED)) refuse([who], `a t2 item waits on the owner only after review signed it off (label ${SIGNED}): plan -> review's sign-off -> ${LABEL}. Ask review first; add ${LABEL} after.`)
     const h = headRefusal(description, labels)
     if (h) refuse([who], `${h}: review signs off the head the card names (label signed-head:<repo>@<sha>, next to ${SIGNED}). Ask review to sign off this head; add ${LABEL} after.`)
