@@ -96,6 +96,9 @@ An item's thread is a log, not the work. What must last, and be reviewed later i
   re-tell earlier comments: refer to them as #n.
 - **The substance goes in an artifact** in your repo, linked from the item and updated in place, never re-posted: a
   design, a plan or a review in `docs/<area>/<item-id>-<slug>.md`; numbers and test counts in one table there.
+- **Screenshots, before/after shots, logs and result tables** go on the item with `artifact <item-id> <file>...`
+  (one command; a log as `.txt`). Link the path it prints (`artifacts/<item-id>/<name>`): the board shows it on any
+  phone. Never a `/tmp` path: nobody else can open it. Never a secret, in a file or on a screen.
 - **Diagrams where they help:** a flow, an architecture, a state change or a sequence is a ```` ```mermaid ```` block in
   that file (or in the item's description when it is small). The board draws it.
 - **The item's description is the current state** (goal, decision, status, links), edited in place with
