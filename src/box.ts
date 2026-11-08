@@ -809,6 +809,26 @@ export function processes(root: string) {
   const r = run(['process-compose', '-U', '-u', sk, 'process', 'list', '-o', 'json'], { timeoutMs: 15_000 })
   try { return r.ok ? JSON.parse(r.out) as { name: string; status: string; is_ready: string; restarts: number }[] : [] } catch { return [] }
 }
+/** Wait until a box can take a job (sy-9r57): its container running and its Dolt ready in its process manager. A rollout
+ *  (mm update / mm up) restarts a box for about a minute, and a job then fails ("container ... is not running", or "can't
+ *  reach its Dolt"). Waits up to `ms` (MM_BOX_WAIT_MS overrides it). Gives what it waited for ('' = nothing) and, when
+ *  it is still not ready, why. */
+export function waitReady(root: string, ms = Number(process.env.MM_BOX_WAIT_MS) || 180_000): { waited: number; why: string } {
+  const a = readAnswers(root), box = names(a.project).box, start = Date.now()
+  const why = () => {
+    if (!running(box)) return 'the box is not running'
+    const ps = processes(root)
+    if (!ps.length) return "the box's process manager does not answer yet"
+    const d = ps.find((p) => p.name === `${a.project}.dolt` || p.name === 'dolt')
+    if (d && !(d.status === 'Running' && (d.is_ready === 'Ready' || d.is_ready === '-'))) return `its Dolt is ${d.status}, ${d.is_ready || 'not ready'}`
+    return ''
+  }
+  for (;;) {
+    const w = why()
+    if (!w || Date.now() - start >= ms) return { waited: Math.round((Date.now() - start) / 1000), why: w }
+    Bun.sleepSync(2000)
+  }
+}
 export function status(root: string) {
   const n = names(readAnswers(root).project)
   const ip = docker('inspect', '-f', `{{(index .NetworkSettings.Networks "${n.net}").IPAddress}}`, n.box).out.trim()

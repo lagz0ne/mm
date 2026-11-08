@@ -32,12 +32,13 @@ board() { # <root> <client> <name> <project> <profile> <with code?>
 set -eu
 P=$(cd "$(dirname "$0")/.." && pwd); D=$BACKUP_DIR/$(date -u +%Y-%m-%dT%H%MZ); mkdir -p "$D/board.dolt"
 [ ! -e "$P/.fail-backup" ] || { echo "bin/doop-run: Error response from daemon: container mm-doop-x is restarting" >&2; exit 1; }
+[ ! -e "$P/.fail-once" ] || { rm -f "$P/.fail-once"; echo "failed to connect to the dolt sql-server at 127.0.0.1:38111" >&2; exit 1; }
 cp "$P/.board-state" "$D/board.dolt/data"; cp "$P/.board-state" "$D/board.jsonl"
 git -C "$P" bundle create -q "$D/config.bundle" --all
 [ ! -d "$P/code/.git" ] || git -C "$P/code" bundle create -q "$D/code.bundle" --all
 echo "backup $D: 1 items"
 EOF
-  chmod +x "$P/bin/backup"; echo "$M_BOARD $4" >"$P/.board-state"; printf '.board-state\n.fail-backup\n' >"$P/.gitignore"
+  chmod +x "$P/bin/backup"; echo "$M_BOARD $4" >"$P/.board-state"; printf '.board-state\n.fail-backup\n.fail-once\n' >"$P/.gitignore"
   [ "$4" = system ] || echo '{"required":[{"name":"API_KEY","for":"app"}],"optional":[]}' >"$P/secrets.json"
   git -C "$P" init -q && git -C "$P" add -A && git -C "$P" commit -qm config
   if [ "$6" = 1 ]; then mkdir -p "$P/code" && echo "$M_CODE" >"$P/code/app.txt" && git -C "$P/code" init -q && git -C "$P/code" add -A && git -C "$P/code" commit -qm code; fi
@@ -130,10 +131,25 @@ case "$1" in
     args=(); for x in "$@"; do args+=("${x//\/run\/mm\/backup/$stage}"); done
     cd "$cwd" && exec env "${env[@]//\/run\/mm\/backup/$stage}" "${args[@]}" ;;
   run) for x in "$@"; do [ "$x" = --rm ] && exit 0; done; exit 1 ;;
+  # is the box running (sy-9r57): "false" while $MM_HOME/.fake-box-down counts down, then "true"
+  inspect) case "$*" in *State.Running*) f=$MM_HOME/.fake-box-down; n=$(cat "$f" 2>/dev/null || echo 0)
+      if [ "$n" -gt 0 ]; then echo $((n-1)) >"$f"; echo false; else echo true; fi ;; *) exit 1 ;; esac ;;
   *) exit 1 ;;
 esac
 EOF
 chmod +x "$T/fake-docker"; export MM_DOCKER="$T/fake-docker"   # from here on: the box's jobs never reach a real docker
+# the box's process manager (sy-9r57): a real socket where mm looks, and a process-compose whose `process list` reads
+# $MM_HOME/.fake-pc-list (the box's Dolt ready by default); any other call goes to the real one
+REAL_PC=$(command -v process-compose || echo false)
+cat >"$T/bin/process-compose" <<EOF
+#!/bin/bash
+case " \$* " in *" process list "*) cat "\$MM_HOME/.fake-pc-list"; exit ;; esac
+exec $REAL_PC "\$@"
+EOF
+chmod +x "$T/bin/process-compose"
+echo '[{"name":"acme-boxed.dolt","status":"Running","is_ready":"Ready","restarts":0}]' >"$MM_HOME/.fake-pc-list"
+mkdir -p "$MM_HOME/box/acme-boxed/sock"
+python3 -I -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$MM_HOME/box/acme-boxed/sock/pc.sock"
 BX="$MM_HOME/projects/acme/boxed"; board "$BX" acme boxed acme-boxed project 0
 printf 'version: 1\nservices:\n  board: { command: "node site/server.mjs" }\n' >"$BX/services.yaml"; echo 'box: true' >>"$BX/.mm-answers.yaml"
 git -C "$BX" add -A && git -C "$BX" commit -qm 'box on'
@@ -160,6 +176,20 @@ check "nothing changed: no commit (the record is resealed only when it changes)"
 ln -s /etc/hostname "$BX/governance.json"
 check "a privilege file that is a link: not followed, the sync refuses, nothing committed" bash -c "! mm sync >'$T/s.out' 2>&1 && grep -q 'governance.json is not a plain file' '$T/s.out' && [ \"\$(git -C '$R' rev-parse main)\" = '$H4' ]"
 rm -f "$BX/governance.json"
+
+echo "== a box a rollout is restarting (sy-9r57)"
+# its config changes, so the sync needs a fresh backup; the box is down for 2 looks, then its Dolt refuses once
+echo one >"$BX/rollout.txt"; git -C "$BX" add -A && git -C "$BX" commit -qm 'during a rollout'
+echo 2 >"$MM_HOME/.fake-box-down"; touch "$BX/.fail-once"; HB=$(heads)
+mm sync >"$T/r.out" 2>&1 && ok "mm sync waits for the box, tries once more, and goes" || { bad "mm sync during a box restart"; tail -8 "$T/r.out"; }
+check "...the step says it waited for the box" grep -q 'backup acme-boxed.*waited [0-9]*s for the box' "$T/r.out"
+check "...and that it tried again, after which error" grep -q 'backup acme-boxed.*tried again after: .*dolt sql-server' "$T/r.out"
+check "...and the new backup went in (mastermind has a new commit)" bash -c "[ \"\$(git -C '$R' rev-parse main)\" != '$HB' ]"
+echo two >"$BX/rollout.txt"; git -C "$BX" commit -qam 'still restarting'; HR=$(heads)
+echo '[{"name":"acme-boxed.dolt","status":"Running","is_ready":"Not Ready","restarts":3}]' >"$MM_HOME/.fake-pc-list"
+check "a box whose Dolt never gets ready: refused after the wait, with why; nothing of it committed" bash -c "! MM_BOX_WAIT_MS=3000 mm sync >'$T/n.out' 2>&1 && grep -q 'backup acme-boxed .*bin/backup in the box not run: still not ready after [0-9]*s (its Dolt is Running, Not Ready)' '$T/n.out' && [ \"\$(git -C '$R' rev-parse main)\" = '$HR' ]"
+echo '[{"name":"acme-boxed.dolt","status":"Running","is_ready":"Ready","restarts":3}]' >"$MM_HOME/.fake-pc-list"
+mm sync >>"$LOG" 2>&1 && ok "...ready again: the next sync goes" || bad "sync after the box is ready"
 # a blank machine restores from it (--drill --data-only: test keys, nothing started)
 NB="$T/blank"; mkdir -p "$NB"; RB="$NB/.mm/projects/acme/boxed"
 (export HOME="$NB" MM_HOME="$NB/.mm"; unset MM_LAYOUT; mm restore --drill --data-only "$R" --identity "$T/recovery.key" --accept "$(git -C "$R" rev-parse main)" -o json) >"$T/restore.json" 2>>"$LOG" \

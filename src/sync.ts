@@ -9,7 +9,7 @@ import { DIRS, HOME, run } from './env'
 import { expand, machineInputs } from './inputs'
 import { boxish, boxRecord, engineRefusal, listProjects, readAnswers } from './project'
 import * as vault from './vault'
-import { jobArgs, landed } from './box'
+import { jobArgs, landed, waitReady } from './box'
 import pkg from '../package.json'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
@@ -114,11 +114,27 @@ function plan(work: string, steps: Step[]): Item[] {
       if (bk) return bk
       const dest = join(work, b.id)
       if (b.box) { // its backup runs in the box and lands in the machine's backups folder (as the nightly one); copy it
-        const r = run(jobArgs(b.root, 'backup', join(b.root, 'bin', 'backup'), { MM_PROJECT: b.id }), { timeoutMs: 900_000 })
-        if (!r.ok) throw new Error(`${b.id}: bin/backup in the box failed: ${short(r)}`)
+        // a rollout may be restarting the box right now (sy-9r57): wait for it and its Dolt, and on a failure wait and
+        // try once more; the step's detail says so
+        const job = () => run(jobArgs(b.root, 'backup', join(b.root, 'bin', 'backup'), { MM_PROJECT: b.id }), { timeoutMs: 900_000 })
+        const notes: string[] = []
+        const ready = (when: string) => {
+          const w = waitReady(b.root)
+          if (w.why) throw new Error(`${b.id}: bin/backup in the box not run${when}: still not ready after ${w.waited}s (${w.why})`)
+          if (w.waited) notes.push(`waited ${w.waited}s for the box${when}`)
+        }
+        ready('')
+        let r = job()
+        if (!r.ok) {
+          const first = short(r)
+          ready(' to try again')
+          r = job()
+          if (!r.ok) throw new Error(`${b.id}: bin/backup in the box failed twice: ${first}; then: ${short(r)}`)
+          notes.push(`tried again after: ${first}`)
+        }
         // the newest folder it landed, by path (sy-0z58: never by splitting landBackup's text); Doop's data is in it
         const l = landed(b.root)
-        steps.push({ step: `backup ${b.id}`, status: 'ok', detail: `in the box; ${l.newest.split('/').pop()}${l.doop === 'yes' ? ', with doop' : l.doop === 'skipped' ? ', doop skipped' : ''}` })
+        steps.push({ step: `backup ${b.id}`, status: 'ok', detail: `in the box; ${l.newest.split('/').pop()}${l.doop === 'yes' ? ', with doop' : l.doop === 'skipped' ? ', doop skipped' : ''}${notes.length ? `; ${notes.join('; ')}` : ''}` })
         return (bk = l.newest)
       }
       // a project that was a box: its bin/ runs on the host only if it is mm's engine (review sy-b15.6 follow-up 2)
