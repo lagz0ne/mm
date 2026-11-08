@@ -37,11 +37,14 @@ stale_ids() {
     try {
       const pw = await m.worker({ fresh: true })
       if (!pw || !/^[0-9.]+$/.test(pw)) process.exit(0)
-      for (const a of await m.list({ project, role })) { const w = a.labels?.["paseo-worker"]; if (w && w !== pw) console.log(a.id) }
+      for (const a of await m.list({ project, role })) { const w = a.labels?.["paseo-worker"]; if (w && w !== pw) console.log(a.id, a.shortId || "") }
     } finally { await m.close() }' "$P/bin/lib/paseo.mjs" x "$PROJECT" "$1" 2>/dev/null || true
 }
+# ids() gives Paseo's short ids (ls -q); stale_ids gives each stale lead's full id and its short id (review sy-jwzj #10):
+# an exact match on either (never a prefix: old-1 is not old-10)
+is_stale() { [ -n "$1" ] || return 1; for x in $stale; do [ "$x" = "$1" ] && return 0; done; return 1; }
 archive_role() {
-  stale=" $(stale_ids "$1" | tr '\n' ' ') "
+  stale=$(stale_ids "$1" | tr '\n' ' ')
   for id in $(ids "$1"); do
     t=0; why=""; gone=""
     while :; do
@@ -51,7 +54,7 @@ archive_role() {
     [ -z "$gone" ] || continue
     del=""
     if why=$("$PASEO" archive --force "$id" 2>&1 >/dev/null); then echo "archived $2$1 lead $id (interrupted: it was busy for ${t}s)"
-    elif case $stale in *" $id "*) true ;; *) false ;; esac && del=$("$PASEO" delete "$id" 2>&1 >/dev/null); then
+    elif is_stale "$id" && del=$("$PASEO" delete "$id" 2>&1 >/dev/null); then
       echo "deleted $2$1 lead $id: made on an older Paseo worker (resumed, it runs without its env), and archive failed: ${why:-no reason given}"
     else echo "lead: could not archive $1 lead $id: ${why:-no reason given}${del:+ (delete: $del)}" >&2; fi
   done
