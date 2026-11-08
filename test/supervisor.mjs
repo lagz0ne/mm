@@ -549,6 +549,32 @@ step('run 9n (+500..510 min): two leads of one role on two passes in a row: a li
   ok('one lead again: the line drops off', !line('platform'))
 }
 
+step('run 9o (+520..535 min): a needs-you item with no valid owner card: a finding to its role, refreshed, cleared (sy-z5lz)')
+{
+  const CARD = '## Owner\n- **What:** Every item that needs you shows a fixed short card at the top; the board checks it.\n- **Why:** You see what is asked and why without reading the agents\' threads.\n- **You:** Nothing\n\nThe rest.'
+  item('sy-40', { title: 'asks the owner, no card', assignee: 'platform/w1', labels: ['needs-you'], description: 'Please decide.' }, 'platform')
+  item('sy-41', { title: 'asks the owner, a card', assignee: 'review', labels: ['needs-you'], description: CARD }, 'review')
+  item('sy-42', { title: 't2, a card without its t2 keys', assignee: 'ops', labels: ['needs-you', 't2'], description: CARD }, 'ops')
+  item('sy-43', { title: 'no card, no needs-you', assignee: 'ops', description: 'Text.' }, 'ops')
+  clock = T0 + 520 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  const C = openOf('card:sy-40'), C2 = openOf('card:sy-42')
+  ok('card:sy-40 opened to the item\'s role (platform), P2, with the reason', C && C.assignee === 'platform' && C.priority === 2 && /Owner card missing: sy-40/.test(C.title) && /does not start with "## Owner"/.test(C.description))
+  ok('card:sy-42 (t2) opened to ops, naming the t2 keys', C2 && C2.assignee === 'ops' && /Owner card invalid/.test(C2.title) && /If yes is missing \(required with t2\)/.test(C2.description))
+  ok('none for sy-41 (a valid card) or sy-43 (no needs-you)', !openOf('card:sy-41') && !openOf('card:sy-43'))
+  clock = T0 + 525 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('nothing changed: no duplicate, no comment', byKey('card:sy-40').length === 1 && openOf('card:sy-40').comments.length === 0)
+  update('sy-40', { description: `${CARD.replace('**You:** Nothing', '**You:** Look')}` }, 'platform')
+  clock = T0 + 530 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('the reason changed (a card now, You invalid): one comment saying so', openOf('card:sy-40')?.comments.length === 1 && /You starts with none of/.test(openOf('card:sy-40').comments[0].text))
+  update('sy-40', { description: CARD }, 'platform'); update('sy-42', { labels: ['t2'] }, 'ops')
+  clock = T0 + 535 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('the card fixed, needs-you removed: both cleared and closed', !openOf('card:sy-40') && !openOf('card:sy-42') && byKey('card:sy-40')[0].status === 'closed' && /Cleared/.test(byKey('card:sy-42')[0].comments.at(-1).text))
+}
+
 step('run 10: the board is down: exit non-zero, nothing written')
 fs.writeFileSync(path.join(T, 'bd.fail'), '')
 const n = sup().length

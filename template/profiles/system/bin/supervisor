@@ -18,6 +18,9 @@
 //                        file (docs/, plans/, ... .md) in its description or comments: the substance belongs in an
 //                        artifact (sy-kmhx; the leads' brief, "Short comments, the work in artifacts"). Low, as blocked
 //                        (stall:<item>, handoff:<item>, idle:<role>: the keys of earlier Supervisors, closed as cleared)
+//     card:<item>        an open item labelled needs-you whose description has no valid owner card (sy-z5lz; the
+//                        format: bin/lib/owner-card.mjs), with the reasons; to the item's role (its assignee), else ops.
+//                        A comment when the reasons change; clears when the card is fixed or needs-you goes     P2
 //     dirty:<worktree>   uncommitted files, none touched for 30 min (git worktrees of the mm repo and of each project) P2
 //     t2-unapproved:<item> a live step for a t2 item with no `approved` from an approver (read from the event journal
 //                        with its actor, never from the label alone): an applied tier-2 brain migration names it in its
@@ -66,6 +69,7 @@ import { cli } from './lib/obs.mjs'
 import * as paseo from './lib/paseo.mjs'
 import { loadConf as approveConf, migrationSubject, readLedger } from './lib/ledger.mjs'
 import { places, projectCap, total, workersOf } from './lib/places.mjs'
+import { parseCard } from './lib/owner-card.mjs'
 
 cli('supervisor')
 const E = process.env
@@ -374,6 +378,27 @@ async function dirty() {
   return { prefix: 'dirty:', problems }
 }
 
+// The owner card (sy-z5lz): every open needs-you item starts its description with a valid one (bin/bd refuses to add
+// the label without it, but a card can be edited away later, or the label set another way). One finding per item, to
+// the item's role, as a dirty worktree is one per worktree.
+async function card() {
+  const problems = []
+  for (const i of await issues()) {
+    if (i.status === 'closed' || mine(i) || !(i.labels || []).includes('needs-you')) continue
+    const r = parseCard(i.description || '', i.labels || [])
+    if (r.ok) continue
+    const why = r.errors.join('; ')
+    problems.push({ key: `card:${i.id}`, priority: 2, assignee: roleOf(i.assignee) || ASSIGNEE,
+      title: `Owner card ${r.found ? 'invalid' : 'missing'}: ${i.id} (needs-you)`,
+      note: why,
+      body: `${i.id} (${i.assignee || 'nobody'}) is labelled needs-you, but its description ${r.found ? 'has an invalid owner card' : 'does not start with the owner card'}:\n\n` +
+        `${r.errors.map((e) => `- ${e}`).join('\n')}\n\nThe owner reads only the card. Write it at the top of the description (\`bd update ${i.id} --body-file <file>\`; ` +
+        'the format: the leads\' brief, "Asking the owner: the owner card"), and check it with `owner-card check ' + i.id + '`. ' +
+        'This item closes itself when the card is valid or needs-you is gone.' })
+  }
+  return { prefix: 'card:', problems }
+}
+
 // A path a migration may write that only a tier-2 change may touch: the root wrapper's policy and the like (sy-7xq0)
 const ROOT_PATH = /\/(?:etc|usr\/local)(?:\/|\b)/
 /** A migration's tier as bin/brain applied it (sy-7xq0): `tier=N` in its state mark (`<iso> <hash> tier=N`), which
@@ -571,7 +596,7 @@ for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')
 }
 const results = [], failed = []
 const failure = (name, e) => ({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) })
-for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap })) {
+for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card })) {
   try { results.push(...[await fn()].flat()) } catch (e) { failed.push(failure(name, e)) }
 }
 await paseo.close()
@@ -606,7 +631,7 @@ for (const src of results) {
     if (unmutable || fresh) delete state.muted[p.key]
     else if (state.muted[p.key]) continue
     else if (again) { state.muted[p.key] = p.parts ? { at: now, parts: p.parts } : now; console.log(`${p.key}: closed by someone while still there; quiet until it clears`); continue }
-    const r = await bd('POST', '/v0/beads/issues', { title: p.title.slice(0, 200), issue_type: 'task', priority: p.priority, assignee: ASSIGNEE, labels: ['supervisor'],
+    const r = await bd('POST', '/v0/beads/issues', { title: p.title.slice(0, 200), issue_type: 'task', priority: p.priority, assignee: p.assignee || ASSIGNEE, labels: ['supervisor'],
       actor: ACTOR, owner: ACTOR, description: p.parts || !again ? desc : `${p.body}\n\nIts earlier item was closed while the finding was still there; a closed item does not end this finding.\n\nsupervisor key: \`${p.key}\`` })
     if (again && r.id) console.log(`${p.key}: closed by someone while still there; opened again`)
     if (r.id) { state.notes[p.key] = p.note; opened++; console.log(`${p.key}: opened ${r.id}`) }

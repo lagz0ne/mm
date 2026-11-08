@@ -82,14 +82,16 @@ const openOf = (k) => sup().find((i) => i.status !== 'closed' && KEY.exec(i.desc
 const byKey = (k) => sup().filter((i) => KEY.exec(i.description)?.[1] === k)
 const at = (min) => { clock = T0 + min * MIN }
 
+// an item that waits on the owner carries a valid owner card (sy-z5lz; without one the Supervisor opens card:<item>)
+const CARD = '## Owner\n- **What:** Pick the name of the new service.\n- **Why:** The leads cannot go on without it.\n- **You:** Reply: which name?'
 try {
   // the board at T0: two quiet P1s of platform, one waiting on the owner (needs-you); handoffs to review, one of them blocked
   item('sy-1', { status: 'in_progress', priority: 1, assignee: 'platform' }, 'platform')
   item('sy-2', { status: 'in_progress', priority: 1, assignee: 'platform' }, 'platform')
-  item('sy-3', { status: 'in_progress', priority: 1, assignee: 'platform', labels: ['needs-you'] }, 'platform')
+  item('sy-3', { status: 'in_progress', priority: 1, assignee: 'platform', labels: ['needs-you'], description: CARD }, 'platform')
   item('sy-4', { assignee: 'platform' }, 'platform'); update('sy-4', { assignee: 'review' }, 'platform')
   item('sy-5', { assignee: 'platform' }, 'platform'); update('sy-5', { assignee: 'review', status: 'blocked' }, 'platform'); dep('dep_add', 'sy-5', 'sy-4') // blocked by sy-4
-  item('sy-6', { assignee: 'platform', labels: ['needs-you'] }, 'platform'); update('sy-6', { assignee: 'review' }, 'platform')
+  item('sy-6', { assignee: 'platform', labels: ['needs-you'], description: CARD }, 'platform'); update('sy-6', { assignee: 'review' }, 'platform')
   // an item of an earlier Supervisor (one per finding)
   item('sy-old', { title: 'Stalled: sy-9', labels: ['supervisor'], assignee: 'ops', description: 'old\n\nsupervisor key: `stall:sy-9`' }, 'watchdog')
 
@@ -138,7 +140,7 @@ try {
   console.log('== "blocked" comes from dependencies: blocked by hand with nothing it waits on is one line in the digest')
   item('sy-20', { status: 'blocked', assignee: 'platform' }, 'platform') // by hand, waits on nothing
   item('sy-21', { status: 'blocked', assignee: 'platform' }, 'platform'); item('sy-22', { assignee: 'ops' }, 'ops'); dep('dep_add', 'sy-21', 'sy-22') // an open blocker
-  item('sy-23', { status: 'blocked', assignee: 'platform', labels: ['needs-you'] }, 'platform') // waits on a person
+  item('sy-23', { status: 'blocked', assignee: 'platform', labels: ['needs-you'], description: CARD }, 'platform') // waits on a person
   item('sy-24', { status: 'blocked', assignee: 'platform' }, 'platform'); items.get('sy-24').dependencies = [{ depends_on_id: 'sy-22', type: 'blocks' }] // bd's own list
   item('sy-26', { status: 'closed', assignee: 'ops' }, 'ops')
   item('sy-25', { status: 'blocked', assignee: 'platform' }, 'platform'); dep('dep_add', 'sy-25', 'sy-26') // its only blocker is closed
