@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUpRightIcon, ChatCircleIcon, LinkSimpleIcon, PlusIcon } from '@phosphor-icons/react'
+import { ArrowUpRightIcon, CaretLeftIcon, CaretRightIcon, ChatCircleIcon, LinkSimpleIcon, PlusIcon } from '@phosphor-icons/react'
 import { toast } from 'sonner'
 import { api, blockers, type BeadEvent, type Issue, type Meta } from '@/lib/api'
 import { COLUMNS, LEAD_DOT, LEAD_READY, ROLES, ROLE_LABEL, ago, byPriority, columnOf, roleOf, setRoleDefs, type ColumnKey } from '@/lib/board'
@@ -8,7 +8,8 @@ import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Toaster } from '@/components/ui/sonner'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { usePhone } from '@/lib/phone'
+import { useDesk, usePhone } from '@/lib/phone'
+import { Goals } from '@/Goals'
 import { cn } from '@/lib/utils'
 import { NewItem } from '@/NewItem'
 import { Identify } from '@/Identify'
@@ -51,16 +52,24 @@ export default function App() {
   // Phones (sy-81dm): one column at a time, its tabs on top; Now and Activity cover the board behind one tap.
   const phone = usePhone()
   const [col, setCol] = useState<ColumnKey>('ready')
-  // Tablet widths (md to xl, the breakpoints the header and grid already use): Now and Activity fold into a drawer
-  // the toolbar's toggle opens over the columns, below the toolbar so the toggle stays in reach (sy-l6t1). Phone keeps
-  // them below the board, desktop beside it.
-  const [side, setSide] = useState(false)
+  // Now and Activity are closed by default at every width; the toolbar's toggle opens them (sy-p88g). On a desktop (xl)
+  // they dock beside the board and the choice is remembered in this browser; below xl they open as a drawer over the
+  // columns, below the toolbar so the toggle stays in reach (sy-l6t1), and close on Escape or a tap outside.
+  const desk = useDesk()
+  const [docked, setDocked] = useState(() => localStorage.getItem('board-side') === '1')
+  const [drawer, setDrawer] = useState(false)
+  const side = desk ? docked : drawer
+  const [folded, setFolded] = useState(() => localStorage.getItem('board-roles-folded') === '1')
+  const toggleFolded = () => setFolded((f) => { localStorage.setItem('board-roles-folded', f ? '0' : '1'); return !f })
   const sideBtn = useRef<HTMLButtonElement>(null)
   const sidePanel = useRef<HTMLElement>(null)
-  const closeSide = useCallback((refocus = true) => { setSide(false); if (refocus) sideBtn.current?.focus() }, [])
-  useEffect(() => { if (side) sidePanel.current?.focus() }, [side])
+  const setSide = useCallback((open: boolean) => {
+    if (desk) { localStorage.setItem('board-side', open ? '1' : '0'); setDocked(open) } else setDrawer(open)
+  }, [desk])
+  const closeSide = useCallback((refocus = true) => { setSide(false); if (refocus) sideBtn.current?.focus() }, [setSide])
+  useEffect(() => { if (drawer && !desk) sidePanel.current?.focus() }, [drawer, desk])
   useEffect(() => {
-    if (!side || openId) return
+    if (desk || !side || openId) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); closeSide() } }
     // a tap outside (the toolbar, the epics) closes it too; the scrim over the columns closes it on its own click
     const onDown = (e: PointerEvent) => {
@@ -70,8 +79,8 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     document.addEventListener('pointerdown', onDown)
     return () => { window.removeEventListener('keydown', onKey); document.removeEventListener('pointerdown', onDown) }
-  }, [side, openId, closeSide])
-  const openFromSide = (id: string) => { closeSide(false); setOpenId(id) }
+  }, [desk, side, openId, closeSide])
+  const openFromSide = (id: string) => { if (!desk) closeSide(false); setOpenId(id) }
 
   const load = useCallback(async () => {
     try {
@@ -179,41 +188,48 @@ export default function App() {
     <PersonaContext.Provider value={meta.personas ?? null}>
     <PresenceContext.Provider value={presence}>
     <div className="flex h-svh flex-col overflow-hidden border-t-4 border-foreground bg-background text-foreground">
-      <header className="grid shrink-0 grid-cols-12 items-end gap-x-6 border-b border-foreground px-4 pt-3 pb-2 md:px-6 md:pt-4 md:pb-3">
-        <div className="col-span-12 flex flex-wrap items-end gap-x-6 gap-y-1 md:col-span-5 md:flex-nowrap">
-          <h1 className="flex min-w-0 items-center gap-2 text-3xl leading-none font-bold tracking-tight [overflow-wrap:anywhere] md:text-4xl">
-            {meta.project || '…'}
-            <span className={cn('size-2.5 shrink-0 md:hidden', live ? 'bg-swiss' : 'border border-muted-foreground')} title={live ? 'Live updates on' : 'Live updates off'} />
-          </h1>
-          <nav className="flex flex-wrap gap-x-4 pb-0.5 text-[13px] font-semibold max-md:gap-x-5 max-md:text-sm [&>a]:max-md:py-2.5">
-            {(['board', 'leads', ...(meta.panels?.includes('machine') ? ['machine' as const] : [])] as const).map((v) => (
-              <a key={v} href={v === 'board' ? '#' : `#${v}`}
-                className={cn('border-b-2 pb-0.5 capitalize', view === v ? 'border-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>{v}</a>
-            ))}
-            {links.map((l) => (
-              <a key={l.name} href={l.url} target="_blank" rel="noreferrer" title={l.url}
-                className="flex items-center gap-0.5 border-b-2 border-transparent pb-0.5 text-swiss hover:border-swiss">
-                {l.label}<ArrowUpRightIcon weight="bold" className="size-3" />
-              </a>
-            ))}
-          </nav>
-        </div>
-        <dl className={cn('col-span-12 mt-3 grid grid-cols-5 gap-x-6 max-md:hidden md:col-span-7 md:mt-0', view !== 'board' && 'invisible')}>
-          {COLUMNS.map((c) => (
-            <div key={c.key} title={c.hint}>
-              <dt className="text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">{c.label}</dt>
-              <dd className="text-3xl leading-none font-bold tabular-nums">{counts[c.key]}</dd>
-            </div>
+      {/* One line (sy-p88g): the project, its views, the goal chip; the column counts only on wide screens (the
+          column heads and the phone's tabs show them anyway), who is working, live, and who you are. */}
+      <header className="flex shrink-0 items-center gap-x-4 border-b border-foreground px-4 max-md:flex-wrap max-md:gap-y-1 max-md:py-1 md:h-11 md:px-6">
+        <h1 className="flex min-w-0 shrink-0 items-center text-xl leading-none font-bold tracking-tight [overflow-wrap:anywhere]">
+          {meta.project || '…'}
+        </h1>
+        <nav className="flex shrink-0 flex-wrap gap-x-4 text-[13px] font-semibold max-md:gap-x-5 max-md:text-sm [&>a]:max-md:py-2.5">
+          {(['board', 'leads', ...(meta.panels?.includes('machine') ? ['machine' as const] : [])] as const).map((v) => (
+            <a key={v} href={v === 'board' ? '#' : `#${v}`}
+              className={cn('border-b-2 pb-0.5 capitalize', view === v ? 'border-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>{v}</a>
           ))}
-          <div className="flex items-end justify-end gap-3" title={live ? 'Live updates on' : 'Live updates off'}>
-            <PresenceBar />
-            <span className={cn('size-2.5', live ? 'bg-swiss' : 'border border-muted-foreground')} />
-          </div>
-        </dl>
+          {links.map((l) => (
+            <a key={l.name} href={l.url} target="_blank" rel="noreferrer" title={l.url}
+              className="flex items-center gap-0.5 border-b-2 border-transparent pb-0.5 text-swiss hover:border-swiss">
+              {l.label}<ArrowUpRightIcon weight="bold" className="size-3" />
+            </a>
+          ))}
+        </nav>
+        {view === 'board' && <Goals epics={epics} issues={issues} onOpen={setOpenId} className="max-md:order-last max-md:mb-1 max-md:basis-full" />}
+        <div className="ml-auto flex shrink-0 items-center gap-4">
+          {view === 'board' && (
+            <dl className="hidden gap-x-4 text-xs 2xl:flex">
+              {COLUMNS.map((c) => (
+                <div key={c.key} title={c.hint} className="flex items-baseline gap-1.5">
+                  <dt className="text-muted-foreground">{c.label}</dt>
+                  <dd className="font-bold tabular-nums">{counts[c.key]}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          <span className="max-md:hidden"><PresenceBar /></span>
+          <span className={cn('size-2.5 shrink-0', live ? 'bg-swiss' : 'border border-muted-foreground')} title={live ? 'Live updates on' : 'Live updates off'} />
+          <button type="button" className="text-xs hover:underline max-md:min-h-11 max-md:max-w-[40vw] max-md:truncate max-md:text-sm" disabled={idSource === 'gateway'}
+            title={idSource === 'gateway' ? 'Your name comes from your sign-in' : 'Change who you are'}
+            onClick={() => setIdentifying(true)}>
+            <b>{actor || '…'}</b>{idSource === 'default' && <span className="text-swiss"> · who are you?</span>}
+          </button>
+        </div>
       </header>
 
       {view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2 md:gap-3 md:px-6 md:py-2.5">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2 md:gap-3 md:px-6 md:py-1.5">
         {phone && (
           <Select value={role} onValueChange={setRole}>
             <SelectTrigger aria-label="Role" className="w-32"><SelectValue /></SelectTrigger>
@@ -228,46 +244,27 @@ export default function App() {
           {ROLES.map((r) => <ToggleGroupItem key={r} value={r}>{ROLE_LABEL[r]}</ToggleGroupItem>)}
         </ToggleGroup>
         <Input ref={search} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search"
-          className="h-7 w-56 max-md:order-4 max-md:w-auto max-md:min-w-0 max-md:flex-1 max-md:basis-40" />
+          className="h-7 w-48 max-md:order-4 max-md:w-auto max-md:min-w-0 max-md:flex-1 max-md:basis-40" />
         <button type="button" ref={sideBtn} aria-expanded={side} aria-controls="board-side" onClick={() => (side ? closeSide() : setSide(true))}
-          title="Now and recent activity"
-          className={cn('inline-flex h-7 items-center gap-1.5 border px-2.5 text-xs font-semibold max-md:min-h-11 max-md:px-3 md:ml-auto xl:hidden', side ? 'border-foreground bg-foreground text-background' : 'border-input hover:border-foreground')}>
+          title={side ? 'Hide now and recent activity' : 'Show now and recent activity'}
+          className={cn('inline-flex h-7 items-center gap-1.5 border px-2.5 text-xs font-semibold max-md:min-h-11 max-md:px-3 md:ml-auto', side ? 'border-foreground bg-foreground text-background' : 'border-input hover:border-foreground')}>
           Now <span className={cn('min-w-4 px-1 text-center tabular-nums', presence.length ? 'bg-swiss text-white' : 'bg-muted text-muted-foreground', side && !presence.length && 'bg-background/20 text-background')}>{presence.length}</span>
           <span aria-hidden className={side ? 'opacity-60' : 'text-muted-foreground'}>·</span> Activity
-        </button>
-        <button type="button" className="ml-auto text-xs hover:underline max-md:order-5 max-md:ml-0 max-md:min-h-11 max-md:max-w-[40vw] max-md:truncate max-md:text-sm md:ml-0 xl:ml-auto" disabled={idSource === 'gateway'}
-          title={idSource === 'gateway' ? 'Your name comes from your sign-in' : 'Change who you are'}
-          onClick={() => setIdentifying(true)}>
-          <b>{actor || '…'}</b>{idSource === 'default' && <span className="text-swiss"> · who are you?</span>}
         </button>
         <Button size="sm" title="New item (N)" className="max-md:order-3 max-md:ml-auto max-md:px-4" onClick={() => setCreating(true)}><PlusIcon weight="bold" />New</Button>
       </div>
 
-      {epics.length > 0 && (
-        <section className="grid shrink-0 border-b max-md:max-h-28 max-md:overflow-y-auto md:grid-cols-2 xl:grid-cols-3">
-          {epics.map((e) => {
-            const kids = issues.filter((i) => i.parent === e.id)
-            const done = kids.filter((i) => i.status === 'closed').length
-            return (
-              <button key={e.id} onClick={() => setOpenId(e.id)}
-                className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 border-r px-4 py-2 text-left hover:bg-muted max-md:min-h-11 max-md:border-b md:px-6">
-                <span className="font-mono text-[11px] text-muted-foreground">{e.id}</span>
-                <span className="truncate text-[13px] font-semibold">{e.title}</span>
-                <span className="text-xs tabular-nums">{done}/{kids.length}</span>
-                <span className="col-span-3 mt-1.5 h-1 bg-muted">
-                  <span className="block h-full bg-foreground" style={{ width: `${kids.length ? (done / kids.length) * 100 : 0}%` }} />
-                </span>
-              </button>
-            )
-          })}
-        </section>
-      )}
-
-      <div className="relative grid min-h-0 flex-1 grid-rows-1 xl:grid-cols-[1fr_20rem]">
-        <main className="min-h-0 overflow-auto">
+      <div className={cn('relative grid min-h-0 flex-1 grid-rows-1', side && 'xl:grid-cols-[minmax(0,1fr)_20rem]')}>
+        <main className="min-h-0 min-w-0 overflow-auto">
           {phone ? <PhoneBoard rows={rows} work={work} ready={ready} byId={byId} meta={meta} counts={counts} col={col} onCol={setCol} onOpen={setOpenId} /> : (
-          <div className="grid min-w-[880px] grid-cols-[9.5rem_repeat(4,minmax(0,1fr))]">
-            <div className="sticky top-0 z-10 border-b border-foreground bg-background" />
+          <div className={cn('grid min-w-[760px]', folded ? 'grid-cols-[3rem_repeat(4,minmax(0,1fr))]' : 'grid-cols-[8.5rem_repeat(4,minmax(0,1fr))]')}>
+            <div className="sticky top-0 z-10 flex items-stretch border-b border-foreground bg-background">
+              <button type="button" onClick={toggleFolded} aria-pressed={folded}
+                aria-label={folded ? 'Unfold the role column' : 'Fold the role column'} title={folded ? 'Show the roles' : 'Fold the roles to their avatars'}
+                className="flex flex-1 items-center gap-1 px-3 text-[11px] font-bold tracking-[0.1em] text-muted-foreground uppercase hover:text-foreground">
+                {folded ? <CaretRightIcon weight="bold" className="size-3" /> : <><CaretLeftIcon weight="bold" className="size-3" />Roles</>}
+              </button>
+            </div>
             {COLUMNS.map((c) => (
               <div key={c.key} className="sticky top-0 z-10 flex items-baseline justify-between border-b border-l border-b-foreground bg-background px-3 py-2">
                 <span className="text-[11px] font-bold tracking-[0.1em] uppercase">{c.label}</span>
@@ -275,19 +272,19 @@ export default function App() {
               </div>
             ))}
             {rows.map((r) => (
-              <Row key={r || 'none'} role={r} items={work.filter((i) => roleOf(i) === r)} ready={ready} byId={byId}
+              <Row key={r || 'none'} role={r} folded={folded} items={work.filter((i) => roleOf(i) === r)} ready={ready} byId={byId}
                 meta={meta} onOpen={setOpenId} onMove={move} />
             ))}
           </div>)}
         </main>
 
-        {side && <div aria-hidden data-side-scrim onClick={() => closeSide()} className="absolute inset-0 z-40 hidden bg-foreground/25 md:block xl:hidden" />}
+        {side && !desk && <div aria-hidden data-side-scrim onClick={() => closeSide()} className="absolute inset-0 z-40 hidden bg-foreground/25 md:block" />}
         <aside id="board-side" ref={sidePanel} tabIndex={-1} aria-label="Now and activity"
           className={cn('min-h-0 flex-col border-t outline-none',
             'max-md:absolute max-md:inset-0 max-md:z-50 max-md:border-t-0 max-md:bg-background',
             'md:absolute md:inset-y-0 md:right-0 md:z-50 md:w-80 md:max-w-[85vw] md:border-t-0 md:border-l md:border-foreground md:bg-background md:shadow-2xl',
             side ? 'flex' : 'hidden',
-            'xl:static xl:z-auto xl:flex xl:w-auto xl:max-w-none xl:border-border xl:shadow-none')}>
+            'xl:static xl:z-auto xl:w-auto xl:max-w-none xl:border-border xl:shadow-none')}>
           <div className="flex shrink-0 items-center justify-between border-b px-4 md:hidden">
             <span className="text-[11px] font-bold tracking-[0.1em] uppercase">Now and activity</span>
             <button type="button" onClick={() => closeSide()} className="-mr-2 min-h-11 px-3 text-sm font-semibold hover:underline">Close</button>
@@ -388,20 +385,42 @@ function PhoneBoard({ rows, work, ready, byId, meta, counts, col, onCol, onOpen 
 }
 
 
-function Row({ role, items, ready, byId, meta, onOpen, onMove }: {
-  role: string; items: Issue[]; ready: Set<string>; byId: Map<string, Issue>; meta: Meta
+function Row({ role, folded, items, ready, byId, meta, onOpen, onMove }: {
+  role: string; folded: boolean; items: Issue[]; ready: Set<string>; byId: Map<string, Issue>; meta: Meta
   onOpen: (id: string) => void; onMove: MoveFn
 }) {
   const lead = role ? meta.leads[role] : null
   const st = (role && meta.states?.[role]) || LEAD_READY
+  const cells = COLUMNS.map((c) => {
+    let cell = items.filter((i) => columnOf(i, ready) === c.key)
+    cell = c.key === 'done'
+      ? cell.sort((a, b) => (b.closed_at || '').localeCompare(a.closed_at || '')).slice(0, 8)
+      : cell.sort(byPriority)
+    return <Cell key={c.key} col={c.key} role={role} items={cell} byId={byId} meta={meta} onOpen={onOpen} onMove={onMove} />
+  })
+  // Folded (sy-p88g): the avatar and the lead's state dot; the name and the state in its tooltip.
+  if (folded) {
+    const p = role ? personaOf(meta.personas ?? null, role) : null
+    return (
+      <>
+        <div className="flex flex-col items-center gap-1.5 border-b py-2.5" title={role ? `${p?.name ? `${p.name} · ` : ''}${ROLE_LABEL[role]} · ${st.label}` : ROLE_LABEL[role]}>
+          {role ? <Avatar actor={role} size="md" /> : <span className="text-[11px] font-bold text-muted-foreground">—</span>}
+          {role && (st.item
+            ? <button aria-label={st.label} onClick={() => onOpen(st.item!)} className={cn('size-2 shrink-0', LEAD_DOT[st.state])} />
+            : <span className={cn('size-2 shrink-0', LEAD_DOT[st.state])} />)}
+        </div>
+        {cells}
+      </>
+    )
+  }
   return (
     <>
-      <div className="border-b px-3 py-2.5">
+      <div className="min-w-0 border-b px-3 py-2.5">
         {role ? (() => { const p = personaOf(meta.personas ?? null, role); return (
           <div className="flex items-center gap-2">
             <Avatar actor={role} size="md" />
             <div className="min-w-0 leading-tight">
-              <div className="truncate text-[13px] font-bold" style={{ color: p?.color }}>{p?.name}</div>
+              <div className="text-[13px] font-bold [overflow-wrap:anywhere]" style={{ color: p?.color }}>{p?.name}</div>
               <div className="text-[11px] text-muted-foreground">{ROLE_LABEL[role]}</div>
               <RowPresence role={role} />
             </div>
@@ -424,13 +443,7 @@ function Row({ role, items, ready, byId, meta, onOpen, onMove }: {
           </div>
         )}
       </div>
-      {COLUMNS.map((c) => {
-        let cell = items.filter((i) => columnOf(i, ready) === c.key)
-        cell = c.key === 'done'
-          ? cell.sort((a, b) => (b.closed_at || '').localeCompare(a.closed_at || '')).slice(0, 8)
-          : cell.sort(byPriority)
-        return <Cell key={c.key} col={c.key} role={role} items={cell} byId={byId} meta={meta} onOpen={onOpen} onMove={onMove} />
-      })}
+      {cells}
     </>
   )
 }
