@@ -7,7 +7,7 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { headRefusal, parseCard, youKind } from '../template/bin/lib/owner-card.mjs'
+import { headRefusal, isGoAsk, NO_GO, parseCard, youKind } from '../template/bin/lib/owner-card.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 let pass = 0, fail = 0
@@ -104,11 +104,40 @@ step('invalid cards, each with its reason')
 
 step('the t2 keys')
 {
-  bad('t2 with no If yes, If no, Risk', B, /If yes is missing \(required with t2\)/, ['t2'])
-  const r = parseCard(B, ['t2'])
-  ok('...all three named', ['If yes', 'If no', 'Risk'].every((k) => r.errors.some((e) => e.startsWith(`${k} is missing`))))
+  const BA = B.replace('**You:** Nothing', '**You:** Tap Approve')
+  bad('a t2 go ask with no If yes, If no, Risk', BA, /If yes is missing \(required with t2\)/, ['t2'])
+  const r = parseCard(BA, ['t2'])
+  ok('...all four named', ['If yes', 'If no', 'Risk', 'Head'].every((k) => r.errors.some((e) => e.startsWith(`${k} is missing`))))
   ok('without t2 they are not required', parseCard(B, ['needs-you']).ok)
   ok('without t2 they may be there', parseCard(T2).ok)
+}
+
+step('go and non-go asks on a t2 item (sy-t9tg)')
+{
+  const NG = (you) => `## Owner
+- **What:** Check that the new admin login works before the plan is written.
+- **Why:** The plan depends on sudo working for that account.
+- **You:** ${you}
+
+The rest.`
+  for (const you of ['Check: run ssh admin@host, then sudo -v, and say if it worked', 'Reply: which account?', 'Nothing for you now'])
+    ok(`a t2 non-go ask (You: ${you.split(':')[0].split(' ')[0]}) needs no If yes, If no, Risk, Head`, parseCard(NG(you), ['t2', 'needs-you']).ok, JSON.stringify(parseCard(NG(you), ['t2']).errors))
+  const C = NG('Check: run ssh admin@host, then sudo -v')
+  ok('...its optional keys are checked when there: a bad Risk', !parseCard(C.replace('\n\nThe rest', '\n- **Risk:** maybe\n\nThe rest'), ['t2']).ok)
+  ok('...a bad Head', !parseCard(C.replace('\n\nThe rest', '\n- **Head:** mm@main\n\nThe rest'), ['t2']).ok)
+  ok('...valid ones are ok', parseCard(C.replace('\n\nThe rest', '\n- **If yes:** ops writes the plan.\n- **Risk:** low, a read-only check\n- **Head:** mm@0a1b2c3\n\nThe rest'), ['t2']).ok)
+  bad('a t2 go ask still needs Head', NG('Tap Approve').replace('- **You:** Tap Approve', '- **You:** Tap Approve\n- **If yes:** y\n- **If no:** n\n- **Risk:** low, x'), /Head is missing \(required with t2\)/, ['t2'])
+  bad('a t2 card with no You: the go keys are required too (fail-closed)', C.replace(/- \*\*You:\*\* .*\n/, ''), /Head is missing/, ['t2'])
+  ok('isGoAsk: only "Tap Approve"', isGoAsk({ You: 'Tap Approve in Telegram' }) && !isGoAsk({ You: 'Check: x, y' }) && !isGoAsk({ You: 'Reply: q' })
+    && !isGoAsk({ You: 'Nothing' }) && !isGoAsk({ You: 'Hmm' }) && !isGoAsk({}) && !isGoAsk(null) && !isGoAsk(undefined))
+  const H = 'mm@0a1b2c3', CH = C.replace('\n\nThe rest', `\n- **Head:** ${H}\n\nThe rest`)
+  ok('headRefusal: a t2 non-go ask gets no go (NO_GO), signed off or not', headRefusal(C, ['t2']) === NO_GO && headRefusal(C, ['t2', 'signed-off']) === NO_GO)
+  ok('...not even with a Head review signed', headRefusal(CH, ['t2', 'signed-off', `signed-head:${H}`]) === NO_GO)
+  ok('...NO_GO names the reason', /asks for no go/.test(NO_GO))
+  ok('headRefusal: a card whose You is no form, with a signed Head: refused (fail-closed)',
+    /asks for no go/.test(headRefusal(CH.replace(/\*\*You:\*\* .*/, '**You:** Look at it'), ['t2', 'signed-off', `signed-head:${H}`]) || ''))
+  ok('headRefusal: the card changed to a go ask: the go checks apply at once', headRefusal(CH.replace(/\*\*You:\*\* .*/, '**You:** Tap Approve'), ['t2', 'signed-off']) === `review's sign-off names no head (card: ${H})`
+    && headRefusal(CH.replace(/\*\*You:\*\* .*/, '**You:** Tap Approve'), ['t2', 'signed-off', `signed-head:${H}`]) === null)
 }
 
 step('a blank line ends the card')
@@ -149,10 +178,11 @@ step('the browser copy and the CLI')
   ok('template/site/src/lib/owner-card.mjs is the same file as template/bin/lib/owner-card.mjs',
     fs.readFileSync(path.join(SRC, 'template/site/src/lib/owner-card.mjs'), 'utf8') === fs.readFileSync(path.join(SRC, 'template/bin/lib/owner-card.mjs'), 'utf8'))
   const cli = (input, ...a) => spawnSync(process.execPath, [path.join(SRC, 'template/bin/owner-card'), 'check', '-', ...a], { input, encoding: 'utf8' })
-  const g = cli(B), b = cli(`x\n${B}`), t = cli(B, '--t2')
+  const g = cli(B), b = cli(`x\n${B}`), t = cli(B.replace('**You:** Nothing', '**You:** Tap Approve'), '--t2'), tn = cli(B, '--t2')
   ok('owner-card check - (valid): exit 0', g.status === 0, g.stderr)
   ok('owner-card check - (not at the top): exit 1, the reason and the format', b.status === 1 && /not at the top/.test(b.stderr) && /The format:/.test(b.stderr), b.stderr)
-  ok('owner-card check - --t2: the t2 keys required', t.status === 1 && /If no is missing/.test(t.stderr), t.stderr)
+  ok('owner-card check - --t2: the t2 keys required on a go ask', t.status === 1 && /If no is missing/.test(t.stderr), t.stderr)
+  ok('owner-card check - --t2: a non-go ask (You: Nothing) needs none of them', tn.status === 0, tn.stderr)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
