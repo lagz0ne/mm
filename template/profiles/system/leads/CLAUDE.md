@@ -134,10 +134,10 @@ first, and the owner reads only it. The format is fixed:
 - **What:** <one sentence, at most 120 characters>
 - **Why:** <one sentence, at most 120>
 - **You:** Tap Approve | Reply: <the question> | Check: <what, where> | Nothing   (at most 160)
-- **If yes:** <at most 120>                (required with t2)
-- **If no:** <at most 120>                 (required with t2)
-- **Risk:** low|medium|high, <at most 80>  (required with t2)
-- **Head:** <repo>@<sha>                   (t2 only, required: the head review signs off)
+- **If yes:** <at most 120>                (required with t2, on a go ask)
+- **If no:** <at most 120>                 (required with t2, on a go ask)
+- **Risk:** low|medium|high, <at most 80>  (required with t2, on a go ask)
+- **Head:** <repo>@<sha>                   (t2 go ask only, required: the head review signs off)
 - **Link:** <artifact path or URL>         (optional)
 - **Item:** <the item's URL>               (optional: the board shows it for you)
 ```
@@ -150,6 +150,11 @@ first, and the owner reads only it. The format is fixed:
 - **A t2 card names its head** (`- **Head:** mm@<sha>`, the commit or migration review signs off). Review adds
   `signed-head:<repo>@<sha>` with its sign-off. A new head after the sign-off needs a new sign-off: the board and bd
   refuse the go (and `needs-you`) until then, and say why.
+- **A go ask or another ask.** A t2 card whose `You` is "Tap Approve" asks for the go: it needs If yes, If no, Risk,
+  Head, and review's sign-off before `needs-you`. A t2 card whose `You` is "Check:", "Reply:" or "Nothing" asks the
+  owner something else (e.g. "Check: run ssh admin@host, then sudo -v, and say if it worked"), before any head: those
+  four lines are optional and `needs-you` needs no sign-off, but it never gets an Approve. To ask for the go later,
+  change `You` to "Tap Approve" and follow the go ask's rules.
 - **Edit the card in place** (`bd update ID --body-file <file>`) when the ask changes. Never post it again as a comment.
 - **Plain words** (the ASD-STE100 rules above). No history in the card: what is asked now, and why.
 - **The detail is on the item and in its artifact:** put the path in `Link`.
