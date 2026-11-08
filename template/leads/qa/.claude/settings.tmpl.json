@@ -21,6 +21,7 @@
       "Bash(git -C {root}/code rev-parse*)",
       "Bash(wt *)",
       "Bash(land *)",
+      "Bash(artifact *)",
       "Bash(ls *)",
       "Bash(mkdir -p *)",
       "Write(//tmp/**)",

@@ -12,6 +12,7 @@
       "Bash(git show*)",
       "Bash(wt *)",
       "Bash(land *)",
+      "Bash(artifact *)",
       "Bash(ls *)",
       "Bash(mkdir -p *)",
       "Write(//tmp/**)",
