@@ -101,8 +101,13 @@ export type UpdateResult = { steps: Step[]; from: string; to: string; changed: s
  * governance check passes; otherwise the merge is left for resolving (`--continue`) or undone (`--abort`).
  */
 export function update(root: string, o: UpdateOpts = {}): UpdateResult {
-  // one run per project at a time, --dry-run, --continue and --abort too (sy-qpqd)
-  const a = readAnswers(root), r = withUpdateLock(root, a.project, () => updateHeld(root, o))
+  // one run per project at a time, --dry-run, --continue and --abort too (sy-qpqd). A box shares the project with its own
+  // uid through the group (sy-nxn1): under an agent's umask 077 the files mm writes (the template's, bin/lead) came out
+  // 0600/0700 and the box could not read or run them, so a box's update writes under umask 002
+  const was = boxish(root) ? process.umask(0o002) : null
+  let r: ReturnType<typeof updateHeld> | { refused: string }
+  const a = readAnswers(root)
+  try { r = withUpdateLock(root, a.project, () => updateHeld(root, o)) } finally { if (was !== null) process.umask(was) }
   return 'refused' in r ? { steps: [{ step: 'lock', status: 'fail', detail: r.refused }], from: a.template_version, to: template().version, changed: [], conflicts: [], ok: false } : r
 }
 function updateHeld(root: string, o: UpdateOpts): UpdateResult {

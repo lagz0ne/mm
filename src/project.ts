@@ -440,9 +440,11 @@ export function writeRunFiles(root: string, pcSocket: string) {
 export function hostGitEnv(root: string): Record<string, string> {
   let box = false; try { box = !!readAnswers(root).box } catch {}
   if (!box) return { GIT_NO_REPLACE_OBJECTS: '1' }
-  return { GIT_NO_REPLACE_OBJECTS: '1', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_COUNT: '3',
+  // core.sharedRepository=group (sy-nxn1): what host git writes in .git stays readable and writable by the box (its
+  // group), whatever the umask (an agent's shell has 077: a 0600 index or ref and git in the box fails)
+  return { GIT_NO_REPLACE_OBJECTS: '1', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_COUNT: '4',
     GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: '/dev/null', GIT_CONFIG_KEY_1: 'safe.directory', GIT_CONFIG_VALUE_1: root,
-    GIT_CONFIG_KEY_2: 'safe.directory', GIT_CONFIG_VALUE_2: join(root, 'code') }
+    GIT_CONFIG_KEY_2: 'safe.directory', GIT_CONFIG_VALUE_2: join(root, 'code'), GIT_CONFIG_KEY_3: 'core.sharedRepository', GIT_CONFIG_VALUE_3: 'group' }
 }
 /** Why mm won't run git on this project, or null: a box-planted way to change what git sees (review sy-b15.6 2c). */
 export function gitRefusal(root: string): string | null {

@@ -547,6 +547,11 @@ function upUnder022(root: string): Step[] {
     mkdirSync(d, { recursive: true, mode: 0o2770 })
     run(['chmod', '-R', 'g+rwX', d], { timeoutMs: 600_000 }); run(['find', d, '-type', 'd', '-exec', 'chmod', 'g+s', '{}', '+'], { timeoutMs: 600_000 })
   }
+  // its repos keep group access whatever the umask of the host's git (sy-nxn1: an agent's shell or a cron job with umask
+  // 077 left a 0600 index and refs, and git in the box failed until the next mm up); .git/config is the host's and
+  // read-only in the box
+  for (const g of [root, join(root, 'code')]) if (existsSync(join(g, '.git')))
+    run(['git', '-C', g, 'config', 'core.sharedRepository', 'group'], { env: hostGitEnv(root) })
   // ...but not the project's top level (review sy-b15.6 2): there the box could rename .git or a mount's parent away, or
   // plant a symlink where a read-only file is missing, for the next mm up to mount
   chmodSync(root, 0o2755)

@@ -8,6 +8,7 @@
 # other box it makes is shaped as mm makes one (mm's names, label, an internal 10.231.<n> network).
 #   test/box.sh [client/name]                       MM_DOCKER=<command>: another docker, for the test and mm both
 set -uo pipefail
+umask 077   # as an agent's shell (sy-nxn1): mm's host-side writes must still leave the box its files
 REF=${1:-qa/boxt}; PROJECT=${REF/\//-}
 export PATH="$HOME/.mm/bin:$HOME/.mm/npm/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
 . "$(dirname "$0")/lib/routes.sh"   # this run's routes in its own folder, never in the live web proxy (review sy-uzh)
@@ -181,8 +182,13 @@ check "mm update: refused, HEAD's bin/config-check is not what is on disk (git s
 git -C "$ROOT" show HEAD:bin/config-check > "$ROOT/bin/config-check"
 check "the box's bin/config-check on disk: mm update refuses to run it, and says why" sh -c "! mm update '$REF' >/tmp/box-upd2.out 2>&1 && grep -q 'not as mm' /tmp/box-upd2.out && ! test -e '$PWN'"
 check "...mm doctor doesn't run the box's bin/ either" sh -c "mm doctor >/tmp/box-doctor.out 2>&1; grep -q 'not checked' /tmp/box-doctor.out && ! test -e '$PWN'"
-git -C "$ROOT" update-index --no-assume-unchanged bin/config-check; git -C "$ROOT" reset -q --hard "$ORIG"
+# the test's own hand-made host step (not mm's): under umask 002, as a host owner working on a box's files would
+(umask 002; git -C "$ROOT" update-index --no-assume-unchanged bin/config-check; git -C "$ROOT" reset -q --hard "$ORIG")
 check "...back to mm's: mm update works again" sh -c "mm update '$REF' >/tmp/box-upd3.out 2>&1 || { cat /tmp/box-upd3.out; false; }"
+# sy-nxn1: that mm update ran under umask 077; git in the box still reads and writes its repo, and runs mm's files
+check "its repo is shared with the box: core.sharedRepository=group (sy-nxn1)" sh -c "[ \"\$(git -C '$ROOT' config core.sharedRepository)\" = group ]"
+check "...after a host mm update under umask 077, git in the box works (status, its index and main readable)" IN "git -c safe.directory='*' -C $ROOT status --porcelain >/dev/null && test -r $ROOT/.git/index && test -r $ROOT/.git/refs/heads/main"
+check "...and what mm update wrote, the box can run (bin/lead)" IN "test -r $ROOT/bin/lead && test -x $ROOT/bin/lead"
 
 echo "== the update's merge base is mm's, not the box's (review sy-055t)"
 MT=$(git -C "$ROOT" rev-parse refs/heads/mm-template); MAIN=$(git -C "$ROOT" rev-parse HEAD)
