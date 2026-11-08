@@ -6,12 +6,16 @@ import { cn } from '@/lib/utils'
 
 /** The goals (open epics) as one chip in the header: the first goal and its progress, the full list on click (sy-p88g).
  *  Nothing when there is no goal. */
-export function Goals({ epics, issues, onOpen, className }: { epics: Issue[]; issues: Issue[]; onOpen: (id: string) => void; className?: string }) {
-  if (!epics.length) return null
-  const goals = [...epics].sort(byPriority).map((e) => {
+export function goalsOf(epics: Issue[], issues: Issue[]) {
+  return [...epics].sort(byPriority).map((e) => {
     const kids = issues.filter((i) => i.parent === e.id)
     return { e, done: kids.filter((i) => i.status === 'closed').length, total: kids.length }
   })
+}
+
+export function Goals({ epics, issues, onOpen, className }: { epics: Issue[]; issues: Issue[]; onOpen: (id: string) => void; className?: string }) {
+  if (!epics.length) return null
+  const goals = goalsOf(epics, issues)
   const [first] = goals
   return (
     <Popover.Root>

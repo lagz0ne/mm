@@ -7,9 +7,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Toaster } from '@/components/ui/sonner'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useDesk, usePhone } from '@/lib/phone'
 import { Goals } from '@/Goals'
+import { PhoneBar } from '@/PhoneBar'
 import { cn } from '@/lib/utils'
 import { NewItem } from '@/NewItem'
 import { Identify } from '@/Identify'
@@ -21,7 +21,7 @@ const loadDetail = () => import('@/Detail'), loadLeads = () => import('@/Leads')
 const Detail = lazy(() => loadDetail().then((m) => ({ default: m.Detail })))
 const Leads = lazy(() => loadLeads().then((m) => ({ default: m.Leads })))
 const Machine = lazy(() => import('@/Machine').then((m) => ({ default: m.Machine })))
-const viewOf = (h: string) => (h === '#leads' ? 'leads' : h === '#machine' ? 'machine' : 'board')
+const viewOf = (h: string) => (h === '#leads' ? 'leads' : h === '#machine' ? 'machine' : 'board') as 'board' | 'leads' | 'machine'
 if (typeof window !== 'undefined') window.addEventListener('load', () => setTimeout(() => { loadDetail(); loadLeads() }, 1500))
 const EMPTY_META: Meta = { project: '', leads: {}, creators: {}, last: {} }
 const SLOW_MIN = 15 // a ready item nobody picked up for this long turns red
@@ -52,6 +52,18 @@ export default function App() {
   // Phones (sy-81dm): one column at a time, its tabs on top; Now and Activity cover the board behind one tap.
   const phone = usePhone()
   const [col, setCol] = useState<ColumnKey>('ready')
+  // The phone's bar lies over the list and slides away on scroll down, back on scroll up (sy-hrsm): a transform, so the
+  // list never moves under the thumb.
+  const [barHidden, setBarHidden] = useState(false)
+  const mainRef = useRef<HTMLElement>(null)
+  const lastY = useRef(0)
+  const onMainScroll = (e: React.UIEvent<HTMLElement>) => {
+    const y = e.currentTarget.scrollTop, d = y - lastY.current
+    lastY.current = y
+    if (y < 48) setBarHidden(false)
+    else if (d > 4) setBarHidden(true)
+    else if (d < -4) setBarHidden(false)
+  }
   // Now and Activity are closed by default at every width; the toolbar's toggle opens them (sy-p88g). On a desktop (xl)
   // they dock beside the board and the choice is remembered in this browser; below xl they open as a drawer over the
   // columns, below the toolbar so the toggle stays in reach (sy-l6t1), and close on Escape or a tap outside.
@@ -187,14 +199,20 @@ export default function App() {
   return (
     <PersonaContext.Provider value={meta.personas ?? null}>
     <PresenceContext.Provider value={presence}>
-    <div className="flex h-svh flex-col overflow-hidden border-t-4 border-foreground bg-background text-foreground">
+    <div className="relative flex h-svh flex-col overflow-hidden border-t-4 border-foreground bg-background text-foreground">
       {/* One line (sy-p88g): the project, its views, the goal chip; the column counts only on wide screens (the
           column heads and the phone's tabs show them anyway), who is working, live, and who you are. */}
-      <header className="flex shrink-0 items-center gap-x-4 border-b border-foreground px-4 max-md:flex-wrap max-md:gap-y-1 max-md:py-1 md:h-11 md:px-6">
+      {phone ? (
+        <PhoneBar project={meta.project} view={view} panels={meta.panels || []} links={links} col={col} counts={counts} onCol={(c) => { setCol(c); setBarHidden(false); mainRef.current?.scrollTo(0, 0) }}
+          role={role} onRole={setRole} q={q} onQ={setQ} search={search} epics={epics} issues={issues} onOpenItem={setOpenId}
+          live={live} actor={actor} idSource={idSource} onIdentify={() => setIdentifying(true)} onNew={() => setCreating(true)}
+          nowCount={presence.length} onNow={() => setSide(true)} hidden={barHidden} />
+      ) : (
+      <header className="flex h-11 shrink-0 items-center gap-x-4 border-b border-foreground px-6">
         <h1 className="flex min-w-0 shrink-0 items-center text-xl leading-none font-bold tracking-tight [overflow-wrap:anywhere]">
           {meta.project || '…'}
         </h1>
-        <nav className="flex shrink-0 flex-wrap gap-x-4 text-[13px] font-semibold max-md:gap-x-5 max-md:text-sm [&>a]:max-md:py-2.5">
+        <nav className="flex shrink-0 flex-wrap gap-x-4 text-[13px] font-semibold">
           {(['board', 'leads', ...(meta.panels?.includes('machine') ? ['machine' as const] : [])] as const).map((v) => (
             <a key={v} href={v === 'board' ? '#' : `#${v}`}
               className={cn('border-b-2 pb-0.5 capitalize', view === v ? 'border-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>{v}</a>
@@ -206,7 +224,7 @@ export default function App() {
             </a>
           ))}
         </nav>
-        {view === 'board' && <Goals epics={epics} issues={issues} onOpen={setOpenId} className="max-md:order-last max-md:mb-1 max-md:basis-full" />}
+        {view === 'board' && <Goals epics={epics} issues={issues} onOpen={setOpenId} />}
         <div className="ml-auto flex shrink-0 items-center gap-4">
           {view === 'board' && (
             <dl className="hidden gap-x-4 text-xs 2xl:flex">
@@ -218,45 +236,38 @@ export default function App() {
               ))}
             </dl>
           )}
-          <span className="max-md:hidden"><PresenceBar /></span>
+          <PresenceBar />
           <span className={cn('size-2.5 shrink-0', live ? 'bg-swiss' : 'border border-muted-foreground')} title={live ? 'Live updates on' : 'Live updates off'} />
-          <button type="button" className="text-xs hover:underline max-md:min-h-11 max-md:max-w-[40vw] max-md:truncate max-md:text-sm" disabled={idSource === 'gateway'}
+          <button type="button" className="text-xs hover:underline" disabled={idSource === 'gateway'}
             title={idSource === 'gateway' ? 'Your name comes from your sign-in' : 'Change who you are'}
             onClick={() => setIdentifying(true)}>
             <b>{actor || '…'}</b>{idSource === 'default' && <span className="text-swiss"> · who are you?</span>}
           </button>
         </div>
       </header>
+      )}
 
       {view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2 md:gap-3 md:px-6 md:py-1.5">
-        {phone && (
-          <Select value={role} onValueChange={setRole}>
-            <SelectTrigger aria-label="Role" className="w-32"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All roles</SelectItem>
-              {ROLES.map((r) => <SelectItem key={r} value={r}>{ROLE_LABEL[r]}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        )}
-        <ToggleGroup type="single" value={role} onValueChange={(v) => v && setRole(v)} variant="outline" size="sm" spacing={0} className="max-md:hidden">
+      {/* The toolbar from md up; on a phone the bar's menu holds the same controls (sy-hrsm). */}
+      {!phone && <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-6 py-1.5">
+        <ToggleGroup type="single" value={role} onValueChange={(v) => v && setRole(v)} variant="outline" size="sm" spacing={0}>
           <ToggleGroupItem value="all">All</ToggleGroupItem>
           {ROLES.map((r) => <ToggleGroupItem key={r} value={r}>{ROLE_LABEL[r]}</ToggleGroupItem>)}
         </ToggleGroup>
         <Input ref={search} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search"
-          className="h-7 w-48 max-md:order-4 max-md:w-auto max-md:min-w-0 max-md:flex-1 max-md:basis-40" />
+          className="h-7 w-48" />
         <button type="button" ref={sideBtn} aria-expanded={side} aria-controls="board-side" onClick={() => (side ? closeSide() : setSide(true))}
           title={side ? 'Hide now and recent activity' : 'Show now and recent activity'}
-          className={cn('inline-flex h-7 items-center gap-1.5 border px-2.5 text-xs font-semibold max-md:min-h-11 max-md:px-3 md:ml-auto', side ? 'border-foreground bg-foreground text-background' : 'border-input hover:border-foreground')}>
+          className={cn('ml-auto inline-flex h-7 items-center gap-1.5 border px-2.5 text-xs font-semibold', side ? 'border-foreground bg-foreground text-background' : 'border-input hover:border-foreground')}>
           Now <span className={cn('min-w-4 px-1 text-center tabular-nums', presence.length ? 'bg-swiss text-white' : 'bg-muted text-muted-foreground', side && !presence.length && 'bg-background/20 text-background')}>{presence.length}</span>
           <span aria-hidden className={side ? 'opacity-60' : 'text-muted-foreground'}>·</span> Activity
         </button>
-        <Button size="sm" title="New item (N)" className="max-md:order-3 max-md:ml-auto max-md:px-4" onClick={() => setCreating(true)}><PlusIcon weight="bold" />New</Button>
-      </div>
+        <Button size="sm" title="New item (N)" onClick={() => setCreating(true)}><PlusIcon weight="bold" />New</Button>
+      </div>}
 
       <div className={cn('relative grid min-h-0 flex-1 grid-rows-1', side && 'xl:grid-cols-[minmax(0,1fr)_20rem]')}>
-        <main className="min-h-0 min-w-0 overflow-auto">
-          {phone ? <PhoneBoard rows={rows} work={work} ready={ready} byId={byId} meta={meta} counts={counts} col={col} onCol={setCol} onOpen={setOpenId} /> : (
+        <main ref={mainRef} onScroll={phone ? onMainScroll : undefined} className="min-h-0 min-w-0 overflow-auto">
+          {phone ? <PhoneBoard rows={rows} work={work} ready={ready} byId={byId} meta={meta} col={col} onOpen={setOpenId} /> : (
           <div className={cn('grid min-w-[760px]', folded ? 'grid-cols-[3rem_repeat(4,minmax(0,1fr))]' : 'grid-cols-[8.5rem_repeat(4,minmax(0,1fr))]')}>
             <div className="sticky top-0 z-10 flex items-stretch border-b border-foreground bg-background">
               <button type="button" onClick={toggleFolded} aria-pressed={folded}
@@ -335,10 +346,10 @@ function verb(ev: BeadEvent) {
 
 type MoveFn = (id: string, role: string, col: ColumnKey) => void
 
-/** The board on a phone: the four columns as tabs, the chosen one as a list, grouped by role (each with its lead's state). */
-function PhoneBoard({ rows, work, ready, byId, meta, counts, col, onCol, onOpen }: {
-  rows: string[]; work: Issue[]; ready: Set<string>; byId: Map<string, Issue>; meta: Meta; counts: Record<ColumnKey, number>
-  col: ColumnKey; onCol: (c: ColumnKey) => void; onOpen: (id: string) => void
+/** The board on a phone: one column at a time (the bar's picker chooses it, sy-hrsm), as a list grouped by role (each
+ *  with its lead's state). It starts under the bar (48px), which lies over it. */
+function PhoneBoard({ rows, work, ready, byId, meta, col, onOpen }: {
+  rows: string[]; work: Issue[]; ready: Set<string>; byId: Map<string, Issue>; meta: Meta; col: ColumnKey; onOpen: (id: string) => void
 }) {
   const inCol = work.filter((i) => columnOf(i, ready) === col)
   const groups = rows.map((r) => {
@@ -346,17 +357,7 @@ function PhoneBoard({ rows, work, ready, byId, meta, counts, col, onCol, onOpen 
     return { role: r, items: col === 'done' ? items.sort((a, b) => (b.closed_at || '').localeCompare(a.closed_at || '')).slice(0, 8) : items.sort(byPriority) }
   }).filter((g) => g.items.length)
   return (
-    <div className="min-w-0">
-      <div role="tablist" aria-label="Columns" className="sticky top-0 z-10 grid grid-cols-4 border-b border-foreground bg-background">
-        {COLUMNS.map((c) => (
-          <button key={c.key} type="button" role="tab" aria-selected={col === c.key} onClick={() => onCol(c.key)} title={c.hint}
-            className={cn('flex min-h-12 min-w-0 flex-col items-center justify-center gap-0.5 border-b-2 px-1 text-center',
-              col === c.key ? 'border-foreground' : 'border-transparent text-muted-foreground')}>
-            <span className="w-full truncate text-[11px] font-bold tracking-[0.06em] uppercase">{c.label}</span>
-            <span className="text-base leading-none font-bold tabular-nums">{counts[c.key]}</span>
-          </button>
-        ))}
-      </div>
+    <div className="min-w-0 pt-12">
       {groups.length === 0 && <p className="px-4 py-6 text-sm text-muted-foreground">Nothing here.</p>}
       {groups.map((g) => {
         const st = (g.role && meta.states?.[g.role]) || LEAD_READY
@@ -365,10 +366,10 @@ function PhoneBoard({ rows, work, ready, byId, meta, counts, col, onCol, onOpen 
           <section key={g.role || 'none'} className="border-b">
             <h2 className="flex min-h-10 items-center gap-2 bg-muted/40 px-4 py-1.5 text-[13px]">
               {g.role && <Avatar actor={g.role} size="sm" />}
-              <b className="truncate" style={{ color: p?.color }}>{p?.name || ROLE_LABEL[g.role]}</b>
-              {g.role && p?.name && <span className="text-[11px] text-muted-foreground">{ROLE_LABEL[g.role]}</span>}
+              <b className="min-w-0 truncate" style={{ color: p?.color }}>{p?.name || ROLE_LABEL[g.role]}</b>
+              {g.role && p?.name && p.name !== `${p.roleTitle} lead` && <span className="min-w-0 shrink-[2] truncate text-[11px] text-muted-foreground">{ROLE_LABEL[g.role]}</span>}
               {g.role && (
-                <span className={cn('ml-auto flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground', ['waiting', 'blocked', 'error'].includes(st.state) && 'font-semibold text-swiss')}>
+                <span className={cn('ml-auto flex min-w-0 shrink-[2] items-center gap-1.5 text-[11px] text-muted-foreground', ['waiting', 'blocked', 'error'].includes(st.state) && 'font-semibold text-swiss')}>
                   <span className={cn('size-2 shrink-0', LEAD_DOT[st.state])} /><span className="truncate">{st.label}</span>
                 </span>
               )}
