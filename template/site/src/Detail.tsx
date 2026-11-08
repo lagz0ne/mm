@@ -88,7 +88,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   const closed = i?.status === 'closed'
   // the T2 go, for the owner on the public side: a signed-off t2 without approved
   // the owner card (sy-z5lz): read first, in its own box; the description below it without the card
-  const card = parseCard(i?.description, i?.labels || [])
+  const card = parseCard(i?.description, i?.labels || [], i?.id)
   const approvable = !!i && !!approval && !!i.labels?.includes('t2') && !!i.labels?.includes('signed-off') && !i.labels?.includes('approved')
 
   return (

@@ -4,6 +4,6 @@ export declare const KEYS: Record<string, number>
 export declare const REQUIRED: string[]
 export declare const REQUIRED_T2: string[]
 export declare function youKind(v: string): 'approve' | 'reply' | 'check' | 'nothing' | null
-export declare function parseCard(description: string | undefined | null, labels?: string[]): {
+export declare function parseCard(description: string | undefined | null, labels?: string[], id?: string): {
   ok: boolean; found: boolean; card: Record<string, string> | null; errors: string[]; rest: string
 }

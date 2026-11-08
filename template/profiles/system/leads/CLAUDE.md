@@ -133,12 +133,17 @@ first, and the owner reads only it. The format is fixed:
 ## Owner
 - **What:** <one sentence, at most 120 characters>
 - **Why:** <one sentence, at most 120>
-- **You:** Tap Approve | Reply: <the question> | Check: <what, where> | Nothing
+- **You:** Tap Approve | Reply: <the question> | Check: <what, where> | Nothing   (at most 160)
 - **If yes:** <at most 120>                (required with t2)
 - **If no:** <at most 120>                 (required with t2)
 - **Risk:** low|medium|high, <at most 80>  (required with t2)
 - **Link:** <artifact path or URL>         (optional)
+- **Item:** <the item's URL>               (optional: the board shows it for you)
 ```
+- **`You` starts with one of the four forms, then says where to act:** e.g. "Tap Approve in Telegram, or press
+  Approve on this item". The owner must not guess where to go.
+- **The link to the item is made for you:** the board shows it in the card, with a copy button. If you write an
+  `Item` line, it is the item's URL and ends in `?item=<its id>`.
 - **Write the card when you ask the owner**, then add `needs-you`. bd refuses `needs-you` on an item with no valid
   card, and says why. `owner-card check <id>` checks it first.
 - **Edit the card in place** (`bd update ID --body-file <file>`) when the ask changes. Never post it again as a comment.
