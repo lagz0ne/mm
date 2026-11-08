@@ -16,8 +16,8 @@ pass=0; fail=0
 check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then printf '  \033[32mok\033[0m   %s\n' "$d"; pass=$((pass+1)); else printf '  \033[31mFAIL\033[0m %s\n' "$d"; fail=$((fail+1)); fi; }
 
 mkdir -p "$T/bin/lib" "$T/tools" "$T/control" "$T/items"
-cp "$SRC/template/bin/bd" "$SRC/template/bin/owner-card" "$T/bin/"
-cp "$SRC/template/bin/lib/owner-card.mjs" "$T/bin/lib/"
+cp "$SRC/template/bin/bd" "$SRC/template/bin/owner-card" "$SRC/template/bin/message" "$T/bin/"
+cp "$SRC/template/bin/lib/owner-card.mjs" "$SRC/template/bin/lib/message.mjs" "$T/bin/lib/"
 printf '#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n' >"$T/bin/trace"
 # the stand-in bd: `show <id> --json` from items/<id>.json (shows are logged apart), everything else recorded in ran
 cat >"$T/tools/bd" <<EOF
@@ -120,7 +120,8 @@ call label add sy-none t1;                              check "label add of anot
 check "...reads nothing" noshow
 call update sy-none --claim;                            check "update --claim" passed
 check "...reads nothing" noshow
-call comments add sy-none "needs-you, says the text";   check "a comment that names needs-you" passed
+call comments add sy-none "NOTE → ops
+needs-you, says the text";   check "a comment that names needs-you" passed
 check "...reads nothing" noshow
 call show sy-none --json;                               check "a read" true
 
@@ -196,7 +197,8 @@ check "...and read the item" grep -qx sy-so "$T/shows"
 call update sy-plain --set-labels t2,t1;                check "ops: --set-labels on an item with no sign-off, none set: passed" passed
 call update sy-plain -d "signed-off is review's" --add-label t1; check "ops: signed-off only in a text: passed" passed
 check "...reads nothing" noshow
-call comments add sy-plain "signed-off, signed-head:mm@0a1b2c3"; check "ops: a comment naming them: passed" passed
+call comments add sy-plain "NOTE → review
+signed-off, signed-head:mm@0a1b2c3"; check "ops: a comment naming them: passed" passed
 check "...reads nothing" noshow
 call label add sy-plain t1;                             check "ops: another label: passed" passed
 check "...reads nothing" noshow

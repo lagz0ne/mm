@@ -11,8 +11,10 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
 check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then printf '  \033[32mok\033[0m   %s\n' "$d"; pass=$((pass+1)); else printf '  \033[31mFAIL\033[0m %s\n' "$d"; fail=$((fail+1)); fi; }
 
-mkdir -p "$T/bin" "$T/tools" "$T/control"
-cp "$SRC/template/bin/bd" "$T/bin/bd"
+mkdir -p "$T/bin/lib" "$T/tools" "$T/control" "$T/leads"
+cp "$SRC/template/bin/bd" "$SRC/template/bin/message" "$T/bin/"
+cp "$SRC/template/bin/lib/message.mjs" "$SRC/template/bin/lib/owner-card.mjs" "$T/bin/lib/"
+printf '{"roles":[{"id":"ops"},{"id":"review"},{"id":"platform"}]}\n' >"$T/leads/roles.json"
 printf '#!/bin/sh\n# stand-in for bin/trace: no span, just the command after --\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n' >"$T/bin/trace"
 printf '#!/bin/sh\necho "$*" >>"%s"\n' "$T/ran" >"$T/tools/bd"
 chmod +x "$T/bin/bd" "$T/bin/trace" "$T/tools/bd"
@@ -22,6 +24,7 @@ unset BEADS_ACTOR BD_ACTOR MM_TRACE_SELF
 call() { : >"$T/ran"; (cd "$T/control" && "$T/bin/bd" "$@") >/dev/null 2>"$T/err"; echo $? >"$T/code"; }
 refused() { [ "$(cat "$T/code")" = 1 ] && [ ! -s "$T/ran" ] && grep -q '^bd: refused: a board write (bd .*) needs an actor: pass --actor <name> or set BEADS_ACTOR' "$T/err"; }
 passed() { [ "$(cat "$T/code")" = 0 ] && [ -s "$T/ran" ]; }
+notmsg() { [ "$(cat "$T/code")" = 1 ] && [ ! -s "$T/ran" ] && grep -qF "bd: refused: a lead's comment is one message" "$T/err"; }
 
 echo "== a write with no actor: refused, bd never runs"
 call comments add sy-1 "a comment";                 check "comments add" refused
@@ -46,6 +49,15 @@ call update sy-1 --claim --actor=platform;          check "--actor=platform" pas
 (export BEADS_ACTOR=ops; call close sy-1);          check "BEADS_ACTOR=ops" passed
 (export BD_ACTOR=review; call label add sy-1 x);    check "BD_ACTOR=review" passed
 call comments add sy-1 --actor mm-upstream -- "text"; check "--actor before --, text after" passed
+
+echo "== a lead's comment is one message (sy-0gsw); the system's and a person's pass unread"
+call comments add sy-1 "done, have a look" --actor platform; check "platform: free text refused" notmsg
+check "...nothing reached bd" test ! -s "$T/ran"
+check "...the reason names the format" grep -qF "a lead's comment is one message" "$T/err"
+call comments add sy-1 --actor ops/certs -- "free text";   check "ops/certs (a worker): free text refused" notmsg
+call comments add sy-1 --actor platform -- "NOTE → ops
+Claimed; plan in #2.";                                      check "platform: a valid NOTE passes" passed
+call comment sy-1 "free text" --actor alex;                 check "alex (a person): passes" passed
 
 echo "== reads need no actor"
 for r in "list --json" "show sy-1 --json" "ready --json" "comments sy-1 --json" "label list sy-1" "dep list sy-1" "dep tree sy-1" "config get no-hooks" "export --all"; do
