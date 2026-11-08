@@ -134,25 +134,123 @@ function toBridge(sock, item, assertionHeader) {
     r.end(body)
   })
 }
-async function webApprove(req, res) {
+// ---------- the owner's own actions on an item (sy-92sg): Approve, Not now, Reply, Done ----------
+// POST /api/approve | /api/not-now | /api/reply | /api/done, on the public side only, by the owner (the gateway's
+// assertion, role owner), from the board's own page: a JSON body, and the request same-origin (an Origin of another
+// site is always refused; Sec-Fetch-Site, when the browser sends it, must be same-origin; without it the Origin must be
+// the board's public origin, https://<the assertion's host>). A form from another site can send neither JSON nor these
+// headers. The gateway's Waiting list calls the same routes server to server, with a fresh owner assertion and the
+// same headers: it is checked like a browser, never trusted more.
+//   approve   a t2 item review signed off, not approved yet. verifier actor: the board adds `approved` as the owner (the
+//             journal's actor is the owner's signed name, as the owner's label PATCH) and a comment. verifier ledger:
+//             nothing is written here; the item goes to the bridge, whose Telegram offer the owner taps (the tap signs).
+//             Whichever comes first counts (the bridge's label or this one); the second answers "already approved".
+//   not-now   the same checks; a comment, and needs-you removed.
+//   reply     a comment (1..1000 characters) as the owner.
+//   done      an item with needs-you: a comment, and needs-you removed.
+// Each one is logged (who, item, what, from where); never the assertion or a cookie.
+const T2_NO_SIGNOFF = 'review has not signed it off yet (a t2 item: plan -> review\'s sign-off -> your go)'
+/** The T2 go comes after review's sign-off (sy-l9uc, review's sy-16ml #2; the bridge's tap checks the same): the item's
+ *  labels after the go must not be t2 without signed-off. One check, for rails() and the board's Approve. */
+const goRefusal = (labels) => (labels.has('t2') && !labels.has('signed-off') ? T2_NO_SIGNOFF : null)
+const REPLY_MAX = 1000, ACTION_BODY_MAX = 8192
+// control characters but the newline, and the bidi controls (a reply is plain text)
+const REPLY_CONTROL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g
+/** A POST from the board's own page (CSRF), on the public side: see above. */
+function sameOrigin(req) {
+  const mine = `https://${req.gateway.h}`, site = String(req.headers['sec-fetch-site'] || ''), origin = String(req.headers.origin || '')
+  const foreign = origin !== '' && origin !== 'null' && origin !== mine
+  return !(foreign || (site ? site !== 'same-origin' : origin !== mine))
+}
+const clientOf = (req) => String(req.headers['x-mm-client-ip'] || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim() || undefined
+/** The checks every owner action shares. Sends the refusal and returns null, or returns { g, item, labels, body }. */
+async function ownerAction(req, res, what) {
   const g = req.gateway
-  if (!g) return send(res, 403, { title: 'Not allowed: the T2 go is given signed in on the board\'s public address, or with the bridge\'s Approve button.' })
-  if (g.r !== 'owner') return send(res, 403, { title: 'Not allowed: only the owner gives the T2 go.' })
-  let item = ''
-  try { item = String(JSON.parse((await readBody(req)) || '{}').item || '') } catch { return send(res, 400, { title: 'Bad JSON' }) }
-  if (!ITEM.test(item)) return send(res, 400, { title: 'Not an item id.' })
+  const no = (code, title, why = title) => {
+    log('info', `${what} refused: ${why}`, { op: 'owner-action', action: what, actor: g?.u, role: g?.r, ip: clientOf(req) })
+    send(res, code, { title }); return null
+  }
+  if (!g) return no(403, 'Not allowed: the owner acts on an item signed in on the board\'s public address (or with the bridge\'s Approve button).', 'the local side')
+  if (g.r !== 'owner') return no(403, `Not allowed: only the owner does this (${what}).`, `role ${g.r}`)
+  if (!/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) return no(415, 'Not allowed: send JSON from the board\'s own page.', 'not JSON')
+  if (!sameOrigin(req)) return no(403, 'Not allowed: use the board\'s own page.', `not same-origin (origin ${String(req.headers.origin || '-').slice(0, 100)}, sec-fetch-site ${String(req.headers['sec-fetch-site'] || '-').slice(0, 20)})`)
+  const raw = await readBody(req)
+  if (raw.length > ACTION_BODY_MAX) return no(413, 'That is too long.')
+  let body
+  try { body = JSON.parse(raw || '{}') } catch { return no(400, 'Bad JSON') }
+  const item = String(body?.item || '')
+  if (!ITEM.test(item)) return no(400, 'Not an item id.')
+  const it = await getItem(item)
+  if (!it || !Array.isArray(it.labels)) return no(404, `${item}: no such item here (or the board can't read it now).`, `${item} unreadable`)
+  if (it.status === 'closed') return no(409, `${item} is closed.`)
+  return { g, item, labels: new Set(it.labels), body }
+}
+/** The T2 go's own checks (approve, not-now): a t2 item, review's sign-off, not approved yet. */
+function goState(item, labels) {
+  if (labels.has('approved')) return { code: 409, title: `${item} is already approved.`, already: true }
+  if (!labels.has('t2')) return { code: 403, title: 'Not allowed: not a t2 item, there is no T2 go to give.' }
+  const why = goRefusal(labels); if (why) return { code: 403, title: `Not allowed: ${why}.` }
+  return null
+}
+async function bdSend(method, apiPath, obj) {
+  const r = await fetch(new URL(apiPath, BD), { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(obj) }).catch(() => null)
+  return !!r?.ok
+}
+// as the rails write for the public side: the author is the signed name, a comment starts with the role
+const bdComment = (item, author, text) => bdSend('POST', `/v0/beads/issues/${encodeURIComponent(item)}/comments`, { text: `[owner] ${text}`, author })
+const bdLabels = (item, actor, patch) => bdSend('PATCH', `/v0/beads/issues/${encodeURIComponent(item)}`, { patch, actor })
+const did = (req, what, a, more = {}) => log('info', `${what} of ${a.item} by ${a.g.u}`, { op: 'owner-action', action: what, actor: a.g.u, item: a.item, ip: clientOf(req), ...more })
+function refusedGo(req, res, what, a, st) {
+  log('info', `${what} of ${a.item} refused: ${st.title}`, { op: 'owner-action', action: what, actor: a.g.u, item: a.item, ip: clientOf(req) })
+  return send(res, st.code, { title: st.title, ...(st.already ? { already: true } : {}) })
+}
+async function webApprove(req, res) {
+  const a = await ownerAction(req, res, 'approve'); if (!a) return
+  const { g, item } = a
+  const st = goState(item, a.labels); if (st) return refusedGo(req, res, 'approve', a, st)
   const c = loadConf()
-  if (c.verifier !== 'ledger') return send(res, 409, { title: 'The approvals are read from the board (verifier actor): add the approved label.', approval: 'label' })
+  if (c.verifier !== 'ledger') {
+    // verifier actor: the owner's go, written as the owner (what the Supervisor counts), then said on the item
+    if (!(await bdLabels(item, g.u, { add_labels: ['approved'] }))) return send(res, 502, { title: 'The board could not write it: nothing was approved.' })
+    const said = await bdComment(item, g.u, `Approved on the board by ${g.u}.`)
+    did(req, 'approve', a, { mode: 'actor', comment: said })
+    return send(res, 200, { ok: true, approved: true, title: `Approved on the board by ${g.u}.` })
+  }
   const b = bridgeSocket(c)
   if (!b.path) {
     log('warn', `web approve of ${item} refused: ${b.why}`, { op: 'approve', actor: g.u, item })
     return send(res, 503, { title: 'No web approval here: the bridge has no endpoint for it. Nothing was sent and nothing was approved: approve on Telegram.' })
   }
-  const a = await toBridge(b.path, item, String(req.headers['x-mm-assertion']))
-  if (a.code >= 200 && a.code < 300) { log('info', `web approve of ${item} sent to the bridge`, { op: 'approve', actor: g.u, item }); return send(res, 200, { ok: true, title: SENT }) }
-  const said = typeof a.d?.title === 'string' ? a.d.title.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 200) : ''
-  log('warn', `web approve of ${item}: the bridge ${a.err ? `is unreachable (${a.err})` : `answered ${a.code}${said ? `: ${said}` : ''}`}`, { op: 'approve', actor: g.u, item })
-  return send(res, 502, { title: a.err ? 'The bridge is not answering: nothing was sent and nothing was approved.' : `The bridge refused it${said ? `: ${said}` : ''}. Nothing was approved.` })
+  const r = await toBridge(b.path, item, String(req.headers['x-mm-assertion']))
+  if (r.code >= 200 && r.code < 300) { did(req, 'approve', a, { mode: 'ledger', sent: 'bridge' }); return send(res, 200, { ok: true, title: SENT }) }
+  const said = typeof r.d?.title === 'string' ? r.d.title.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 200) : ''
+  log('warn', `web approve of ${item}: the bridge ${r.err ? `is unreachable (${r.err})` : `answered ${r.code}${said ? `: ${said}` : ''}`}`, { op: 'approve', actor: g.u, item })
+  return send(res, 502, { title: r.err ? 'The bridge is not answering: nothing was sent and nothing was approved.' : `The bridge refused it${said ? `: ${said}` : ''}. Nothing was approved.` })
+}
+async function webNotNow(req, res) {
+  const a = await ownerAction(req, res, 'not-now'); if (!a) return
+  const st = goState(a.item, a.labels); if (st) return refusedGo(req, res, 'not-now', a, st)
+  if (!(await bdComment(a.item, a.g.u, `Not now, said ${a.g.u} on the board.`))) return send(res, 502, { title: 'The board could not write it.' })
+  const dropped = a.labels.has('needs-you') ? await bdLabels(a.item, a.g.u, { remove_labels: ['needs-you'] }) : null
+  did(req, 'not-now', a, { dropped })
+  return send(res, 200, { ok: true, title: `Not now: said on ${a.item}.` })
+}
+async function webReply(req, res) {
+  const a = await ownerAction(req, res, 'reply'); if (!a) return
+  const text = String(a.body.text ?? '').replace(/\r\n?/g, '\n').replace(REPLY_CONTROL, ' ').trim()
+  const n = Array.from(text).length
+  if (!n || n > REPLY_MAX) return send(res, 400, { title: `Write 1 to ${REPLY_MAX} characters.` })
+  if (!(await bdComment(a.item, a.g.u, text))) return send(res, 502, { title: 'The board could not write it.' })
+  did(req, 'reply', a, { chars: n })
+  return send(res, 200, { ok: true, title: `Your reply is on ${a.item}.` })
+}
+async function webDone(req, res) {
+  const a = await ownerAction(req, res, 'done'); if (!a) return
+  if (!a.labels.has('needs-you')) return send(res, 409, { title: `${a.item} does not wait for you (no needs-you).` })
+  if (!(await bdComment(a.item, a.g.u, `Checked: done, said ${a.g.u}.`))) return send(res, 502, { title: 'The board could not write it.' })
+  const dropped = await bdLabels(a.item, a.g.u, { remove_labels: ['needs-you'] })
+  did(req, 'done', a, { dropped })
+  return send(res, 200, { ok: true, title: `Checked: done, said on ${a.item}.` })
 }
 async function currentLabels(id) {
   const r = await fetch(new URL(`/v0/beads/issues/${encodeURIComponent(id)}`, BD)).then((x) => x.json()).catch(() => null)
@@ -181,14 +279,13 @@ async function rails(req, apiPath, data) {
   if (!g) return localRefusal(ch.added, ch.removed) // the local side: as before, but approved
   const why = railRefusal(g.r, ch.added, ch.removed); if (why) return why
   if (ch.added.includes('approved') && ledgerOn()) return LEDGER_LABEL
-  // The T2 go comes after review's sign-off (sy-l9uc, review's sy-16ml #2; the bridge's tap checks the same): the
-  // item's labels after this write must not be t2 without signed-off.
+  // the T2 go comes after review's sign-off (goRefusal, sy-l9uc)
   if (ch.added.includes('approved')) {
     const create = req.method === 'POST' && apiPath === '/v0/beads/issues'
     const cur = create ? [] : await currentLabels(apiPath.split('/').pop())
     if (!cur) return 'could not read the item to check its labels'
     const after = new Set([...cur, ...ch.added].filter((l) => !ch.removed.includes(l)))
-    if (after.has('t2') && !after.has('signed-off')) return 'review has not signed it off yet (a t2 item: plan -> review\'s sign-off -> your go)'
+    const why = goRefusal(after); if (why) return why
   }
   if (req.method === 'POST' && apiPath === '/v0/beads/issues') data.labels = [...new Set([...(data.labels || []), `by:${g.r}`])]
   else if (apiPath.endsWith('/comments')) data.text = `[${g.r}] ${String(data.text || '')}`
@@ -417,7 +514,7 @@ async function sendSummary(req, res, signal = false) {
 // label or a closed item shows on the next load. Under 32 KB.
 async function sendWaiting(req, res) {
   const items = await allItems()
-  send(res, 200, waitingFor({ items, me: who(req), owner: req.gateway?.r === 'owner', now: Date.now() }))
+  send(res, 200, waitingFor({ items, me: who(req), owner: req.gateway?.r === 'owner', now: Date.now(), cards: new URL(req.url, 'http://x').searchParams.get('card') === '1' }))
 }
 
 // ---------- panels (off unless the board's env turns them on: BOARD_PANELS=machine; the system profile does) ----------
@@ -880,6 +977,9 @@ async function handle(req, res) {
     return send(res, 200, { actor: who(req), source: whoSource(req), ...(req.gateway ? { role: req.gateway.r } : {}), ...(owner ? { approval: ledgerOn() ? 'telegram' : 'label' } : {}) })
   }
   if (url.pathname === '/api/approve' && req.method === 'POST') return webApprove(req, res)
+  if (url.pathname === '/api/not-now' && req.method === 'POST') return webNotNow(req, res)
+  if (url.pathname === '/api/reply' && req.method === 'POST') return webReply(req, res)
+  if (url.pathname === '/api/done' && req.method === 'POST') return webDone(req, res)
   if (url.pathname === '/api/whoami' && req.method === 'POST') {
     let name = ''
     try { name = String(JSON.parse(await readBody(req)).name || '').trim().toLowerCase() } catch {}

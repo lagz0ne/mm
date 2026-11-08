@@ -260,6 +260,7 @@ http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); r
   res.end(JSON.stringify(req.method === 'GET' && /\/issues\/it-1(\?|$)/.test(req.url) ? { id: 'it-1', labels: ['t2', 'bug', 'signed-off'] }
     : req.method === 'GET' && /\/issues\/it-9(\?|$)/.test(req.url) ? { id: 'it-9', labels: ['t2', 'bug'] }
     : req.method === 'GET' && /\/issues\/it-10(\?|$)/.test(req.url) ? { id: 'it-10', labels: ['bug'] }
+    : req.method === 'GET' && /\/issues\/it-3(\?|$)/.test(req.url) ? { id: 'it-3', status: 'in_progress', labels: ['t2', 'signed-off'] }
     : req.method === 'GET' && /^\/v0\/beads\/issues(\?|$)/.test(req.url) ? { items: LIST, has_more: false }
     : req.method === 'GET' && /^\/v0\/beads\/ready(\?|$)/.test(req.url) ? { items: READY, has_more: false } : { ok: true, items: [] }))
 }) }).listen(Number(port), '127.0.0.1')
@@ -353,7 +354,7 @@ aconf ledger "$SOCK"
   exec node site/server.mjs >"$T/board-ledger.log" 2>&1) & BSL=$!
 for _ in $(seq 1 150); do [ -S "$SOCK" ] && curl -s -o /dev/null "http://127.0.0.1:$BAL/api/whoami" && curl -s -o /dev/null "http://127.0.0.1:$BAP/" && break; sleep 0.2; done
 # POST /api/approve on the ledger board's public side (or, with "local", its local side)
-ap() { local u="http://127.0.0.1:$BAP/api/approve" h=(-H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $1"); [ "$1" = local ] && { u="http://127.0.0.1:$BAL/api/approve"; h=(); }
+ap() { local u="http://127.0.0.1:$BAP/api/approve" h=(-H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $1" -H "origin: https://$BOARD" -H "sec-fetch-site: same-origin"); [ "$1" = local ] && { u="http://127.0.0.1:$BAL/api/approve"; h=(); }
   curl -s -o "$T/ab" -w '%{http_code}' -X POST -H 'content-type: application/json' "${h[@]}" -d "$2" "$u"; }
 lpw() { curl -s -o "$T/ab" -w '%{http_code}' -X PATCH -H 'content-type: application/json' -H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $1" -d "$2" "http://127.0.0.1:$BAP/api/v0/beads/issues/it-1"; }
 lwho() { curl -s -H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $1" "http://127.0.0.1:$BAP/api/whoami"; }
@@ -396,7 +397,11 @@ check "ledger on, the whole time: no write reached bd" nowrites "$n1"
 aconf actor "$SOCK"
 check "verifier actor (today): the owner's whoami says approval label" bash -c "lwho '$OA' | jq -e '.approval == \"label\"'"
 check "...the owner's approved on the public side goes to bd as before (200, as boss)" bash -c "[ \$(lpw '$OA' '{\"patch\":{\"add_labels\":[\"approved\"]}}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.actor == \"boss\" and .b.patch.add_labels == [\"approved\"]'"
-check "...and /api/approve sends nothing (409: approve by the label)" bash -c "[ \$(ap '$OA' '{\"item\":\"it-3\"}') = 409 ] && jq -e '.approval == \"label\"' '$T/ab'"
+b4=$(brn)
+check "...and /api/approve adds approved as the owner itself (200, as boss; sy-92sg), nothing to the bridge" bash -c "[ \$(ap '$OA' '{\"item\":\"it-3\"}') = 200 ] && jq -e '.approved' '$T/ab' && grep '\"PATCH\"' '$T/bd.jsonl' | tail -1 | jq -e '.p == \"/v0/beads/issues/it-3\" and .b.actor == \"boss\" and .b.patch.add_labels == [\"approved\"]' && [ \$(brn) = $b4 ]"
+aconf ledger "$SOCK"
+check "ledger on: a web Approve without the same-origin proof (a form from another site): 403, nothing sent" bash -c "[ \$(curl -s -o '$T/ab' -w '%{http_code}' -X POST -H 'content-type: application/json' -H 'x-forwarded-host: $BOARD' -H 'x-mm-assertion: $OA' -H 'origin: https://evil.example' -d '{\"item\":\"it-3\"}' http://127.0.0.1:$BAP/api/approve) = 403 ] && [ \$(brn) = $b4 ]"
+check "...an item without review's sign-off: 403, nothing sent" bash -c "[ \$(ap '$OA' '{\"item\":\"it-9\"}') = 403 ] && [ \$(brn) = $b4 ]"
 rm -f "$ACONF"
 check "the test config gone (ledger.mjs reads it as the strict side): the owner's approved is refused, not written" test "$(lpw "$OA" '{"patch":{"add_labels":["approved"]}}')" = 403
 kill $BSL 2>/dev/null
@@ -584,7 +589,7 @@ check "a bad id drops the item (capitals; a quote and markup)" bash -c "! grep -
 check "an over-long title (201) or one with a control or bidi character drops the item; one of exactly 200 stays" bash -c "! grep -qE 'L{201}' '$T/hp' && ! grep -q -e DROPCTL -e DROPBIDI '$T/hp' && grep -qE '>T{200}</span>' '$T/hp'"
 check "...an unknown field (a url), a fraction or a negative age, an unknown label, a repeated id, an empty or non-text title: dropped" bash -c "! grep -q -e DROPLINK -e DROPFRAC -e DROPAGE -e DROPAPPROVED -e DROPDUP '$T/hp' && ! wids | grep -q -e ao-13 -e ao-15"
 check "...an item with no ask for the owner (no label): not on the owner's list" bash -c "! wsec | grep -q 'plain work'"
-check "each board asked for its list with that person's own fresh assertion (boss, owner, that board's host)" bash -c "jq -e '.p == \"/api/waiting\" and .h == \"$BOARD2\"' <(tail -1 '$T/fb2.w.jsonl') && node '$T/verify.mjs' \"\$(tail -1 '$T/fb2.w.jsonl' | jq -r .a)\" '$MM_HOME/auth/signing.key' '$BOARD2' boss owner"
+check "each board asked for its list with that person's own fresh assertion (boss, owner, that board's host), the owner's with the cards (?card=1, sy-92sg)" bash -c "jq -e '.p == \"/api/waiting?card=1\" and .h == \"$BOARD2\"' <(tail -1 '$T/fb2.w.jsonl') && node '$T/verify.mjs' \"\$(tail -1 '$T/fb2.w.jsonl' | jq -r .a)\" '$MM_HOME/auth/signing.key' '$BOARD2' boss owner"
 check "an older board (system: no such answer) adds nothing and is no error (no note, not logged)" bash -c "! wsec | grep -q -e system -e unavailable && ! grep 'board waiting list unavailable' '$T/gw.log' | grep -q '\"project\":\"system\"'"
 CBI=$(gw -D - -o /dev/null -H "cookie: $SB" "$G/s?b=$BOARD&r=%2F%3Fitem%3Dit-1" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
 check "the link opens the item: the board's one-time callback, then /?item=it-1 on the board (its item view)" bash -c "echo '$CBI' | grep -q '^/_mm/auth/callback?c=' && curl -s -H 'x-forwarded-host: $BOARD' '$G$CBI' | grep -qF 'content=\"0;url=/?item=it-1\"'"

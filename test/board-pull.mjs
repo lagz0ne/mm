@@ -21,7 +21,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const MIN = 60e3, NOW = Date.now(), ago = (m) => new Date(NOW - m * MIN).toISOString()
 
 const { pullState, foldRequeues, leaseOf } = await import(path.join(SRC, 'template', 'site', 'pull-state.mjs'))
-const { waitingFor, plainTitle, youLine, MAX_BYTES, YOU_MAX } = await import(path.join(SRC, 'template', 'site', 'waiting.mjs'))
+const { waitingFor, plainTitle, youLine, MAX_BYTES, YOU_MAX, CARD_FIELDS } = await import(path.join(SRC, 'template', 'site', 'waiting.mjs'))
 
 // ---------- the fixture board ----------
 const PROJECT = 'pb'
@@ -104,6 +104,15 @@ step('site/waiting.mjs (the gateway\'s "Waiting for you" list, sy-vdi8)')
   ok('...the You line as plain text, like a title: control and bidi characters out', o.items.find((x) => x.id === 'pb-23').you === 'Check: the shot, artifacts/pb-23/a.png')
   const lng = youLine(CARD.replace('Reply: ok, or say which line to change.', `Reply: ${'w'.repeat(200)}`)), bad = youLine(CARD.replace('**You:** Reply: ok, or say which line to change.', '**You:** \u202e'))
   ok(`...cut to ${YOU_MAX} characters (an invalid card's You still shows: its own detail says invalid); none for no card, an empty one`, Array.from(lng).length === YOU_MAX && lng.endsWith('…') && youLine('no card') === null && bad === null)
+  // sy-92sg: with ?card=1 the owner's entries carry the card's fields, plain text, each cut to the card's limit
+  const T2CARD = `## Owner\n- **What:** Rotate <b>the</b> key\u202e now.\n- **Why:** ${'w'.repeat(130)}\n- **You:** Tap Approve\n- **If yes:** it runs\n- **If no:** it waits\n- **Risk:** low, a minute\n- **Link:** https://evil.example/\n\nThread.`
+  const c = waitingFor({ items: [...W, it('pb-29', 'ops', 'open', 50, { labels: ['t2', 'signed-off'], title: 'carded', description: T2CARD })], me: 'boss', owner: true, now: NOW, cards: true })
+  const cc = c.items.find((x) => x.id === 'pb-29').card
+  ok('?card=1, the owner: each entry also has card: the fields the card has, plain text (control and bidi out), cut to its limit; no Link', JSON.stringify(Object.keys(cc)) === '["what","why","you","if_yes","if_no","risk"]'
+    && cc.what === 'Rotate <b>the</b> key now.' && Array.from(cc.why).length === CARD_FIELDS.why[1] && cc.why.endsWith('…') && cc.risk === 'low, a minute' && cc.you === 'Tap Approve', JSON.stringify(cc))
+  ok('...null for an item with no card; the other keys as before', c.items.find((x) => x.id === 'pb-21').card === null && c.items.every((x) => Object.keys(x).join() === 'id,title,age_min,labels,you,card'))
+  ok('...without ?card=1 no card key (an older gateway drops an entry with a key it doesn\'t know); never for a member', !o.items.some((x) => 'card' in x)
+    && !waitingFor({ items: W, me: 'alex', owner: false, now: NOW, cards: true }).items.some((x) => 'card' in x))
   const m = waitingFor({ items: W, me: 'alex', owner: false, now: NOW })
   ok('a member: only the open items assigned to them (not closed, not the owner\'s needs-you, not a bad id)', m.items.map((x) => x.id).join() === 'pb-23,pb-28', JSON.stringify(m))
   ok('...with no labels at all (needs-you is the owner\'s ask)', m.items.every((x) => x.labels.length === 0))

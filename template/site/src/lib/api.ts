@@ -81,17 +81,25 @@ export interface Meta {
   panels?: string[] // turned on by the board's env (BOARD_PANELS), e.g. the system board's machine panel
 }
 
+/** The owner's own actions on an item (POST /api/<action>, the public side; the server checks the owner, the item, and
+ *  that the request is same-origin JSON). */
+async function ownerAct(action: 'approve' | 'not-now', item: string) {
+  const r = await fetch(`/api/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ item }) })
+  const d = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(d.title || `${r.status}`)
+  return d as { ok: true; title: string; approved?: boolean }
+}
+
 export const api = {
   meta: () => fetch('/api/meta').then((r) => (r.ok ? r.json() : Promise.reject(new Error(`meta ${r.status}`))) as Promise<Meta>),
   // role: on the public side; approval: the owner's only, how the T2 go is given (the label, or a tap on Telegram)
   whoami: () => fetch('/api/whoami').then((r) => r.json() as Promise<{ actor: string; source: 'gateway' | 'self' | 'default'; role?: string; approval?: 'label' | 'telegram' }>),
   // with the ledger on: the board sends the item to the bridge, which offers it on the owner's Telegram (signs nothing here)
-  approveOnTelegram: async (item: string) => {
-    const r = await fetch('/api/approve', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ item }) })
-    const d = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(d.title || `${r.status}`)
-    return d as { ok: true; title: string }
-  },
+  // verifier actor (sy-92sg): the board adds approved as the owner, with a comment; same route, same checks
+  approveOnTelegram: (item: string) => ownerAct('approve', item),
+  approve: (item: string) => ownerAct('approve', item),
+  // the owner's "not now" on a t2 that waits for the go: a comment, and needs-you removed
+  notNow: (item: string) => ownerAct('not-now', item),
   identify: async (name: string) => {
     const r = await fetch('/api/whoami', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) })
     const d = await r.json().catch(() => ({}))

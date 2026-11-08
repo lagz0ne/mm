@@ -163,6 +163,10 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                   {i.status !== 'open' && <Button size="sm" variant="outline" disabled={busy} onClick={() => run(() => api.patch(i.id, { status: 'open' }))}>Back to open</Button>}
                   {approvable && approval === 'telegram' && <Button size="sm" disabled={busy} title="With the ledger on, only your tap on Telegram signs the T2 go: this sends the item there"
                     onClick={() => run(async () => { setSent(null); const d = await api.approveOnTelegram(i.id); setSent(d.title); toast.success(d.title) })}>Approve on Telegram</Button>}
+                  {approvable && approval === 'label' && <Button size="sm" disabled={busy} title="The T2 go: the board adds approved as you, and says so on the item"
+                    onClick={() => run(async () => { setSent(null); const d = await api.approve(i.id); setSent('Approved on the board.'); toast.success(d.title) })}>Approve: this is your go</Button>}
+                  {approvable && <Button size="sm" variant="outline" disabled={busy} title="Not now: a comment on the item, and it no longer waits for you"
+                    onClick={() => run(async () => { const d = await api.notNow(i.id); toast.success(d.title) })}>Not now</Button>}
                   <CopyLink url={itemUrl(i.id)} className="ml-auto" />
                   <Button size="sm" variant="outline" disabled={busy} onClick={() => run(() => api.close(i.id, 'Closed from board'))}>Close</Button>
                 </>
@@ -171,6 +175,11 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
             {approvable && approval === 'telegram' && (
               <p className="border-b px-5 py-2 text-[11px] text-muted-foreground">
                 {sent || 'The approval is signed on Telegram: Approve sends this item to your Telegram, and your tap there is the T2 go. Nothing is approved here.'}
+              </p>
+            )}
+            {approval === 'label' && (approvable || sent) && (
+              <p className="border-b px-5 py-2 text-[11px] text-muted-foreground" data-approved={sent ? '' : undefined}>
+                {sent || 'Review signed this off. Approve is your T2 go: the board adds approved as you, and says so on the item. Telegram\'s Approve does the same; whichever comes first counts.'}
               </p>
             )}
 

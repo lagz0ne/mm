@@ -172,12 +172,37 @@ same item.
 - On "plan changed": send a new offer. On "used" or "expired": say so.
 - Then add `approved` on the board as today, for the people who read the board. The label alone counts for nothing.
 
+## The board's Approve
+
+The owner's **Approve** on an item (and on the gateway's Waiting list, which calls the same route) is
+`POST /api/approve` on the board's public side. What it does depends on the mode:
+
+| Mode | What Approve does | What counts |
+|---|---|---|
+| `verifier = actor` | the board adds `approved` as the owner (the journal's actor is the owner's signed name, from the gateway's assertion) and comments "Approved on the board by <name>." | the label, read with its actor, as before: the board's Approve or the bridge's Telegram tap, whichever comes first; the second answers "already approved" |
+| `verifier = ledger` | the board writes and signs nothing: it sends the item to the bridge, which sends the Telegram offer | only the owner's tap on Telegram (a signed ledger line) |
+
+**Why the board's Approve does not count with the ledger on.** The board trusts the gateway's assertion, and the
+gateway's signing key is a file of the machine's owner account. Every agent runs as that account, so it can sign an
+owner assertion and press the board's Approve itself. In actor mode that is no loss: the same account can already
+write the label with bd (the actor is a brake, not a wall; see the top of this file). In ledger mode the wall is the
+signer's key, which that account can't read; a board assertion would bring the wall back down to the actor's level.
+So there the button only asks for the Telegram offer, and the tap signs.
+
+Both modes refuse, with the reason and nothing written: the local side; any role but owner; an item that is not t2,
+has no `signed-off` (the same check as the label rail, sy-l9uc), is already `approved` (409), or is closed; and a
+request that is not same-origin JSON: the `Content-Type` must be JSON, an `Origin` of another site is refused,
+`Sec-Fetch-Site` (when sent) must be `same-origin`, and without it the `Origin` must be the board's public origin. A
+form posted from another site sends neither. **Not now** (`POST /api/not-now`, the same checks) comments "Not now,
+said <name> on the board." and removes `needs-you`; no other label changes. Each one is logged on the board (who, item,
+what); never the assertion.
+
 ### The board's web Approve (with the ledger on)
 
 With `verifier = ledger`, the board writes no `approved` on its public side and signs nothing: adding the label
 there is refused, and the owner's **Approve on Telegram** button (a signed-off t2 without `approved`) asks the bridge
-to send the Telegram offer. The owner's tap there is what counts. With `verifier = actor` nothing changes: the
-owner adds `approved` on the public side as before.
+to send the Telegram offer. The owner's tap there is what counts. With `verifier = actor` the owner adds `approved` on
+the public side as before, or presses Approve (above).
 
 The board reads the mode and the socket as `bin/lib/ledger.mjs` reads them (only from `/etc/mm-approve.conf` when
 it exists), on every click. It sends nothing, and tells the owner there is no web approval, when there is no
