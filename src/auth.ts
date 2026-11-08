@@ -37,6 +37,7 @@ export const AUTH_DIR = join(DIRS.mm, 'auth')
 export const AUTH_SOCK = join(DIRS.mm, 'run', 'auth.sock')
 // a sign-in link is a bearer link that may travel through chat apps: 1 h by default (review sy-b15.14), `--ttl` for more,
 // up to the plugin's ceiling (each link's own row is set to its ttl after it is made)
+const LOOP_MS = 10e3, LOOP_MAX = 3 // board sessions for one person and host in that time: a sign-in loop (sy-wbdn)
 const SESSION_S = 12 * 3600, BOARD_CODE_MS = 30e3, ASSERT_MS = 60e3, LINK_S = Number(process.env.MM_AUTH_LINK_S) || 3600, LINK_MAX_S = 7 * 86400, TOKEN_DAYS = 30
 const CODE_MS = Number(process.env.MM_AUTH_CODE_MS) || 5 * 60e3, CODE_LINK_S = 120 // a code lives 5 min; its link 2 min
 // designer = a member who also edits the project's Doop (the owner, 2026-11-05; plans/ui-access.md, doop.md)
@@ -500,10 +501,23 @@ export async function gateway() {
       boardCodes.delete(k) // single use, whatever happens next
       const parent = bc ? liveSession(bc.parent) : null
       if (!bc || bc.exp < now() || bc.host !== host || !alive(parent)) { log('warn', 'board callback refused', { host, code: short(c) }); return new Response('Sign-in expired. Open the board again.', { status: 403, headers }) }
+      const back = safeBack(bc.back)
+      // A loop guard (sy-wbdn): when this person got LOOP_MAX board sessions on this host in the last LOOP_MS, the
+      // browser is not sending the cookie back; a new one would only go round again. A link on this page is a
+      // same-site navigation, so a tap sends the cookie already set.
+      const recent = (db.query('SELECT COUNT(*) AS n FROM mm_board_session WHERE user_id = ? AND host = ? AND created > ?').get(bc.userId, host, now() - LOOP_MS) as { n: number }).n
+      if (recent >= LOOP_MAX) {
+        log('warn', 'board session loop stopped', { user: userById(bc.userId)?.name, host, recent })
+        return new Response(boardHop(back, false), { status: 200, headers: { 'content-type': 'text/html; charset=utf-8', ...headers } })
+      }
       const id = randomBytes(32).toString('base64url'), exp = Math.min(new Date(parent!.expiresAt).getTime(), now() + SESSION_S * 1000)
       db.run('INSERT INTO mm_board_session (hash, user_id, parent, host, created, expires) VALUES (?, ?, ?, ?, ?, ?)', [h(id), bc.userId, bc.parent, host, now(), exp])
       log('info', 'board session', { user: userById(bc.userId)?.name, host })
-      return new Response(null, { status: 302, headers: { location: safeBack(bc.back), 'set-cookie': setCookie(req, 'mm_board', id, exp - now()), ...headers } })
+      // Not a 302 (sy-wbdn): when the sign-in began with a cross-site tap (a link in Telegram), the whole redirect chain
+      // is cross-site, so the browser keeps the Strict cookie off the redirected request, /verify sends it to sign-in
+      // again, and it loops. A page on the board itself that moves on (meta refresh, no script) makes the next request
+      // same-site, so the cookie goes with it. The link is there if the refresh does not run.
+      return new Response(boardHop(back, true), { status: 200, headers: { 'content-type': 'text/html; charset=utf-8', 'set-cookie': setCookie(req, 'mm_board', id, exp - now()), ...headers } })
     }
     // a sign-in link (review sy-g8v 2): opening it only shows a Continue button. Chat previews (Telegram) and mail
     // scanners open links; a GET that signed in would use the single-use link up, or sign the fetcher in. Only the
@@ -1029,6 +1043,15 @@ function continuePage(token: string, callbackURL: string) {
   return shell('Sign in', SIGN_IN_NAV, `<p>This link signs you in once. Press Continue to use it.</p>
 <form method="post" action="/s/l"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="c" value="${esc(callbackURL)}">
 <button type="submit">Continue</button></form>`)
+}
+/** The board's callback page (sy-wbdn): the cookie is set, and the next request starts on the board itself (same-site),
+ *  by a meta refresh (`go`) or a tap on the link. `back` is a path from safeBack (starts with one `/`), escaped here. */
+function boardHop(back: string, go: boolean) {
+  const b = esc(back)
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+${go ? `<meta http-equiv="refresh" content="0;url=${b}">` : ''}<title>Opening the board</title></head>
+<body><p>${go ? 'Signed in. Opening the board…' : 'Signed in.'}</p>
+<p><a href="${b}">Open the board</a></p></body></html>`
 }
 /** A short message (expired link, refused, no access): `text` is the caller's, with any value in it escaped. */
 function page(text: string) {
