@@ -7,8 +7,8 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet'
-import { AnnotateContext, Embed, Markdown } from '@/Markdown'
-import { ArrowsInIcon, ArrowsOutIcon } from '@phosphor-icons/react'
+import { AnnotateContext, Embed, Markdown, Viewer, fileUrl } from '@/Markdown'
+import { ArrowSquareOutIcon, ArrowsInIcon, ArrowsOutIcon, FileTextIcon } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 import { Avatar, PersonaContext, personaOf } from '@/lib/persona'
 import { ThreadPresence } from '@/Presence'
@@ -184,6 +184,8 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
 
             <Designs id={i.id} tick={tick} assignee={i.assignee} built={content} onOpen={onOpen} />
 
+            <Artifacts id={i.id} tick={tick} />
+
             {content.length > 0 && (
               <Section label={`Content · ${content.length}`}>
                 <div className="grid grid-cols-[minmax(0,1fr)] gap-3">
@@ -329,6 +331,56 @@ function groupComments(list: { id: string; author: string; text: string; created
     else groups.push({ author: c.author, items: [{ c, n: k + 1 }] })
   })
   return groups
+}
+
+interface ArtifactFile { name: string; path: string; type: string; size: number; mtime: string }
+const bytes = (n: number) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`)
+
+/** The item's artifacts (bin/artifact: artifacts/<id>/<name> in the project root): images as a strip of thumbnails
+ *  (a tap: full size), the rest as chips (.md and .svg: the dialog; .html and others: a new tab). */
+function Artifacts({ id, tick }: { id: string; tick: number }) {
+  const [files, setFiles] = useState<ArtifactFile[]>([])
+  const [open, setOpen] = useState<string | null>(null)
+  useEffect(() => {
+    let gone = false
+    fetch(`/api/artifacts/${id}`).then((r) => r.json()).then((d) => !gone && setFiles(d.files || [])).catch(() => !gone && setFiles([]))
+    return () => { gone = true }
+  }, [id, tick])
+  if (!files.length) return null
+  const isImg = (f: ArtifactFile) => /\.(png|jpg|webp)$/.test(f.name)
+  const images = files.filter(isImg), others = files.filter((f) => !isImg(f))
+  const chip = 'flex min-h-10 max-w-full min-w-0 items-center gap-1.5 border border-foreground px-2.5 text-xs hover:bg-muted'
+  return (
+    <Section label={`Artifacts · ${files.length}`}>
+      {images.length > 0 && (
+        <ul data-artifact-thumbs className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-2">
+          {images.map((f) => (
+            <li key={f.name} className="min-w-0">
+              <button type="button" onClick={() => setOpen(f.path)} title={`${f.name} · ${bytes(f.size)}`} data-artifact={f.name}
+                className="block w-full min-w-0 border border-foreground text-left hover:outline-2 hover:outline-swiss">
+                <img src={fileUrl(f.path)} alt={f.name} loading="lazy" className="aspect-[4/3] w-full bg-muted object-cover object-top" />
+                <span className="block truncate border-t border-foreground px-1.5 py-1 font-mono text-[11px]">{f.name}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {others.length > 0 && (
+        <ul className={cn('flex flex-wrap gap-2', images.length > 0 && 'mt-2')}>
+          {others.map((f) => (
+            <li key={f.name} className="max-w-full min-w-0">
+              {/\.(md|svg)$/.test(f.name)
+                ? <button type="button" onClick={() => setOpen(f.path)} className={chip} data-artifact={f.name} title={bytes(f.size)}>
+                    <FileTextIcon className="shrink-0" /><span className="truncate font-mono">{f.name}</span></button>
+                : <a href={fileUrl(f.path)} target="_blank" rel="noreferrer" className={chip} data-artifact={f.name} title={bytes(f.size)}>
+                    <ArrowSquareOutIcon className="shrink-0" /><span className="truncate font-mono">{f.name}</span></a>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <Viewer path={open} onClose={() => setOpen(null)} />
+    </Section>
+  )
 }
 
 interface WorkerInfo { id: string; status: string; created: string; activity: string[] }
