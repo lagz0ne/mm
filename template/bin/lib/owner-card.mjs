@@ -56,6 +56,10 @@ export function youKind(v) {
  * Waiting list and the bridge. False for no card, a card with no You, or any other form (a non-go ask).
  * @param {Record<string,string>|null|undefined} card  parseCard(...).card */
 export const isGoAsk = (card) => youKind(card?.You) === 'approve'
+/** A non-go ask (sy-t9tg): the card's You starts with "Reply: …", "Check: …" or "Nothing". Not the negation of isGoAsk:
+ * no card, or a card with no or an invalid You, is neither (a t2 one is refused at the gate and at the go). The board
+ * and the Waiting list show a t2 non-go ask with its own action (Reply, Done), never Approve or Not now. */
+export const isNonGoAsk = (card) => ['reply', 'check', 'nothing'].includes(youKind(card?.You))
 /** The reason headRefusal gives for a t2 card that asks the owner something other than the go (sy-t9tg). */
 export const NO_GO = 'this item asks for no go (its owner card\'s You is not "Tap Approve")'
 
@@ -108,7 +112,7 @@ export function parseCard(description, labels = [], id = '') {
   const t2 = Array.isArray(labels) && labels.includes('t2')
   // a t2 card that is not a non-go ask needs the go's keys: a go ask, and (fail-closed) a card whose You is missing or
   // invalid (it is refused for that anyway)
-  const go = t2 && !['reply', 'check', 'nothing'].includes(youKind(card.You))
+  const go = t2 && !isNonGoAsk(card)
   for (const r of [...REQUIRED, ...(go ? REQUIRED_T2 : [])]) if (!(r in card)) errors.push(`${r} is missing${REQUIRED_T2.includes(r) ? ' (required with t2) on a go ask (You: Tap Approve)' : ''}`)
   return { ok: errors.length === 0, found: true, card, errors, rest: lines.slice(k).join('\n').replace(/^\n+/, '') }
 }
@@ -125,8 +129,8 @@ export function parseCard(description, labels = [], id = '') {
 export function headRefusal(description, labels) {
   const ls = [...(labels ?? [])].map(String)
   if (!ls.includes('t2') || ls.includes('approved')) return null
-  const card = parseCard(description, ls).card, kind = youKind(card?.You)
-  if (kind === 'reply' || kind === 'check' || kind === 'nothing') return NO_GO
+  const card = parseCard(description, ls).card
+  if (isNonGoAsk(card)) return NO_GO
   const head = card?.Head
   if (head === undefined) return `the card names no head (required with t2: - **Head:** <repo>@<sha>)`
   if (!HEAD.test(head)) return `the card's Head is not <repo>@<sha> (card: ${clip(head)})`

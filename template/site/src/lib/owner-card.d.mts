@@ -11,4 +11,5 @@ export declare const HEAD: RegExp
 export declare const SIGNED_HEAD: string
 export declare function headRefusal(description: string | undefined | null, labels: Iterable<string> | undefined | null): string | null
 export declare function isGoAsk(card: Record<string, string> | null | undefined): boolean
+export declare function isNonGoAsk(card: Record<string, string> | null | undefined): boolean
 export declare const NO_GO: string

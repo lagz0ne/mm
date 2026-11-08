@@ -7,7 +7,7 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { headRefusal, isGoAsk, NO_GO, parseCard, youKind } from '../template/bin/lib/owner-card.mjs'
+import { headRefusal, isGoAsk, isNonGoAsk, NO_GO, parseCard, youKind } from '../template/bin/lib/owner-card.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 let pass = 0, fail = 0
@@ -130,6 +130,8 @@ The rest.`
   bad('a t2 card with no You: the go keys are required too (fail-closed)', C.replace(/- \*\*You:\*\* .*\n/, ''), /Head is missing/, ['t2'])
   ok('isGoAsk: only "Tap Approve"', isGoAsk({ You: 'Tap Approve in Telegram' }) && !isGoAsk({ You: 'Check: x, y' }) && !isGoAsk({ You: 'Reply: q' })
     && !isGoAsk({ You: 'Nothing' }) && !isGoAsk({ You: 'Hmm' }) && !isGoAsk({}) && !isGoAsk(null) && !isGoAsk(undefined))
+  ok('isNonGoAsk: Reply:, Check:, Nothing; not Tap Approve, no form, no You, no card', isNonGoAsk({ You: 'Check: x, y' }) && isNonGoAsk({ You: 'Reply: q' }) && isNonGoAsk({ You: 'Nothing' })
+    && !isNonGoAsk({ You: 'Tap Approve' }) && !isNonGoAsk({ You: 'Hmm' }) && !isNonGoAsk({}) && !isNonGoAsk(null))
   const H = 'mm@0a1b2c3', CH = C.replace('\n\nThe rest', `\n- **Head:** ${H}\n\nThe rest`)
   ok('headRefusal: a t2 non-go ask gets no go (NO_GO), signed off or not', headRefusal(C, ['t2']) === NO_GO && headRefusal(C, ['t2', 'signed-off']) === NO_GO)
   ok('...not even with a Head review signed', headRefusal(CH, ['t2', 'signed-off', `signed-head:${H}`]) === NO_GO)
