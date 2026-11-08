@@ -94,8 +94,23 @@ check "mm grant alex acme-shop (member)" bash -c "mm grant alex acme-shop -o jso
 CB=$(gw -D - -o /dev/null -H "cookie: $S1" "$G/s?b=$BOARD&r=/items" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
 check "the same session, the board: straight to its one-time callback, no new link" bash -c "echo '$CB' | grep -q '^/_mm/auth/callback?c='"
 check "/s/done lists the board (through the one-redirect flow)" bash -c "gw -H 'cookie: $S1' $G/s/done | grep -q '/s?b=$BOARD&amp;r=%2F'"
-curl -s -c "$T/bj" -H "x-forwarded-host: $BOARD" -D "$T/h3" -o /dev/null "$G$CB"
-check "the callback sets the board's own cookie (Strict, host-only) and goes back to /items" bash -c "grep -i 'set-cookie: mm_board=' '$T/h3' | grep -qi 'SameSite=Strict' && ! grep -i 'set-cookie: mm_board=' '$T/h3' | grep -qi 'domain=' && grep -qi '^location: /items' '$T/h3'"
+curl -s -c "$T/bj" -H "x-forwarded-host: $BOARD" -H 'sec-fetch-site: cross-site' -D "$T/h3" -o "$T/b3" "$G$CB"
+check "the callback sets the board's own cookie (Strict, host-only)" bash -c "grep -i 'set-cookie: mm_board=' '$T/h3' | grep -qi 'SameSite=Strict' && ! grep -i 'set-cookie: mm_board=' '$T/h3' | grep -qi 'domain='"
+# sy-wbdn: a sign-in begun by a tap in another app (Telegram) is a cross-site chain; a 302 from here would go back to
+# /items without the Strict cookie and loop. So the callback answers 200 with a page on the board that moves on.
+check "...and answers 200 with a page on the board, not a 302 (no cross-site redirect for the Strict cookie to miss)" bash -c "head -1 '$T/h3' | grep -q ' 200' && ! grep -qi '^location:' '$T/h3'"
+check "...the page moves on to /items itself (meta refresh, no script) and has the link too" bash -c "grep -qF '<meta http-equiv=\"refresh\" content=\"0;url=/items\">' '$T/b3' && grep -qF '<a href=\"/items\">Open the board</a>' '$T/b3' && ! grep -qi '<script' '$T/b3'"
+check "...with the same headers as before (CSP, no-store, nosniff, no referrer)" bash -c "grep -qi \"^content-security-policy: default-src 'self'\" '$T/h3' && grep -qi '^cache-control: no-store' '$T/h3' && grep -qi '^x-content-type-options: nosniff' '$T/h3' && grep -qi '^referrer-policy: no-referrer' '$T/h3'"
+cbfor() { gw -D - -o /dev/null -H "cookie: $S1" "$G/s?b=$BOARD&r=$1" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip'; }
+CBQ=$(cbfor '%2F%3Fq%3D%22%3E%3Cb%3Ex')
+curl -s -H "x-forwarded-host: $BOARD" -o "$T/bq" "$G$CBQ"
+check "...the way back is escaped in the page (a quote and markup in it stay text)" bash -c "grep -qF 'url=/?q=&#34;&#62;&#60;b&#62;x\"' '$T/bq' && ! grep -qF '<b>x' '$T/bq'"
+echo '== a sign-in loop stops (sy-wbdn)'
+# the sessions above count: after 3 board sessions in 10 s for this person and host, no new one is made
+for i in 1 2 3; do curl -s -H "x-forwarded-host: $BOARD" -D "$T/hl$i" -o "$T/bl$i" "$G$(cbfor %2Fitems)"; done
+check "a 3rd board session in 10 s for the same person and host: no new cookie, no refresh, the link only" bash -c "! grep -qi '^set-cookie: mm_board=' '$T/hl3' && head -1 '$T/hl3' | grep -q ' 200' && ! grep -qi 'http-equiv' '$T/bl3' && grep -qF '<a href=\"/items\">Open the board</a>' '$T/bl3'"
+check "...and the gateway logs it (no cookie value in the log)" bash -c "grep -q 'board session loop stopped' '$T/gw.log'"
+sleep 11 # out of the loop window again, for the callbacks below
 check "the callback code is single use" test "$(curl -s -o /dev/null -w '%{http_code}' -H "x-forwarded-host: $BOARD" "$G$CB")" = 403
 CBX=$(gw -D - -o /dev/null -H "cookie: $S1" "$G/s?b=$BOARD&r=/" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
 check "a callback on another host is refused" test "$(curl -s -o /dev/null -w '%{http_code}' -H "x-forwarded-host: $BOARD2" "$G$CBX")" = 403
@@ -549,7 +564,7 @@ check "...an item with no ask for the owner (no label): not on the owner's list"
 check "each board asked for its list with that person's own fresh assertion (boss, owner, that board's host)" bash -c "jq -e '.p == \"/api/waiting\" and .h == \"$BOARD2\"' <(tail -1 '$T/fb2.w.jsonl') && node '$T/verify.mjs' \"\$(tail -1 '$T/fb2.w.jsonl' | jq -r .a)\" '$MM_HOME/auth/signing.key' '$BOARD2' boss owner"
 check "an older board (system: no such answer) adds nothing and is no error (no note, not logged)" bash -c "! wsec | grep -q -e system -e unavailable && ! grep 'board waiting list unavailable' '$T/gw.log' | grep -q '\"project\":\"system\"'"
 CBI=$(gw -D - -o /dev/null -H "cookie: $SB" "$G/s?b=$BOARD&r=%2F%3Fitem%3Dit-1" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
-check "the link opens the item: the board's one-time callback, then /?item=it-1 on the board (its item view)" bash -c "echo '$CBI' | grep -q '^/_mm/auth/callback?c=' && curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' '$G$CBI' | grep -qiE '^location: /\\?item=it-1[[:space:]]*\$'"
+check "the link opens the item: the board's one-time callback, then /?item=it-1 on the board (its item view)" bash -c "echo '$CBI' | grep -q '^/_mm/auth/callback?c=' && curl -s -H 'x-forwarded-host: $BOARD' '$G$CBI' | grep -qF 'content=\"0;url=/?item=it-1\"'"
 hp "$SA" >/dev/null
 check "a member (alex): only their own items (it-3, it-1), each \"assigned to you\", none red" bash -c "[ \"\$(wids)\" = 'it-3 it-1 ' ] && [ \$(wsec | grep -o 'class=\"w-ask\">assigned to you<' | wc -l) = 2 ] && ! wsec | grep -q -e 'w-ask hot' -e 'approve (t2' -e '>needs you<'"
 hp "$SV" >/dev/null
