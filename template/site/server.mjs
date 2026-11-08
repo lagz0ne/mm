@@ -181,6 +181,15 @@ async function rails(req, apiPath, data) {
   if (!g) return localRefusal(ch.added, ch.removed) // the local side: as before, but approved
   const why = railRefusal(g.r, ch.added, ch.removed); if (why) return why
   if (ch.added.includes('approved') && ledgerOn()) return LEDGER_LABEL
+  // The T2 go comes after review's sign-off (sy-l9uc, review's sy-16ml #2; the bridge's tap checks the same): the
+  // item's labels after this write must not be t2 without signed-off.
+  if (ch.added.includes('approved')) {
+    const create = req.method === 'POST' && apiPath === '/v0/beads/issues'
+    const cur = create ? [] : await currentLabels(apiPath.split('/').pop())
+    if (!cur) return 'could not read the item to check its labels'
+    const after = new Set([...cur, ...ch.added].filter((l) => !ch.removed.includes(l)))
+    if (after.has('t2') && !after.has('signed-off')) return 'review has not signed it off yet (a t2 item: plan -> review\'s sign-off -> your go)'
+  }
   if (req.method === 'POST' && apiPath === '/v0/beads/issues') data.labels = [...new Set([...(data.labels || []), `by:${g.r}`])]
   else if (apiPath.endsWith('/comments')) data.text = `[${g.r}] ${String(data.text || '')}`
   return null
