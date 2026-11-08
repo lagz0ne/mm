@@ -94,6 +94,7 @@ const comments = [
   { id: 'c4', author: 'alex', text: 'Please keep it short.', created_at: iso(100) }, // #4 a person
   { id: 'c5', author: 'platform', text: 'Old free text from before the format.', created_at: iso(90) }, // #5 a lead, free text
   { id: 'c6', author: 'review', text: VERDICT, created_at: iso(10) }, // #6
+  { id: 'c7', author: 'platform', text: VERDICT.replace('re #5', 're #1'), created_at: iso(5) }, // #7 a VERDICT not by review: text
 ]
 const ITEMS = [{ id: 'ms-1', title: 'Messages on the board', status: 'in_progress', priority: 1, issue_type: 'task', assignee: 'platform', labels: [], created_at: iso(300), updated_at: iso(10), description: 'The work.', comments }]
 const bdSrv = http.createServer((req, res) => {
@@ -156,10 +157,11 @@ try {
     const res = page.locator('[data-message="VERDICT"] dd b')
     ok('the VERDICT: Result blocked, in red', (await res.textContent()) === 'blocked' && /destructive/.test(await res.getAttribute('class')))
     const thread = (await page.locator('ol').last().textContent()) || ''
+    ok('a VERDICT by platform (#7) shows as text, not as a message', (await page.locator('[data-message="VERDICT"]').count()) === 1 && /VERDICT → platform · re #1/.test((await page.locator('ol').last().textContent()) || ''))
     ok('a person\'s comment and a lead\'s older free text show as text', thread.includes('Please keep it short.') && thread.includes('Old free text from before the format.'))
     const waits = page.locator('[aria-label="Waits on"] [data-wait]')
     const ws = await waits.evaluateAll((es) => es.map((e) => e.getAttribute('data-wait')))
-    ok('"Waits on": #1 only (the HANDOFF; the ASK #2 has its answer #3)', ws.join() === '1', ws.join())
+    ok('"Waits on": #1 only (the HANDOFF; the ASK #2 has its answer #3; #7 answers nothing)', ws.join() === '1', ws.join())
     const wt = (await waits.first().textContent()) || ''
     ok('...it names review, the action, and late by next wake', /review/.test(wt) && /sign off or block this head/.test(wt) && /late · by next wake/.test(wt), wt)
     const wb = await page.locator('[aria-label="Waits on"]').boundingBox(), ob = await page.locator('ol').last().boundingBox()

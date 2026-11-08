@@ -22,8 +22,9 @@ export function IntentTag({ intent, className }: { intent: string; className?: s
 }
 
 /** One comment: a valid message as its parts; anything else (a person's words, the system's, an older comment) as text. */
-export function CommentBody({ text, onRef, className }: { text: string; onRef: (n: number) => void; className?: string }) {
-  const m: Message = parseMessage(text, { roles: ROLES })
+export function CommentBody({ text, author, onRef, className }: { text: string; author: string; onRef: (n: number) => void; className?: string }) {
+  // a VERDICT not written by review shows as text (review sy-0gsw #8: only review writes one)
+  const m: Message = parseMessage(text, { roles: ROLES, author })
   if (!m.ok) return <Markdown className={className} onRef={onRef}>{text}</Markdown>
   const rest = m.intent === 'NOTE' ? m.text.split('\n').slice(1).join('\n').trim() : ''
   const keys = Object.keys(m.keys).filter((k) => k !== 'Head')

@@ -118,6 +118,16 @@ bad('too long', `NOTE → ops\n${'x'.repeat(MAX)}`, /too long/)
   ok('a list line goes on the key above it', r.ok && r.keys.Notes.includes('\n- 2. a second note'), JSON.stringify(r.errors))
 }
 
+step('only review writes a VERDICT (review sy-0gsw #8)')
+{
+  const by = (author) => parseMessage(EX.verdictSigned, { roles: ROLES, author })
+  ok('a VERDICT by platform is refused, with the reason', !by('platform').ok && by('platform').errors.some((e) => /only review writes a VERDICT/.test(e)), JSON.stringify(by('platform').errors))
+  ok('...by review: valid; by a review worker (review/sec): valid', by('review').ok && by('review/sec').ok)
+  ok('...by a person: refused too', !by('alex').ok)
+  ok('...no author given (a draft check): not judged', parseMessage(EX.verdictSigned, { roles: ROLES }).ok)
+  ok('...another reviewer role, when the board names one', parseMessage(EX.verdictSigned, { author: 'qa', reviewer: 'qa' }).ok)
+}
+
 step('dueAt')
 const at = '2026-11-08T10:30:00Z', T = (s) => Date.parse(s)
 ok('next wake: +60 min by default', dueAt('next wake', at) === T('2026-11-08T11:30:00Z'))
@@ -147,6 +157,8 @@ step('openWaits: what waits on whom')
   thread.push(c('review', EX.verdictSigned.replace('re #4', 're #3'), '2026-11-08T13:40:00Z'))
   ok('a VERDICT re #3 answers the HANDOFF', openWaits(thread, { roles: ROLES }).map((x) => x.n).join(',') === '6')
   ok('an answer before the message does not count', openWaits([c('ops', EX.answer, at), c('platform', EX.ask, at)], { roles: ROLES }).length === 1)
+  const fake = [c('platform', EX.handoff, at), c('platform', EX.verdictSigned.replace('re #4', 're #1'), at)]
+  ok('a VERDICT by platform does not answer a HANDOFF', openWaits(fake, { roles: ROLES }).map((x) => x.n).join(',') === '1')
   ok('an invalid ASK never waits', openWaits([c('platform', EX.ask.replace(/\nWhy:.*$/, ''), at)], { roles: ROLES }).length === 0)
 }
 
@@ -190,6 +202,10 @@ const run = (args, input, env = {}) => spawnSync(process.execPath, [path.join(D,
   ok('gate: --stdin is refused for a lead (cannot be checked first)', r.status === 1 && /--stdin/.test(r.stderr), r.stderr)
   r = gate('platform', ['comments', 'add', 'sy-1', '--', EX.ask])
   ok('gate: text after -- is the comment', r.status === 0, r.stderr)
+  r = gate('platform', ['comments', 'add', 'sy-1', EX.verdictSigned])
+  ok('gate: a VERDICT by platform is refused (only review)', r.status === 1 && /only review writes a VERDICT/.test(r.stderr), r.stderr)
+  r = gate('review', ['comments', 'add', 'sy-1', EX.verdictSigned])
+  ok('gate: a VERDICT by review passes', r.status === 0, r.stderr)
   r = gate('platform', ['list', '--json'])
   ok('gate: a call that writes no comment passes', r.status === 0, r.stderr)
   r = gate('platform', ['comments', 'sy-1'])

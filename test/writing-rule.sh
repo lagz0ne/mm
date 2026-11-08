@@ -57,7 +57,7 @@ check "system board: leads/CLAUDE.md" grep -qF "$A" "$SYS/leads/CLAUDE.md"
 check "system board: assistants/CLAUDE.md" grep -qF "$A" "$SYS/assistants/CLAUDE.md"
 for f in "$PROJ/leads/CLAUDE.md" "$SYS/leads/CLAUDE.md"; do
   check "...each point is there in ${f#$MM_HOME/} (artifact path, mermaid, description is the state, close DONE)" sh -c "grep -qF 'docs/<area>/<item-id>-<slug>.md' '$f' && grep -q 'mermaid' '$f' && grep -q \"description is the current state\" '$f' && grep -q 'one DONE message with the artifact links' '$f'"
-  check "...the message section (sy-0gsw) in ${f#$MM_HOME/}: the header, the intents, 500 characters, never asks a person" sh -c "grep -qF '## Messages between roles: one intent, one expectation' '$f' && grep -qF '<INTENT> → <role> · re #<n>' '$f' && grep -qF '| \`VERDICT\` |' '$f' && grep -q 'At most 500 characters' '$f' && grep -q 'A message never asks a person' '$f'"
+  check "...the message section (sy-0gsw) in ${f#$MM_HOME/}: the header, the intents, 500 characters, never asks a person" sh -c "grep -qF '## Messages between roles: one intent, one expectation' '$f' && grep -qF '<INTENT> → <role> · re #<n>' '$f' && grep -qF '| \`VERDICT\` |' '$f' && grep -q 'At most 600 characters' '$f' && grep -q 'A message never asks a person' '$f'"
 done
 check "...the system brief sends machine work to the brain's plans/ and keeps mm's public repo clean" sh -c "grep -q \"(machine work: the brain's .plans/.)\" '$SYS/leads/CLAUDE.md' &&grep -q 'nothing of this machine goes in it' '$SYS/leads/CLAUDE.md'"
 echo "== config-check holds the artifact rule"

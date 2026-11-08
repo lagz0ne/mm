@@ -17,7 +17,9 @@
 // test/message.mjs keeps them equal).
 import { HEAD } from './owner-card.mjs'
 
-export const MAX = 500
+export const MAX = 600
+/** The role that writes a VERDICT (review sy-0gsw #8): as only it signs off (bin/owner-card signoff). */
+export const REVIEWER = 'review'
 export const MAX_EXPECT_WORDS = 20
 const COMMON = ['Head', 'Expect', 'Done when', 'Verify', 'By']
 /** intent -> { req: its own required keys, opt: its own optional keys, expect: 'role' | 'none' | 'any' | 'no' } */
@@ -51,8 +53,10 @@ export const looksLikeMessage = (text) => LOOSE_HEADER.test(String(text ?? '').r
 /**
  * Read and check one message.
  * @param {string} text  the comment's text
- * @param {{ roles?: string[] }} [o]  roles: the board's role ids (leads/roles.json); when given, the "→" of an ASK,
- *   HANDOFF or VERDICT and the role of an Expect must be one of them
+ * @param {{ roles?: string[], author?: string, reviewer?: string }} [o]  roles: the board's role ids (leads/roles.json);
+ *   when given, the "→" of an ASK, HANDOFF or VERDICT and the role of an Expect must be one of them. author: who
+ *   wrote it (bd's actor, a comment's author); when given, a VERDICT is valid only from the reviewer role (reviewer,
+ *   default REVIEWER) or its worker <reviewer>/<name>
  * @returns {{ ok: boolean, found: boolean, intent: string|null, to: string|null, re: number|null,
  *   keys: Record<string,string>, expect: { role: string, action: string }|null, by: string|null, text: string,
  *   errors: string[] }}  found: the first line is a valid header; keys: the body's keys (continuation lines joined
@@ -76,6 +80,9 @@ export function parseMessage(text, o = {}) {
   out.to = h[2]
   out.re = h[3] ? Number(h[3]) : null
   if (out.re !== null && out.re < 1) errors.push('re #0: comments count from #1')
+  const reviewer = o.reviewer || REVIEWER
+  if (intent === 'VERDICT' && o.author !== undefined && String(o.author).split('/')[0] !== reviewer)
+    errors.push(`only ${reviewer} writes a VERDICT (as only ${reviewer} signs off); ${o.author || 'nobody'} writes an ANSWER, a NOTE or a HANDOFF`)
   if (roles && ['ASK', 'HANDOFF', 'VERDICT'].includes(intent) && !roles.includes(out.to.split('/')[0]))
     errors.push(`${intent} → ${out.to}: ${an(intent)} goes to a role (${roles.join(', ')}); ask a person with an owner card, never in a message`)
   if (len(t) > MAX) errors.push(`the message is too long (${len(t)} characters; at most ${MAX}): put tables, logs and test output in an artifact (artifact <id> <file>) and link it`)
@@ -169,14 +176,15 @@ export function dueAt(by, at, nextWakeMin = 60) {
 /**
  * What waits on whom on one item: each valid ASK or HANDOFF that no later message answers ("re #<n>").
  * @param {{ author?: string, text?: string, created_at?: string }[]} comments  the item's comments, in thread order
- * @param {{ roles?: string[], nextWakeMin?: number, now?: number }} [o]
+ * @param {{ roles?: string[], reviewer?: string, nextWakeMin?: number, now?: number }} [o]  each comment is read with its
+ *   author: a VERDICT not by the reviewer neither waits nor answers
  * @returns {{ n: number, intent: string, from: string, to: string, role: string, action: string, by: string|null,
  *   due: number|null, late: boolean }[]}  role: who must act (the Expect's role); late: its By has passed (now)
  */
 export function openWaits(comments, o = {}) {
   const list = Array.isArray(comments) ? comments : []
-  const msgs = list.map((c, k) => ({ c, n: k + 1, m: parseMessage(c?.text, { roles: o.roles }) }))
-  const answered = new Set(msgs.filter((x) => x.m.found && x.m.re !== null).map((x) => `${x.m.re}<${x.n}`))
+  const msgs = list.map((c, k) => ({ c, n: k + 1, m: parseMessage(c?.text, { roles: o.roles, reviewer: o.reviewer, author: String(c?.author ?? '') }) }))
+  const answered = new Set(msgs.filter((x) => x.m.ok && x.m.re !== null).map((x) => `${x.m.re}<${x.n}`))
   const now = o.now ?? Date.now()
   const out = []
   for (const { c, n, m } of msgs) {
