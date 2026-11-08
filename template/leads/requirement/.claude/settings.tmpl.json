@@ -21,6 +21,7 @@
       "Bash(wt *)",
       "Bash(land *)",
       "Bash(artifact *)",
+      "Bash(owner-card check *)",
       "Bash(ls *)",
       "Bash(mkdir -p *)",
       "Write(//tmp/**)",

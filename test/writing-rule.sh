@@ -68,5 +68,20 @@ check "an assistants' brief without it: refused, and named" sh -c "! (cd '$SYS' 
 cp "$T/a.bak" "$SYS/assistants/CLAUDE.md"
 check "...both back: both boards pass again" sh -c "(cd '$PROJ' && node bin/config-check) && (cd '$SYS' && node bin/config-check)"
 
+# Asking the owner (sy-z5lz, the owner): the owner card rule in the leads' shared brief (both profiles)
+C='## Asking the owner: the owner card'
+echo "== the briefs carry the owner card rule (sy-z5lz)"
+for f in "$PROJ/leads/CLAUDE.md" "$SYS/leads/CLAUDE.md"; do
+  check "${f#$MM_HOME/}: the section, the format, edit in place, never needs-you without it" sh -c "grep -qF '$C' '$f' && grep -qF -- '- **You:** Tap Approve | Reply: <the question> | Check: <what, where> | Nothing' '$f' && grep -qF 'bd update ID --body-file' '$f' && grep -q 'bd refuses .needs-you. on an item with no valid' '$f'"
+done
+echo "== config-check holds the owner card rule"
+cp "$PROJ/leads/CLAUDE.md" "$T/l.bak"; grep -vF "$C" "$T/l.bak" >"$PROJ/leads/CLAUDE.md"
+check "a leads' brief without it: refused, and named" sh -c "! (cd '$PROJ' && node bin/config-check) >'$T/o' 2>&1; grep -q 'leads/CLAUDE.md: lost its \"$C\"' '$T/o'"
+cp "$T/l.bak" "$PROJ/leads/CLAUDE.md"
+cp "$SYS/leads/CLAUDE.md" "$T/l.bak"; grep -vF "$C" "$T/l.bak" >"$SYS/leads/CLAUDE.md"
+check "the system board's, without it: refused" sh -c "! (cd '$SYS' && node bin/config-check) >'$T/o' 2>&1; grep -q 'leads/CLAUDE.md: lost its \"$C\"' '$T/o'"
+cp "$T/l.bak" "$SYS/leads/CLAUDE.md"
+check "...back: both boards pass again" sh -c "(cd '$PROJ' && node bin/config-check) && (cd '$SYS' && node bin/config-check)"
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
