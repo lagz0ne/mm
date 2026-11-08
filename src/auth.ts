@@ -798,16 +798,18 @@ export function worstOf(s: Summary): { text: string; hot: boolean } | null {
   return s.queue !== undefined ? { text: 'nothing waiting', hot: false } : null
 }
 /** One entry of the "Waiting for you" list (sy-vdi8): what the board sent, checked, and the ask the gateway wrote. */
-type Waiting = { id: string; title: string; age_min: number; ask: string; hot: boolean }
+type Waiting = { id: string; title: string; age_min: number; ask: string; hot: boolean; you?: string | null }
 const ITEM_ID = /^[a-z]+-[a-z0-9]+(\.[0-9]+)*$/ // the boards' id pattern (template/site/server.mjs ID_RE)
 // control characters (C0, DEL, C1), the line and paragraph separators, and the bidi controls
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/
 const ASK_LABELS = new Set(['needs-you', 't2', 'signed-off'])
-const WAIT_KEYS = new Set(['id', 'title', 'age_min', 'labels'])
+const WAIT_KEYS = new Set(['id', 'title', 'age_min', 'labels', 'you'])
+const YOU_MAX = 160 // the owner card's You line (sy-z5lz; template/site/waiting.mjs YOU_MAX)
 /** A board's /api/waiting answer, read strictly (review sy-6h43 #5). The answer: an object with `items` (an array) and
  *  `more` (a whole number, optional), nothing else, or the board's whole list is dropped. Each item: an id of the boards'
  *  pattern (at most 64 characters), a plain-text title (1..200 characters, no control characters), age_min a whole
- *  number, labels only from needs-you/t2/signed-off, and nothing else, or that item is dropped. The ask is the gateway's:
+ *  number, labels only from needs-you/t2/signed-off, `you` (optional: the You line of the item's owner card, sy-z5lz)
+ *  null or plain text as the title (1..160 characters), and nothing else, or that item is dropped. The ask is the gateway's:
  *  for the owner "approve (t2, signed off)" (t2 + signed-off) or "needs you" (needs-you), else the item is dropped; for
  *  anyone else "assigned to you" (the board sends them only their own items). A repeated id: kept once. */
 export function waitingOf(o: unknown, owner: boolean): { items: Waiting[]; more: number } | null {
@@ -827,6 +829,8 @@ export function waitingOf(o: unknown, owner: boolean): { items: Waiting[]; more:
     if (!whole(e.age_min, 1e8)) continue
     const labels = e.labels === undefined ? [] : e.labels
     if (!Array.isArray(labels) || labels.length > 3 || labels.some((l) => typeof l !== 'string' || !ASK_LABELS.has(l))) continue
+    const you = e.you
+    if (you !== undefined && you !== null && (typeof you !== 'string' || CONTROL.test(you) || [...you].length < 1 || [...you].length > YOU_MAX)) continue
     let ask: string, hot: boolean
     if (owner) {
       if (labels.includes('t2') && labels.includes('signed-off')) { ask = 'approve (t2, signed off)'; hot = true }
@@ -834,7 +838,7 @@ export function waitingOf(o: unknown, owner: boolean): { items: Waiting[]; more:
       else continue
     } else { ask = 'assigned to you'; hot = false }
     seen.add(e.id)
-    items.push({ id: e.id, title: e.title, age_min: e.age_min as number, ask, hot })
+    items.push({ id: e.id, title: e.title, age_min: e.age_min as number, ask, hot, ...(you !== undefined ? { you: you as string | null } : {}) })
   }
   return { items, more: (x.more as number | undefined) ?? 0 }
 }
@@ -851,17 +855,20 @@ const SIGN_IN_NAV = '<span class="here">Sign in</span>'
 /** Made on the server, no script; every value escaped; the name and link from the gateway's own data, never a board's. */
 type Card = { project: string; host: string; role: string; s: Summary | null; w: { items: Waiting[]; more: number } | null; older: boolean }
 /** The "Waiting for you" list (sy-vdi8), the first thing on the home page: every checked item of every board the person
- *  holds a role on, oldest first: the ask, the title, the board, the id, the age. The link is the gateway's own: the
+ *  holds a role on, oldest first: the ask, the title, what the person must do (the owner card's You line, sy-z5lz;
+ *  "card missing" when the board says the item has none; nothing from a board on an older template), the board, the
+ *  id, the age. The link is the gateway's own: the
  *  board's host (from the host's registry) and the checked id, through the one-redirect flow, to the board's item view
  *  (`/?item=<id>`). No list at all when no board has one (boards on an older template); a board whose answer failed the
  *  check is named in a note. */
+const youOf = (y: string | null | undefined) => (y === undefined ? '' : y === null ? '<span class="w-you none">card missing</span>' : `<span class="w-you">You: ${esc(y)}</span>`)
 function waitingList(cards: Card[]) {
   const withList = cards.filter((c) => c.w), failed = cards.filter((c) => !c.w && !c.older && c.s)
   if (!withList.length && !failed.length) return ''
   const rows = withList.flatMap((c) => c.w!.items.map((i) => ({ ...i, project: c.project, host: c.host })))
     .sort((a, b) => b.age_min - a.age_min || a.project.localeCompare(b.project) || a.id.localeCompare(b.id))
   const href = (host: string, id: string) => `/s?b=${encodeURIComponent(host)}&amp;r=${encodeURIComponent(`/?item=${id}`)}`
-  const row = (r: typeof rows[number]) => `<li><a href="${href(r.host, r.id)}"><span class="w-ask${r.hot ? ' hot' : ''}">${esc(r.ask)}</span><span class="w-age">${esc(mins(r.age_min))}</span><span class="w-title">${esc(r.title)}</span><span class="w-where"><span class="w-board">${esc(r.project)}</span><span class="w-id">${esc(r.id)}</span></span></a></li>`
+  const row = (r: typeof rows[number]) => `<li><a href="${href(r.host, r.id)}"><span class="w-ask${r.hot ? ' hot' : ''}">${esc(r.ask)}</span><span class="w-age">${esc(mins(r.age_min))}</span><span class="w-title">${esc(r.title)}</span>${youOf(r.you)}<span class="w-where"><span class="w-board">${esc(r.project)}</span><span class="w-id">${esc(r.id)}</span></span></a></li>`
   const more = withList.filter((c) => c.w!.more > 0).map((c) => `<p class="w-note">${esc(c.project)}: ${c.w!.more} more on the board.</p>`).join('')
   const notes = failed.map((c) => `<p class="w-note">${esc(c.project)}: the list is unavailable right now.</p>`).join('')
   return `<section class="waiting" aria-labelledby="waiting-h"><h2 id="waiting-h">Waiting for you${rows.length ? ` <span class="w-n">${rows.length}</span>` : ''}</h2>
@@ -960,12 +967,14 @@ button.quiet:hover{border-bottom-color:var(--swiss);color:var(--swiss)}
 .waiting .w-n{color:var(--swiss);font-variant-numeric:tabular-nums}
 .w-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--fg)}
 .w-list li{border-bottom:1px solid var(--rule)}
-.w-list a{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"ask age" "title title" "where where";gap:.2rem .75rem;min-height:44px;padding:.7rem 0;text-decoration:none}
+.w-list a{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"ask age" "title title" "you you" "where where";gap:.2rem .75rem;min-height:44px;padding:.7rem 0;text-decoration:none}
 .w-list a:hover .w-title{color:var(--swiss)}
 .w-ask{grid-area:ask;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .w-ask.hot{color:var(--swiss)}
 .w-age{grid-area:age;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
 .w-title{grid-area:title;font-size:15px;font-weight:600;text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:3px;overflow-wrap:anywhere}
+.w-you{grid-area:you;font-size:14px;overflow-wrap:anywhere}
+.w-you.none{color:var(--swiss);font-size:13px;font-weight:600}
 .w-where{grid-area:where;display:flex;flex-wrap:wrap;gap:0 .75rem;font-size:13px;color:var(--muted)}
 .w-id{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
 .top nav a{text-decoration:none;padding-bottom:2px;border-bottom:2px solid transparent}
@@ -977,7 +986,7 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:
 .tok input{font:inherit;font-size:16px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;width:100%;max-width:34rem;min-height:44px;padding:.5rem;border:1px solid var(--fg);border-radius:0;background:var(--bg);color:var(--fg)}
 .w-none,.w-note{margin:.6rem 0 0;font-size:13px;color:var(--muted)}
 @media (max-width:47.99rem){.top nav{gap:0 1.25rem;font-size:14px}.go a{display:inline-flex;align-items:center;min-height:44px;padding-bottom:0}.top nav a,.top nav .here,.top nav button.quiet{display:inline-flex;align-items:center;min-height:44px}.top nav .who{padding:.75rem 0}.top nav .here{padding-bottom:0}.code{font-size:2rem}}
-@media (min-width:48rem){.w-list a{grid-template-columns:12rem minmax(0,1fr) 9rem 7rem 4.5rem;grid-template-areas:"ask title board id age";align-items:baseline}.w-where{display:contents}.w-board{grid-area:board;overflow-wrap:anywhere}.w-id{grid-area:id}}
+@media (min-width:48rem){.w-list a{grid-template-columns:12rem minmax(0,1fr) 9rem 7rem 4.5rem;grid-template-areas:"ask title board id age" ". you you you .";align-items:baseline}.w-where{display:contents}.w-board{grid-area:board;overflow-wrap:anywhere}.w-id{grid-area:id}}
 @media (min-width:40rem){.top{padding:1rem 1.5rem .75rem}.wrap{padding:2rem 1.5rem 3rem}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:64rem){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}`
 /** The pages on their own, for the phone check (test/board-phone.mjs): no server, no account. */
