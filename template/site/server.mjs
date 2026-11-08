@@ -213,7 +213,9 @@ async function webApprove(req, res) {
     // verifier actor: the owner's go, written as the owner (what the Supervisor counts), then said on the item
     if (!(await bdLabels(item, g.u, { add_labels: ['approved'] }))) return send(res, 502, { title: 'The board could not write it: nothing was approved.' })
     const said = await bdComment(item, g.u, `Approved on the board by ${g.u}.`)
-    did(req, 'approve', a, { mode: 'actor', comment: said })
+    // the owner has done what was asked: the item no longer waits on them
+    const dropped = a.labels.has('needs-you') ? await bdLabels(item, g.u, { remove_labels: ['needs-you'] }) : null
+    did(req, 'approve', a, { mode: 'actor', comment: said, dropped })
     return send(res, 200, { ok: true, approved: true, title: `Approved on the board by ${g.u}.` })
   }
   const b = bridgeSocket(c)

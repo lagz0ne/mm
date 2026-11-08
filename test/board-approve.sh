@@ -145,7 +145,8 @@ says() { title | grep -qF "$1"; }
 if [ "$MODE" = actor ]; then
 echo "== the owner's Approve on the board (verifier actor): approved as the owner, said on the item"
 check "a signed-off t2 without approved: 200, \"Approved on the board by boss.\"" eval '[ "$(act approve "$OA" "{\"item\":\"ap-1\"}")" = 200 ] && says "Approved on the board by boss."'
-check "...approved written as the owner's signed name (the journal's actor, what the Supervisor counts)" eval 'lastw ap-1 PATCH | jq -e ".b.actor == \"boss\" and .b.patch == {add_labels: [\"approved\"]}" && has ap-1 approved'
+check "...approved written as the owner's signed name (the journal's actor, what the Supervisor counts)" eval 'jq -s -e "[.[] | select(.m == \"PATCH\" and (.p | test(\"/ap-1\$\")) and .b.patch == {add_labels: [\"approved\"]})] | length == 1 and (.[0].b.actor == \"boss\")" "$T/bd.jsonl" && has ap-1 approved'
+check "...and needs-you removed, as the owner: the item no longer waits on them" eval 'lastw ap-1 PATCH | jq -e ".b.actor == \"boss\" and .b.patch == {remove_labels: [\"needs-you\"]}" && ! has ap-1 needs-you'
 check "...and a comment by boss: \"[owner] Approved on the board by boss.\" (no address in it)" eval 'lastw ap-1/comments POST | jq -e ".b.author == \"boss\" and .b.text == \"[owner] Approved on the board by boss.\""'
 check "...the board's log says who, what, which item (and from where)" eval 'grep "\"op\":\"owner-action\"" "$BLOG" | grep "\"action\":\"approve\"" | grep "\"item\":\"ap-1\"" | grep -q "\"actor\":\"boss\""'
 n=$(writes ap-1)
@@ -211,7 +212,7 @@ if [ "$MODE" = actor ]; then
 check "Approve through the gateway: the board's answer on the page; approved as boss" eval '[ "$(post "$SB" "${same[@]}" -d "a=approve&b=acme-shop&i=ap-10")" = 200 ] && msg | grep -qF "acme-shop ap-10: Approved on the board by boss." && has ap-10 approved && lastw ap-10 PATCH | jq -e ".b.actor == \"boss\""'
 check "...the board checked it as a browser's: the gateway sent a fresh owner assertion and the board's origin" eval 'grep "\"action\":\"approve\"" "$BLOG" | grep -q "\"item\":\"ap-10\""'
 check "...and twice: the board's \"already approved\" on the page (409)" eval '[ "$(post "$SB" "${same[@]}" -d "a=approve&b=acme-shop&i=ap-10")" = 409 ] && msg | grep -q "already approved"'
-check "...approved, it no longer waits for the go: its row (needs-you still) has no Approve" eval 'home "$SB"; row ap-10 | grep -q "w-ask hot\">needs you<" && ! row ap-10 | grep -q "value=\"approve\""'
+check "...approved, it no longer waits for the owner: needs-you is gone and so is its row" eval 'home "$SB"; ! has ap-10 needs-you && [ -z "$(row ap-10)" ]'
 fi
 check "Not now through the gateway: a comment, needs-you removed" eval '[ "$(post "$SB" "${same[@]}" -d "a=not-now&b=acme-shop&i=ap-16")" = 200 ] && lastw ap-16/comments POST | jq -e ".b.text == \"[owner] Not now, said boss on the board.\"" && ! has ap-16 needs-you'
 check "Reply through the gateway: a comment as the owner, the text as typed (line breaks kept)" eval '[ "$(post "$SB" "${same[@]}" --data-urlencode "a=reply" --data-urlencode "b=acme-shop" --data-urlencode "i=ap-11" --data-urlencode "t=Use acme.
