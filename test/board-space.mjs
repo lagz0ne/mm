@@ -221,7 +221,7 @@ for (const [w, h] of [[1280, 800], [1440, 900], [1920, 1080], [1024, 768]]) {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
   const page = await ctx.newPage()
   await page.goto(`${BASE}/`)
-  await page.getByRole('tab').first().waitFor({ timeout: 10000 })
+  await page.getByRole('button', { name: /^Column/ }).waitFor({ timeout: 10000 })
   await settle(page)
   const m = await measure(page)
   table.push(['390x844', 'phone', pct(m.share)])
