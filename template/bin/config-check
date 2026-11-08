@@ -387,11 +387,14 @@ for (const f of WF) {
     if (s.kind === 'write' && /^(Edit|Write)\(/.test(a) && !mineW(a)) bad(`${who}: writes outside its own folder (${a})`)
   }
 }
-// Words to a person (sy-dz7y, the owner): the leads' shared brief and the assistants' carry the ASD-STE100 rules
-const WRITE_RULE = '## Writing to a person (ASD-STE100)'
+// Words to a person (sy-dz7y, the owner): the leads' shared brief and the assistants' carry the ASD-STE100 rules;
+// and words between roles (sy-z29t, the owner): short comments, the substance in linked artifacts, diagrams.
+const WRITE_RULE = '## Writing to a person (ASD-STE100)', ARTIFACT_RULE = '## Short comments, the work in artifacts'
 for (const f of [path.join(P, 'leads', 'CLAUDE.md'), path.join(ASSIST_ROOT, 'CLAUDE.md')]) {
   if (!fs.existsSync(f)) continue
-  if (!fs.readFileSync(f, 'utf8').includes(WRITE_RULE)) bad(`${path.relative(P, f)}: lost its "${WRITE_RULE}" section (how every lead and assistant writes to a person)`)
+  const brief = fs.readFileSync(f, 'utf8')
+  if (!brief.includes(WRITE_RULE)) bad(`${path.relative(P, f)}: lost its "${WRITE_RULE}" section (how every lead and assistant writes to a person)`)
+  if (!brief.includes(ARTIFACT_RULE)) bad(`${path.relative(P, f)}: lost its "${ARTIFACT_RULE}" section (short comments; the substance in linked files)`)
 }
 // Assistants: read-only by permissions, whatever their brief says.
 const SYSTEM_NAMES = new Set(['wake', 'watchdog', 'brain', 'ui', 'beads', 'smoke', 'system', 'admin', 'setup', 'guest', 'human', 'mm-upstream'])

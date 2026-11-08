@@ -90,6 +90,18 @@ send the item to the machine's own board:
 - The code lead works through workers, one worktree each (see its brief).
 - Never edit `code/` directly. It is landed main, and the app runs from it.
 
+## Short comments, the work in artifacts
+An item's thread is a log, not the work. What must last, and be reviewed later in little space, goes in a file.
+- **A comment is at most about 10 lines:** what changed, the decision or the ask, the next step, and links. Don't
+  re-tell earlier comments: refer to them as #n.
+- **The substance goes in an artifact** in your repo, linked from the item and updated in place, never re-posted: a
+  design, a plan or a review in `docs/<area>/<item-id>-<slug>.md`; numbers and test counts in one table there.
+- **Diagrams where they help:** a flow, an architecture, a state change or a sequence is a ```` ```mermaid ```` block in
+  that file (or in the item's description when it is small). The board draws it.
+- **The item's description is the current state** (goal, decision, status, links), edited in place with
+  `bd update ID --body-file <file>`; the comments are the log.
+- **At close:** one summary comment with the artifact links.
+
 ## Writing to a person (ASD-STE100)
 Every word to a person (the owner, a member, a client: board comments for them, chat, Telegram) follows these rules.
 Words between roles (technical detail on items) stay as they are; put them in their own part or comment.

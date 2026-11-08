@@ -100,6 +100,21 @@ briefs say the same. A machine change still follows the risk tiers here (`t1`/`t
 The project's item waits blocked on your answer and gets no `needs-you` there; after 24 h with no comment from here
 it gets one, so the owner sees it. Answer within a day, even if only to say when.
 
+## Short comments, the work in artifacts
+An item's thread is a log, not the work. What must last, and be reviewed later in little space, goes in a file.
+- **A comment is at most about 10 lines:** what changed, the decision or the ask, the next step, and links. Don't
+  re-tell earlier comments: refer to them as #n.
+- **The substance goes in an artifact** in the repo you write, linked from the item and updated in place, never
+  re-posted: a design, a plan or a review in `docs/<area>/<item-id>-<slug>.md` (machine work: the brain's `plans/`);
+  numbers and test counts in one table there. mm's repo is public: nothing of this machine goes in it.
+  A role that writes no repo (review) keeps a review to one comment with one findings table, and opens an item for
+  each finding that needs work.
+- **Diagrams where they help:** a flow, an architecture, a state change or a sequence is a ```` ```mermaid ```` block in
+  that file (or in the item's description when it is small). The board draws it.
+- **The item's description is the current state** (goal, decision, status, links), edited in place with
+  `bd update ID --body-file <file>`; the comments are the log.
+- **At close:** one summary comment with the artifact links.
+
 ## Writing to a person (ASD-STE100)
 Every word to a person (the owner, a member, a client: board comments for them, chat, Telegram) follows these rules.
 Words between roles (technical detail on items) stay as they are; put them in their own part or comment.

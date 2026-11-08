@@ -49,5 +49,24 @@ check "an assistants' brief without the section: refused, and named" sh -c "! (c
 cp "$T/a.bak" "$SYS/assistants/CLAUDE.md"
 check "...both back: passes again" cc "$SYS"
 
+# Words between roles (sy-z29t, the owner): short comments, the substance in linked artifacts, diagrams where they help.
+A='## Short comments, the work in artifacts'
+echo "== the briefs carry the artifact rule (sy-z29t)"
+check "project board: leads/CLAUDE.md" grep -qF "$A" "$PROJ/leads/CLAUDE.md"
+check "system board: leads/CLAUDE.md" grep -qF "$A" "$SYS/leads/CLAUDE.md"
+check "system board: assistants/CLAUDE.md" grep -qF "$A" "$SYS/assistants/CLAUDE.md"
+for f in "$PROJ/leads/CLAUDE.md" "$SYS/leads/CLAUDE.md"; do
+  check "...each point is there in ${f#$MM_HOME/} (10 lines, artifact path, mermaid, description is the state, close summary)" sh -c "grep -q 'at most about 10 lines' '$f' && grep -qF 'docs/<area>/<item-id>-<slug>.md' '$f' && grep -q 'mermaid' '$f' && grep -q \"description is the current state\" '$f' && grep -q 'one summary comment with the artifact links' '$f'"
+done
+check "...the system brief sends machine work to the brain's plans/ and keeps mm's public repo clean" sh -c "grep -q \"(machine work: the brain's .plans/.)\" '$SYS/leads/CLAUDE.md' &&grep -q 'nothing of this machine goes in it' '$SYS/leads/CLAUDE.md'"
+echo "== config-check holds the artifact rule"
+cp "$PROJ/leads/CLAUDE.md" "$T/l.bak"; grep -vF "$A" "$T/l.bak" >"$PROJ/leads/CLAUDE.md"
+check "a leads' brief without it: refused, and named" sh -c "! (cd '$PROJ' && node bin/config-check) >'$T/o' 2>&1; grep -q 'leads/CLAUDE.md: lost its \"$A\"' '$T/o'"
+cp "$T/l.bak" "$PROJ/leads/CLAUDE.md"
+cp "$SYS/assistants/CLAUDE.md" "$T/a.bak"; grep -vF "$A" "$T/a.bak" >"$SYS/assistants/CLAUDE.md"
+check "an assistants' brief without it: refused, and named" sh -c "! (cd '$SYS' && node bin/config-check) >'$T/o' 2>&1; grep -q 'assistants/CLAUDE.md: lost its \"$A\"' '$T/o'"
+cp "$T/a.bak" "$SYS/assistants/CLAUDE.md"
+check "...both back: both boards pass again" sh -c "(cd '$PROJ' && node bin/config-check) && (cd '$SYS' && node bin/config-check)"
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
