@@ -14,6 +14,8 @@ import { Avatar, PersonaContext, personaOf } from '@/lib/persona'
 import { ThreadPresence } from '@/Presence'
 import { Designs } from '@/Designs'
 import { usePhone } from '@/lib/phone'
+import { parseCard } from '@/lib/owner-card.mjs'
+import { OwnerCard } from '@/OwnerCard'
 
 const STATUSES = ['open', 'in_progress', 'blocked', 'deferred'] as const
 const NONE = '_none'
@@ -85,6 +87,8 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   const children = i ? [...byId.values()].filter((x) => x.parent === i.id) : []
   const closed = i?.status === 'closed'
   // the T2 go, for the owner on the public side: a signed-off t2 without approved
+  // the owner card (sy-z5lz): read first, in its own box; the description below it without the card
+  const card = parseCard(i?.description, i?.labels || [])
   const approvable = !!i && !!approval && !!i.labels?.includes('t2') && !!i.labels?.includes('signed-off') && !i.labels?.includes('approved')
 
   return (
@@ -116,6 +120,8 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                 onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
                 aria-label="Title" className="mt-1 h-auto border-0 px-0 text-xl md:text-xl font-bold tracking-tight shadow-none focus-visible:ring-0 dark:bg-transparent" />)}
             </div>
+
+            <OwnerCard card={card} needsYou={!closed && !!i.labels?.includes('needs-you')} />
 
             <div className="grid border-b md:grid-cols-3">
               <Field label="Status">
@@ -175,7 +181,8 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                     <Button size="xs" variant="ghost" onClick={() => { setDesc(i.description || ''); setEditing(false) }}>Cancel</Button>
                   </div>
                 </>
-              ) : i.description ? <Markdown>{i.description}</Markdown>
+              ) : card.found ? (card.rest.trim() ? <Markdown>{card.rest}</Markdown> : null)
+                : i.description ? <Markdown>{i.description}</Markdown>
                 : <button className="text-xs text-muted-foreground hover:underline" onClick={() => setEditing(true)}>Add a description</button>}
               {i.close_reason && <p className="mt-2 text-xs text-muted-foreground">Closed: {i.close_reason}</p>}
             </Section>
