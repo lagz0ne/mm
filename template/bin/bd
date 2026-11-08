@@ -21,6 +21,13 @@ case "$cmd:$sub" in
   comment:*|update:*|close:*|create:*|q:*|reopen:*|delete:*|assign:*|edit:*|set-state:*|comments:add|label:add|label:remove|dep:add|dep:remove|dep:rm|dep:relate|dep:unrelate)
     [ -n "$actor" ] || { echo "bd: refused: a board write (bd $cmd${sub:+ $sub}) needs an actor: pass --actor <name> or set BEADS_ACTOR (without one bd records \"mm\", which reads as a person)" >&2; exit 1; } ;;
 esac
+# needs-you only with a valid owner card (sy-z5lz): a call that adds it (label add, update --add-label/-l/--set-labels,
+# create/q -l/--labels) is checked by bin/owner-card gate, which reads the item (bd show) only then. Every other call,
+# and removing the label, costs nothing more than this loop over the arguments.
+case "$cmd:$sub" in
+  create:*|q:*|new:*|update:*|edit:*|label:add)
+    for a in "$@"; do case "$a" in --) break ;; *needs-you*) "$P/bin/owner-card" gate -- "$@" || exit 1; break ;; esac; done ;;
+esac
 unset actor cmd sub next
 export BEADS_DIR="$P/control/.beads" XDG_CONFIG_HOME="$P/.config" DOLT_ROOT_PATH="$P/.dolt-root" PATH="$P/tools:$PATH"
 # Talk to Dolt through its Unix socket when it runs with one (services.json); otherwise the TCP port in metadata.
