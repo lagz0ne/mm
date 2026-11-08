@@ -932,7 +932,11 @@ p{margin:0 0 .75rem;overflow-wrap:anywhere}
 .muted,.note{color:var(--muted)}
 .note{font-size:13px;border-top:1px solid var(--rule);padding-top:.75rem;margin-top:1.5rem}
 .label{margin:0;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-.code{margin:.25rem 0 1rem;padding:.75rem 0;border-top:1px solid var(--fg);border-bottom:1px solid var(--fg);font:700 2.5rem/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.12em;font-variant-numeric:tabular-nums}
+.code{margin:.25rem 0 1rem;padding:.75rem 0;border-top:1px solid var(--fg);border-bottom:1px solid var(--fg);font:700 2.5rem/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.12em;font-variant-numeric:tabular-nums;white-space:nowrap;user-select:all;-webkit-user-select:all}
+.code-acts{display:flex;flex-wrap:wrap;gap:.5rem;margin:0 0 .5rem}
+a.btn{display:inline-flex;align-items:center;min-height:44px;padding:.6rem 1.5rem;border:1px solid var(--fg);font-size:14px;font-weight:600;text-decoration:none;color:var(--fg)}
+a.btn:hover{border-color:var(--swiss);color:var(--swiss)}
+.hint{margin:0 0 1rem;font-size:14px}
 button{font:inherit;font-size:14px;font-weight:600;min-height:44px;padding:.6rem 1.5rem;border:1px solid var(--fg);border-radius:0;background:var(--fg);color:var(--bg);cursor:pointer}
 button:hover{background:var(--swiss);border-color:var(--swiss)}
 button.quiet{min-height:0;padding:0 0 2px;border:0;border-bottom:2px solid transparent;background:none;color:var(--fg);font-size:13px}
@@ -977,15 +981,34 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:
 @media (min-width:40rem){.top{padding:1rem 1.5rem .75rem}.wrap{padding:2rem 1.5rem 3rem}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:64rem){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}`
 /** The pages on their own, for the phone check (test/board-phone.mjs): no server, no account. */
-export const pagesForTest = { home: homePage, code: codePage, continue: continuePage, account: tokenPage, runs: runsPage, message: page, css: APP_CSS }
-function codePage(code: string, board: string) {
+export const pagesForTest = { home: homePage, code: codePage, continue: continuePage, account: tokenPage, runs: runsPage, message: page, css: APP_CSS, get js() { return CODE_JS } }
+/** The Telegram bot's user name (mm's config `telegram.bot_username`, with or without the @), or '' when unset or not a
+ *  valid Telegram user name (5-32 of A-Z a-z 0-9 _, a letter first): then the page has no "Open in Telegram" (sy-2pv9). */
+export function botUsername(raw: unknown = getPath(loadConfig(), 'telegram.bot_username')): string {
+  const u = String(raw ?? '').trim().replace(/^@/, '')
+  return /^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(u) ? u : ''
+}
+/** The deep link to the bot with the code (sy-2pv9): Telegram sends the bot '/start <code>', which the bridge (v15)
+ *  takes as a typed code. The code is 4-4 Crockford base32 with its dash: all characters a start parameter allows. */
+export const signinLink = (bot: string, code: string) => `https://t.me/${bot}?start=${code}`
+function codePage(code: string, board: string, bot = botUsername()) {
   return shell('Sign in', SIGN_IN_NAV, `${board ? `<p class="label">Board</p><p>${esc(board)}</p>` : ''}
-<p>Give this code to the owner to approve, or open the sign-in link they sent you:</p>
+<p>${bot ? 'Sign in with this code, or open the sign-in link the owner sent you:' : 'Give this code to the owner to approve, or open the sign-in link they sent you:'}</p>
 <p id="code" class="code">${esc(code)}</p>
+<p class="code-acts"><button type="button" id="copy" data-code="${esc(code)}">Copy code</button>${bot
+    ? ` <a class="btn" id="tg" href="${esc(signinLink(bot, code))}" target="_blank" rel="noreferrer">Open in Telegram</a>` : ''}</p>
+${bot ? `<p class="hint">Send this code to the bot in Telegram, then press 'This is me' there.</p>` : ''}
 <p id="state" class="muted">Waiting for approval… (valid ${Math.round(CODE_MS / 60e3)} minutes)</p>
 <p class="note">The code does nothing by itself. Only the owner can approve it.</p>`, '\n<script src="/s/app.js"></script>')
 }
-const CODE_JS = `(function poll(){fetch('/s/poll',{credentials:'same-origin'}).then(function(r){return r.json().then(function(j){
+// Copy code (sy-2pv9): the clipboard, else select the code so a long press or Ctrl+C copies it; "Copied" for 2 s.
+const COPY_JS = `(function(){var b=document.getElementById('copy'),c=document.getElementById('code');if(!b||!c)return;
+function sel(){var r=document.createRange();r.selectNodeContents(c);var s=getSelection();s.removeAllRanges();s.addRange(r)}
+function done(t){b.textContent=t;clearTimeout(b._t);b._t=setTimeout(function(){b.textContent='Copy code'},2000)}
+b.addEventListener('click',function(){var v=b.getAttribute('data-code')||c.textContent;
+if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(v).then(function(){done('Copied')},function(){sel();done('Selected: copy it')})}
+else{sel();var ok=false;try{ok=document.execCommand('copy')}catch(e){}done(ok?'Copied':'Selected: copy it')}})})();`
+const CODE_JS = COPY_JS + `(function poll(){fetch('/s/poll',{credentials:'same-origin'}).then(function(r){return r.json().then(function(j){
 if(j.state==='approved'){document.getElementById('state').textContent='Approved. Signing you in…';var u=new URL(j.next,location.href),f=document.createElement('form');f.method='post';f.action='/s/l';
 [['t',u.searchParams.get('token')||''],['c',u.searchParams.get('callbackURL')||'/s/done']].forEach(function(x){var i=document.createElement('input');i.type='hidden';i.name=x[0];i.value=x[1];f.appendChild(i)});document.body.appendChild(f);f.submit();return}
 if(j.state==='expired'){document.getElementById('state').textContent='This code has expired. Reload the page for a new one.';return}

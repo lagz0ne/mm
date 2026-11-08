@@ -39,6 +39,11 @@ Status: **built** (`src/auth.ts`; `test/auth.sh`, `test/auth-e2e.sh`, `test/box-
   carry no inline style: they link one stylesheet, `/s/app.css`, served by the gateway (same headers, but cacheable
   for an hour). Fonts: the boards' stack (`'Inter Variable', 'Helvetica Neue', Helvetica, Arial`), from the device;
   nothing is loaded from elsewhere. The only script is the code page's `/s/app.js` (same origin, so the CSP allows it).
+- **The code page** (sy-2pv9): the code selects whole on one tap and never breaks. **Copy code** puts it on the
+  clipboard (else selects it) and says "Copied" for 2 s. With `telegram.bot_username` in mm's config (5-32 of
+  `A-Z a-z 0-9 _`, a leading `@` dropped), **Open in Telegram** links `https://t.me/<bot>?start=<CODE>`, the code as
+  shown (`XXXX-XXXX`, Crockford base32, dash kept). Telegram sends the bot `/start <CODE>`, which the bridge takes as a
+  typed code. Without the setting, no button.
 
 ## Home
 `https://auth.<domain>/` (and `/s/done`, where a link lands) is the signed-in person's home page: one card per board
