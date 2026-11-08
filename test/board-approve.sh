@@ -92,6 +92,11 @@ const items = [
   I('ap-23', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', 'mm@9f8e7d6') }),
   I('ap-24', ['t2', 'signed-off', 'needs-you', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve') }),
   I('ap-25', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve') }),
+  // sy-t9tg: t2 cards that ask something other than the go (no Head needed; never an Approve)
+  I('ap-30', ['t2', 'signed-off', 'needs-you', SH], { description: card('Check: run ssh admin@host, then sudo -v, and say if it worked') }),
+  I('ap-31', ['t2', 'needs-you'], { description: card('Reply: which account do we use?', '') }),
+  I('ap-32', ['t2', 'signed-off', 'needs-you'], { description: card('Reply: which account?', '') }),
+  I('ap-33', ['t2', 'signed-off', 'needs-you'], { description: card('Check: the login, on the host', '') }),
 ]
 const byId = new Map(items.map((i) => [i.id, i]))
 http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
@@ -209,6 +214,19 @@ check "signed-head:* is the leads': a member may not add it (403), nothing writt
 check "...nor the owner" eval '[ "$(lab "$OA" ap-22 signed-head:mm@0a1b2c3)" = 403 ] && says "only the leads change" && [ "$(writes ap-22)" = 0 ]'
 check "...nor remove it" eval 'curl -s -o "$T/ab" -X PATCH -H "content-type: application/json" -H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $OA" -H "origin: https://$BOARD" -H "sec-fetch-site: same-origin" -d "{\"patch\":{\"remove_labels\":[\"signed-head:mm@0a1b2c3\"]}}" "http://127.0.0.1:$BP/api/v0/beads/issues/ap-20" && says "only the leads change" && has ap-20 signed-head:mm@0a1b2c3'
 
+echo "== a t2 non-go ask (sy-t9tg): no go to give, its own Reply or Done"
+NG="this item asks you something else; there is no go to give here"
+check "Approve on a signed-off t2 whose You is Check: (even with a signed head): 403, \"$NG\", nothing written" eval '[ "$(act approve "$OA" "{\"item\":\"ap-30\"}")" = 403 ] && says "$NG" && [ "$(writes ap-30)" = 0 ] && ! has ap-30 approved'
+check "Not now on it: 403, the same, nothing written" eval '[ "$(act not-now "$OA" "{\"item\":\"ap-30\"}")" = 403 ] && says "$NG" && [ "$(writes ap-30)" = 0 ]'
+check "Approve on a t2 Reply: ask without sign-off or head: 403, the same" eval '[ "$(act approve "$OA" "{\"item\":\"ap-31\"}")" = 403 ] && says "$NG" && [ "$(writes ap-31)" = 0 ]'
+check "Not now on a signed-off t2 Reply: ask: 403" eval '[ "$(act not-now "$OA" "{\"item\":\"ap-32\"}")" = 403 ] && says "$NG" && [ "$(writes ap-32)" = 0 ]'
+if [ "$MODE" = actor ]; then
+check "the label rail: the owner adds approved to a signed-off non-go ask with a signed head: 403, \"asks for no go\", nothing written" eval '[ "$(lab "$OA" ap-30 approved)" = 403 ] && says "asks for no go" && [ "$(writes ap-30)" = 0 ] && ! has ap-30 approved'
+check "...to a non-go ask without sign-off: 403, nothing written" eval '[ "$(lab "$OA" ap-31 approved)" = 403 ] && [ "$(writes ap-31)" = 0 ] && ! has ap-31 approved'
+fi
+check "Reply on the board's route: a comment as the owner; needs-you stays" eval '[ "$(act reply "$OA" "{\"item\":\"ap-31\",\"text\":\"Use admin.\"}")" = 200 ] && lastw ap-31/comments POST | jq -e ".b.text == \"[owner] Use admin.\" and .b.author == \"boss\"" && has ap-31 needs-you && ! has ap-31 approved'
+check "Done on the board's route: \"Checked: done\", needs-you removed, no approved" eval '[ "$(act done "$OA" "{\"item\":\"ap-30\"}")" = 200 ] && lastw ap-30/comments POST | jq -e ".b.text == \"[owner] Checked: done, said boss.\"" && ! has ap-30 needs-you && ! has ap-30 approved'
+
 echo "== Not now (POST /api/not-now): a comment and needs-you removed"
 check "the owner: 200; \"[owner] Not now, said boss on the board.\"; needs-you gone, no approved" eval '[ "$(act not-now "$OA" "{\"item\":\"ap-5\"}")" = 200 ] && lastw ap-5/comments POST | jq -e ".b.text == \"[owner] Not now, said boss on the board.\" and .b.author == \"boss\"" && ! has ap-5 needs-you && ! has ap-5 approved && has ap-5 t2'
 check "...the same checks: a member 403, another origin 403, no sign-off 403" eval '[ "$(act not-now "$MA" "{\"item\":\"ap-4\"}")" = 403 ] && [ "$(rawact not-now "$OA" "{\"item\":\"ap-4\"}" -H "content-type: application/json" -H "origin: https://evil.example")" = 403 ] && [ "$(act not-now "$OA" "{\"item\":\"ap-2\"}")" = 403 ]'
@@ -238,6 +256,8 @@ check "a card that names its head: \"Head\" on the row (sy-hzmu)" eval 'row ap-2
 check "...a moved head: the board's reason instead of Approve and Not now" eval 'row ap-20 | grep -qF "<p class=\"w-refused\" role=\"note\">No go yet: the head changed since review&#39;s sign-off (card: mm@9f8e7d6, signed: mm@0a1b2c3).</p>" && ! row ap-20 | grep -q "value=\"approve\""' 
 check "...no signed-head: the reason too" eval 'row ap-22 | grep -qF "No go yet: review&#39;s sign-off names no head (card: mm@0a1b2c3)." && ! row ap-22 | grep -q "value=\"approve\""'
 check "...the signed head: Head and Approve, no reason" eval 'row ap-25 | grep -qF "<dt>Head</dt><dd>mm@0a1b2c3</dd>" && row ap-25 | grep -q "value=\"approve\"" && ! row ap-25 | grep -q "w-refused"'
+check "a signed-off t2 Reply: ask (sy-t9tg): \"needs you\", the reply box, no Approve, no Not now, no refusal note" eval 'row ap-32 | grep -q "needs you" && ! row ap-32 | grep -q "approve (t2" && row ap-32 | grep -q "<textarea id=\"r-acme-shop-ap-32\"" && ! row ap-32 | grep -q -e "value=\"approve\"" -e "value=\"not-now\"" -e "w-refused"'
+check "...a signed-off t2 Check: ask: Done, no Approve" eval 'row ap-33 | grep -qF "<input type=\"hidden\" name=\"a\" value=\"done\"><button type=\"submit\">Done</button>" && ! row ap-33 | grep -q -e "value=\"approve\"" -e "approve (t2"'
 check "the page has no inline script or style (CSP default-src 'self')" eval '! grep -qi -e "<script" -e "style=" "$T/hp"'
 
 post() { local who=$1; shift; gw -o "$T/hp" -w '%{http_code}' -H "cookie: $who" "$@" "$G/s/act"; }

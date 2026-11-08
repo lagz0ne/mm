@@ -2,6 +2,7 @@
 // the person the gateway asks for, never anyone else's. The gateway fetches it per board with that person's own
 // assertion, checks every field again, writes the one-line ask itself from the labels and builds the link itself.
 //   the owner             the items labelled needs-you, and the t2 items review signed off that wait for approved
+//                         (but a non-go ask, sy-t9tg: You Reply:/Check:/Nothing; it is listed by needs-you only)
 //   designer/member/viewer only the open items assigned to them (needs-you means the owner, not every human)
 // Each entry: id, title (plain text, at most 200 characters, no control or bidi characters), age_min (whole minutes
 // since its last update), only the labels the ask needs (needs-you; t2 and signed-off for an approval), and `you`: the
@@ -19,7 +20,7 @@
 // shows it instead of Approve. The board refuses the go anyway.
 // The answer stays under 32 KB (MAX_BYTES): what doesn't fit is counted in `more`, never cut in the middle.
 // Pure: the board's server feeds it, test/board-pull.mjs checks it.
-import { HEAD, headRefusal, parseCard } from '../bin/lib/owner-card.mjs'
+import { HEAD, headRefusal, isNonGoAsk, parseCard } from '../bin/lib/owner-card.mjs'
 
 export const MAX_BYTES = 32 * 1024
 export const TITLE_MAX = 200
@@ -70,7 +71,9 @@ export function waitingFor({ items, me, owner, now = Date.now(), max = MAX_BYTES
     if (!i || i.status === 'closed' || typeof i.id !== 'string' || !ID_RE.test(i.id)) continue
     let labels
     if (owner) {
-      const approval = has(i, 't2') && has(i, 'signed-off') && !has(i, 'approved')
+      // never an approval for a non-go ask (sy-t9tg: You Reply:/Check:/Nothing): it is listed by its needs-you, with no
+      // t2 labels, so the gateway offers its Reply or Done and never Approve (no card: an approval, with its refusal)
+      const approval = has(i, 't2') && has(i, 'signed-off') && !has(i, 'approved') && !isNonGoAsk(parseCard(i.description, i.labels).card)
       labels = [...(has(i, 'needs-you') ? ['needs-you'] : []), ...(approval ? ['t2', 'signed-off'] : [])]
       if (!labels.length) continue
     } else {
