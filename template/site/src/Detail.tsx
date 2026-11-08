@@ -15,7 +15,7 @@ import { ThreadPresence } from '@/Presence'
 import { Designs } from '@/Designs'
 import { usePhone } from '@/lib/phone'
 import { parseCard } from '@/lib/owner-card.mjs'
-import { OwnerCard } from '@/OwnerCard'
+import { CopyLink, OwnerCard, itemUrl } from '@/OwnerCard'
 
 const STATUSES = ['open', 'in_progress', 'blocked', 'deferred'] as const
 const NONE = '_none'
@@ -121,7 +121,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                 aria-label="Title" className="mt-1 h-auto border-0 px-0 text-xl md:text-xl font-bold tracking-tight shadow-none focus-visible:ring-0 dark:bg-transparent" />)}
             </div>
 
-            <OwnerCard card={card} needsYou={!closed && !!i.labels?.includes('needs-you')} />
+            <OwnerCard card={card} needsYou={!closed && !!i.labels?.includes('needs-you')} id={i.id} />
 
             <div className="grid border-b md:grid-cols-3">
               <Field label="Status">
@@ -152,7 +152,10 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
 
             <div className="flex flex-wrap gap-2 border-b px-4 py-3 md:px-5">
               {closed ? (
-                <Button size="sm" variant="outline" disabled={busy} onClick={() => run(() => api.reopen(i.id))}>Reopen</Button>
+                <>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => run(() => api.reopen(i.id))}>Reopen</Button>
+                  <CopyLink url={itemUrl(i.id)} className="ml-auto" />
+                </>
               ) : (
                 <>
                   {i.status !== 'in_progress' && <Button size="sm" disabled={busy} onClick={() => run(() => api.patch(i.id, { status: 'in_progress' }))}>Start</Button>}
@@ -160,7 +163,8 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                   {i.status !== 'open' && <Button size="sm" variant="outline" disabled={busy} onClick={() => run(() => api.patch(i.id, { status: 'open' }))}>Back to open</Button>}
                   {approvable && approval === 'telegram' && <Button size="sm" disabled={busy} title="With the ledger on, only your tap on Telegram signs the T2 go: this sends the item there"
                     onClick={() => run(async () => { setSent(null); const d = await api.approveOnTelegram(i.id); setSent(d.title); toast.success(d.title) })}>Approve on Telegram</Button>}
-                  <Button size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => run(() => api.close(i.id, 'Closed from board'))}>Close</Button>
+                  <CopyLink url={itemUrl(i.id)} className="ml-auto" />
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => run(() => api.close(i.id, 'Closed from board'))}>Close</Button>
                 </>
               )}
             </div>

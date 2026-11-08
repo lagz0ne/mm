@@ -7,7 +7,8 @@
 // since its last update), only the labels the ask needs (needs-you; t2 and signed-off for an approval), and `you`: the
 // `You` line of the item's owner card (sy-z5lz; bin/lib/owner-card.mjs), plain text as the title, at most 160
 // characters. For the owner `you` is always there, null when the item has no card (or no You line): the gateway shows
-// "card missing". For anyone else it is there only when the card has one. Oldest first.
+// "card missing". For anyone else it is there only when the card has one. Oldest first. No link: the gateway shows
+// each item's address itself, from the board's host in its registry and the checked id (review sy-6h43).
 // The answer stays under 32 KB (MAX_BYTES): what doesn't fit is counted in `more`, never cut in the middle.
 // Pure: the board's server feeds it, test/board-pull.mjs checks it.
 import { parseCard } from '../bin/lib/owner-card.mjs'

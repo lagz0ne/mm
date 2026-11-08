@@ -2,7 +2,9 @@
 // The owner card on the board (sy-z5lz), at 390x844 (Playwright): the item's detail shows the card first, as a box
 // at the top (each key in bold, the value as text, Link a link), the description below it without the card; an invalid
 // card shows what it read and "card invalid: <reason>"; a needs-you item with no card says "card missing"; an item
-// without needs-you and without a card shows nothing more. No sideways scroll. Then the owner's "Waiting for you" list:
+// without needs-you and without a card shows nothing more. The card's last line is Item: the item's own URL (made by
+// the board, it wins over a written one) with a copy button (40 px+); every item's detail has a copy button, card or
+// not; where the clipboard is refused the link shows in a field, selected. No sideways scroll. Then the owner's "Waiting for you" list:
 // the board's /api/waiting (the real server.mjs, signed in as the owner on its public side) sends each item's You line,
 // and the gateway's home page (src/auth.ts, rendered with bun from that answer) shows it, or "card missing".
 // The built site and the real site/server.mjs (copies, in a temp folder), a stand-in bd serve and Paseo; no bd, no
@@ -74,12 +76,13 @@ const CARD = `## Owner
 - **Why:** You see in 6 lines what is asked and why, without reading the agents' threads.
 - **You:** Reply: ok, or say which line to change.
 - **Link:** artifacts/oc-1/plan.md
+- **Item:** https://somewhere-else.example.org/?item=oc-1
 
 The owner asked for output that is "loud and clear, correct and enough". Plan: the steps in the linked file.`
 const BAD = `## Owner
 - **What:** Open the mail port to the relay so the alerts can leave the machine.
 - **Why:** The alerts stay on the board only.
-- **You:** Tap Approve
+- **You:** Tap Approve in Telegram, or press Approve on this item
 - **If yes:** Ops opens the port and tests one alert.
 - **Risk:** some, a wrong rule can close a port
 
@@ -145,7 +148,7 @@ try {
   ok('a card box, valid', (await box.count()) === 1 && (await box.getAttribute('data-owner-card')) === 'ok')
   if (!(await box.count())) { await page.screenshot({ path: path.join(SHOTS, 'debug-no-card.png') }); throw new Error(`no card box; page errors: ${errs.join(' | ')}`) }
   const keys = await box.locator('dt').allTextContents()
-  ok('its keys in order: What, Why, You, Link', keys.join() === 'What,Why,You,Link', keys.join())
+  ok('its keys in order: What, Why, You, Link, Item', keys.join() === 'What,Why,You,Link,Item', keys.join())
   ok('...each key in bold', (await box.locator('dt').evaluateAll((ds) => ds.every((d) => Number(getComputedStyle(d).fontWeight) >= 700))))
   ok('...the values as written (plain text)', (await box.locator('[data-key="You"] dd').textContent()) === 'Reply: ok, or say which line to change.'
     && (await box.locator('[data-key="Why"] dd').textContent()) === 'You see in 6 lines what is asked and why, without reading the agents\' threads.')
@@ -159,10 +162,22 @@ try {
   ok('the description shows the rest, without the card repeated', dtext.includes('loud and clear, correct and enough') && !dtext.includes('A fixed short card') && !/What:|## Owner/.test(dtext), dtext.slice(0, 200))
   const link = box.locator('[data-key="Link"] dd button')
   ok('Link is a link (it opens the artifact)', (await link.count()) === 1 && (await link.textContent()) === 'artifacts/oc-1/plan.md')
+  ok('Item: this board\'s own link to the item (the written one loses)', (await box.locator('[data-item-url]').textContent()) === `${BASE}/?item=oc-1`)
+  const copy = box.locator('[data-copy-link]'), cb = await copy.boundingBox()
+  ok('...with a copy button, 40 px+ high and wide, on the screen', !!cb && cb.height >= 40 && cb.width >= 40 && cb.x + cb.width <= 391, JSON.stringify(cb))
+  ok('every item\'s detail has a copy button too (the actions row)', (await page.locator('[data-copy-link]').count()) === 2)
   ok('no sideways scroll (page, sheet, card)', Object.values(await noSideways(page)).every((v) => !v), JSON.stringify(await noSideways(page)))
   ok('no "card invalid" note', (await page.locator('[data-owner-card-note]').count()) === 0)
   await page.waitForTimeout(300)
   await page.screenshot({ path: path.join(SHOTS, 'card-valid-390.png') })
+  // the clipboard refused (as on an http page): the link shows in a field, selected
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true }))
+  await copy.click()
+  const fieldSel = await box.locator('[data-copy-field]').evaluate((f) => [f.value, f.selectionStart, f.selectionEnd, document.activeElement === f]).catch(() => null)
+  ok('no clipboard: the link in a field, all of it selected, to copy by hand', !!fieldSel && fieldSel[0] === `${BASE}/?item=oc-1` && fieldSel[1] === 0 && fieldSel[2] === fieldSel[0].length && fieldSel[3], JSON.stringify(fieldSel))
+  ok('...still no sideways scroll', Object.values(await noSideways(page)).every((v) => !v))
+  await page.waitForTimeout(200)
+  await box.screenshot({ path: path.join(SHOTS, 'card-copy-fallback-390.png') })
   await link.click()
   const dlg = page.getByRole('dialog', { name: 'artifacts/oc-1/plan.md' })
   ok('...a tap opens it in the viewer', await dlg.getByRole('heading', { name: 'The plan' }).waitFor({ timeout: 5000 }).then(() => true, () => false))
@@ -174,7 +189,7 @@ try {
   ok('a card box, invalid', (await page.locator('[data-owner-card]').getAttribute('data-owner-card')) === 'invalid')
   const note = (await page.locator('[data-owner-card-note]').textContent()) || ''
   ok('the note names each reason', note.startsWith('card invalid: ') && /Risk does not start with low, medium or high/.test(note) && /If no is missing \(required with t2\)/.test(note), note)
-  ok('...what it read still shows', (await page.locator('[data-owner-card] [data-key="You"] dd').textContent()) === 'Tap Approve')
+  ok('...what it read still shows (a You that says where to act)', (await page.locator('[data-owner-card] [data-key="You"] dd').textContent()) === 'Tap Approve in Telegram, or press Approve on this item')
   ok('no sideways scroll', Object.values(await noSideways(page)).every((v) => !v), JSON.stringify(await noSideways(page)))
   await page.waitForTimeout(300)
   await page.screenshot({ path: path.join(SHOTS, 'card-invalid-390.png') })
@@ -189,6 +204,11 @@ try {
   await page.goto(`${BASE}/?item=oc-4`)
   await page.getByText('Refactor the list.').first().waitFor({ timeout: 10000 }).catch(() => {})
   ok('no box, no note', (await page.locator('[data-owner-card]').count()) === 0)
+  ok('...but a copy button for its link', (await page.locator('[data-copy-link]').count()) === 1)
+  await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE }).catch(() => {})
+  await page.locator('[data-copy-link]').click()
+  const copied = await page.evaluate(() => navigator.clipboard.readText()).catch(() => null)
+  ok('a tap copies the link (where the clipboard is allowed: localhost is a secure origin)', copied === `${BASE}/?item=oc-4` && (await page.locator('[data-copy-link]').textContent()) === 'Copied', String(copied))
   ok('no page error', errs.length === 0, errs.join(' | '))
   await ctx.close()
 
@@ -196,7 +216,7 @@ try {
   const w = await getPublic('/api/waiting', { host: HOST, 'x-mm-assertion': sign('boss', 'owner') })
   const wl = w.status === 200 ? JSON.parse(w.body) : null
   ok('the board\'s /api/waiting for the owner: oc-1, oc-2, oc-3 (oldest first)', wl?.items.map((x) => x.id).join() === 'oc-1,oc-2,oc-3', w.body.slice(0, 300))
-  ok('...each with its You line: the card\'s, the invalid card\'s, null for none', wl?.items[0].you === 'Reply: ok, or say which line to change.' && wl?.items[1].you === 'Tap Approve' && wl?.items[2].you === null)
+  ok('...each with its You line: the card\'s, the invalid card\'s, null for none', wl?.items[0].you === 'Reply: ok, or say which line to change.' && wl?.items[1].you === 'Tap Approve in Telegram, or press Approve on this item' && wl?.items[2].you === null)
   // the gateway's home page, rendered from that answer (src/auth.ts: waitingOf checks it, the page shows it)
   fs.writeFileSync(path.join(T, 'answer.json'), w.body)
   fs.writeFileSync(path.join(T, 'render.ts'), `import { readFileSync } from 'node:fs'
@@ -211,14 +231,15 @@ console.log(JSON.stringify({ html, css: pagesForTest.css }))
   if (r.status !== 0) ok('the gateway\'s page renders (bun)', false, r.stderr.slice(-600))
   else {
     const { html, css } = JSON.parse(r.stdout)
-    ok('the gateway\'s page renders, with each You line, and "card missing" for oc-3', html.includes('<span class="w-you">You: Reply: ok, or say which line to change.</span>') && html.includes('<span class="w-you">You: Tap Approve</span>')
+    ok('the gateway\'s page renders, with each You line, and "card missing" for oc-3', html.includes('<span class="w-you">You: Reply: ok, or say which line to change.</span>') && html.includes('<span class="w-you">You: Tap Approve in Telegram, or press Approve on this item</span>')
       && /<span class="w-title">Pick a name for the new service<\/span><span class="w-you none">card missing<\/span>/.test(html))
+    ok('...and each item\'s link, the gateway\'s own (the board\'s host and the checked id)', ['oc-1', 'oc-2', 'oc-3'].every((id) => html.includes(`<span class="w-link">https://board-oc.example.org/?item=${id}</span>`)))
     const pctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
     page2 = await pctx.newPage()
     await page2.setContent(html.replace('<link rel="stylesheet" href="/s/app.css">', `<style>${css}</style>`))
     const rows = page2.locator('.w-list li')
-    ok('three rows, each with its You line in view', (await rows.count()) === 3 && (await page2.locator('.w-you').count()) === 3)
-    const ys = await page2.locator('.w-you').evaluateAll((es) => es.map((e) => { const b = e.getBoundingClientRect(); return [b.left, b.right] }))
+    ok('three rows, each with its You line and its link in view', (await rows.count()) === 3 && (await page2.locator('.w-you').count()) === 3 && (await page2.locator('.w-link').count()) === 3)
+    const ys = await page2.locator('.w-you, .w-link').evaluateAll((es) => es.map((e) => { const b = e.getBoundingClientRect(); return [b.left, b.right] }))
     ok('...on the phone\'s width, no sideways scroll', ys.every(([l, rr]) => l >= 0 && rr <= 391) && !(await page2.evaluate(() => document.documentElement.scrollWidth > innerWidth)), JSON.stringify(ys))
     await page2.screenshot({ path: path.join(SHOTS, 'waiting-you-390.png') })
     await pctx.close()

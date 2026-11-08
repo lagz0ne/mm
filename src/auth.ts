@@ -856,8 +856,9 @@ const SIGN_IN_NAV = '<span class="here">Sign in</span>'
 type Card = { project: string; host: string; role: string; s: Summary | null; w: { items: Waiting[]; more: number } | null; older: boolean }
 /** The "Waiting for you" list (sy-vdi8), the first thing on the home page: every checked item of every board the person
  *  holds a role on, oldest first: the ask, the title, what the person must do (the owner card's You line, sy-z5lz;
- *  "card missing" when the board says the item has none; nothing from a board on an older template), the board, the
- *  id, the age. The link is the gateway's own: the
+ *  "card missing" when the board says the item has none; nothing from a board on an older template), the item's own
+ *  address to share (https://<the board's host>/?item=<the checked id>, the gateway's own, never the board's text), the
+ *  board, the id, the age. The link is the gateway's own: the
  *  board's host (from the host's registry) and the checked id, through the one-redirect flow, to the board's item view
  *  (`/?item=<id>`). No list at all when no board has one (boards on an older template); a board whose answer failed the
  *  check is named in a note. */
@@ -868,7 +869,7 @@ function waitingList(cards: Card[]) {
   const rows = withList.flatMap((c) => c.w!.items.map((i) => ({ ...i, project: c.project, host: c.host })))
     .sort((a, b) => b.age_min - a.age_min || a.project.localeCompare(b.project) || a.id.localeCompare(b.id))
   const href = (host: string, id: string) => `/s?b=${encodeURIComponent(host)}&amp;r=${encodeURIComponent(`/?item=${id}`)}`
-  const row = (r: typeof rows[number]) => `<li><a href="${href(r.host, r.id)}"><span class="w-ask${r.hot ? ' hot' : ''}">${esc(r.ask)}</span><span class="w-age">${esc(mins(r.age_min))}</span><span class="w-title">${esc(r.title)}</span>${youOf(r.you)}<span class="w-where"><span class="w-board">${esc(r.project)}</span><span class="w-id">${esc(r.id)}</span></span></a></li>`
+  const row = (r: typeof rows[number]) => `<li><a href="${href(r.host, r.id)}"><span class="w-ask${r.hot ? ' hot' : ''}">${esc(r.ask)}</span><span class="w-age">${esc(mins(r.age_min))}</span><span class="w-title">${esc(r.title)}</span>${youOf(r.you)}<span class="w-link">${esc(`https://${r.host}/?item=${r.id}`)}</span><span class="w-where"><span class="w-board">${esc(r.project)}</span><span class="w-id">${esc(r.id)}</span></span></a></li>`
   const more = withList.filter((c) => c.w!.more > 0).map((c) => `<p class="w-note">${esc(c.project)}: ${c.w!.more} more on the board.</p>`).join('')
   const notes = failed.map((c) => `<p class="w-note">${esc(c.project)}: the list is unavailable right now.</p>`).join('')
   return `<section class="waiting" aria-labelledby="waiting-h"><h2 id="waiting-h">Waiting for you${rows.length ? ` <span class="w-n">${rows.length}</span>` : ''}</h2>
@@ -967,7 +968,7 @@ button.quiet:hover{border-bottom-color:var(--swiss);color:var(--swiss)}
 .waiting .w-n{color:var(--swiss);font-variant-numeric:tabular-nums}
 .w-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--fg)}
 .w-list li{border-bottom:1px solid var(--rule)}
-.w-list a{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"ask age" "title title" "you you" "where where";gap:.2rem .75rem;min-height:44px;padding:.7rem 0;text-decoration:none}
+.w-list a{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"ask age" "title title" "you you" "link link" "where where";gap:.2rem .75rem;min-height:44px;padding:.7rem 0;text-decoration:none}
 .w-list a:hover .w-title{color:var(--swiss)}
 .w-ask{grid-area:ask;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .w-ask.hot{color:var(--swiss)}
@@ -975,6 +976,7 @@ button.quiet:hover{border-bottom-color:var(--swiss);color:var(--swiss)}
 .w-title{grid-area:title;font-size:15px;font-weight:600;text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:3px;overflow-wrap:anywhere}
 .w-you{grid-area:you;font-size:14px;overflow-wrap:anywhere}
 .w-you.none{color:var(--swiss);font-size:13px;font-weight:600}
+.w-link{grid-area:link;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--muted);overflow-wrap:anywhere;user-select:all}
 .w-where{grid-area:where;display:flex;flex-wrap:wrap;gap:0 .75rem;font-size:13px;color:var(--muted)}
 .w-id{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
 .top nav a{text-decoration:none;padding-bottom:2px;border-bottom:2px solid transparent}
@@ -986,7 +988,7 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:
 .tok input{font:inherit;font-size:16px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;width:100%;max-width:34rem;min-height:44px;padding:.5rem;border:1px solid var(--fg);border-radius:0;background:var(--bg);color:var(--fg)}
 .w-none,.w-note{margin:.6rem 0 0;font-size:13px;color:var(--muted)}
 @media (max-width:47.99rem){.top nav{gap:0 1.25rem;font-size:14px}.go a{display:inline-flex;align-items:center;min-height:44px;padding-bottom:0}.top nav a,.top nav .here,.top nav button.quiet{display:inline-flex;align-items:center;min-height:44px}.top nav .who{padding:.75rem 0}.top nav .here{padding-bottom:0}.code{font-size:2rem}}
-@media (min-width:48rem){.w-list a{grid-template-columns:12rem minmax(0,1fr) 9rem 7rem 4.5rem;grid-template-areas:"ask title board id age" ". you you you .";align-items:baseline}.w-where{display:contents}.w-board{grid-area:board;overflow-wrap:anywhere}.w-id{grid-area:id}}
+@media (min-width:48rem){.w-list a{grid-template-columns:12rem minmax(0,1fr) 9rem 7rem 4.5rem;grid-template-areas:"ask title board id age" ". you you you ." ". link link link .";align-items:baseline}.w-where{display:contents}.w-board{grid-area:board;overflow-wrap:anywhere}.w-id{grid-area:id}}
 @media (min-width:40rem){.top{padding:1rem 1.5rem .75rem}.wrap{padding:2rem 1.5rem 3rem}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:64rem){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}`
 /** The pages on their own, for the phone check (test/board-phone.mjs): no server, no account. */
