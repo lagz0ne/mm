@@ -110,6 +110,17 @@ backof() { curl -s -D - -o /dev/null -H "x-forwarded-host: $BOARD" -H "x-forward
 export -f backof
 check "the way back never leaves the host: /\\\\evil, /%5Cevil (as sent), /<tab>/evil, //evil, /\\\\/evil all become /" bash -c "for r in '/\\evil.example' '/\\\\evil.example' \$'/\\t/evil.example' '//evil.example' '/\\/evil.example'; do [ \"\$(backof \"\$r\")\" = '%2F' ] || { echo \"\$r -> \$(backof \"\$r\")\"; exit 1; }; done"
 check "...a plain path with a query and a fragment stays as it is" bash -c "[ \"\$(backof '/items?x=1#top')\" = '%2Fitems%3Fx%3D1%23top' ]"
+check "...dot segments that the parser turns into '//' (/.//evil, /..//evil, /x/..//evil, /%2e//evil): / (review sy-ua5q #2)" bash -c "for r in '/.//evil.example' '/..//evil.example' '/x/..//evil.example' '/%2e//evil.example'; do [ \"\$(backof \"\$r\")\" = '%2F' ] || { echo \"\$r -> \$(backof \"\$r\")\"; exit 1; }; done"
+cat >"$T/back.ts" <<EOF
+import { safeBack } from '$SRC/src/auth'
+const bad = ['/\\\\evil.example', '/\\\\\\\\evil.example', '/\t/evil.example', '/\n/evil.example', '//evil.example', '/\\\\/evil.example',
+  '/.//evil.example', '/..//evil.example', '/x/..//evil.example', '/%2e//evil.example', '/%2E%2E//evil.example', 'evil.example', '', null]
+const good: [string, string][] = [['/items?x=1#top', '/items?x=1#top'], ['/?item=sy-1', '/?item=sy-1'], ['/%5Cevil.example', '/%5Cevil.example'], ['/a/./b/../c', '/a/c']]
+const wrong = [...bad.filter((r) => safeBack(r) !== '/').map((r) => JSON.stringify(r) + ' -> ' + safeBack(r)),
+  ...good.filter(([r, w]) => safeBack(r) !== w).map(([r, w]) => JSON.stringify(r) + ' -> ' + safeBack(r) + ', want ' + w)]
+if (wrong.length) { console.log(wrong.join('\n')); process.exit(1) }
+EOF
+check "safeBack on its own: every bad form (newline too) gives /, good paths stay (dot segments resolved)" bash -c "cd '$T' && PATH=\"$HOME/.bun/bin:\$PATH\" bun '$T/back.ts'"
 echo '== a sign-in loop stops (sy-wbdn)'
 # the sessions above count: after 3 board sessions in 10 s for this person and host, no new one is made
 for i in 1 2 3; do curl -s -H "x-forwarded-host: $BOARD" -D "$T/hl$i" -o "$T/bl$i" "$G$(cbfor %2Fitems)"; done
