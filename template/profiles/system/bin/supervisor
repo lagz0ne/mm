@@ -21,6 +21,9 @@
 //     card:<item>        an open item labelled needs-you whose description has no valid owner card (sy-z5lz; the
 //                        format: bin/lib/owner-card.mjs), with the reasons; to the item's role (its assignee), else ops.
 //                        A comment when the reasons change; clears when the card is fixed or needs-you goes     P2
+//     signoff:<item>     an open item labelled signed-off or signed-head:* that an actor other than review (or
+//                        review/<worker>) added, read from the journal as approved is (sy-9bss). Label audit, to ops.
+//                        Clears when the label goes or review adds it again                                       P1
 //     dirty:<worktree>   uncommitted files, none touched for 30 min (git worktrees of the mm repo and of each project) P2
 //     t2-unapproved:<item> a live step for a t2 item with no `approved` from an approver (read from the event journal
 //                        with its actor, never from the label alone): an applied tier-2 brain migration names it in its
@@ -69,7 +72,7 @@ import { cli } from './lib/obs.mjs'
 import * as paseo from './lib/paseo.mjs'
 import { loadConf as approveConf, migrationSubject, readLedger } from './lib/ledger.mjs'
 import { places, projectCap, total, workersOf } from './lib/places.mjs'
-import { parseCard } from './lib/owner-card.mjs'
+import { SIGNED_HEAD, parseCard } from './lib/owner-card.mjs'
 
 cli('supervisor')
 const E = process.env
@@ -116,8 +119,8 @@ state.seq ||= 0
 // the summary's version: when what is folded from the journal changes (approvals and t2 labels per item, sy-7xq0; closed
 // items kept), a summary from an older Supervisor misses what happened before the upgrade (sy-m5qr: an approval by the
 // bridge at 16:36 never seen after 17:00). So a new version reads the whole journal again, from the start.
-// v3: each item's `blocks` edges (bk, sy-28ev).
-const STATE_V = 3
+// v3: each item's `blocks` edges (bk, sy-28ev). v4: who added signed-off and each signed-head:* (so, sy-9bss).
+const STATE_V = 4
 if (state.v !== STATE_V) { state.seq = 0; state.items = {}; state.v = STATE_V }
 state.t2since ||= NOW // closed items: only migrations applied since this check first ran (no flood from older ones)
 
@@ -125,6 +128,9 @@ const DEFS = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'l
 const ROLES = DEFS.map((r) => r.id)
 if (!ROLES.includes('setup')) ROLES.push('setup')
 const roleOf = (actor) => ROLES.find((r) => actor === r || String(actor || '').startsWith(`${r}/`)) || null
+// review's sign-off labels (sy-9bss): only the actor review (or review/<worker>) adds them
+const isSignoff = (l) => l === 'signed-off' || String(l).startsWith(SIGNED_HEAD)
+const isReview = (actor) => actor === 'review' || String(actor || '').startsWith('review/')
 
 // ---------- shared reads (once per run; a check that needs one that failed fails with it) ----------
 const once = (fn) => { let p; return () => (p ||= fn()) }
@@ -164,6 +170,14 @@ const journal = once(async () => {
         const labels = e.issue.labels || [], had = s.lb ? s.lb.includes('approved') : e.op !== 'create' && labels.includes('approved')
         if (labels.includes('approved') && !had) s.ap = { ok: APPROVERS.has(String(e.actor || '')), by: String(e.actor || ''), at: t }
         if (!labels.includes('approved')) delete s.ap
+        // review's sign-off (sy-9bss): who added signed-off and each signed-head:*, from the record that added it (a
+        // label first seen mid-life has no known setter: ''); dropped when the label goes, set again when it comes back
+        const so = {}
+        for (const l of labels.filter(isSignoff)) {
+          const prev = s.so?.[l], seen = s.lb ? s.lb.includes(l) : e.op !== 'create'
+          so[l] = seen ? (prev ?? '') : String(e.actor || '')
+        }
+        if (Object.keys(so).length) s.so = so; else delete s.so
         // `t2` taken off (sy-7xq0): who and when, kept until it is back (read against the item's applied migrations)
         if (s.lb?.includes('t2') && !labels.includes('t2')) s.t2off = { by: String(e.actor || ''), at: t }
         if (labels.includes('t2')) delete s.t2off
@@ -399,6 +413,33 @@ async function card() {
   return { prefix: 'card:', problems }
 }
 
+// Review's sign-off (sy-9bss): an open item that carries signed-off or a signed-head:* label someone other than review
+// added. bin/bd, the board's local side and the guard refuse that, but the actor on the local side is a claim, not a
+// proof (docs/approvals.md): this finding is how it is seen. Read from the journal (who added each label), as approved.
+// Clears when the label goes, or review adds it again.
+async function signoff() {
+  const [all, sum] = await Promise.all([issues(), journal()])
+  const problems = []
+  for (const i of all) {
+    if (i.status === 'closed' || mine(i)) continue
+    const has = (i.labels || []).filter(isSignoff)
+    if (!has.length) continue
+    const by = sum[i.id]?.so || {}
+    const bad = has.filter((l) => !isReview(by[l])).sort().map((l) => [l, by[l] || ''])
+    if (!bad.length) continue
+    const said = bad.map(([l, a]) => `${l} added by ${a || 'an unknown actor'}`).join('; ')
+    problems.push({ key: `signoff:${i.id}`, priority: 1, labels: ['audit'],
+      title: `Sign-off not by review: ${i.id} (${bad.map(([l]) => l).join(', ')})`,
+      note: said,
+      body: `${i.id} (${i.assignee || 'nobody'}) carries review's sign-off, but the board's journal says another actor added it:\n\n` +
+        `${bad.map(([l, a]) => `- \`${l}\`: added by ${a || 'an unknown actor (the label was there before the journal this check read)'}`).join('\n')}\n\n` +
+        'Only review signs off (signed-off, signed-head:<repo>@<sha>). Until review signs it off itself, the gate, the board\'s Approve and the bridge ' +
+        `treat a sign-off that is not review's as if it were. Remove the label (\`bd label remove ${i.id} <label>\`) and ask review on the item. ` +
+        'This item closes itself when the label is gone, or review added it again.' })
+  }
+  return { prefix: 'signoff:', problems }
+}
+
 // A path a migration may write that only a tier-2 change may touch: the root wrapper's policy and the like (sy-7xq0)
 const ROOT_PATH = /\/(?:etc|usr\/local)(?:\/|\b)/
 /** A migration's tier as bin/brain applied it (sy-7xq0): `tier=N` in its state mark (`<iso> <hash> tier=N`), which
@@ -596,7 +637,7 @@ for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')
 }
 const results = [], failed = []
 const failure = (name, e) => ({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) })
-for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card })) {
+for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card, signoff })) {
   try { results.push(...[await fn()].flat()) } catch (e) { failed.push(failure(name, e)) }
 }
 await paseo.close()
@@ -631,7 +672,7 @@ for (const src of results) {
     if (unmutable || fresh) delete state.muted[p.key]
     else if (state.muted[p.key]) continue
     else if (again) { state.muted[p.key] = p.parts ? { at: now, parts: p.parts } : now; console.log(`${p.key}: closed by someone while still there; quiet until it clears`); continue }
-    const r = await bd('POST', '/v0/beads/issues', { title: p.title.slice(0, 200), issue_type: 'task', priority: p.priority, assignee: p.assignee || ASSIGNEE, labels: ['supervisor'],
+    const r = await bd('POST', '/v0/beads/issues', { title: p.title.slice(0, 200), issue_type: 'task', priority: p.priority, assignee: p.assignee || ASSIGNEE, labels: ['supervisor', ...(p.labels || [])],
       actor: ACTOR, owner: ACTOR, description: p.parts || !again ? desc : `${p.body}\n\nIts earlier item was closed while the finding was still there; a closed item does not end this finding.\n\nsupervisor key: \`${p.key}\`` })
     if (again && r.id) console.log(`${p.key}: closed by someone while still there; opened again`)
     if (r.id) { state.notes[p.key] = p.note; opened++; console.log(`${p.key}: opened ${r.id}`) }

@@ -272,7 +272,7 @@ const migration = (name, summary, applied, tier = 2, { body = 'true', rollback =
   if (applied) fs.writeFileSync(path.join(DONE, `${name}.sh`), `${iso(clock)} abc1234${mark ? ` tier=${mark}` : ''}\n`)
 }
 clock = T0 + 86 * MIN
-item('sy-11', { title: 't2 claimed, no approval', priority: 2, assignee: 'ops', labels: ['t2', 'signed-off'] })
+item('sy-11', { title: 't2 claimed, no approval', priority: 2, assignee: 'ops', labels: ['t2', 'signed-off'] }, 'review') // review's own sign-off (sy-9bss)
 update('sy-11', { status: 'in_progress' }, 'ops')
 item('sy-12', { title: 't2, approved by a lead', priority: 2, assignee: 'ops', labels: ['t2'] })
 update('sy-12', { labels: ['t2', 'approved'] }, 'platform'); update('sy-12', { status: 'in_progress' }, 'ops')
@@ -436,13 +436,41 @@ item('sy-40', { title: 't2, approved by the bridge before an upgrade', priority:
 update('sy-40', { labels: ['t2', 'approved'] }, 'bridge')
 clock = T0 + 456 * MIN
 ok('exit 0', (await supervise()) === 0)
-ok('the state carries its version', JSON.parse(fs.readFileSync(STATE, 'utf8')).v === 3)
+ok('the state carries its version', JSON.parse(fs.readFileSync(STATE, 'utf8')).v === 4)
 // as an older Supervisor left it: no version, its position at the head, and no summary of sy-40's approval
 { const s = JSON.parse(fs.readFileSync(STATE, 'utf8')); delete s.v; delete s.items['sy-40']; fs.writeFileSync(STATE, JSON.stringify(s)) }
 migration('1800000024-fw', 'open a port (sy-40)', true)
 clock = T0 + 461 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('the bridge\'s approval from before the upgrade still counts: no finding for sy-40', !openOf(T2('sy-40')) && openKeys() === DIRTY)
+
+step('run 9k2 (+462..464 min): only review signs off: a signed-off or signed-head:* another actor added opens signoff:<item> (sy-9bss)')
+const SO = (id) => `signoff:${id}`
+clock = T0 + 462 * MIN
+item('sy-45', { title: 'a plan, signed off by ops', priority: 3, assignee: 'ops', labels: ['t2'] })
+update('sy-45', { labels: ['t2', 'signed-off'] }, 'ops')
+item('sy-46', { title: 'a plan, signed off by review', priority: 3, assignee: 'ops', labels: ['t2'] })
+update('sy-46', { labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'] }, 'review')
+item('sy-47', { title: 'a plan, signed off by a review worker; its head by platform', priority: 3, assignee: 'ops', labels: ['t2'] })
+update('sy-47', { labels: ['t2', 'signed-off'] }, 'review/w1'); update('sy-47', { labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'] }, 'platform')
+item('sy-48', { title: 'created with signed-off by platform', priority: 3, assignee: 'ops', labels: ['t2', 'signed-off'] }, 'platform')
+ok('exit 0', (await supervise()) === 0)
+ok('open: signoff for sy-45 (ops), sy-47 (its head by platform), sy-48 (created with it by platform); not sy-46 (review), not sy-47\'s signed-off (review/w1)',
+  openKeys() === `${DIRTY} ${SO('sy-45')} ${SO('sy-47')} ${SO('sy-48')}`)
+const SF = openOf(SO('sy-45')), SH = openOf(SO('sy-47'))
+ok('...for ops, P1, labelled supervisor and audit, and it says who added it', SF?.assignee === 'ops' && SF.priority === 1 && SF.labels.includes('supervisor') && SF.labels.includes('audit') && /`signed-off`: added by ops/.test(SF.description))
+ok('...sy-47 names only its signed-head (by platform), not review/w1\'s signed-off', /signed-head:mm@0a1b2c3`: added by platform/.test(SH?.description || '') && !/`signed-off`/.test(SH?.description || ''))
+clock = T0 + 463 * MIN
+update('sy-45', { labels: ['t2'] }, 'ops') // removed
+update('sy-47', { labels: ['t2', 'signed-off'] }, 'platform'); update('sy-47', { labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'] }, 'review') // re-added by review
+update('sy-46', { labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3', 'x'] }, 'ops') // another label by ops: review's sign-off stays review's
+ok('exit 0', (await supervise()) === 0)
+ok('removed (sy-45), re-added by review (sy-47): cleared; a later change by ops keeps sy-46 clean; sy-48 stays', openKeys() === `${DIRTY} ${SO('sy-48')}`)
+ok('...each cleared one closed with "Cleared"', ['sy-45', 'sy-47'].every((id) => byKey(SO(id)).every((i) => i.status === 'closed' && /Cleared/.test(i.comments.at(-1).text))))
+clock = T0 + 464 * MIN
+update('sy-48', { status: 'closed' }, 'ops')
+ok('exit 0', (await supervise()) === 0)
+ok('a closed item is not watched: sy-48 cleared', openKeys() === DIRTY)
 
 step('run 9l (+466..472 min): a route mm added or removed is a live step; a throwaway project\'s or a failed one is not (sy-n9zp)')
 clock = T0 + 466 * MIN
