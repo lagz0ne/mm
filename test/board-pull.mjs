@@ -126,6 +126,15 @@ step('site/waiting.mjs (the gateway\'s "Waiting for you" list, sy-vdi8)')
   ok('...a moved head: refused, the reason (headRefusal) as plain text', e(h2, 'pb-30').refused === "the head changed since review's sign-off (card: mm@9f8e7d6, signed: mm@0a1b2c3)")
   ok('...the signed head: no refused key', !('refused' in e(h2, 'pb-31')))
   ok('?card=1 alone (an older gateway): no head, no refused', h1.items.every((x) => !('refused' in x) && x.card && !('head' in x.card)))
+  // sy-t9tg: a signed-off t2 whose card asks no go (Reply:/Check:/Nothing) is no approval: listed by needs-you only
+  const NGC = (you) => `## Owner\n- **What:** Check the admin login.\n- **Why:** The plan needs sudo.\n- **You:** ${you}\n\nThread.`
+  const ng = waitingFor({ items: [it('pb-40', 'ops', 'open', 30, { labels: ['t2', 'signed-off', 'needs-you'], title: 'ask', description: NGC('Check: run ssh admin@host, then sudo -v') }),
+    it('pb-41', 'ops', 'open', 30, { labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], title: 'no ny', description: NGC('Reply: which?') }),
+    it('pb-42', 'ops', 'open', 30, { labels: ['t2', 'signed-off'], title: 'go, no card', description: 'no card' })], me: 'boss', owner: true, now: NOW, cards: 2 })
+  ok('a signed-off t2 non-go ask with needs-you: labels needs-you only (no approval), its You, no refused', JSON.stringify(e(ng, 'pb-40')?.labels) === '["needs-you"]'
+    && e(ng, 'pb-40').you === 'Check: run ssh admin@host, then sudo -v' && !('refused' in e(ng, 'pb-40')), JSON.stringify(ng))
+  ok('...without needs-you: not on the list (it waits on nobody)', !e(ng, 'pb-41'))
+  ok('...a signed-off t2 with no card is still an approval, with its refusal', JSON.stringify(e(ng, 'pb-42')?.labels) === '["t2","signed-off"]' && /names no head/.test(e(ng, 'pb-42').refused || ''))
   ok('a member never gets head or refused', waitingFor({ items: hi.map((x) => ({ ...x, assignee: 'alex' })), me: 'alex', owner: false, now: NOW, cards: 2 }).items.every((x) => !('refused' in x) && !('card' in x)))
   const m = waitingFor({ items: W, me: 'alex', owner: false, now: NOW })
   ok('a member: only the open items assigned to them (not closed, not the owner\'s needs-you, not a bad id)', m.items.map((x) => x.id).join() === 'pb-23,pb-28', JSON.stringify(m))

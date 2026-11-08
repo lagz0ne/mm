@@ -15,7 +15,7 @@ import { foldRequeues, pullState } from './pull-state.mjs'
 import { exportQuery, flowRows, parseExport, PAIRS } from './flow-rows.mjs'
 import { waitingFor } from './waiting.mjs'
 import { designsApi } from './designs.mjs'
-import { headRefusal, SIGNED_HEAD } from '../bin/lib/owner-card.mjs'
+import { headRefusal, isNonGoAsk, parseCard, SIGNED_HEAD } from '../bin/lib/owner-card.mjs'
 import * as P_ from '../bin/lib/paseo.mjs'
 import { bridgeSocket, ITEM, loadConf } from '../bin/lib/ledger.mjs'
 
@@ -200,10 +200,14 @@ async function ownerAction(req, res, what) {
   if (it.status === 'closed') return no(409, `${item} is closed.`)
   return { g, item, labels: new Set(it.labels), description: typeof it.description === 'string' ? it.description : '', body }
 }
-/** The T2 go's own checks (approve, not-now): a t2 item, review's sign-off, not approved yet. */
+const NOT_A_GO = 'Not allowed: this item asks you something else; there is no go to give here.'
+/** The T2 go's own checks (approve, not-now): a t2 item, a go ask (sy-t9tg: its card's You is "Tap Approve"; a non-go
+ *  ask is answered with Reply or Done, never Approve or Not now), review's sign-off, not approved yet. The card is read
+ *  here, at the go: nothing caches it. */
 function goState(item, labels, description) {
   if (labels.has('approved')) return { code: 409, title: `${item} is already approved.`, already: true }
   if (!labels.has('t2')) return { code: 403, title: 'Not allowed: not a t2 item, there is no T2 go to give.' }
+  if (isNonGoAsk(parseCard(description, [...labels]).card)) return { code: 403, title: NOT_A_GO }
   const why = goRefusal(labels, description); if (why) return { code: 403, title: `Not allowed: ${why}.` }
   return null
 }
@@ -503,7 +507,9 @@ async function sendSummary(req, res, signal = false) {
   let last = meta.lastTs
   for (const i of open) { const t = Date.parse(i.updated_at); if (t > last) last = t }
   const now = Date.now(), min = (i) => Math.max(0, Math.floor((now - (Date.parse(i.updated_at) || now)) / 60000))
+  // an approval: not a non-go ask (sy-t9tg: it waits on the owner only with needs-you); no card counts (refused at the go)
   const approval = (i) => owner && labels(i).includes('t2') && labels(i).includes('signed-off') && !labels(i).includes('approved')
+    && !isNonGoAsk(parseCard(i.description, labels(i)).card)
   const waits = open.filter((i) => labels(i).includes('needs-you') || approval(i))
   let worst = null
   for (const q of pullState({ roles: [...ROLES, 'setup'], items: [], ready, now })) {
