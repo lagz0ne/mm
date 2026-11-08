@@ -7,7 +7,7 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { parseCard, youKind } from '../template/bin/lib/owner-card.mjs'
+import { headRefusal, parseCard, youKind } from '../template/bin/lib/owner-card.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 let pass = 0, fail = 0
@@ -115,6 +115,30 @@ step('a blank line ends the card')
   ok('a key after a blank line is not in the card (You missing)', !r.ok && r.errors.some((e) => /You is missing/.test(e)) && r.rest.includes('**You:** Nothing'))
   const l = parseCard(`${B.split('\n\n')[0]}\n\n- **When:** later`)
   ok('a list after the blank line is the rest, not the card', l.ok && l.rest === '- **When:** later')
+}
+
+step('the Head key and headRefusal (sy-hzmu)')
+{
+  const H = 'mm@0a1b2c3', H2 = 'mm@9f8e7d6c5b4a'
+  const withHead = (h, card = T2) => card.replace('- **Risk:**', `- **Head:** ${h}\n- **Risk:**`)
+  ok('a Head <repo>@<sha>: ok, read', (() => { const r = parseCard(withHead(H), ['t2']); return r.ok && r.card.Head === H })(), JSON.stringify(parseCard(withHead(H), ['t2']).errors))
+  ok('Head: 40 hex, a repo with digits and dashes of 31 characters: ok', parseCard(withHead(`a${'b-1'.repeat(10)}@${'f'.repeat(40)}`), ['t2']).ok)
+  ok('Head is optional (a t2 card without it is ok)', parseCard(T2, ['t2']).ok)
+  for (const [d, h] of [['a short sha (6)', 'mm@0a1b2c'], ['a sha of 41', `mm@${'a'.repeat(41)}`], ['upper-case hex', 'mm@0A1B2C3'], ['no repo', '@0a1b2c3'],
+    ['a repo of 32', `a${'b'.repeat(31)}@0a1b2c3`], ['a repo starting with a digit', '1mm@0a1b2c3'], ['no @', 'mm0a1b2c3'], ['two heads', `${H} ${H2}`], ['a branch, not a sha', 'mm@main']])
+    bad(`Head: ${d}`, withHead(h), /Head is not <repo>@<sha>/, ['t2'])
+  const D = withHead(H), D2 = withHead(H2)
+  ok('headRefusal: no Head on the card: null', headRefusal(T2, ['t2', 'signed-off']) === null)
+  ok('headRefusal: the signed head matches: null', headRefusal(D, ['t2', 'signed-off', `signed-head:${H}`]) === null)
+  ok('headRefusal: a Set of labels works the same', headRefusal(D, new Set(['t2', 'signed-off', `signed-head:${H}`])) === null)
+  ok('headRefusal: no signed-head: "review\'s sign-off names no head (card: X)"', headRefusal(D, ['t2', 'signed-off']) === `review's sign-off names no head (card: ${H})`)
+  ok('headRefusal: the head moved: "the head changed since review\'s sign-off (card: X, signed: Y)"',
+    headRefusal(D2, ['t2', 'signed-off', `signed-head:${H}`]) === `the head changed since review's sign-off (card: ${H2}, signed: ${H})`)
+  ok('headRefusal: a prefix of the head is not the head', headRefusal(D, ['t2', 'signed-off', 'signed-head:mm@0a1b2c']) !== null)
+  ok('headRefusal: approved is not re-checked: null', headRefusal(D2, ['t2', 'signed-off', `signed-head:${H}`, 'approved']) === null)
+  ok('headRefusal: not t2: null', headRefusal(D2, ['signed-off', `signed-head:${H}`]) === null && headRefusal(D, []) === null)
+  ok('headRefusal: an invalid Head is refused, with the reason', /the card's Head is not <repo>@<sha>/.test(headRefusal(withHead('mm@main'), ['t2', 'signed-off', 'signed-head:mm@main']) || ''))
+  ok('headRefusal: no card: null', headRefusal('Some text.', ['t2', 'signed-off']) === null && headRefusal(undefined, undefined) === null)
 }
 
 step('the browser copy and the CLI')
