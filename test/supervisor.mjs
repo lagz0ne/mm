@@ -582,7 +582,7 @@ step('run 9o (+520..535 min): a needs-you item with no valid owner card: a findi
   const CARD = '## Owner\n- **What:** Every item that needs you shows a fixed short card at the top; the board checks it.\n- **Why:** You see what is asked and why without reading the agents\' threads.\n- **You:** Nothing\n\nThe rest.'
   item('sy-40', { title: 'asks the owner, no card', assignee: 'platform/w1', labels: ['needs-you'], description: 'Please decide.' }, 'platform')
   item('sy-41', { title: 'asks the owner, a card', assignee: 'review', labels: ['needs-you'], description: CARD }, 'review')
-  item('sy-42', { title: 't2, a card without its t2 keys', assignee: 'ops', labels: ['needs-you', 't2'], description: CARD }, 'ops')
+  item('sy-42', { title: 't2, a card without its t2 keys', assignee: 'ops', labels: ['needs-you', 't2'], description: CARD.replace('**You:** Nothing', '**You:** Tap Approve') }, 'ops') // a go ask (sy-t9tg)
   item('sy-43', { title: 'no card, no needs-you', assignee: 'ops', description: 'Text.' }, 'ops')
   clock = T0 + 520 * MIN
   ok('exit 0', (await supervise()) === 0)
