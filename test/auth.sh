@@ -325,7 +325,7 @@ check "...through a label field it does not know (403)" test "$(lw PATCH /it-1 '
 check "...nothing of it reached bd (only reads)" bash -c "tail -n +$((n0 + 1)) '$T/bd.jsonl' | jq -e -s 'length > 0 and all(.m == \"GET\")'"
 check "...each refusal is logged" bash -c "grep -c 'refused on the local side' '$T/board/.run/logs/ops.log' | grep -qx 5"
 check "local side: other labels as before (200, no author role label)" bash -c "[ \$(lw PATCH /it-1 '{\"patch\":{\"add_labels\":[\"urgent\"]}}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.patch.add_labels == [\"urgent\"] and .b.actor == \"boss\"'"
-check "...a new item with a tier, a full label set without approved that keeps the sign-off (200)" bash -c "[ \$(lw POST '' '{\"title\":\"x\",\"labels\":[\"t2\"]}') = 200 ] && [ \$(lw PATCH /it-1 '{\"patch\":{\"labels\":[\"t2\",\"bug\",\"urgent\",\"signed-off\"]}}') = 200 ]"
+check "...a new item with a tier, a full label set without approved that keeps the sign-off (200)" bash -c "[ \$(lw POST '' '{\"title\":\"x\",\"labels\":[\"t2\"]}') = 200 ] && [ \$(lw PATCH /it-1 '{\"patch\":{\"labels\":[\"t2\",\"bug\",\"urgent\",\"signed-off\",\"signed-head:mm@0a1b2c3\"]}}') = 200 ]"
 # sy-9bss: only review signs off; a self-chosen name is never a role's, so the local side refuses it to every visitor
 n3=$(wc -l <"$T/bd.jsonl")
 check "local side: adding signed-off is refused (403), and it says to ask review" bash -c "[ \$(lw PATCH /it-10 '{\"patch\":{\"add_labels\":[\"signed-off\"]}}') = 403 ] && grep -q 'only review signs off' '$T/wb'"
