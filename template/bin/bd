@@ -21,6 +21,16 @@ case "$cmd:$sub" in
   comment:*|update:*|close:*|create:*|q:*|reopen:*|delete:*|assign:*|edit:*|set-state:*|comments:add|label:add|label:remove|dep:add|dep:remove|dep:rm|dep:relate|dep:unrelate)
     [ -n "$actor" ] || { echo "bd: refused: a board write (bd $cmd${sub:+ $sub}) needs an actor: pass --actor <name> or set BEADS_ACTOR (without one bd records \"mm\", which reads as a person)" >&2; exit 1; } ;;
 esac
+# Only review signs off (sy-9bss): signed-off and signed-head:<repo>@<sha> are added or removed by the actor review (or
+# review/<worker>: the role is the part before /) only. For any other actor, a label call whose arguments name one (or
+# set the labels: --set-labels drops a sign-off it leaves out) is checked by bin/owner-card signoff, which reads the
+# item (bd show) only for --set-labels. Every other call costs only this loop.
+case "$cmd" in
+  create|q|new|update|edit|label)
+    case "${actor%%/*}" in review) ;; *)
+      for a in "$@"; do case "$a" in --) break ;; *signed-off*|*signed-head:*|--set-labels|--set-labels=*) "$P/bin/owner-card" signoff -- "$@" || exit 1; break ;; esac; done ;;
+    esac ;;
+esac
 # needs-you only with a valid owner card (sy-z5lz): a call that adds it (label add, update --add-label/-l/--set-labels,
 # create/q -l/--labels) is checked by bin/owner-card gate, which reads the item (bd show) only then. Every other call,
 # and removing the label, costs nothing more than this loop over the arguments.
