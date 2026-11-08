@@ -25,7 +25,9 @@ trap 'for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null; done; rm -rf "$T"' EXIT
 export HOME="$T/home" MM_HOME="$T/home/.mm" MM_OBS_TRACES=""
 unset PASEO_AGENT_ID PASEO_AGENT_CWD CLAUDECODE   # this test plays the owner on a throwaway store
 mkdir -p "$MM_HOME/pc/projects" "$T/proj/.run" "$T/bin"
-PORT=$(( 41000 + RANDOM % 800 )); BOARD=board-shop-acme.example.org; AUTH=auth.example.org
+busy() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+for _ in $(seq 1 20); do PORT=$(( 41000 + RANDOM % 800 )); busy $PORT || busy $((PORT+1)) || busy $((PORT+2)) || busy $((PORT+3)) || break; done
+BOARD=board-shop-acme.example.org; AUTH=auth.example.org
 BP=$(( PORT + 1 )); BL=$(( PORT + 2 )); BDP=$(( PORT + 3 ))
 printf 'domain: example.org\naccess: domain\nauth_port: %s\nbind_host: 127.0.0.1\nowner_name: boss\n' "$PORT" >"$MM_HOME/config.yaml"
 echo "# from $T/proj/services.yaml" >"$MM_HOME/pc/projects/acme-shop.yaml"
@@ -46,7 +48,7 @@ mkdir -p "$T/br"; SOCK="$T/br/bridge.sock"
 
 # ---------- the gateway ----------
 MM_AUTH_HOST_CACHE_MS=200 mm auth serve >"$T/gw.log" 2>&1 & PIDS+=($!)
-for _ in $(seq 1 100); do [ -S "$MM_HOME/run/auth.sock" ] && curl -s -o /dev/null "http://127.0.0.1:$PORT/s" && break; sleep 0.2; done
+for _ in $(seq 1 300); do [ -S "$MM_HOME/run/auth.sock" ] && curl -s -o /dev/null "http://127.0.0.1:$PORT/s" && break; sleep 0.2; done
 G="http://127.0.0.1:$PORT"
 gw() { curl -s -H "x-forwarded-host: $AUTH" -H 'x-forwarded-proto: https' "$@"; }
 sess() { sed -n 's/^set-cookie: \(__Secure-better-auth\.session_token=[^;]*\).*/\1/ip' "$1" | tail -1; }
@@ -117,8 +119,10 @@ mkdir -p "$T/board" && (cd "$SRC/template" && tar -cf - --exclude=node_modules -
 mkdir -p "$T/board/.run" && printf '{"owner_name": "boss"}\n' >"$T/board/.run/endpoints.json"
 (cd "$T/board" && PORT=$BL BOARD_PUBLIC_PORT=$BP BD_SERVE=http://127.0.0.1:$BDP MM_AUTH_PUBLIC_KEY="$PUB" MM_APPROVE_CONF="$ACONF" PASEO_NO_SDK=1 PASEO_BIN=false MM_PROJECT=acme-shop \
   exec node site/server.mjs >"$T/board.log" 2>&1) & PIDS+=($!)
-for _ in $(seq 1 150); do curl -s -o /dev/null "http://127.0.0.1:$BL/api/whoami" && curl -s -o /dev/null "http://127.0.0.1:$BP/" && break; sleep 0.2; done
+for _ in $(seq 1 300); do curl -s -o /dev/null "http://127.0.0.1:$BL/api/whoami" && curl -s -o /dev/null "http://127.0.0.1:$BP/" && break; sleep 0.2; done
 BLOG="$T/board/.run/logs/ops.log"
+up() { curl -s -o /dev/null "$G/s" && curl -s -o /dev/null "http://127.0.0.1:$BP/" && curl -s -o /dev/null "http://127.0.0.1:$BDP/v0/beads/ready"; }
+if ! up || [ -z "$SB" ] || [ -z "$SA" ]; then echo "setup failed: the gateway, the board or bd is not up, or a sign-in failed (ports $PORT..$((PORT+3)))"; echo "gw: $(curl -s -o /dev/null -w "%{http_code}" "$G/s") board: $(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$BP/") bd: $(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$BDP/v0/beads/ready") SB=${SB:+set} SA=${SA:+set}"; tail -n 5 "$T/gw.log" "$T/board.log"; exit 2; fi
 
 # an assertion as the gateway's /verify makes it (the gateway's key, this board's host)
 mk() { node -e "const c=require('crypto'),f=require('fs');const [k,u,r,h,ms]=process.argv.slice(1);const b=Buffer.from(JSON.stringify({u,r,h,exp:Date.now()+Number(ms),n:'t'})).toString('base64url');process.stdout.write(b+'.'+c.sign(null,Buffer.from(b),c.createPrivateKey(f.readFileSync(k,'utf8'))).toString('base64url'))" "$MM_HOME/auth/signing.key" "$@"; }
