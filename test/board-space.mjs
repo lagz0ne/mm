@@ -91,7 +91,8 @@ const TYPES = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/htm
 const srv = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x'), p = u.pathname
   if (p === '/api/meta') return json(res, meta)
-  if (p === '/api/whoami') return json(res, { actor: 'alex', source: 'gateway', role: 'owner', approval: 'telegram' })
+  // a local person (sy-c7mh: one signed in through the gateway starts on For you; test/board-for-you.mjs checks that)
+  if (p === '/api/whoami') return json(res, { actor: 'alex', source: 'self', approval: 'telegram' })
   if (p === '/api/links') return json(res, { links: [] })
   if (p === '/api/presence') return json(res, { agents: [{ actor: 'ops', kind: 'lead', id: 'a1', item: work[0].id, doing: 'reading the plan' }] })
   if (p === '/api/v0/beads/events:watch') { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(':\n\n'); return }

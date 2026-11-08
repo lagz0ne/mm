@@ -133,7 +133,8 @@ const srv = http.createServer((req, res) => {
   if (p.startsWith('/gw/')) { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(fs.readFileSync(path.join(GW, `${path.basename(p)}.html`))) }
   if (p.startsWith('/img/')) { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(png) }
   if (p === '/api/meta') return json(res, meta)
-  if (p === '/api/whoami') return json(res, { actor: 'alex', source: 'gateway', role: 'owner', approval: 'telegram' })
+  // a local person (sy-c7mh: one signed in through the gateway starts on For you; test/board-for-you.mjs checks that)
+  if (p === '/api/whoami') return json(res, { actor: 'alex', source: 'self', approval: 'telegram' })
   if (p === '/api/links') return json(res, { links: [] })
   if (p === '/api/presence') return json(res, { agents: [{ actor: 'ops', kind: 'lead', id: 'a1', item: 'sy-1', doing: 'reading the plan' }] })
   if (p === '/api/pull') return json(res, { title: 'not here' }, 404)

@@ -83,6 +83,14 @@ export interface Meta {
   panels?: string[] // turned on by the board's env (BOARD_PANELS), e.g. the system board's machine panel
 }
 
+/** The owner card's fields as the Waiting list and To review send them (site/waiting.mjs CARD_FIELDS). */
+export interface CardFields { what?: string; why?: string; you?: string; if_yes?: string; if_no?: string; risk?: string; head?: string }
+/** One entry of /api/waiting (site/waiting.mjs): labels t2 + signed-off mark a T2 go; refused: why the go is refused. */
+export interface WaitingEntry { id: string; title: string; age_min: number; labels: string[]; you?: string | null; card?: CardFields | null; refused?: string }
+/** One entry of /api/to-review (site/review.mjs). */
+export interface ReviewEntry { id: string; title: string; at: string; kind: 'closed' | 'handed'; by: string; to?: string; card: CardFields | null
+  artifacts: { name: string; path: string; type: string }[]; files: number }
+
 /** The owner's own actions on an item (POST /api/<action>, the public side; the server checks the owner, the item, and
  *  that the request is same-origin JSON). */
 async function ownerAct(action: 'approve' | 'not-now' | 'reply' | 'done', item: string, more: Record<string, string> = {}) {
@@ -95,7 +103,12 @@ async function ownerAct(action: 'approve' | 'not-now' | 'reply' | 'done', item: 
 export const api = {
   meta: () => fetch('/api/meta').then((r) => (r.ok ? r.json() : Promise.reject(new Error(`meta ${r.status}`))) as Promise<Meta>),
   // role: on the public side; approval: the owner's only, how the T2 go is given (the label, or a tap on Telegram)
-  whoami: () => fetch('/api/whoami').then((r) => r.json() as Promise<{ actor: string; source: 'gateway' | 'self' | 'default'; role?: string; approval?: 'label' | 'telegram' }>),
+  // home: the gateway's home page (sign out there), on the public side
+  whoami: () => fetch('/api/whoami').then((r) => r.json() as Promise<{ actor: string; source: 'gateway' | 'self' | 'default'; role?: string; approval?: 'label' | 'telegram'; home?: string }>),
+  // For you (sy-c7mh): what waits on the signed-in person (the gateway's Waiting list, with the cards and their heads),
+  // and what was closed or handed over since a time with an artifact or a card
+  waiting: () => fetch('/api/waiting?card=1&head=1').then((r) => (r.ok ? r.json() : Promise.reject(new Error(`waiting ${r.status}`))) as Promise<{ items: WaitingEntry[]; more: number }>),
+  toReview: (since: number) => fetch(`/api/to-review?since=${Math.floor(since)}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`to-review ${r.status}`))) as Promise<{ since: string; items: ReviewEntry[]; more: number }>),
   // with the ledger on: the board sends the item to the bridge, which offers it on the owner's Telegram (signs nothing here)
   // verifier actor (sy-92sg): the board adds approved as the owner, with a comment; same route, same checks
   approveOnTelegram: (item: string) => ownerAct('approve', item),

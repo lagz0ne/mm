@@ -9,7 +9,7 @@ import { getPath, held, loadConfig } from './config'
 import { DIRS, engineDirs, HOME, portlessDir, run, servicePath, toolPath, which, within } from './env'
 import { obsEndpoints } from './obs'
 import { writeSecretPaths } from './inputs'
-import { nameClash, publicKeyPem } from './auth'
+import { gatewayHost, nameClash, publicKeyPem } from './auth'
 import { type NamesMode, namesMode, routeName } from './names'
 import { pcRunning, writeBase } from './pc'
 import { rendered, renderTo, template, templateCommit } from './template'
@@ -445,7 +445,8 @@ export function writeRunFiles(root: string, pcSocket: string) {
   const owner = String(getPath(loadConfig(), 'owner_name') ?? '').trim()
   const ep = { manager: 'process-compose (mm)', self_healing: true, restart: `process-compose -U -u ${pcSocket} process restart ${a.project}.{service}`,
     logs: `tail -n {lines} ${join(root, '.run', 'logs')}/{service}.log`, observability: obsEndpoints(), dirs: engineDirs(),
-    ...(publicKeyPem() ? { auth: { public_key: publicKeyPem() } } : {}), // the gateway's key: boards verify its assertions
+    // the gateway's key (boards verify its assertions) and its home page (the board's menu links to it to sign out)
+    ...(publicKeyPem() ? { auth: { public_key: publicKeyPem(), home: `https://${gatewayHost()}/` } } : {}),
     // the owner's name (mm's config owner_name; absent when unset): with the bridge, the only actor whose `approved`
     // counts (bin/supervisor, bin/flow), and a name the guard keeps agents from writing as (sy-h2yt)
     ...(owner ? { owner_name: owner } : {}),
