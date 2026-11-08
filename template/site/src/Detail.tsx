@@ -14,7 +14,7 @@ import { Avatar, PersonaContext, personaOf } from '@/lib/persona'
 import { ThreadPresence } from '@/Presence'
 import { Designs } from '@/Designs'
 import { usePhone } from '@/lib/phone'
-import { headRefusal, parseCard } from '@/lib/owner-card.mjs'
+import { headRefusal, isNonGoAsk, parseCard, youKind } from '@/lib/owner-card.mjs'
 import { CopyLink, OwnerCard, itemUrl } from '@/OwnerCard'
 
 const STATUSES = ['open', 'in_progress', 'blocked', 'deferred'] as const
@@ -89,10 +89,13 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   // the T2 go, for the owner on the public side: a signed-off t2 without approved
   // the owner card (sy-z5lz): read first, in its own box; the description below it without the card
   const card = parseCard(i?.description, i?.labels || [], i?.id)
-  const t2go = !!i && !!approval && !!i.labels?.includes('t2') && !!i.labels?.includes('signed-off') && !i.labels?.includes('approved')
+  // sy-t9tg: a non-go ask (You: Reply:/Check:/Nothing) never gets Approve or Not now, only its own action (Reply, Done)
+  const t2go = !!i && !!approval && !!i.labels?.includes('t2') && !!i.labels?.includes('signed-off') && !i.labels?.includes('approved') && !isNonGoAsk(card.card)
   // sy-hzmu: the card names a head review did not sign off (the server refuses the go anyway): the reason, no Approve
   const headWhy = t2go ? headRefusal(i!.description, i!.labels || []) : null
   const approvable = t2go && !headWhy
+  // the owner's answer the card asks for (sy-t9tg), on the public side: a Reply box or Done
+  const answer = youKind(card.card?.You ?? '')
 
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
@@ -125,6 +128,10 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
             </div>
 
             <OwnerCard card={card} needsYou={!closed && !!i.labels?.includes('needs-you')} id={i.id} />
+            {/* the owner's answer to a card that asks no go (sy-t9tg): Reply or Done, as on the Waiting list */}
+            {!!approval && !closed && card.ok && !!i.labels?.includes('needs-you') && (answer === 'reply' || answer === 'check') && (
+              <OwnerAnswer id={i.id} kind={answer} onDone={onChanged} />
+            )}
 
             <div className="grid border-b md:grid-cols-3">
               <Field label="Status">
@@ -454,5 +461,28 @@ function Workers({ id, tick }: { id: string; tick: number }) {
       ))}
       <p className="mt-1 text-[11px] text-muted-foreground">The code lead never sees this; it reads only the worker's final report.</p>
     </section>
+  )
+}
+
+/** The owner's answer to a card that asks no go (sy-t9tg), the same routes as the Waiting list: "Reply: …" a reply box
+ *  (a comment as the owner), "Check: …" Done (needs-you removed). The server checks the owner and the item again. */
+function OwnerAnswer({ id, kind, onDone }: { id: string; kind: 'reply' | 'check'; onDone: () => void }) {
+  const [text, setText] = useState(''), [busy, setBusy] = useState(false)
+  const go = async (what: () => Promise<{ title: string }>) => {
+    setBusy(true)
+    try { const d = await what(); toast.success(d.title); setText(''); onDone() } catch (e) { toast.error((e as Error).message) } finally { setBusy(false) }
+  }
+  return (
+    <div data-owner-answer={kind} className="flex flex-wrap items-end gap-2 border-b px-4 py-3 md:px-5">
+      {kind === 'reply' ? (
+        <>
+          <label htmlFor={`owner-reply-${id}`} className="w-full text-[11px] font-semibold">Your reply</label>
+          <Textarea id={`owner-reply-${id}`} value={text} onChange={(e) => setText(e.target.value)} rows={3} maxLength={1000} className="min-h-16 flex-1" />
+          <Button size="sm" disabled={busy || !text.trim()} onClick={() => go(() => api.reply(id, text))}>Send</Button>
+        </>
+      ) : (
+        <Button size="sm" disabled={busy} title="Done: a comment on the item, and it no longer waits for you" onClick={() => go(() => api.done(id))}>Done</Button>
+      )}
+    </div>
   )
 }
