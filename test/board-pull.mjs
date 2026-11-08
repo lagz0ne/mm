@@ -113,6 +113,20 @@ step('site/waiting.mjs (the gateway\'s "Waiting for you" list, sy-vdi8)')
   ok('...null for an item with no card; the other keys as before', c.items.find((x) => x.id === 'pb-21').card === null && c.items.every((x) => Object.keys(x).join() === 'id,title,age_min,labels,you,card'))
   ok('...without ?card=1 no card key (an older gateway drops an entry with a key it doesn\'t know); never for a member', !o.items.some((x) => 'card' in x)
     && !waitingFor({ items: W, me: 'alex', owner: false, now: NOW, cards: true }).items.some((x) => 'card' in x))
+  // sy-hzmu: with ?card=1&head=1 the card also carries its Head, and an entry whose head review did not sign off its reason
+  const HCARD = (h) => T2CARD.replace('- **Link:**', `- **Head:** ${h}\n- **Link:**`)
+  const hi = [it('pb-30', 'ops', 'open', 40, { labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], title: 'moved', description: HCARD('mm@9f8e7d6') }),
+    it('pb-31', 'ops', 'open', 40, { labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], title: 'signed', description: HCARD('mm@0a1b2c3') }),
+    it('pb-32', 'ops', 'open', 40, { labels: ['t2', 'signed-off'], title: 'bad head', description: HCARD('mm@main') })]
+  const h2 = waitingFor({ items: hi, me: 'boss', owner: true, now: NOW, cards: 2 }), h1 = waitingFor({ items: hi, me: 'boss', owner: true, now: NOW, cards: true })
+  const e = (r, id) => r.items.find((x) => x.id === id)
+  ok('?card=1&head=1: the card has head (<repo>@<sha>, plain text), after the other fields', e(h2, 'pb-30').card.head === 'mm@9f8e7d6' && e(h2, 'pb-31').card.head === 'mm@0a1b2c3'
+    && Object.keys(e(h2, 'pb-31').card).pop() === 'head', JSON.stringify(h2))
+  ok('...an invalid Head is not sent as head (its refusal says why)', !('head' in e(h2, 'pb-32').card) && /the card's Head is not/.test(e(h2, 'pb-32').refused || ''))
+  ok('...a moved head: refused, the reason (headRefusal) as plain text', e(h2, 'pb-30').refused === "the head changed since review's sign-off (card: mm@9f8e7d6, signed: mm@0a1b2c3)")
+  ok('...the signed head: no refused key', !('refused' in e(h2, 'pb-31')))
+  ok('?card=1 alone (an older gateway): no head, no refused', h1.items.every((x) => !('refused' in x) && x.card && !('head' in x.card)))
+  ok('a member never gets head or refused', waitingFor({ items: hi.map((x) => ({ ...x, assignee: 'alex' })), me: 'alex', owner: false, now: NOW, cards: 2 }).items.every((x) => !('refused' in x) && !('card' in x)))
   const m = waitingFor({ items: W, me: 'alex', owner: false, now: NOW })
   ok('a member: only the open items assigned to them (not closed, not the owner\'s needs-you, not a bad id)', m.items.map((x) => x.id).join() === 'pb-23,pb-28', JSON.stringify(m))
   ok('...with no labels at all (needs-you is the owner\'s ask)', m.items.every((x) => x.labels.length === 0))

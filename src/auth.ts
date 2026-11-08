@@ -397,7 +397,7 @@ export async function gateway() {
       const [s, w] = await Promise.all([
         askBoard('summary', '/api/summary?signal=1', SUMMARY_MAX, (o) => summaryOf(o, roles[c.project] || new Set()), () => false, c.project, c.host, up, p.name, c.role),
         // an older board answers 404 or 403 ("not allowed from the board"): no list, no error
-        askBoard('waiting list', c.role === 'owner' ? '/api/waiting?card=1' : '/api/waiting', WAITING_MAX, (o) => waitingOf(o, c.role === 'owner'), (st) => st === 404 || st === 403, c.project, c.host, up, p.name, c.role)])
+        askBoard('waiting list', c.role === 'owner' ? '/api/waiting?card=1&head=1' : '/api/waiting', WAITING_MAX, (o) => waitingOf(o, c.role === 'owner'), (st) => st === 404 || st === 403, c.project, c.host, up, p.name, c.role)])
       return { ...c, s: s.v, w: w.v, older: !!w.older }
     }))
     return html(homePage(p.name, cards, msg), status)
@@ -871,23 +871,27 @@ export function worstOf(s: Summary): { text: string; hot: boolean } | null {
   return s.queue !== undefined ? { text: 'nothing waiting', hot: false } : null
 }
 /** One entry of the "Waiting for you" list (sy-vdi8): what the board sent, checked, and the ask the gateway wrote. */
-type Waiting = { id: string; title: string; age_min: number; ask: string; hot: boolean; you?: string | null; card?: WaitCard | null; act?: WaitAct }
-/** The owner card's fields as a board sends them with ?card=1 (sy-92sg; template/site/waiting.mjs CARD_FIELDS). */
-type WaitCard = Partial<Record<'what' | 'why' | 'you' | 'if_yes' | 'if_no' | 'risk', string>>
+type Waiting = { id: string; title: string; age_min: number; ask: string; hot: boolean; you?: string | null; card?: WaitCard | null; act?: WaitAct; refused?: string }
+/** The owner card's fields as a board sends them with ?card=1&head=1 (sy-92sg; template/site/waiting.mjs CARD_FIELDS; `head`,
+ *  the card's Head <repo>@<sha>, sy-hzmu). A board on an older template reads it as ?card=1: no head, no refused. */
+type WaitCard = Partial<Record<'what' | 'why' | 'you' | 'if_yes' | 'if_no' | 'risk' | 'head', string>>
 /** The one action the owner's row offers, from its You line (owner-card.mjs youKind) and its labels. */
 type WaitAct = 'approve' | 'reply' | 'check' | 'none'
-const CARD_MAX: Record<string, number> = { what: 120, why: 120, you: 160, if_yes: 120, if_no: 120, risk: 100 }
+const CARD_MAX: Record<string, number> = { what: 120, why: 120, you: 160, if_yes: 120, if_no: 120, risk: 100, head: 72 }
+const HEAD = /^[a-z][a-z0-9-]{0,30}@[0-9a-f]{7,40}$/ // the card's Head (template/bin/lib/owner-card.mjs HEAD)
+const REFUSED_MAX = 200 // the board's reason it would refuse the T2 go (template/site/waiting.mjs REFUSED_MAX)
 const ITEM_ID = /^[a-z]+-[a-z0-9]+(\.[0-9]+)*$/ // the boards' id pattern (template/site/server.mjs ID_RE)
 // control characters (C0, DEL, C1), the line and paragraph separators, and the bidi controls
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/
 const ASK_LABELS = new Set(['needs-you', 't2', 'signed-off'])
-const WAIT_KEYS = new Set(['id', 'title', 'age_min', 'labels', 'you', 'card'])
+const WAIT_KEYS = new Set(['id', 'title', 'age_min', 'labels', 'you', 'card', 'refused'])
 const YOU_MAX = 160 // the owner card's You line (sy-z5lz; template/site/waiting.mjs YOU_MAX)
 /** A board's /api/waiting answer, read strictly (review sy-6h43 #5). The answer: an object with `items` (an array) and
  *  `more` (a whole number, optional), nothing else, or the board's whole list is dropped. Each item: an id of the boards'
  *  pattern (at most 64 characters), a plain-text title (1..200 characters, no control characters), age_min a whole
  *  number, labels only from needs-you/t2/signed-off, `you` (optional: the You line of the item's owner card, sy-z5lz)
- *  null or plain text as the title (1..160 characters), and nothing else, or that item is dropped. The ask is the gateway's:
+ *  null or plain text as the title (1..160 characters), `refused` (optional, the owner's only: why the board would
+ *  refuse the T2 go for the card's head, sy-hzmu) plain text of 1..200 characters, and nothing else, or that item is dropped. The ask is the gateway's:
  *  for the owner "approve (t2, signed off)" (t2 + signed-off) or "needs you" (needs-you), else the item is dropped; for
  *  anyone else "assigned to you" (the board sends them only their own items). A repeated id: kept once. */
 export function waitingOf(o: unknown, owner: boolean): { items: Waiting[]; more: number } | null {
@@ -911,6 +915,8 @@ export function waitingOf(o: unknown, owner: boolean): { items: Waiting[]; more:
     if (you !== undefined && you !== null && (typeof you !== 'string' || CONTROL.test(you) || [...you].length < 1 || [...you].length > YOU_MAX)) continue
     const card = cardOf(e.card)
     if (card === false || (card && !owner)) continue
+    const refused = e.refused
+    if (refused !== undefined && (!owner || typeof refused !== 'string' || CONTROL.test(refused) || [...refused].length < 1 || [...refused].length > REFUSED_MAX)) continue
     let ask: string, hot: boolean
     const t2 = labels.includes('t2') && labels.includes('signed-off')
     if (owner) {
@@ -920,7 +926,8 @@ export function waitingOf(o: unknown, owner: boolean): { items: Waiting[]; more:
     } else { ask = 'assigned to you'; hot = false }
     seen.add(e.id)
     items.push({ id: e.id, title: e.title, age_min: e.age_min as number, ask, hot, ...(you !== undefined ? { you: you as string | null } : {}),
-      ...(card !== undefined ? { card, act: actOf(card?.you ?? (you as string | null | undefined), t2) } : {}) })
+      ...(card !== undefined ? { card, act: actOf(card?.you ?? (you as string | null | undefined), t2) } : {}),
+      ...(refused !== undefined ? { refused: refused as string } : {}) })
   }
   return { items, more: (x.more as number | undefined) ?? 0 }
 }
@@ -935,6 +942,7 @@ function cardOf(v: unknown): WaitCard | null | undefined | false {
     const max = CARD_MAX[k]
     if (!max || typeof s !== 'string' || CONTROL.test(s)) return false
     const n = [...s].length; if (n < 1 || n > max) return false
+    if (k === 'head' && !HEAD.test(s)) return false
     out[k as keyof WaitCard] = s
   }
   return out
@@ -970,15 +978,18 @@ type Card = { project: string; host: string; role: string; s: Summary | null; w:
  *  check is named in a note. */
 const youOf = (y: string | null | undefined) => (y === undefined ? '' : y === null ? '<span class="w-you none">card missing</span>' : `<span class="w-you">You: ${esc(y)}</span>`)
 /** The owner's row (sy-92sg): the card's other lines (the You line is in the row already), every value escaped. */
-const CARD_LINES: [keyof WaitCard, string][] = [['what', 'What'], ['why', 'Why'], ['if_yes', 'If yes'], ['if_no', 'If no'], ['risk', 'Risk']]
+const CARD_LINES: [keyof WaitCard, string][] = [['what', 'What'], ['why', 'Why'], ['if_yes', 'If yes'], ['if_no', 'If no'], ['risk', 'Risk'], ['head', 'Head']]
 function cardOfRow(c: WaitCard | null | undefined) {
   const lines = c ? CARD_LINES.filter(([k]) => c[k]) : []
   return lines.length ? `<dl class="w-card">${lines.map(([k, label]) => `<div><dt>${label}</dt><dd>${esc(c![k]!)}</dd></div>`).join('')}</dl>` : ''
 }
 /** The one action that fits the You line: a form that POSTs to this host (/s/act), no script. The gateway checks the
- *  person is the owner and asks the board, which checks everything again. */
-function actsOf(project: string, id: string, act: WaitAct | undefined) {
+ *  person is the owner and asks the board, which checks everything again. A T2 go the board says it would refuse for
+ *  the card's head (`refused`, sy-hzmu): the reason instead of Approve and Not now. */
+function actsOf(project: string, id: string, act: WaitAct | undefined, refused?: string) {
   if (!act || act === 'none') return ''
+  if (act === 'approve' && refused) return `<p class="w-refused" role="note">No go yet: ${esc(refused)}.</p>`
+
   const f = (a: string, inner: string, cls = '') => `<form method="post" action="/s/act" class="w-act${cls}"><input type="hidden" name="b" value="${esc(project)}"><input type="hidden" name="i" value="${esc(id)}">${a ? `<input type="hidden" name="a" value="${a}">` : ''}${inner}</form>`
   if (act === 'approve') return f('', '<button type="submit" name="a" value="approve">Approve</button><button type="submit" name="a" value="not-now" class="alt">Not now</button>')
   if (act === 'check') return f('done', '<button type="submit">Done</button>')
@@ -992,7 +1003,7 @@ function waitingList(cards: Card[]) {
   const rows = withList.flatMap((c) => c.w!.items.map((i) => ({ ...i, project: c.project, host: c.host, owner: c.role === 'owner' })))
     .sort((a, b) => b.age_min - a.age_min || a.project.localeCompare(b.project) || a.id.localeCompare(b.id))
   const href = (host: string, id: string) => `/s?b=${encodeURIComponent(host)}&amp;r=${encodeURIComponent(`/?item=${id}`)}`
-  const row = (r: typeof rows[number]) => `<li><a href="${href(r.host, r.id)}"><span class="w-ask${r.hot ? ' hot' : ''}">${esc(r.ask)}</span><span class="w-age">${esc(mins(r.age_min))}</span><span class="w-title">${esc(r.title)}</span>${youOf(r.you)}<span class="w-link">${esc(`https://${r.host}/?item=${r.id}`)}</span><span class="w-where"><span class="w-board">${esc(r.project)}</span><span class="w-id">${esc(r.id)}</span></span></a>${r.owner ? cardOfRow(r.card) + actsOf(r.project, r.id, r.act) : ''}</li>`
+  const row = (r: typeof rows[number]) => `<li><a href="${href(r.host, r.id)}"><span class="w-ask${r.hot ? ' hot' : ''}">${esc(r.ask)}</span><span class="w-age">${esc(mins(r.age_min))}</span><span class="w-title">${esc(r.title)}</span>${youOf(r.you)}<span class="w-link">${esc(`https://${r.host}/?item=${r.id}`)}</span><span class="w-where"><span class="w-board">${esc(r.project)}</span><span class="w-id">${esc(r.id)}</span></span></a>${r.owner ? cardOfRow(r.card) + actsOf(r.project, r.id, r.act, r.refused) : ''}</li>`
   const more = withList.filter((c) => c.w!.more > 0).map((c) => `<p class="w-note">${esc(c.project)}: ${c.w!.more} more on the board.</p>`).join('')
   const notes = failed.map((c) => `<p class="w-note">${esc(c.project)}: the list is unavailable right now.</p>`).join('')
   return `<section class="waiting" aria-labelledby="waiting-h"><h2 id="waiting-h">Waiting for you${rows.length ? ` <span class="w-n">${rows.length}</span>` : ''}</h2>
@@ -1106,6 +1117,7 @@ button.quiet:hover{border-bottom-color:var(--swiss);color:var(--swiss)}
 .w-card div{display:contents}
 .w-card dt{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding-top:2px;white-space:nowrap}
 .w-card dd{margin:0;overflow-wrap:anywhere}
+.w-refused{margin:0 0 .6rem;font-size:14px;font-weight:600;color:var(--swiss);border-left:3px solid var(--swiss);padding-left:.5rem;overflow-wrap:anywhere}
 .w-act{display:flex;flex-wrap:wrap;gap:.5rem;margin:0 0 .8rem}
 .w-act button.alt{background:var(--bg);color:var(--fg)}
 .w-act button.alt:hover{border-color:var(--swiss);color:var(--swiss);background:var(--bg)}

@@ -10,6 +10,9 @@
 #   - the Waiting list (the gateway's home): the owner card's fields as escaped text, one action per row from its You
 #     line (Approve + Not now, Reply, Done, or the link only), each done server to server through the gateway, refused
 #     for a member and from another origin; a bad card field drops the item; a member's list as before;
+#   - sy-hzmu: a card that names its Head gets the T2 go (Approve, Not now, the label rail) only when review's
+#     signed-head:<repo>@<sha> names that head; the reason otherwise, nothing written; signed-head:* is the leads';
+#     the Waiting list shows Head and the reason instead of Approve;
 #   - the logs: each action on the board and the gateway's relay, never an assertion or a cookie.
 # The ledger cases run only where /etc/mm-approve.conf is absent (the board then reads the test's config); the actor
 # cases only where the verifier in force is actor.
@@ -80,6 +83,13 @@ const items = [
   I('ap-14', ['needs-you']),
   I('ap-15', ['t2', 'signed-off'], { description: card('Tap Approve') }),
   I('ap-16', ['t2', 'signed-off', 'needs-you'], { description: card('Tap Approve') }),
+  // sy-hzmu: the card names its head; review signed off mm@0a1b2c3
+  I('ap-20', ['t2', 'signed-off', 'needs-you', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', '\n- **Head:** mm@9f8e7d6') }),
+  I('ap-21', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', '\n- **Head:** mm@0a1b2c3') }),
+  I('ap-22', ['t2', 'signed-off', 'needs-you'], { description: card('Tap Approve', '\n- **Head:** mm@0a1b2c3') }),
+  I('ap-23', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', '\n- **Head:** mm@9f8e7d6') }),
+  I('ap-24', ['t2', 'signed-off', 'needs-you', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', '\n- **Head:** mm@0a1b2c3') }),
+  I('ap-25', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', '\n- **Head:** mm@0a1b2c3') }),
 ]
 const byId = new Map(items.map((i) => [i.id, i]))
 http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
@@ -178,6 +188,25 @@ check "a closed item: 409" eval '[ "$(act approve "$OA" "{\"item\":\"ap-7\"}")" 
 check "not an item id: 400; an item the board doesn't have: 404" eval '[ "$(act approve "$OA" "{\"item\":\"ap-4/../x\"}")" = 400 ] && [ "$(act approve "$OA" "{\"item\":\"ap-99\"}")" = 404 ]'
 check "...each refusal is in the board's log" eval 'grep "\"op\":\"owner-action\"" "$BLOG" | grep -q "approve refused: not same-origin"'
 
+echo "== the head review signed off (sy-hzmu): a moved head gets no go, with the reason, nothing written"
+MOVED="the head changed since review's sign-off (card: mm@9f8e7d6, signed: mm@0a1b2c3)"
+check "Approve, the card's head moved after the sign-off: 403, the reason" eval '[ "$(act approve "$OA" "{\"item\":\"ap-20\"}")" = 403 ] && says "$MOVED" && [ "$(writes ap-20)" = 0 ] && ! has ap-20 approved'
+check "Not now, the same: 403, the reason, nothing written" eval '[ "$(act not-now "$OA" "{\"item\":\"ap-20\"}")" = 403 ] && says "$MOVED" && [ "$(writes ap-20)" = 0 ]'
+check "Approve, signed off with no signed-head: 403, \"review's sign-off names no head (card: mm@0a1b2c3)\"" eval '[ "$(act approve "$OA" "{\"item\":\"ap-22\"}")" = 403 ] && says "review'"'"'s sign-off names no head (card: mm@0a1b2c3)" && [ "$(writes ap-22)" = 0 ]'
+# the label rail: the owner adds approved through the board's API (the public side)
+lab() { curl -s -o "$T/ab" -w '%{http_code}' -X PATCH -H 'content-type: application/json' -H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $1" \
+  -H "origin: https://$BOARD" -H 'sec-fetch-site: same-origin' -d "{\"patch\":{\"add_labels\":[\"$3\"]}}" "http://127.0.0.1:$BP/api/v0/beads/issues/$2"; }
+if [ "$MODE" = actor ]; then
+check "the label rail: the owner adds approved to a moved head: 403, the reason, nothing written" eval '[ "$(lab "$OA" ap-23 approved)" = 403 ] && says "$MOVED" && [ "$(writes ap-23)" = 0 ] && ! has ap-23 approved'
+check "...a matching head: the owner's approved label goes through" eval '[ "$(lab "$OA" ap-21 approved)" = 200 ] && has ap-21 approved'
+check "Approve, the card's head is the signed head: 200, approved" eval '[ "$(act approve "$OA" "{\"item\":\"ap-24\"}")" = 200 ] && has ap-24 approved'
+else
+check "the label rail: approved is refused (the ledger's tap), nothing written" eval '[ "$(lab "$OA" ap-23 approved)" = 403 ] && [ "$(writes ap-23)" = 0 ]'
+fi
+check "signed-head:* is the leads': a member may not add it (403), nothing written" eval '[ "$(lab "$MA" ap-22 signed-head:mm@0a1b2c3)" = 403 ] && says "only the leads change \"signed-head:mm@0a1b2c3\"" && [ "$(writes ap-22)" = 0 ]'
+check "...nor the owner" eval '[ "$(lab "$OA" ap-22 signed-head:mm@0a1b2c3)" = 403 ] && says "only the leads change" && [ "$(writes ap-22)" = 0 ]'
+check "...nor remove it" eval 'curl -s -o "$T/ab" -X PATCH -H "content-type: application/json" -H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $OA" -H "origin: https://$BOARD" -H "sec-fetch-site: same-origin" -d "{\"patch\":{\"remove_labels\":[\"signed-head:mm@0a1b2c3\"]}}" "http://127.0.0.1:$BP/api/v0/beads/issues/ap-20" && says "only the leads change" && has ap-20 signed-head:mm@0a1b2c3'
+
 echo "== Not now (POST /api/not-now): a comment and needs-you removed"
 check "the owner: 200; \"[owner] Not now, said boss on the board.\"; needs-you gone, no approved" eval '[ "$(act not-now "$OA" "{\"item\":\"ap-5\"}")" = 200 ] && lastw ap-5/comments POST | jq -e ".b.text == \"[owner] Not now, said boss on the board.\" and .b.author == \"boss\"" && ! has ap-5 needs-you && ! has ap-5 approved && has ap-5 t2'
 check "...the same checks: a member 403, another origin 403, no sign-off 403" eval '[ "$(act not-now "$MA" "{\"item\":\"ap-4\"}")" = 403 ] && [ "$(rawact not-now "$OA" "{\"item\":\"ap-4\"}" -H "content-type: application/json" -H "origin: https://evil.example")" = 403 ] && [ "$(act not-now "$OA" "{\"item\":\"ap-2\"}")" = 403 ]'
@@ -196,13 +225,17 @@ echo "== the gateway's Waiting list: the owner card's fields, escaped, and one a
 home() { gw -H "cookie: $1" "$G/" >"$T/hp"; }
 row() { tr '\n' ' ' <"$T/hp" | sed 's#</li>#</li>\n#g' | grep -F "class=\"w-id\">$1<"; }
 home "$SB"
-check "the owner's list was asked with ?card=1" eval 'grep -q "<span class=\"w-id\">ap-10<" "$T/hp"'
+check "the owner's list was asked with the cards (?card=1&head=1)" eval 'grep -q "<span class=\"w-id\">ap-10<" "$T/hp" && grep -q "<dt>Head</dt>" "$T/hp"'
 check "a card's What with a <script> in it stays text (escaped), its other lines shown" eval 'row ap-10 | grep -qF "<dt>What</dt><dd>Rotate the key for &#60;script&#62;alert(1)&#60;/script&#62; the shop.</dd>" && row ap-10 | grep -qF "<dt>If no</dt><dd>The old key stays.</dd>" && row ap-10 | grep -qF "<dt>Risk</dt><dd>medium, a minute without sign-in</dd>" && ! grep -q "<script>alert" "$T/hp"'
 check "\"Tap Approve…\" on a signed-off t2: Approve and Not now, a POST form to /s/act" eval 'row ap-10 | grep -qF "<form method=\"post\" action=\"/s/act\" class=\"w-act\"><input type=\"hidden\" name=\"b\" value=\"acme-shop\"><input type=\"hidden\" name=\"i\" value=\"ap-10\"><button type=\"submit\" name=\"a\" value=\"approve\">Approve</button><button type=\"submit\" name=\"a\" value=\"not-now\" class=\"alt\">Not now</button></form>"'
 check "\"Tap Approve\" on a t2 without sign-off (ap-2 is not on the list: needs-you only, ask 'needs you'): no Approve" eval '! row ap-2 | grep -q "value=\"approve\""'
 check "\"Reply: …\": a text box (at most 1000) and Send" eval 'row ap-11 | grep -q "<textarea id=\"r-acme-shop-ap-11\" name=\"t\" rows=\"3\" maxlength=\"1000\" required></textarea><button type=\"submit\">Send</button>"'
 check "\"Check: …\": a Done button" eval 'row ap-12 | grep -qF "<input type=\"hidden\" name=\"a\" value=\"done\"><button type=\"submit\">Done</button>"'
 check "\"Nothing…\", or no card: the link only (no form)" eval '! row ap-13 | grep -q "<form" && ! row ap-14 | grep -q "<form" && row ap-14 | grep -q "card missing" && row ap-13 | grep -q "/s?b=$BOARD&amp;r=%2F%3Fitem%3Dap-13"'
+check "a card that names its head: \"Head\" on the row (sy-hzmu)" eval 'row ap-20 | grep -qF "<dt>Head</dt><dd>mm@9f8e7d6</dd>"'
+check "...a moved head: the board's reason instead of Approve and Not now" eval 'row ap-20 | grep -qF "<p class=\"w-refused\" role=\"note\">No go yet: the head changed since review&#39;s sign-off (card: mm@9f8e7d6, signed: mm@0a1b2c3).</p>" && ! row ap-20 | grep -q "value=\"approve\""' 
+check "...no signed-head: the reason too" eval 'row ap-22 | grep -qF "No go yet: review&#39;s sign-off names no head (card: mm@0a1b2c3)." && ! row ap-22 | grep -q "value=\"approve\""'
+check "...the signed head: Head and Approve, no reason" eval 'row ap-25 | grep -qF "<dt>Head</dt><dd>mm@0a1b2c3</dd>" && row ap-25 | grep -q "value=\"approve\"" && ! row ap-25 | grep -q "w-refused"'
 check "the page has no inline script or style (CSP default-src 'self')" eval '! grep -qi -e "<script" -e "style=" "$T/hp"'
 
 post() { local who=$1; shift; gw -o "$T/hp" -w '%{http_code}' -H "cookie: $who" "$@" "$G/s/act"; }
@@ -244,6 +277,11 @@ const r = {
   nocard: one(null), bidi: one({ what: 'a' + bidi + 'b' }), bell: one({ why: 'a' + bell }), long: one({ what: 'w'.repeat(121) }),
   risk: one({ risk: 'r'.repeat(101) }), empty: one({ what: '' }), key: one({ link: 'https://evil.example/' }), num: one({ what: 5 }),
   arr: one([]), str: one('card'), member: one({ what: 'w' }, false), memberNull: one(null, false),
+  head: one({ head: 'mm@0a1b2c3' }), headBad: one({ head: 'mm@main' }), headUp: one({ head: 'mm@0A1B2C3' }),
+  refused: waitingOf({ items: [it({ head: 'mm@0a1b2c3' }, { refused: 'the head changed' })] }, true)!.items,
+  refusedMember: waitingOf({ items: [it(undefined, { refused: 'x' })] }, false)!.items,
+  refusedLong: waitingOf({ items: [it(null, { refused: 'r'.repeat(201) })] }, true)!.items,
+  refusedBidi: waitingOf({ items: [it(null, { refused: 'a' + bidi })] }, true)!.items,
 }
 console.log(JSON.stringify(r))
 EOF
@@ -252,6 +290,9 @@ check "a good card: kept as given (the page escapes it), the action approve" eva
 check "no card (null): kept, the link only" eval 'echo "$WO" | jq -e ".nocard | length == 1 and .[0].card == null and .[0].act == \"approve\""'
 check "a bidi or control character, a field over its limit, an empty one, an unknown key, a number, a list, a string: the item is dropped" eval 'echo "$WO" | jq -e "[.bidi, .bell, .long, .risk, .empty, .key, .num, .arr, .str] | all(length == 0)"'
 check "a card in a member's list: dropped (only the owner's entries carry one); null passes" eval 'echo "$WO" | jq -e ".member | length == 0" && echo "$WO" | jq -e ".memberNull | length == 1"'
+
+check "a card's head: <repo>@<sha> kept; anything else drops the item (sy-hzmu)" eval 'echo "$WO" | jq -e ".head[0].card.head == \"mm@0a1b2c3\" and (.headBad | length == 0) and (.headUp | length == 0)"'
+check "refused: kept for the owner; a member's, one over 200 or with a bidi character: dropped" eval 'echo "$WO" | jq -e ".refused[0].refused == \"the head changed\" and (.refusedMember | length == 0) and (.refusedLong | length == 0) and (.refusedBidi | length == 0)"'
 
 if [ "$fail" -gt 0 ]; then echo "--- gw.log"; tail -20 "$T/gw.log"; echo "--- board log"; tail -20 "$BLOG" 2>/dev/null; tail -5 "$T/board.log"; cat "$T/wo.err" 2>/dev/null; fi
 echo; echo "$pass passed, $fail failed"
