@@ -62,21 +62,21 @@ function gate(actor, argv) {
   let body
   if (file !== null) { try { body = fs.readFileSync(file, 'utf8') } catch { no(`cannot read -f ${file}`) } }
   else body = [...words, ...text].join(' ')
-  const r = parseMessage(body, { roles: RS })
+  const r = parseMessage(body, { roles: RS, author: actor })
   if (!r.ok) no(`${r.found ? `this ${r.intent} is invalid` : 'it is not a message'}:\n${say(r)}`)
   process.exit(0)
 }
 
 const [cmd, ...rest] = process.argv.slice(2)
 if (cmd === 'check') {
-  let text, what
+  let text, what, author
   if (rest.length === 1 && rest[0] === '-') { text = fs.readFileSync(0, 'utf8'); what = 'the message' }
   else if (rest.length === 2 && /^[0-9]+$/.test(rest[1])) {
     const c = comments(rest[0])[Number(rest[1]) - 1]
     if (!c) die(`${rest[0]} has no comment #${rest[1]}`)
-    text = c.text; what = `${rest[0]} #${rest[1]}`
+    text = c.text; author = String(c.author ?? ''); what = `${rest[0]} #${rest[1]}`
   } else die('usage: message check - | message check <id> <n>')
-  const r = parseMessage(text, { roles: roles() })
+  const r = parseMessage(text, { roles: roles(), author })
   if (r.ok) { console.log(`message ok (${r.intent} → ${r.to})`); process.exit(0) }
   console.error(`message: ${what} is ${r.found ? `an invalid ${r.intent}` : 'not a message'}:\n${say(r)}\nThe format: ${FORMAT}.`)
   process.exit(1)

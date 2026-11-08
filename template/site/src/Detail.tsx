@@ -278,7 +278,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                             <a href={`#c-${n}`} onClick={(e) => { e.preventDefault(); navigator.clipboard?.writeText(`#${n}`); toast.success(`Copied #${n}: use it to refer to this comment`) }}
                               title="Copy reference" className="pt-0.5 font-mono text-[11px] text-muted-foreground hover:text-swiss">#{n}</a>
                             {kind === 'lead'
-                              ? <CommentBody text={c.text} onRef={jump} />
+                              ? <CommentBody text={c.text} author={c.author} onRef={jump} />
                               : <Markdown className={cn(kind === 'system' && 'text-xs')} onRef={jump}>{c.text}</Markdown>}
                           </div>
                         ))}

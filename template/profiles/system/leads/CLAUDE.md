@@ -117,11 +117,11 @@ By: <next wake | today | hh:mm UTC> · Else: <what happens if it is not done>
 |---|---|---|---|
 | `ASK` | I need something from you | yes | `Why` · `Options` |
 | `HANDOFF` | the work is yours now | yes | `Ready` · `Tests` (artifact link) · `Open` |
-| `VERDICT` | review's result | yes, and `Head` | `Result: signed off` or `Result: blocked` · `Must change` · `Notes` |
+| `VERDICT` | review's result (only review writes one) | yes, and `Head` | `Result: signed off` or `Result: blocked` · `Must change` · `Notes` |
 | `ANSWER` | a reply to an ASK (`re #n` required) | `Expect: none` (Verify: the evidence), or a follow-up | `Answer` |
 | `DONE` | the unit is finished | `Expect: none`; Verify: the result | `Result` · `Follow-ups` · `Artifacts` |
 | `NOTE` | for the record (a plan, progress) | none | free text |
-- **One message, one intent.** Two intents are two messages. At most 500 characters: tables, logs and test output go
+- **One message, one intent.** Two intents are two messages. At most 600 characters: tables, logs and test output go
   in an artifact (below), linked.
 - **Verify is a check both sides can run**, with its expected output: a test and its case, a command and its line, a
   URL and its HTTP code, a board field and its value. "Looks good" is not a check.
