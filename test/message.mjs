@@ -19,7 +19,7 @@ const ROLES = ['ops', 'review', 'platform']
 const good = (d, t) => { const r = parseMessage(t, { roles: ROLES }); ok(`${d}: valid`, r.ok, JSON.stringify(r.errors)); return r }
 const bad = (d, t, re) => { const r = parseMessage(t, { roles: ROLES }); ok(`${d}: invalid, "${re.source}"`, !r.ok && r.errors.some((e) => re.test(e)), JSON.stringify(r.errors)) }
 
-// the plan's examples (brain plans/agent-messages.md, "Examples from 2026-11-08"), word for word
+// the six examples of the plan (agent messages), names and addresses made neutral
 const EX = {
   verdictBlocked: `VERDICT → ops · re #1
 Head: brain@3e3f1d1
@@ -53,8 +53,8 @@ By: 11:00 UTC · Else: clean-box stays blocked
 Why: onboard installs no tools, so clean-box fails 14 of 30.`,
   answer: `ANSWER → platform · re #1
 Expect: none
-Answer: The cause is GitHub's Australia server. Other GitHub servers answer 302. Nothing changed here.
-Verify: artifacts/sy-cpek/edges.txt → 4.237.22.38: 504; 140.82.112.3: 302`,
+Answer: The cause is one edge server of the host. The other edge servers answer 302. Nothing changed here.
+Verify: artifacts/sy-cpek/edges.txt → 192.0.2.10: 504; 192.0.2.20: 302`,
   answerFollow: `ANSWER → watchdog · re #1
 Head: mm@10bd473
 Answer: The commit is on main and in the mm program. No board runs it.
@@ -70,7 +70,7 @@ Verify: artifacts/sy-3wl6/checks.txt → 11 rows, all ok; each board's last comm
 Follow-ups: the owner opens a board link from Telegram (owner card on sy-3wl6).`,
   note: `NOTE → platform
 The platform lead had an error since 17:55 UTC (its session was lost). Ops started a new lead at 18:06 UTC.
-Your queue: sy-c7mh, sy-0gsw, sy-lusk, sy-ko6r. The plan is brain plans/agent-messages.md.`,
+Your queue: sy-c7mh, sy-0gsw. The plan is linked on the item.`,
 }
 
 step('the plan\'s examples are valid')
