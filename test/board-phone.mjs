@@ -84,7 +84,9 @@ const now = Date.now(), iso = (minAgo) => new Date(now - minAgo * 60e3).toISOStr
 const LONG = 'A long item title that goes on, with a/very/long/path/in/it/that/does/not/break/easily.tsx and more words'
 const issue = (id, f = {}) => ({ id, title: `${id} ${LONG}`, status: 'open', priority: 2, issue_type: 'task', assignee: 'platform', labels: [], created_at: iso(300), updated_at: iso(5), comment_count: 2, ...f })
 const issues = [
-  issue('sy-1', { priority: 0, labels: ['t2', 'signed-off'], assignee: 'ops', title: 'Rotate the gateway key (t2): plan, rollback, lockout safeguard' }),
+  // a t2 card names its head and review signed that head (sy-hzmu), so the item shows its Approve
+  issue('sy-1', { priority: 0, labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], assignee: 'ops', title: 'Rotate the gateway key (t2): plan, rollback, lockout safeguard',
+    description: '## Owner\n- **What:** Rotate the gateway key.\n- **Why:** The old one is a year old.\n- **You:** Tap Approve\n- **If yes:** Ops rotates it tonight.\n- **If no:** The old key stays.\n- **Risk:** medium, a minute without sign-in\n- **Head:** mm@0a1b2c3\n\nThe plan, the rollback and the lockout safeguard.' }),
   issue('sy-2', { status: 'in_progress', assignee: 'platform' }),
   issue('sy-3', { status: 'blocked', assignee: 'review', dependencies: [{ issue_id: 'sy-3', depends_on_id: 'sy-2', type: 'blocks' }] }),
   issue('sy-4', { assignee: 'setup' }),
