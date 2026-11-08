@@ -4,7 +4,8 @@
 # Steps:
 #   1. tools/bd and tools/dolt must match tools.json (installed_sha256)
 #   2. control/ = a git repo (repo-local identity), with project-local config dirs (.config, .dolt-root, .dolt, .run)
-#   3. bd init --server: Beads in Dolt server mode (database = <prefix>), stealth, no git hooks and no agent files
+#   3. bd init --server: Beads in Dolt server mode (database = <prefix>), stealth, no git hooks and no agent files;
+#      its output in .run/init-bd.log, tried once more from zero when it fails (sy-92ch)
 #      (--skip-hooks --skip-agents), maintainer role; then bin/bd-quiet: no-hooks, no-git-ops (sy-8s1; metrics are off in bin/bd)
 #   4. events-journal on: the board's live stream and wake read /v0/beads/events
 #   5. stop the Dolt server bd started for init; from now on the process manager runs it (services.json: dolt, which
@@ -38,7 +39,16 @@ cd "$P/control"
 export BEADS_DOLT_AUTO_START=1
 # HOME is the project's own here (sy-nsnp): before control/.beads/config.yaml exists, bd init saves what --stealth sets
 # (no-git-ops) into the user's ~/.config/bd/config.yaml when there is one; with this HOME there is none to find
-HOME="$P/.config" "$P/bin/bd" init --quiet --stealth --skip-hooks --skip-agents --server --prefix "$PREFIX" --non-interactive --role maintainer
+# Its temporary Dolt listens on a port bd derives from the path, inside the kernel's ephemeral range: on a busy machine
+# an outgoing connection can hold that port for a moment, and bd init fails (sy-92ch, twice while other boards were being
+# made). So its whole output is kept, and it is tried once more, from zero (control/.beads did not exist before: above).
+log="$P/.run/init-bd.log"; try=1
+until HOME="$P/.config" "$P/bin/bd" init --quiet --stealth --skip-hooks --skip-agents --server --prefix "$PREFIX" --non-interactive --role maintainer >"$log" 2>&1; do
+  [ "$try" -lt 2 ] || { echo "init: bd init failed twice; its output ($log):" >&2; tail -n 20 "$log" >&2; exit 1; }
+  echo "init: bd init failed once (its output: $log); trying again from zero in 5 s" >&2
+  cp "$log" "$log.1"; "$P/bin/bd" dolt stop >/dev/null 2>&1 || true
+  rm -rf "$P/control/.beads"; sleep "${INIT_RETRY_WAIT:-5}"; try=$((try + 1))
+done
 
 # 4. live event stream for the board and wake
 "$P/bin/bd" config set events-journal true >/dev/null
