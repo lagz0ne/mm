@@ -25,7 +25,14 @@ ids() { "$PASEO" ls -g --label "project=$PROJECT" --label "role=$1" -q 2>/dev/nu
 # Archive every lead of a role, and say so when one stays (sy-8n1: a silent failure left two leads of one role).
 # A lead in the middle of a turn refuses a plain archive: wait for it up to LEAD_ARCHIVE_WAIT seconds (default 30),
 # then interrupt it (--force). Returns 1, with paseo's reason, if any lead of the role is still there afterwards.
+# A lead made on another Paseo worker than the daemon's now (sy-vsh5's label) is stale: any resume runs without bin/lead's
+# env (no CLAUDE_CONFIG_DIR: no session, no folder trust). One that refuses archive and --force is deleted (sy-jwzj: a
+# send by id revived such a lead, it refused the archive, and the role had no lead for an hour); its transcript stays in
+# the Claude folder. A lead on the current worker is never deleted; when the daemon can't say its worker, none is stale.
+cur_worker() { node --input-type=module -e 'const m = await import(process.argv[1]); process.stdout.write((await m.worker({ fresh: true })) || "")' "$P/bin/lib/paseo.mjs" 2>/dev/null || true; }
 archive_role() {
+  pw=$(cur_worker); case $pw in *[!0-9.]*) pw="" ;; esac
+  fresh=""; [ -z "$pw" ] || fresh=" $("$PASEO" ls -g --label "project=$PROJECT" --label "role=$1" --label "paseo-worker=$pw" -q 2>/dev/null | tr '\n' ' ') "
   for id in $(ids "$1"); do
     t=0; why=""; gone=""
     while :; do
@@ -33,8 +40,11 @@ archive_role() {
       [ "$t" -ge "${LEAD_ARCHIVE_WAIT:-30}" ] && break; sleep 3; t=$((t + 3))
     done
     [ -z "$gone" ] || continue
+    del=""
     if why=$("$PASEO" archive --force "$id" 2>&1 >/dev/null); then echo "archived $2$1 lead $id (interrupted: it was busy for ${t}s)"
-    else echo "lead: could not archive $1 lead $id: ${why:-no reason given}" >&2; fi
+    elif [ -n "$pw" ] && case $fresh in *" $id "*) false ;; *) true ;; esac && del=$("$PASEO" delete "$id" 2>&1 >/dev/null); then
+      echo "deleted $2$1 lead $id: made on an older Paseo worker (resumed, it runs without its env), and archive failed: ${why:-no reason given}"
+    else echo "lead: could not archive $1 lead $id: ${why:-no reason given}${del:+ (delete: $del)}" >&2; fi
   done
   left=$(ids "$1")
   [ -z "$left" ] || { echo "lead: $1 lead(s) still there: $(echo $left)" >&2; return 1; }
@@ -113,7 +123,7 @@ $(fenced "$LEAD_NEXT")"
     # the daemon's worker it is made on (sy-vsh5): Paseo keeps no agent's env, so a lead it resumes after its daemon
     # restarted has none of the env below; wake knows that one by this label and starts the role again instead. The
     # daemon can't say: no label (wake leaves such a lead as before). A person's run gets it from run-as.mjs.
-    PW=""; [ -n "$as" ] || PW=$(node --input-type=module -e 'const m = await import(process.argv[1]); process.stdout.write((await m.worker({ fresh: true })) || "")' "$P/bin/lib/paseo.mjs" 2>/dev/null) || PW=""
+    PW=""; [ -n "$as" ] || PW=$(cur_worker)
     case $PW in *[!0-9.]*) PW="" ;; esac
     set -- --no-wait -q --title "$PROJECT · $role lead${as:+ (for $as)}" --provider "$model" --mode auto --env "CLAUDE_CONFIG_DIR=$CDIR" \
       ${WS:+--workspace "$WS"} --cwd "$DIR" --label "project=$PROJECT" --label "role=$role" ${as:+--label "person=$as"} ${PW:+--label "paseo-worker=$PW"} \
