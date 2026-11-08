@@ -197,6 +197,15 @@ form posted from another site sends neither. **Not now** (`POST /api/not-now`, t
 said <name> on the board." and removes `needs-you`; no other label changes. Each one is logged on the board (who, item,
 what); never the assertion.
 
+**The head review signed off** (sy-hzmu). A t2 owner card may name its head, `- **Head:** <repo>@<sha>` (repo
+`[a-z][a-z0-9-]{0,30}`, sha 7 to 40 lowercase hex): the commit or migration review signed off. Review then adds the
+label `signed-head:<repo>@<sha>` next to `signed-off` (a new sign-off replaces the old label); only the leads change
+`signed-head:*`. One check, `headRefusal(description, labels)` in `bin/lib/owner-card.mjs`, refuses the go on a t2
+item whose card names a head that no `signed-head:` label names: "review's sign-off names no head (card: X)" or "the
+head changed since review's sign-off (card: X, signed: Y)". The board (Approve, Not now, the label rail), bd's gate
+(adding `needs-you`) use it, and the bridge's tap is to use it too; the Waiting list shows the head and the reason instead of Approve. A card
+with no Head is not checked; an approved item is not checked again.
+
 ### The board's web Approve (with the ledger on)
 
 With `verifier = ledger`, the board writes no `approved` on its public side and signs nothing: adding the label
