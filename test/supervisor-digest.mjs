@@ -39,7 +39,7 @@ fs.writeFileSync(path.join(T, 'mm'), `#!/bin/sh\n[ "$1 $2" = "ls -o" ] && { echo
 // fake bd-serve: items, comments, PATCH, close, the event journal
 const items = new Map(), events = []
 let seq = 0, nextId = 1
-const snap = (i) => ({ ...i, comments: undefined })
+const snap = (i) => ({ ...i, comments: undefined, comment_count: i.comments.length })
 const record = (op, i, actor, t = clock, comment) => events.push({ seq: ++seq, op, issue_id: i.id, actor, ts: iso(t), issue: snap(i), ...(comment ? { comment } : {}) })
 function item(id, f, actor = 'ops', t = clock) {
   const i = { id, title: f.title || id, status: f.status || 'open', priority: f.priority ?? 2, assignee: f.assignee || '', labels: f.labels || [], description: f.description || '', updated_at: iso(t), comments: [] }
@@ -58,6 +58,7 @@ const srv = http.createServer(async (req, res) => {
     const label = u.searchParams.get('label'), status = u.searchParams.get('status')?.split(',')
     return json({ items: [...items.values()].filter((i) => (!label || i.labels.includes(label)) && (status ? status.includes(i.status) : i.status !== 'closed')).map(snap), has_more: false })
   }
+  if (req.method === 'GET' && (m = /^\/v0\/beads\/issues\/([\w.-]+)$/.exec(u.pathname))) { const i = items.get(m[1]); return i ? json({ ...snap(i), ...(u.searchParams.get('include_comments') === 'true' ? { comments: i.comments } : {}) }) : json({ error: 'no' }, 404) }
   if (req.method === 'GET' && u.pathname === '/v0/beads/ready') return json({ items: [...items.values()].filter((i) => i.status === 'open').map(snap) })
   if (req.method === 'GET' && u.pathname === '/v0/beads/events') { const since = Number(u.searchParams.get('since') || 0); return json({ head: seq, records: events.filter((e) => e.seq > since) }) }
   if (req.method === 'POST' && u.pathname === '/v0/beads/issues') return json({ id: item(`sy-s${nextId++}`, b, b.actor).id })
@@ -155,6 +156,24 @@ try {
   at(123); await supervise()
   const B2 = openOf('digest:platform')
   ok('a blocker removed (sy-21) adds its line; a blocker added (sy-20) drops one', B2?.id === B.id && /: sy-21 /.test(B2.description) && !/: sy-20 /.test(B2.description) && B2.comments.length === 0)
+
+  console.log('== long thread, no artifact (sy-kmhx): more than 15 comments and no linked file is a line in the digest')
+  const talk = (id, n) => { for (let k = 1; k <= n; k++) comment(id, k % 2 ? 'ops' : 'review', `Point ${k}: we went over it again, see #${k} above.`) }
+  item('sy-30', { assignee: 'ops' }, 'ops'); talk('sy-30', 16)                                    // wordy, no file
+  item('sy-31', { assignee: 'ops' }, 'ops'); talk('sy-31', 15)                                    // at the limit, not over
+  item('sy-32', { assignee: 'ops', description: 'Plan: plans/sy-32-rotate.md' }, 'ops'); talk('sy-32', 20) // linked in its description
+  item('sy-33', { assignee: 'ops' }, 'ops'); talk('sy-33', 18); comment('sy-33', 'ops', 'The design is in `docs/board/sy-33-layout.md`.') // linked in a comment
+  item('sy-34', { assignee: 'ops', status: 'closed' }, 'ops'); talk('sy-34', 30)                 // closed
+  item('sy-35', { assignee: 'ops' }, 'ops'); talk('sy-35', 17); comment('sy-35', 'ops', 'Compare mydocs/x.md and https://example.org/docs/y.md.') // not a repo path
+  at(130); await supervise()
+  const W = openOf('digest:ops')
+  ok('digest:ops: sy-30 and sy-35, with their counts', /^- long thread, no artifact: sy-30 \(16 comments, ops\)/m.test(W?.description) && /^- long thread, no artifact: sy-35 \(18 comments, ops\)/m.test(W?.description))
+  ok('...not sy-31 (15), sy-32 (description links a plan), sy-33 (a comment links a doc), sy-34 (closed)', !/sy-31|sy-32|sy-33|sy-34/.test(W?.description))
+  ok('...low (P2), and it says what to do', W?.priority === 2 && /put the substance in a file/.test(W.description))
+  comment('sy-30', 'ops', 'Moved it all to plans/sy-30-backup.md; the description holds the state.')
+  at(135); await supervise()
+  const W2 = openOf('digest:ops')
+  ok('a link appears: sy-30\'s line drops off, the same item, no comment', W2?.id === W.id && !/sy-30/.test(W2.description) && /sy-35/.test(W2.description) && W2.comments.length === 0)
 } finally {
   srv.close()
   if (fail) console.log(out.slice(-3000))
