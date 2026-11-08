@@ -4,7 +4,8 @@
 // opened with Playwright at 390x844 and 375x667. It fails on sideways scroll (scrollWidth > innerWidth) on the board, an
 // open item, the Now/Activity panel, the Designs panel, the Machine panel, the gateway's home, sign-in and token pages;
 // on an input under 16px (iOS zooms on focus below that); on a main action under 40px high. Screenshots go to a folder
-// under the temp dir; their paths are printed.
+// under the temp dir; their paths are printed. Then it runs test/board-phone-space.mjs (the items' share of the screen,
+// the one-row bar and its menu) on the same build, and counts its checks with its own.
 //   node test/board-phone.mjs            exit 0 = every check passed
 //   BOARD_PHONE_NOBUILD=1 ...            use template/site/dist as it is
 // The browser: playwright-core (mm's dev dependency) and its cached headless shell, or PLAYWRIGHT_CHROMIUM=<binary>.
@@ -190,16 +191,26 @@ for (const [w, h] of [[390, 844], [375, 667]]) {
   page.on('pageerror', (e) => errs.push(e.message))
   await page.goto(`${BASE}/`)
   await page.getByText('Rotate the gateway key').first().waitFor({ timeout: 10000 })
-  shots.push(await check(page, 'board', size, ['New', { name: 'Ready tab', loc: page.getByRole('tab').first() }]))
-  ok(`board @${size}: the columns are tabs, one at a time`, (await page.getByRole('tab').count()) === 4)
-  await page.getByRole('tab', { name: /In progress/ }).click()
+  // one column at a time, chosen in the bar's picker; everything else in its menu (sy-hrsm, test/board-phone-space.mjs)
+  const picker = page.getByRole('button', { name: /^Column/ })
+  shots.push(await check(page, 'board', size, [{ name: 'Column picker', loc: picker }, 'Menu']))
+  await picker.click()
+  ok(`board @${size}: the picker offers the four columns`, (await page.getByRole('menuitemradio').count()) === 4)
+  await page.getByRole('menuitemradio', { name: /In progress/ }).click()
   await page.getByText(/sy-2 A long item title/).first().waitFor({ timeout: 5000 }).catch(() => {})
-  ok(`board @${size}: a tab shows its column (In progress has sy-2)`, await page.getByText(/sy-2 A long item title/).first().isVisible())
+  ok(`board @${size}: a pick shows its column (In progress has sy-2)`, await page.getByText(/sy-2 A long item title/).first().isVisible())
   shots.push(await check(page, 'board-tab-2', size))
-  await page.getByRole('tab').first().click()
+  await picker.click()
+  await page.getByRole('menuitemradio', { name: /Ready/ }).click()
+
+  step(`the menu at ${size}`)
+  await page.getByRole('button', { name: 'Menu', exact: true }).click()
+  await page.waitForTimeout(300)
+  shots.push(await check(page, 'menu', size, ['Close', { name: 'New item', loc: page.getByRole('button', { name: /New item/ }) }, { name: 'All roles', loc: page.getByRole('button', { name: /^All roles/ }) }]))
 
   step(`Now and Activity at ${size}`)
-  await page.locator('button[aria-controls=board-side]').click()
+  await page.getByRole('dialog', { name: 'Menu' }).getByRole('button', { name: /^Now/ }).click()
+  await page.waitForTimeout(300)
   shots.push(await check(page, 'now-activity', size, ['Close']))
   ok(`now @${size}: the panel covers the board`, await page.locator('#board-side').isVisible())
   await page.getByRole('button', { name: 'Close', exact: true }).click()
@@ -262,6 +273,14 @@ for (const [w, h] of [[390, 844], [375, 667]]) {
 }
 await browser.close()
 srv.close()
+
+// the items' share of the phone's screen, the one-row bar, its menu and filter chip (sy-hrsm): same build, own fixture
+step('the items get the screen (test/board-phone-space.mjs)')
+const sp = spawnSync('node', [path.join(SRC, 'test', 'board-phone-space.mjs')], { encoding: 'utf8', env: { ...process.env, BOARD_PHONE_NOBUILD: '1' } })
+process.stdout.write(sp.stdout.split('\n').filter((l) => !/build the site|^\s+built$/.test(l)).join('\n'))
+const sm = /(\d+) passed, (\d+) failed/.exec(sp.stdout.replace(/\x1b\[[0-9;]*m/g, ''))
+if (sm) { pass += +sm[1]; fail += +sm[2] }
+ok('board-phone-space ran to the end', sp.status === 0 || (sm && +sm[2] > 0), (sp.stderr || '').slice(-600))
 
 console.log('\nscreenshots:')
 for (const s of shots) console.log(`  ${s}`)
