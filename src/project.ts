@@ -137,6 +137,31 @@ export async function installTools(root: string): Promise<Step[]> {
   return steps
 }
 
+/** What under `paths` is not this user's, the top-most such entries, never through a link (sy-4jc6: Docker makes a
+ *  missing mount source as root, and the owner can't remove it). */
+export function notMine(paths: string[]): string[] {
+  const uid = process.getuid?.(), out: string[] = []
+  const walk = (p: string) => {
+    let st; try { st = lstatSync(p) } catch { return }
+    if (st.uid !== uid) { out.push(p); return }
+    if (!st.isDirectory()) return
+    let names: string[]; try { names = readdirSync(p) } catch { out.push(p); return }
+    for (const n of names) walk(join(p, n))
+  }
+  for (const p of paths) walk(p)
+  return out
+}
+/** Remove each of `paths` (recursive). What this user can't remove is not a stop: it is listed, with the one command that
+ *  removes it (as root), so the caller reports it and goes on (sy-4jc6). */
+export function removeAll(paths: string[]): { removed: string[]; left: string[]; fix: string } {
+  const removed: string[] = [], left: string[] = []
+  for (const p of paths.filter((x) => { try { lstatSync(x); return true } catch { return false } })) {
+    try { rmSync(p, { recursive: true, force: true }); removed.push(p) } catch { const nm = notMine([p]); left.push(...(nm.length ? nm : [p])) }
+  }
+  const q = (p: string) => `'${p.replace(/'/g, `'\\''`)}'`
+  return { removed, left, fix: left.length ? `left (another user's: Docker makes a missing mount folder as root): ${left.map((p) => p.replace(HOME, '~')).join(', ')}; remove as root: sudo rm -rf ${left.map(q).join(' ')}` : '' }
+}
+
 export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answers: Answers; steps: Step[] }> {
   const { client, name } = parseRef(ref)
   const profile = o.profile || 'project', product = profile === 'project'
@@ -152,6 +177,12 @@ export async function newProject(ref: string, o: NewOpts = {}): Promise<{ answer
     root, template_version: pkg.version, created: new Date().toISOString(), ...(product ? {} : { profile }), ...(o.throwaway ? { throwaway: true } : {}), ...(o.box ? { box: true } : {}),
   }
   if (!/^[a-z]{1,8}$/.test(answers.short)) throw new Error('short (item id prefix) must be 1-8 letters')
+  // a box made again under a name whose old box left another user's folders (sy-4jc6): refused before anything is
+  // written, with what is left and how to remove it (it failed later with EACCES, and left a half-made project)
+  if (o.box) {
+    const stale = notMine(['box', 'egress', 'paseo'].map((d) => join(DIRS.mm, d, answers.project)))
+    if (stale.length) throw new Error(`a box named ${answers.project} left folders that are not yours: ${stale.map((p) => p.replace(HOME, '~')).join(', ')}; remove them as root (sudo rm -rf ${stale.map((p) => `'${p}'`).join(' ')}), then run mm new again`)
+  }
 
   // 1. render the template
   const t = template()
