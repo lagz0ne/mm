@@ -2,7 +2,8 @@
 # bin/bd adds needs-you only with a valid owner card (sy-z5lz): label add (the label in any position), update
 # --add-label / -l / --set-labels, create / q -l / --labels are refused (exit 1, the reasons, the format; bd itself
 # never runs) when the item's description, or the one the call sets (-d, --description, --body-file), has no valid card;
-# t2 asks for If yes, If no, Risk, and review's sign-off first (signed-off; sy-l9uc), also when t2 is added to an item
+# t2 on a go ask (You: Tap Approve) asks for If yes, If no, Risk, Head, and review's sign-off first (signed-off; sy-l9uc;
+# a non-go ask, You: Reply:/Check:/Nothing, needs neither: sy-t9tg), also when t2 is added to an item
 # that has needs-you; a card that names its Head needs review's signed-head for that head (sy-hzmu). Allowed: a valid card, removing the label, any other label, any other command (and
 # those never read the item). bin/owner-card check <id> reads the item through bin/bd show. Hermetic: a copy of the
 # template's bin/bd, bin/owner-card and its lib in a throwaway folder; a stand-in bd (it records its arguments and
@@ -41,13 +42,24 @@ T2CARD='## Owner
 - **If no:** The alerts stay on the board only.
 - **Risk:** medium, a wrong rule can close a port; the rollback is tested.
 - **Head:** mm@0a1b2c3'
+# a go ask (You: Tap Approve) without the t2 keys; a non-go ask (sy-t9tg: You: Check:) asks before any head exists
+GOCARD=$(printf '%s' "$CARD" | sed 's/^- \*\*You:\*\* Nothing$/- **You:** Tap Approve/')
+NGCARD='## Owner
+- **What:** Check that the admin login works before the plan is written.
+- **Why:** The plan depends on sudo working for that account.
+- **You:** Check: run ssh admin@host, then sudo -v, and say if it worked
+
+The rest of the text.'
 item() { node -e 'process.stdout.write(JSON.stringify([{ id: process.argv[1], description: process.argv[2], labels: JSON.parse(process.argv[3]) }]))' "$1" "$2" "$3" >"$T/items/$1.json"; }
 item sy-good "$CARD" '[]'
 item sy-none "Just a text, no card." '[]'
 item sy-late "Intro.
 
 $CARD" '[]'
-item sy-t2 "$CARD" '["t2"]'
+item sy-t2 "$GOCARD" '["t2"]'
+item sy-ng "$NGCARD" '["t2"]'
+item sy-ngny "$NGCARD" '["needs-you"]'
+item sy-ngbad "$(printf '%s' "$NGCARD" | sed 's/^- \*\*You:\*\* \(.*\)$/- **You:** \1\n- **Risk:** maybe/')" '["t2"]'
 item sy-t2ok "$T2CARD" '["t2","signed-off","signed-head:mm@0a1b2c3"]'
 item sy-t2nohead "$(printf '%s' "$T2CARD" | grep -v '^- \*\*Head:')" '["t2","signed-off","signed-head:mm@0a1b2c3"]'
 item sy-t2full "$T2CARD" '["t2"]'
@@ -85,7 +97,7 @@ call create "a title" --body-file "$T/nocard.md" -l needs-you; check "create --b
 call q "a title" -l needs-you;                          check "q -l needs-you" refused
 call label add sy-t2 needs-you;                         check "t2 item, card without If yes/If no/Risk" refused
 check "...the t2 reason" says "If yes is missing (required with t2)"
-call create "a title" --description "$CARD" -l t2,needs-you; check "create t2 with a card lacking the t2 keys" refused
+call create "a title" --description "$GOCARD" -l t2,needs-you; check "create t2 with a go card lacking the t2 keys" refused
 call label add sy-missing needs-you;                    check "an item bd cannot show" refused
 call --json update sy-none --add-label needs-you;       check "a global flag first" refused
 call label add sy-wrongitem needs-you;                  check "an Item line to another item" refused
@@ -126,6 +138,17 @@ call label add sy-good t2;                              check "adding t2 to an i
 call label add sy-t2x t1;                               check "an id with t2 inside it, another label: no gate" passed
 check "...reads nothing" noshow
 call update sy-nyfull --set-labels t2;                  check "--set-labels t2 (needs-you dropped by the set): allowed" passed
+
+echo "== a t2 non-go ask (You: Reply:/Check:/Nothing) waits on the owner before any sign-off or head (sy-t9tg)"
+call label add sy-ng needs-you;                         check "t2, a Check: card, no Head, no signed-off: label add needs-you passed" passed
+call update sy-ng --add-label needs-you;                check "...update --add-label needs-you too" passed
+call create "a title" -d "$NGCARD" -l t2,needs-you;     check "create t2,needs-you with a non-go card" passed
+call label add sy-ngny t2;                              check "adding t2 to a non-go item with needs-you" passed
+call create "a title" -d "$CARD" -l t2,needs-you;       check "create t2,needs-you with You: Nothing" passed
+call label add sy-ngbad needs-you;                      check "a non-go card's optional keys are checked: a bad Risk refused" refused
+check "...the reason" says "Risk does not start with low, medium or high"
+call update sy-ng -d "$T2CARD" --add-label needs-you;   check "the same item, its card made a go ask in the call: refused (no signed-off)" refused
+check "...the reason: plan, sign-off, then needs-you" says "plan -> review's sign-off -> needs-you"
 
 echo "== a t2 card that names its head waits on the owner only when review signed off that head (sy-hzmu)"
 HCARD=$T2CARD # it names its head: mm@0a1b2c3
