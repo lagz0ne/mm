@@ -172,7 +172,7 @@ project:
 
   repos:
     root:    { kind: config, hook: "ops/githooks/pre-commit -> bin/config-check --render --staged",
-               gitignore_whitelist: [CLAUDE.md, leads/, ops/, bin/, site/, setup/, worktrees/CLAUDE.md,
+               gitignore_whitelist: [CLAUDE.md, leads/, ops/, bin/, site/, setup/, artifacts/, worktrees/CLAUDE.md,
                                      services.json, tools.json, secrets.json] }
     code:    { kind: product, branch: main,
                worktrees: "lead-<role> for every role without workers (playground: architecture, design, ops, qa,

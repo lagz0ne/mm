@@ -1,0 +1,67 @@
+#!/bin/sh
+# artifact — put files on an item, where the board shows them (sy-wxzx): screenshots, before/after shots, logs, result
+# tables. A path in /tmp is not one the owner can open on a phone; artifacts/<item-id>/<name> is.
+#   artifact <item-id> <file>...
+# Copies each file into artifacts/<item-id>/ in the project root (its base name kept; the same name again replaces
+# it), commits only those files in the root repo (message "artifact <id>: <names>", author the caller's role from
+# BEADS_ACTOR/BD_ACTOR; the pre-commit hook's config-check scans them for secrets), and prints for each the path to
+# quote in a comment: artifacts/<item-id>/<name>. The item's detail shows them as a gallery.
+# Refused (nothing is copied when one file is): a bad item id, no actor, a type the board's viewer cannot show
+# (html md txt json css js svg png jpg webp), a file over 5 MB, a name with a leading dot or other than
+# A-Z a-z 0-9 . _ -, a file in a secrets folder, or anything that looks like a key or token.
+[ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" artifact -- "$0" "$@"
+set -eu
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+MAX=$((5 * 1024 * 1024))
+die() { echo "artifact: $*" >&2; exit 2; }
+[ $# -ge 2 ] || die "usage: artifact <item-id> <file>... (prints artifacts/<item-id>/<name> for each, to quote in a comment)"
+id=$1; shift
+printf '%s\n' "$id" | grep -Eqx '[a-z]+-[a-z0-9]+(\.[0-9]+)*' || die "'$id' is not an item id (like ab-1x2 or ab-1x2.3)"
+actor=${BEADS_ACTOR:-${BD_ACTOR:-}}; role=${actor%%/*}
+case $role in ''|*[!a-z0-9._-]*|[!a-z]*) die "no actor: BEADS_ACTOR (or BD_ACTOR) names who commits (your role)";; esac
+git -C "$P" rev-parse --git-dir >/dev/null 2>&1 || die "$P is not a git repo (the project's root config repo)"
+names=""
+for f in "$@"; do
+  [ -f "$f" ] || die "$f: no such file (a regular file; not a folder)"
+  n=${f##*/}
+  case $n in .*) die "$f: a name with a leading dot is not shown (rename it)";; esac
+  case $n in *[!A-Za-z0-9._-]*) die "$f: the name may have only A-Z a-z 0-9 . _ - (rename it)";; esac
+  case $n in
+    *.html|*.md|*.txt|*.json|*.css|*.js|*.svg|*.png|*.jpg|*.webp) ;;
+    *) die "$f: the board cannot show that type (html md txt json css js svg png jpg webp; a log goes as .txt)";;
+  esac
+  size=$(($(wc -c < "$f")))
+  [ "$size" -le "$MAX" ] || die "$f: $((size / 1048576)) MB, the most is 5 MB (crop or compress it)"
+  real=$(readlink -f "$f")
+  for s in "$P/secrets" "$P/.keys" "$HOME/.ssh" "$HOME/.config/secrets" "${MM_HOME:-$HOME/.mm}/vault" "/run/user/$(id -u)/mm/secrets"; do
+    case $real in "$s"/*) die "$f: is in a secrets folder; an artifact never holds a secret";; esac
+  done
+  case " $names " in *" $n "*) die "$n: named twice";; esac
+  names="${names:+$names }$n"
+done
+node "$P/bin/lib/secret-scan.mjs" "$@" || die "refused: an artifact never holds a secret (nothing copied)"
+D=$P/artifacts/$id
+mkdir -p "$D"
+# one artifact commit at a time (two leads at once would race for the root repo's index)
+if command -v flock >/dev/null 2>&1; then exec 9>"$(git -C "$P" rev-parse --absolute-git-dir)/artifact.lock"; flock -w 60 9 || die "the root repo is busy (another artifact commit for 60 s)"; fi
+paths=""
+for f in "$@"; do
+  n=${f##*/}
+  cp -- "$f" "$D/$n.tmp" && chmod 644 "$D/$n.tmp" && mv -f -- "$D/$n.tmp" "$D/$n"
+  paths="${paths:+$paths }artifacts/$id/$n"
+done
+# shellcheck disable=SC2086 # the names are checked above: no spaces, no glob characters
+git -C "$P" add -- $paths
+# shellcheck disable=SC2086
+if git -C "$P" diff --cached --quiet -- $paths; then
+  echo "artifact: unchanged, already committed" >&2
+else
+  # shellcheck disable=SC2086
+  GIT_AUTHOR_NAME=$role GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-$role@$(basename "$P").local} \
+  GIT_COMMITTER_NAME=${GIT_COMMITTER_NAME:-$role} GIT_COMMITTER_EMAIL=${GIT_COMMITTER_EMAIL:-$role@$(basename "$P").local} \
+    git -C "$P" commit -q -m "artifact $id: $names" --only -- $paths || {
+      git -C "$P" reset -q -- $paths 2>/dev/null || true
+      for p in $paths; do git -C "$P" checkout -q HEAD -- "$p" 2>/dev/null || rm -f -- "$P/$p"; done
+      die "the commit was refused (see above): nothing kept"; }
+fi
+for p in $paths; do echo "$p"; done
