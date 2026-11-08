@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUpRightIcon, CaretLeftIcon, CaretRightIcon, ChatCircleIcon, LinkSimpleIcon, PlusIcon } from '@phosphor-icons/react'
 import { toast } from 'sonner'
-import { api, blockers, type BeadEvent, type Issue, type Meta } from '@/lib/api'
+import { api, blockers, type BeadEvent, type Issue, type Meta, type WaitingEntry } from '@/lib/api'
 import { COLUMNS, LEAD_DOT, LEAD_READY, ROLES, ROLE_LABEL, ago, byPriority, columnOf, roleOf, setRoleDefs, type ColumnKey } from '@/lib/board'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,6 +11,8 @@ import { useDesk, usePhone } from '@/lib/phone'
 import { REL_TAG, clearLinks, hoverLinks, linksNotShown, linksPinned, pinLinks, setLinkGraph, useLinkRel, useMarked } from '@/lib/links'
 import { Goals } from '@/Goals'
 import { PhoneBar } from '@/PhoneBar'
+import { HumanBar, type HumanView } from '@/HumanBar'
+import { ForYou } from '@/ForYou'
 import { cn } from '@/lib/utils'
 import { NewItem } from '@/NewItem'
 import { Identify } from '@/Identify'
@@ -24,6 +26,8 @@ const Leads = lazy(() => loadLeads().then((m) => ({ default: m.Leads })))
 const Machine = lazy(() => import('@/Machine').then((m) => ({ default: m.Machine })))
 const Glossary = lazy(() => import('@/Glossary').then((m) => ({ default: m.Glossary })))
 const viewOf = (h: string) => (h === '#leads' ? 'leads' : h === '#machine' ? 'machine' : h === '#glossary' ? 'glossary' : 'board') as 'board' | 'leads' | 'machine' | 'glossary'
+// a person signed in through the gateway starts on For you (sy-c7mh); the board is behind #board
+const humanViewOf = (h: string): HumanView => (h === '#board' ? 'board' : h === '#leads' ? 'leads' : h === '#machine' ? 'machine' : h === '#glossary' ? 'glossary' : 'foryou')
 if (typeof window !== 'undefined') window.addEventListener('load', () => setTimeout(() => { loadDetail(); loadLeads() }, 1500))
 const EMPTY_META: Meta = { project: '', leads: {}, creators: {}, last: {} }
 const SLOW_MIN = 15 // a ready item nobody picked up for this long turns red
@@ -36,6 +40,8 @@ export default function App() {
   const [live, setLive] = useState(false)
   const [actor, setActor] = useState('')
   const [idSource, setIdSource] = useState('')
+  const [me, setMe] = useState<{ approval?: 'label' | 'telegram'; home?: string; role?: string }>({})
+  const [waiting, setWaiting] = useState<WaitingEntry[] | null>(null)
   const [identifying, setIdentifying] = useState(false)
   const [links, setLinks] = useState<{ name: string; label: string; url: string }[]>([])
   const [role, setRole] = useState('all')
@@ -72,7 +78,11 @@ export default function App() {
   const [creating, setCreating] = useState(false)
   const [meta, setMeta] = useState<Meta>(EMPTY_META)
   const presence = usePresenceFeed()
-  const [view, setView] = useState(() => viewOf(window.location.hash))
+  const [hash, setHash] = useState(() => window.location.hash)
+  // the human's views (For you first) only when the gateway says who this is; the leads' local side as before
+  const human = idSource === 'gateway'
+  const hview = humanViewOf(hash)
+  const view = human ? (hview === 'foryou' ? 'board' : hview) : viewOf(hash)
   const [, setNow] = useState(0) // re-render each poll so "waiting 3m" ages
   const [tick, setTick] = useState(0) // bumps when anything changes, so an open detail reloads
   const search = useRef<HTMLInputElement>(null)
@@ -138,7 +148,7 @@ export default function App() {
   useEffect(() => {
     load()
     fetch('/api/links').then((r) => r.json()).then((d) => setLinks(d.links || [])).catch(() => {})
-    api.whoami().then((w) => { setActor(w.actor); setIdSource(w.source); if (w.source === 'default') setIdentifying(true) }).catch(() => {})
+    api.whoami().then((w) => { setActor(w.actor); setIdSource(w.source); setMe({ approval: w.approval, home: w.home, role: w.role }); if (w.source === 'default') setIdentifying(true) }).catch(() => {})
     let es: EventSource | undefined
     let timer: number | undefined
     let stopped = false
@@ -164,12 +174,20 @@ export default function App() {
   }, [load])
 
   useEffect(() => {
-    const onHash = () => setView(viewOf(window.location.hash))
+    const onHash = () => setHash(window.location.hash)
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
   useEffect(() => { if (meta.project) document.title = `${meta.project} · work board` }, [meta.project])
+
+  // what waits on the signed-in person (For you's count and its Needs you), again on every change of the board
+  useEffect(() => {
+    if (!human) return
+    let gone = false
+    api.waiting().then((d) => !gone && setWaiting(d.items)).catch(() => !gone && setWaiting((w) => w ?? []))
+    return () => { gone = true }
+  }, [human, tick])
 
   // Lead status changes in Paseo, not in Beads, so poll it.
   useEffect(() => {
@@ -239,7 +257,11 @@ export default function App() {
     <div className="relative flex h-svh flex-col overflow-hidden border-t-4 border-foreground bg-background text-foreground">
       {/* One line (sy-p88g): the project, its views, the goal chip; the column counts only on wide screens (the
           column heads and the phone's tabs show them anyway), who is working, live, and who you are. */}
-      {phone ? (
+      {human ? (
+        <HumanBar project={meta.project} view={hview} needs={waiting?.length ?? 0} panels={meta.panels || []} links={links}
+          role={role} onRole={setRole} q={q} onQ={setQ} search={search} epics={epics} issues={issues} onOpenItem={setOpenId}
+          live={live} actor={actor} home={me.home} onNew={() => setCreating(true)} nowCount={presence.length} onNow={() => setSide(true)} />
+      ) : phone ? (
         <PhoneBar project={meta.project} view={view} panels={meta.panels || []} links={links} col={col} counts={counts} onCol={(c) => { setCol(c); setBarHidden(false); mainRef.current?.scrollTo(0, 0) }}
           role={role} onRole={setRole} q={q} onQ={setQ} search={search} epics={epics} issues={issues} onOpenItem={setOpenId}
           live={live} actor={actor} idSource={idSource} onIdentify={() => setIdentifying(true)} onNew={() => setCreating(true)}
@@ -284,9 +306,30 @@ export default function App() {
       </header>
       )}
 
-      {view === 'glossary' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Glossary /></Suspense> : view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
+      {human && hview === 'foryou' ? (
+        <main className="min-h-0 flex-1 overflow-auto">
+          <ForYou waiting={waiting} owner={me.role === 'owner'} approval={me.approval} storeKey={`${meta.project || 'board'}:${actor}`} tick={tick}
+            onOpen={setOpenId} onChanged={load} />
+        </main>
+      ) : view === 'glossary' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Glossary /></Suspense> : view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
       {/* The toolbar from md up; on a phone the bar's menu holds the same controls (sy-hrsm). */}
-      {!phone && <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-6 py-1.5">
+      {/* the human's board (sy-c7mh): no toolbar (the menu holds it); a filter in force says so, with Clear; on a phone
+          the column tabs sit on top of the list */}
+      {human && (role !== 'all' || q.trim()) && (
+        <p data-filter-line className="flex shrink-0 items-center gap-2 border-b px-4 py-1 text-[13px] md:px-6">
+          <span className="min-w-0 truncate">Showing {[role !== 'all' && ROLE_LABEL[role], q.trim() && `“${q.trim()}”`].filter(Boolean).join(' · ')}</span>
+          <button type="button" onClick={() => { setRole('all'); setQ('') }} className="min-h-10 px-2 font-semibold hover:underline">Clear</button>
+        </p>
+      )}
+      {human && phone && (
+        <div role="tablist" aria-label="Columns" className="grid shrink-0 grid-cols-4 border-b">
+          {COLUMNS.map((c) => (
+            <button key={c.key} role="tab" aria-selected={col === c.key} onClick={() => { setCol(c.key); mainRef.current?.scrollTo(0, 0) }}
+              className={cn('min-h-11 border-b-2 text-[13px] font-semibold', col === c.key ? 'border-foreground' : 'border-transparent text-muted-foreground')}>{c.label}</button>
+          ))}
+        </div>
+      )}
+      {!phone && !human && <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-6 py-1.5">
         <ToggleGroup type="single" value={role} onValueChange={(v) => v && setRole(v)} variant="outline" size="sm" spacing={0}>
           <ToggleGroupItem value="all">All</ToggleGroupItem>
           {ROLES.map((r) => <ToggleGroupItem key={r} value={r}>{ROLE_LABEL[r]}</ToggleGroupItem>)}
@@ -303,8 +346,8 @@ export default function App() {
       </div>}
 
       <div className={cn('relative grid min-h-0 flex-1 grid-rows-1', side && 'xl:grid-cols-[minmax(0,1fr)_20rem]')}>
-        <main ref={mainRef} onScroll={phone ? onMainScroll : undefined} className="min-h-0 min-w-0 overflow-auto">
-          {phone ? <PhoneBoard rows={rows} work={work} ready={ready} byId={byId} meta={meta} col={col} onOpen={setOpenId} /> : (
+        <main ref={mainRef} onScroll={phone && !human ? onMainScroll : undefined} className="min-h-0 min-w-0 overflow-auto">
+          {phone ? <PhoneBoard top={!human} rows={rows} work={work} ready={ready} byId={byId} meta={meta} col={col} onOpen={setOpenId} /> : (
           <div className={cn('grid min-w-[760px]', folded ? 'grid-cols-[3rem_repeat(4,minmax(0,1fr))]' : 'grid-cols-[8.5rem_repeat(4,minmax(0,1fr))]')}>
             <div className="sticky top-0 z-10 flex items-stretch border-b border-foreground bg-background">
               <button type="button" onClick={toggleFolded} aria-pressed={folded}
@@ -385,8 +428,8 @@ type MoveFn = (id: string, role: string, col: ColumnKey) => void
 
 /** The board on a phone: one column at a time (the bar's picker chooses it, sy-hrsm), as a list grouped by role (each
  *  with its lead's state). It starts under the bar (48px), which lies over it. */
-function PhoneBoard({ rows, work, ready, byId, meta, col, onOpen }: {
-  rows: string[]; work: Issue[]; ready: Set<string>; byId: Map<string, Issue>; meta: Meta; col: ColumnKey; onOpen: (id: string) => void
+function PhoneBoard({ top, rows, work, ready, byId, meta, col, onOpen }: {
+  top: boolean; rows: string[]; work: Issue[]; ready: Set<string>; byId: Map<string, Issue>; meta: Meta; col: ColumnKey; onOpen: (id: string) => void
 }) {
   const inCol = work.filter((i) => columnOf(i, ready) === col)
   const groups = rows.map((r) => {
@@ -394,7 +437,7 @@ function PhoneBoard({ rows, work, ready, byId, meta, col, onOpen }: {
     return { role: r, items: col === 'done' ? items.sort((a, b) => (b.closed_at || '').localeCompare(a.closed_at || '')).slice(0, 8) : items.sort(byPriority) }
   }).filter((g) => g.items.length)
   return (
-    <div className="min-w-0 pt-12">
+    <div className={cn('min-w-0', top && 'pt-12')}>
       {groups.length === 0 && <p className="px-4 py-6 text-sm text-muted-foreground">Nothing here.</p>}
       {groups.map((g) => {
         const st = (g.role && meta.states?.[g.role]) || LEAD_READY
