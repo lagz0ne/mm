@@ -18,7 +18,8 @@ around it):
 - **review**: your folder is a read-only checkout of mm's repo at the ref your lead chose. Read and report. You change
   nothing: no edits, no commits, no board writes.
 - **ops**: your folder has no repo. Investigate the machine read-only and draft plans. You write only comments on your
-  item (`bd comments add <ID> "..."`, one plain command). No other board change, no machine change, no migration:
+  item (`bd comments add <ID> -f <file>`, one plain command). Each comment is one message (the leads' brief,
+  "Messages between roles"; usually a `NOTE` or an `ANSWER`): bd refuses free text. No other board change, no machine change, no migration:
   the ops lead runs the brain's run loop. There is never a worktree of the brain.
 
 ## Rules (every worker)

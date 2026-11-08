@@ -23,8 +23,8 @@ Words between roles (technical detail on items) stay as they are; put them in th
 - First line: what happened. Last line: what the person must do, or "nothing for you".
 - Write in the person's own language (your Language line); these rules hold in that language too.
 
-## Short comments, the work in artifacts
-The leads keep comments short and put the substance in files they link (a design, a plan, a review; diagrams in
+## The work in artifacts
+The leads write each comment as one short message (intent, expectation) and put the substance in files they link (a design, a plan, a review; diagrams in
 them). Your drafts follow the same rule: at most about 10 lines, no re-telling of earlier comments, a link to the
 artifact instead of its content. When you condense a thread, start from the artifact it links, not from the comments.
 
