@@ -6,11 +6,16 @@
 //   - **You:** Tap Approve | Reply: <the question> | Check: <what, where> | Nothing   (at most 160; one of the four
 //              forms first, then more words may follow: where to act, e.g. "Tap Approve in Telegram, or press Approve
 //              on this item")
-//   - **If yes:** <at most 120>                 (required with the label t2)
-//   - **If no:** <at most 120>                  (required with the label t2)
-//   - **Risk:** low|medium|high, <at most 80>   (required with the label t2)
-//   - **Head:** <repo>@<sha>                    (required with the label t2; sy-hzmu: the one head review signs off, a commit or a
-//                                                migration: repo [a-z][a-z0-9-]{0,30}, sha 7 to 40 lowercase hex)
+//   - **If yes:** <at most 120>                 (required with the label t2 on a go ask)
+//   - **If no:** <at most 120>                  (required with the label t2 on a go ask)
+//   - **Risk:** low|medium|high, <at most 80>   (required with the label t2 on a go ask)
+//   - **Head:** <repo>@<sha>                    (required with the label t2 on a go ask; sy-hzmu: the one head review signs
+//                                                off, a commit or a migration: repo [a-z][a-z0-9-]{0,30}, sha 7 to 40
+//                                                lowercase hex)
+// A go ask (sy-t9tg) is a card whose You starts with "Tap Approve" (isGoAsk): on a t2 item it asks for the T2 go, so it
+// needs If yes, If no, Risk and Head, waits on the owner only after review's sign-off, and gets the go only for the head
+// review signed (headRefusal). A non-go ask (You: "Reply: …", "Check: …", "Nothing…") asks the owner something else,
+// before any head may exist: on a t2 item those four keys are optional (checked when there), and it never gets the go.
 //   - **Link:** <artifact path or URL>          (optional)
 //   - **Item:** <the item's URL>                (optional; the board shows its own: an http(s) URL that ends in
 //                                                ?item=<this item's id>)
@@ -19,11 +24,12 @@
 // Pure, no imports: bin/owner-card, bin/bd (through it), the Supervisor, the board's server (waiting.mjs) and, as an
 // identical copy, the board's browser code (site/src/lib/owner-card.mjs; test/owner-card.mjs keeps them equal).
 
-export const FORMAT = 'the description starts with "## Owner", then one line per key: "- **What:** ...", "- **Why:** ...", "- **You:** Tap Approve | Reply: <question> | Check: <what, where> | Nothing", with t2 also "- **If yes:** ...", "- **If no:** ...", "- **Risk:** low|medium|high, ...", "- **Head:** <repo>@<sha>"; optional "- **Link:** ...", "- **Item:** <URL ending in ?item=<id>>"; a blank line ends it (the leads\' brief, "Asking the owner: the owner card")'
+export const FORMAT = 'the description starts with "## Owner", then one line per key: "- **What:** ...", "- **Why:** ...", "- **You:** Tap Approve | Reply: <question> | Check: <what, where> | Nothing", with t2 and You "Tap Approve" (a go ask) also "- **If yes:** ...", "- **If no:** ...", "- **Risk:** low|medium|high, ...", "- **Head:** <repo>@<sha>"; optional "- **Link:** ...", "- **Item:** <URL ending in ?item=<id>>"; a blank line ends it (the leads\' brief, "Asking the owner: the owner card")'
 // key -> its limit in characters; the order is the card's
 export const KEYS = { What: 120, Why: 120, You: 160, 'If yes': 120, 'If no': 120, Risk: 80, Head: 72, Link: 300, Item: 300 }
 export const REQUIRED = ['What', 'Why', 'You']
-export const REQUIRED_T2 = ['If yes', 'If no', 'Risk', 'Head'] // Head: review sy-hzmu #3, no fail-open
+/** Required on a t2 card that is a go ask (isGoAsk; sy-t9tg); optional on a non-go ask. Head: review sy-hzmu #3. */
+export const REQUIRED_T2 = ['If yes', 'If no', 'Risk', 'Head']
 const HEADING = /^##[ \t]+Owner[ \t]*$/
 const LINE = /^[-*][ \t]+\*\*([^*]+?):\*\*[ \t]*(.*?)[ \t]*$/
 const RISK = /^(low|medium|high)(?:[ \t]*[,:;–—-][ \t]*(.*))?$/i
@@ -46,10 +52,17 @@ export function youKind(v) {
   return null
 }
 
+/** A go ask (sy-t9tg): the card's You starts with "Tap Approve". The one definition for the bd gate, the board, the
+ * Waiting list and the bridge. False for no card, a card with no You, or any other form (a non-go ask).
+ * @param {Record<string,string>|null|undefined} card  parseCard(...).card */
+export const isGoAsk = (card) => youKind(card?.You) === 'approve'
+/** The reason headRefusal gives for a t2 card that asks the owner something other than the go (sy-t9tg). */
+export const NO_GO = 'this item asks for no go (its owner card\'s You is not "Tap Approve")'
+
 /**
  * Read the owner card at the top of a description.
  * @param {string} description  the item's description (Markdown)
- * @param {string[]} [labels]   the item's labels (t2 makes If yes, If no and Risk required)
+ * @param {string[]} [labels]   the item's labels (t2 makes If yes, If no, Risk and Head required on a go ask)
  * @param {string} [id]         the item's id, when known: an Item line must end in ?item=<id>
  * @returns {{ ok: boolean, found: boolean, card: Record<string,string>|null, errors: string[], rest: string }}
  *   found: a `## Owner` heading is at the top (the card's lines are then taken out of `rest`, valid or not);
@@ -93,26 +106,32 @@ export function parseCard(description, labels = [], id = '') {
     if (key === 'You' && !youKind(value)) errors.push('You starts with none of "Tap Approve", "Reply: <the question>", "Check: <what, where>", "Nothing"')
   }
   const t2 = Array.isArray(labels) && labels.includes('t2')
-  for (const r of [...REQUIRED, ...(t2 ? REQUIRED_T2 : [])]) if (!(r in card)) errors.push(`${r} is missing${REQUIRED_T2.includes(r) ? ' (required with t2)' : ''}`)
+  // a t2 card that is not a non-go ask needs the go's keys: a go ask, and (fail-closed) a card whose You is missing or
+  // invalid (it is refused for that anyway)
+  const go = t2 && !['reply', 'check', 'nothing'].includes(youKind(card.You))
+  for (const r of [...REQUIRED, ...(go ? REQUIRED_T2 : [])]) if (!(r in card)) errors.push(`${r} is missing${REQUIRED_T2.includes(r) ? ' (required with t2) on a go ask (You: Tap Approve)' : ''}`)
   return { ok: errors.length === 0, found: true, card, errors, rest: lines.slice(k).join('\n').replace(/^\n+/, '') }
 }
 
 /**
- * The T2 go names the head review signed off (sy-hzmu). One check for the bd gate, the board (its label rail, Approve,
- * Not now, the Waiting list) and the bridge.
+ * May this item get the T2 go? (sy-hzmu, sy-t9tg) Only a go ask (isGoAsk) whose Head is the head review signed off.
+ * One check for the bd gate, the board (its label rail, Approve, Not now, the Waiting list) and the bridge.
  * @param {string} description  the item's description
  * @param {Iterable<string>} labels  the item's labels (as they are, or as they will be after the call)
- * @returns {string|null} null: no objection (not t2, already approved, or the card's Head is the head review signed);
- *   else the reason (a t2 card with no Head is refused too: review sy-hzmu #3, no fail-open).
+ * @returns {string|null} null: no objection (not t2, already approved, or a go ask whose Head is the head review
+ *   signed); else the reason: a non-go ask (NO_GO), a card with no Head (review sy-hzmu #3, no fail-open; no card too),
+ *   a Head review did not sign, or a card whose You is no go ask.
  */
 export function headRefusal(description, labels) {
   const ls = [...(labels ?? [])].map(String)
   if (!ls.includes('t2') || ls.includes('approved')) return null
-  const head = parseCard(description, ls).card?.Head
+  const card = parseCard(description, ls).card, kind = youKind(card?.You)
+  if (kind === 'reply' || kind === 'check' || kind === 'nothing') return NO_GO
+  const head = card?.Head
   if (head === undefined) return `the card names no head (required with t2: - **Head:** <repo>@<sha>)`
   if (!HEAD.test(head)) return `the card's Head is not <repo>@<sha> (card: ${clip(head)})`
   const signed = ls.filter((l) => l.startsWith(SIGNED_HEAD)).map((l) => l.slice(SIGNED_HEAD.length))
-  if (signed.includes(head)) return null
+  if (signed.includes(head)) return isGoAsk(card) ? null : 'the card asks for no go: its You does not start with "Tap Approve"'
   if (!signed.length) return `review's sign-off names no head (card: ${head})`
   return `the head changed since review's sign-off (card: ${head}, signed: ${signed.map(clip).join(', ')})`
 }
