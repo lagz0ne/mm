@@ -9,13 +9,15 @@ import { cn } from '@/lib/utils'
 // A reference is a path like `code/docs/design/x.html` / `docs/design/x.md`, or a preview.<domain>/<project>-design link.
 const PREVIEW = /^https?:\/\/preview\.[\w.-]+\/[\w-]+-design\/([\w.-]+\.html)$/
 const PATH = /^(?:code\/)?((?:docs|public|test|src)\/[\w./-]+\.(?:html|md|svg|png|jpg|webp))$/
+// An item's artifact (bin/artifact): artifacts/<item-id>/<name>, from the project root (not code/), on every board.
+const ARTIFACT = /^(artifacts\/[a-z]+-[a-z0-9]+(?:\.[0-9]+)*\/[\w-][\w.-]*\.(?:html|md|svg|png|jpg|webp|txt|json))$/
 
 /** Project-relative path under code/ for a link or inline-code text, if the board can show it. */
 export function fileRef(s: string): string | null {
   const t = s.trim().replace(/^\.\//, '')
   const p = PREVIEW.exec(t)
   if (p) return `docs/design/${p[1]}`
-  const m = PATH.exec(t)
+  const m = PATH.exec(t) || ARTIFACT.exec(t)
   return m ? m[1] : null
 }
 export const fileUrl = (p: string, rev?: string) => `/files/${p.split('/').map(encodeURIComponent).join('/')}${rev ? `?rev=${rev}` : ''}`
@@ -33,7 +35,7 @@ function refsIn(md: string): string[] {
 /** Turn bare project paths in prose into inline code, so they become clickable (fenced blocks are left alone). */
 function linkPaths(md: string) {
   return md.split(/(```[\s\S]*?```)/).map((part, i) => (i % 2 ? part
-    : part.replace(/(^|[\s(,;])((?:code\/)?(?:docs|public|test|src)\/[\w./-]+\.(?:md|html|svg|png|jpg|webp))(?=[\s),.;:]|$)/gm, '$1`$2`'))).join('')
+    : part.replace(/(^|[\s(,;])((?:code\/)?(?:docs|public|test|src)\/[\w./-]+\.(?:md|html|svg|png|jpg|webp)|artifacts\/[a-z]+-[a-z0-9]+(?:\.[0-9]+)*\/[\w-][\w.-]*\.(?:md|html|svg|png|jpg|webp|txt|json))(?=[\s),.;:]|$)/gm, '$1`$2`'))).join('')
 }
 
 export function Markdown({ children: raw, embeds = true, className, onRef }: { children: string; embeds?: boolean; className?: string; onRef?: (n: number) => void }) {
@@ -181,7 +183,9 @@ export function Viewer({ path, rev, onClose }: { path: string | null; rev?: stri
           <button type="button" onClick={onClose} className="flex items-center gap-1 text-xs font-semibold hover:underline"><XIcon />Close</button>
         </div>
         <div className="flex min-h-0 flex-1">
-          {path && (path.endsWith('.md')
+          {path && (/\.(png|jpg|webp)$/.test(path)
+            ? <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-background p-2"><img src={fileUrl(path, rev)} alt={path} className="max-h-full max-w-full object-contain" /></div>
+            : path.endsWith('.md')
             ? <MdFile path={path} rev={rev} className="min-h-0 flex-1 overflow-y-auto px-[max(1.5rem,calc(50vw-26rem))] py-6" />
             : <iframe ref={frame} key={noting ? 'note' : 'view'} title={path} src={fileUrl(path, rev) + (noting ? `${rev ? '&' : '?'}annotate=1` : '')}
                 sandbox="allow-scripts allow-popups" className="min-h-0 w-full flex-1 bg-white" />)}
