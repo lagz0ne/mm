@@ -41,7 +41,13 @@ for f in "$@"; do
 done
 node "$P/bin/lib/secret-scan.mjs" "$@" || die "refused: an artifact never holds a secret (nothing copied)"
 D=$P/artifacts/$id
+# artifacts/ and artifacts/<id> are plain folders of this repo: a symlink there would take the copy below out of
+# artifacts/ (e.g. over a lead's settings) before git refuses it (review, sy-6zi5). The server's artifactFile() makes
+# the same check. Checked before mkdir (a dangling symlink would make it fail or follow) and again after.
+for d in "$P/artifacts" "$D"; do [ ! -L "$d" ] || die "${d#"$P"/} is a symlink; an artifact folder must be a plain folder (nothing copied)"; done
 mkdir -p "$D"
+[ "$(readlink -f "$P/artifacts")" = "$P/artifacts" ] && [ "$(readlink -f "$D")" = "$P/artifacts/$id" ] ||
+  die "artifacts/$id does not resolve inside artifacts/ (a symlinked folder on its path); nothing copied"
 # one artifact commit at a time (two leads at once would race for the root repo's index)
 if command -v flock >/dev/null 2>&1; then exec 9>"$(git -C "$P" rev-parse --absolute-git-dir)/artifact.lock"; flock -w 60 9 || die "the root repo is busy (another artifact commit for 60 s)"; fi
 paths=""
