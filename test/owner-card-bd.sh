@@ -39,7 +39,8 @@ T2CARD='## Owner
 - **You:** Tap Approve
 - **If yes:** Ops opens the port and tests one alert.
 - **If no:** The alerts stay on the board only.
-- **Risk:** medium, a wrong rule can close a port; the rollback is tested.'
+- **Risk:** medium, a wrong rule can close a port; the rollback is tested.
+- **Head:** mm@0a1b2c3'
 item() { node -e 'process.stdout.write(JSON.stringify([{ id: process.argv[1], description: process.argv[2], labels: JSON.parse(process.argv[3]) }]))' "$1" "$2" "$3" >"$T/items/$1.json"; }
 item sy-good "$CARD" '[]'
 item sy-none "Just a text, no card." '[]'
@@ -47,7 +48,8 @@ item sy-late "Intro.
 
 $CARD" '[]'
 item sy-t2 "$CARD" '["t2"]'
-item sy-t2ok "$T2CARD" '["t2","signed-off"]'
+item sy-t2ok "$T2CARD" '["t2","signed-off","signed-head:mm@0a1b2c3"]'
+item sy-t2nohead "$(printf '%s' "$T2CARD" | grep -v '^- \*\*Head:')" '["t2","signed-off","signed-head:mm@0a1b2c3"]'
 item sy-t2full "$T2CARD" '["t2"]'
 item sy-nyfull "$T2CARD" '["needs-you"]'
 item sy-wrongitem "$(printf '%s' "$CARD" | sed 's|^- \*\*You:\*\* Nothing$|- **You:** Nothing\n- **Item:** https://board-shop.example.org/?item=sy-other|')" '[]'
@@ -113,18 +115,20 @@ call label add sy-t2full needs-you;                     check "t2, a full card, 
 check "...the reason: plan, sign-off, then needs-you" says "plan -> review's sign-off -> needs-you"
 call update sy-t2full --add-label needs-you;            check "...update --add-label needs-you too" refused
 call create "a title" -d "$T2CARD" -l t2,needs-you;     check "create t2,needs-you with a full card, no signed-off" refused
-call create "a title" -d "$T2CARD" -l t2,signed-off,needs-you; check "create t2,signed-off,needs-you with a full card" passed
+call create "a title" -d "$T2CARD" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create t2,signed-off,signed-head,needs-you with a full card" passed
 call label add sy-nyfull t2;                            check "adding t2 to an item with needs-you, no signed-off: refused" refused
 call update sy-nyfull --add-label t2;                   check "...update --add-label t2 too" refused
 call update sy-nyfull --add-label=t2;                   check "...--add-label=t2 too" refused
-call update sy-nyfull --add-label t2,signed-off;        check "adding t2 with signed-off in the same call" passed
+call update sy-nyfull --add-label t2,signed-off,signed-head:mm@0a1b2c3; check "adding t2 with signed-off and its signed-head in the same call" passed
 call label add sy-good t2;                              check "adding t2 to an item without needs-you" passed
 call label add sy-t2x t1;                               check "an id with t2 inside it, another label: no gate" passed
 check "...reads nothing" noshow
 call update sy-nyfull --set-labels t2;                  check "--set-labels t2 (needs-you dropped by the set): allowed" passed
 
 echo "== a t2 card that names its head waits on the owner only when review signed off that head (sy-hzmu)"
-HCARD=$(printf '%s\n- **Head:** mm@0a1b2c3' "$T2CARD")
+HCARD=$T2CARD # it names its head: mm@0a1b2c3
+call label add sy-t2nohead needs-you;                   check "a t2 card with no Head: refused (no fail-open, review sy-hzmu #3)" refused
+check "...the reason" says "Head is missing (required with t2)"
 item sy-hmoved "$(printf '%s' "$HCARD" | sed 's/0a1b2c3/9f8e7d6/')" '["t2","signed-off","signed-head:mm@0a1b2c3"]'
 item sy-hmatch "$HCARD" '["t2","signed-off","signed-head:mm@0a1b2c3"]'
 item sy-hnone "$HCARD" '["t2","signed-off"]'

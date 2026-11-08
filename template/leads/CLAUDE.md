@@ -124,7 +124,7 @@ first, and the owner reads only it. The format is fixed:
 - **If yes:** <at most 120>                (required with t2)
 - **If no:** <at most 120>                 (required with t2)
 - **Risk:** low|medium|high, <at most 80>  (required with t2)
-- **Head:** <repo>@<sha>                   (optional; a t2 card names its head)
+- **Head:** <repo>@<sha>                   (t2 only, required: the head review signs off)
 - **Link:** <artifact path or URL>         (optional)
 - **Item:** <the item's URL>               (optional: the board shows it for you)
 ```

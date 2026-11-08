@@ -65,31 +65,33 @@ SB=$(signin boss); SA=$(signin alex)
 cat >"$T/fakebd.mjs" <<'EOF'
 import http from 'node:http'; import fs from 'node:fs'
 const [port, logf] = process.argv.slice(2)
-const card = (you, more = '') => `## Owner\n- **What:** Rotate the key for <script>alert(1)</script> the shop.\n- **Why:** The old one leaked in a log.\n- **You:** ${you}\n- **If yes:** Ops rotates it tonight.\n- **If no:** The old key stays.\n- **Risk:** medium, a minute without sign-in${more}\n\nThe thread.`
+// a t2 card names its head (required with t2 since review sy-hzmu #3); signed-off t2 items carry review's signed-head
+const HEAD = 'mm@0a1b2c3', SH = `signed-head:${HEAD}`
+const card = (you, head = HEAD) => `## Owner\n- **What:** Rotate the key for <script>alert(1)</script> the shop.\n- **Why:** The old one leaked in a log.\n- **You:** ${you}\n- **If yes:** Ops rotates it tonight.\n- **If no:** The old key stays.\n- **Risk:** medium, a minute without sign-in${head ? `\n- **Head:** ${head}` : ''}\n\nThe thread.`
 const at = '2026-11-07T10:00:00Z'
 const I = (id, labels, f = {}) => ({ id, title: `title ${id}`, status: 'open', priority: 2, assignee: 'ops', labels, updated_at: at, ...f })
 const items = [
-  I('ap-1', ['t2', 'signed-off', 'needs-you'], { description: card('Tap Approve on the board, or in Telegram') }),
+  I('ap-1', ['t2', 'signed-off', 'needs-you', SH], { description: card('Tap Approve on the board, or in Telegram') }),
   I('ap-2', ['t2', 'needs-you'], { description: card('Tap Approve') }),
   I('ap-3', ['needs-you'], { description: card('Nothing') }),
   I('ap-4', ['t2', 'signed-off']),
-  I('ap-5', ['t2', 'signed-off', 'needs-you']),
+  I('ap-5', ['t2', 'signed-off', 'needs-you', SH], { description: card('Tap Approve') }),
   I('ap-6', ['t2', 'signed-off']),
   I('ap-7', ['t2', 'signed-off'], { status: 'closed' }),
-  I('ap-10', ['t2', 'signed-off', 'needs-you'], { description: card('Tap Approve here or in Telegram') }),
+  I('ap-10', ['t2', 'signed-off', 'needs-you', SH], { description: card('Tap Approve here or in Telegram') }),
   I('ap-11', ['needs-you'], { assignee: 'alex', description: card('Reply: which name do we use?') }),
   I('ap-12', ['needs-you'], { description: card('Check: the page, on the board') }),
   I('ap-13', ['needs-you'], { description: card('Nothing, this is for your information') }),
   I('ap-14', ['needs-you']),
-  I('ap-15', ['t2', 'signed-off'], { description: card('Tap Approve') }),
-  I('ap-16', ['t2', 'signed-off', 'needs-you'], { description: card('Tap Approve') }),
+  I('ap-15', ['t2', 'signed-off', SH], { description: card('Tap Approve') }),
+  I('ap-16', ['t2', 'signed-off', 'needs-you', SH], { description: card('Tap Approve') }),
   // sy-hzmu: the card names its head; review signed off mm@0a1b2c3
-  I('ap-20', ['t2', 'signed-off', 'needs-you', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', '\n- **Head:** mm@9f8e7d6') }),
-  I('ap-21', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', '\n- **Head:** mm@0a1b2c3') }),
-  I('ap-22', ['t2', 'signed-off', 'needs-you'], { description: card('Tap Approve', '\n- **Head:** mm@0a1b2c3') }),
-  I('ap-23', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', '\n- **Head:** mm@9f8e7d6') }),
-  I('ap-24', ['t2', 'signed-off', 'needs-you', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', '\n- **Head:** mm@0a1b2c3') }),
-  I('ap-25', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', '\n- **Head:** mm@0a1b2c3') }),
+  I('ap-20', ['t2', 'signed-off', 'needs-you', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', 'mm@9f8e7d6') }),
+  I('ap-21', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve') }),
+  I('ap-22', ['t2', 'signed-off', 'needs-you'], { description: card('Tap Approve') }),
+  I('ap-23', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', 'mm@9f8e7d6') }),
+  I('ap-24', ['t2', 'signed-off', 'needs-you', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve') }),
+  I('ap-25', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve') }),
 ]
 const byId = new Map(items.map((i) => [i.id, i]))
 http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
