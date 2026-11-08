@@ -387,7 +387,7 @@ export async function gateway() {
     } catch (e) { why = ac.signal.aborted ? 'timeout' : (e as Error).name || 'error'; return { v: null } }
     finally { clearTimeout(timer); if (why) log('warn', `board ${what} unavailable`, { project, host, why }) }
   }
-  const home = async (p: { userId: string; name: string }) => {
+  const home = async (p: { userId: string; name: string }, msg = '', status = 200) => {
     const { hosts, ups, roles } = loadHosts()
     const granted = Object.entries(hosts).sort(([a], [b]) => a.localeCompare(b))
       .flatMap(([project, host]) => { const role = roleOn(p.userId, project); return role ? [{ project, host, role }] : [] })
@@ -397,10 +397,10 @@ export async function gateway() {
       const [s, w] = await Promise.all([
         askBoard('summary', '/api/summary?signal=1', SUMMARY_MAX, (o) => summaryOf(o, roles[c.project] || new Set()), () => false, c.project, c.host, up, p.name, c.role),
         // an older board answers 404 or 403 ("not allowed from the board"): no list, no error
-        askBoard('waiting list', '/api/waiting', WAITING_MAX, (o) => waitingOf(o, c.role === 'owner'), (st) => st === 404 || st === 403, c.project, c.host, up, p.name, c.role)])
+        askBoard('waiting list', c.role === 'owner' ? '/api/waiting?card=1' : '/api/waiting', WAITING_MAX, (o) => waitingOf(o, c.role === 'owner'), (st) => st === 404 || st === 403, c.project, c.host, up, p.name, c.role)])
       return { ...c, s: s.v, w: w.v, older: !!w.older }
     }))
-    return html(homePage(p.name, cards))
+    return html(homePage(p.name, cards, msg), status)
   }
 
   /** A form POST from one of this host's own pages (CSRF). Our pages are served with Referrer-Policy: no-referrer, so a
@@ -481,6 +481,53 @@ export async function gateway() {
     log('info', 'run ask', { user: p.name, project, item, ip })
     tellOwner(`${p.name} asked for runs on ${item} in ${project}, on their own Claude token (from ${ip}).`)
     return runsPageFor(p, `Asked: runs for ${item} on ${project} are yours, on your own token, for ${Math.round(ASK_TTL_MS / 86400e3)} days.`)
+  }
+
+  // ---------- the Waiting list's actions (sy-92sg): the owner acts on an item from the home page ----------
+  // POST /s/act, a form of the home page (CSRF: fromOwnPage, as every form here), fields b (the project), i (the item),
+  // a (approve | not-now | reply | done), t (a reply, at most 1000 characters). The person is the session's; only the
+  // owner (the owner everywhere, roleOn) acts. The gateway then asks that board's public side server to server, at the
+  // address the host gave its route, with a fresh owner assertion for that board's host and the headers a browser on the
+  // board's own page sends (Origin https://<host>, Sec-Fetch-Site same-origin, JSON): the board checks it as it checks
+  // a browser (template/site/server.mjs ownerAction), never trusting the gateway more. Its answer (one plain sentence)
+  // is shown on the home page. Logged: who, the board, the item, what, the board's status; never the assertion or a
+  // cookie. The owner is not told on Telegram: the board's comment is the record.
+  const ACT_FORM_MAX = 8192, ACT_MS = 15000, ACT_ANSWER_MAX = 4096
+  const ACT_PATH: Record<string, string> = { approve: '/api/approve', 'not-now': '/api/not-now', reply: '/api/reply', done: '/api/done' }
+  const ownerAct = async (req: Request, srv?: { requestIP?: (r: Request) => { address: string } | null }) => {
+    if (req.method !== 'POST') return new Response(null, { status: 302, headers: { location: '/', ...headers } })
+    const p = await personOf(req), ip = clientIp(req, srv)
+    if (!p) return html(page('Your session has ended. Sign in again, then open your boards.'), 403)
+    if (!fromOwnPage(req)) { log('warn', 'owner action refused (not from the home page)', { user: p.name, ip, origin: req.headers.get('origin') || undefined, site: req.headers.get('sec-fetch-site') || undefined }); return home(p, 'Use the buttons on this page.', 403) }
+    if (limited(`act:${p.userId}`, 30, 10 * 60e3)) return home(p, 'Too many actions. Wait a few minutes.', 429)
+    const raw = await req.arrayBuffer().catch(() => new ArrayBuffer(0))
+    if (raw.byteLength > ACT_FORM_MAX) return home(p, 'That is too long.', 413)
+    const f = new URLSearchParams(new TextDecoder().decode(raw))
+    const a = String(f.get('a') || ''), project = String(f.get('b') || ''), item = String(f.get('i') || ''), text = String(f.get('t') || '').replace(/\r\n?/g, '\n')
+    if (!ACT_PATH[a] || !PROJECT.test(project) || item.length > 64 || !ITEM_ID.test(item)) return home(p, 'Use the buttons on this page.', 400)
+    if (a === 'reply' && ([...text.trim()].length < 1 || [...text].length > REPLY_MAX)) return home(p, `${project} ${item}: write 1 to ${REPLY_MAX} characters.`, 400)
+    const role = roleOn(p.userId, project)
+    if (role !== 'owner') { log('warn', 'owner action refused: not the owner', { user: p.name, project, item, action: a, role: role || undefined, ip }); return home(p, 'Only the owner acts on the Waiting list.', 403) }
+    const { hosts, ups } = loadHosts(), host = hosts[project], up = host ? ups[host] : undefined
+    if (!host || !up) return home(p, `${project}: no board here.`, 404)
+    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), ACT_MS)
+    let status = 0, title = ''
+    try {
+      const r = await fetch(`${up}${ACT_PATH[a]}`, { method: 'POST', redirect: 'manual', signal: ac.signal, body: JSON.stringify(a === 'reply' ? { item, text } : { item }),
+        headers: { 'x-mm-assertion': signAssertion(p.name, 'owner', host), 'x-forwarded-host': host, 'x-forwarded-proto': 'https', origin: `https://${host}`,
+          'sec-fetch-site': 'same-origin', 'content-type': 'application/json', accept: 'application/json', 'accept-encoding': 'identity', 'x-mm-client-ip': ip } })
+      status = r.status
+      const body = r.body ? await (async () => {
+        const rd = r.body!.getReader(), parts: Uint8Array[] = []
+        for (let n = 0; ;) { const { done, value } = await rd.read(); if (done) break; n += value.byteLength; if (n > ACT_ANSWER_MAX) { ac.abort(); return '' } parts.push(value) }
+        return Buffer.concat(parts).toString('utf8')
+      })() : ''
+      try { const t = (JSON.parse(body) as { title?: unknown }).title; if (typeof t === 'string') title = [...t.replace(new RegExp(CONTROL.source, 'g'), ' ').trim()].slice(0, 200).join('') } catch {}
+    } catch (e) { title = ''; status = ac.signal.aborted && !status ? 504 : status || 502; log('warn', 'owner action: the board is not answering', { user: p.name, project, item, action: a, why: (e as Error).name }) }
+    finally { clearTimeout(timer) }
+    const ok = status >= 200 && status < 300
+    log(ok ? 'info' : 'warn', 'owner action relayed', { user: p.name, project, item, action: a, status, ip })
+    return home(p, `${project} ${item}: ${title || (ok ? 'done.' : status ? `the board answered ${status}.` : 'the board is not answering.')}`, ok ? 200 : status >= 400 && status < 500 ? status : 502)
   }
 
   async function http(req: Request, srv?: { requestIP?: (r: Request) => { address: string } | null }): Promise<Response> {
@@ -580,6 +627,7 @@ export async function gateway() {
     }
     if (path === '/s/token' && host === authHost) return claudeToken(req, srv)
     if (path === '/s/runs' && host === authHost) return runsForYou(req, srv)
+    if (path === '/s/act' && host === authHost) return ownerAct(req, srv)
     if (path === '/s/app.js') return new Response(CODE_JS, { headers: { 'content-type': 'text/javascript', ...headers } })
     if (path === '/s/poll') {
       const v = cookies(req).mm_pending, k = v ? h(v) : '', pp = k ? pending.get(k) : undefined
@@ -823,12 +871,17 @@ export function worstOf(s: Summary): { text: string; hot: boolean } | null {
   return s.queue !== undefined ? { text: 'nothing waiting', hot: false } : null
 }
 /** One entry of the "Waiting for you" list (sy-vdi8): what the board sent, checked, and the ask the gateway wrote. */
-type Waiting = { id: string; title: string; age_min: number; ask: string; hot: boolean; you?: string | null }
+type Waiting = { id: string; title: string; age_min: number; ask: string; hot: boolean; you?: string | null; card?: WaitCard | null; act?: WaitAct }
+/** The owner card's fields as a board sends them with ?card=1 (sy-92sg; template/site/waiting.mjs CARD_FIELDS). */
+type WaitCard = Partial<Record<'what' | 'why' | 'you' | 'if_yes' | 'if_no' | 'risk', string>>
+/** The one action the owner's row offers, from its You line (owner-card.mjs youKind) and its labels. */
+type WaitAct = 'approve' | 'reply' | 'check' | 'none'
+const CARD_MAX: Record<string, number> = { what: 120, why: 120, you: 160, if_yes: 120, if_no: 120, risk: 100 }
 const ITEM_ID = /^[a-z]+-[a-z0-9]+(\.[0-9]+)*$/ // the boards' id pattern (template/site/server.mjs ID_RE)
 // control characters (C0, DEL, C1), the line and paragraph separators, and the bidi controls
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/
 const ASK_LABELS = new Set(['needs-you', 't2', 'signed-off'])
-const WAIT_KEYS = new Set(['id', 'title', 'age_min', 'labels', 'you'])
+const WAIT_KEYS = new Set(['id', 'title', 'age_min', 'labels', 'you', 'card'])
 const YOU_MAX = 160 // the owner card's You line (sy-z5lz; template/site/waiting.mjs YOU_MAX)
 /** A board's /api/waiting answer, read strictly (review sy-6h43 #5). The answer: an object with `items` (an array) and
  *  `more` (a whole number, optional), nothing else, or the board's whole list is dropped. Each item: an id of the boards'
@@ -856,16 +909,44 @@ export function waitingOf(o: unknown, owner: boolean): { items: Waiting[]; more:
     if (!Array.isArray(labels) || labels.length > 3 || labels.some((l) => typeof l !== 'string' || !ASK_LABELS.has(l))) continue
     const you = e.you
     if (you !== undefined && you !== null && (typeof you !== 'string' || CONTROL.test(you) || [...you].length < 1 || [...you].length > YOU_MAX)) continue
+    const card = cardOf(e.card)
+    if (card === false || (card && !owner)) continue
     let ask: string, hot: boolean
+    const t2 = labels.includes('t2') && labels.includes('signed-off')
     if (owner) {
-      if (labels.includes('t2') && labels.includes('signed-off')) { ask = 'approve (t2, signed off)'; hot = true }
+      if (t2) { ask = 'approve (t2, signed off)'; hot = true }
       else if (labels.includes('needs-you')) { ask = 'needs you'; hot = true }
       else continue
     } else { ask = 'assigned to you'; hot = false }
     seen.add(e.id)
-    items.push({ id: e.id, title: e.title, age_min: e.age_min as number, ask, hot, ...(you !== undefined ? { you: you as string | null } : {}) })
+    items.push({ id: e.id, title: e.title, age_min: e.age_min as number, ask, hot, ...(you !== undefined ? { you: you as string | null } : {}),
+      ...(card !== undefined ? { card, act: actOf(card?.you ?? (you as string | null | undefined), t2) } : {}) })
   }
   return { items, more: (x.more as number | undefined) ?? 0 }
+}
+/** A board's `card` (sy-92sg), read as strictly as a title: absent (undefined), null (no card), or an object of only the
+ *  card's fields, each plain text (no control or bidi character) of 1..its limit (CARD_MAX). Anything else: false, and
+ *  the item is dropped. */
+function cardOf(v: unknown): WaitCard | null | undefined | false {
+  if (v === undefined || v === null) return v
+  if (typeof v !== 'object' || Array.isArray(v)) return false
+  const out: WaitCard = {}
+  for (const [k, s] of Object.entries(v as Record<string, unknown>)) {
+    const max = CARD_MAX[k]
+    if (!max || typeof s !== 'string' || CONTROL.test(s)) return false
+    const n = [...s].length; if (n < 1 || n > max) return false
+    out[k as keyof WaitCard] = s
+  }
+  return out
+}
+/** What the owner can do from the list (owner-card.mjs youKind): "Tap Approve…" on a signed-off t2: approve (and not
+ *  now); "Reply: …": reply; "Check: …": done; anything else, or no card: the link only. The board checks again. */
+export function actOf(you: string | null | undefined, t2: boolean): WaitAct {
+  const s = String(you ?? '').trim()
+  if (/^Tap Approve(?=$|[\s.,;:!])/.test(s)) return t2 ? 'approve' : 'none'
+  const m = /^(Reply|Check):[ \t]*(.*)$/.exec(s)
+  if (m && m[2].trim()) return m[1] === 'Reply' ? 'reply' : 'check'
+  return 'none'
 }
 // ---------- the gateway's pages (sy-vey6): the boards' Swiss style, one stylesheet, no inline style ----------
 // The CSP (default-src 'self') blocks style="" and <style>, so every page links /s/app.css, served from here. The same
@@ -888,26 +969,43 @@ type Card = { project: string; host: string; role: string; s: Summary | null; w:
  *  (`/?item=<id>`). No list at all when no board has one (boards on an older template); a board whose answer failed the
  *  check is named in a note. */
 const youOf = (y: string | null | undefined) => (y === undefined ? '' : y === null ? '<span class="w-you none">card missing</span>' : `<span class="w-you">You: ${esc(y)}</span>`)
+/** The owner's row (sy-92sg): the card's other lines (the You line is in the row already), every value escaped. */
+const CARD_LINES: [keyof WaitCard, string][] = [['what', 'What'], ['why', 'Why'], ['if_yes', 'If yes'], ['if_no', 'If no'], ['risk', 'Risk']]
+function cardOfRow(c: WaitCard | null | undefined) {
+  const lines = c ? CARD_LINES.filter(([k]) => c[k]) : []
+  return lines.length ? `<dl class="w-card">${lines.map(([k, label]) => `<div><dt>${label}</dt><dd>${esc(c![k]!)}</dd></div>`).join('')}</dl>` : ''
+}
+/** The one action that fits the You line: a form that POSTs to this host (/s/act), no script. The gateway checks the
+ *  person is the owner and asks the board, which checks everything again. */
+function actsOf(project: string, id: string, act: WaitAct | undefined) {
+  if (!act || act === 'none') return ''
+  const f = (a: string, inner: string, cls = '') => `<form method="post" action="/s/act" class="w-act${cls}"><input type="hidden" name="b" value="${esc(project)}"><input type="hidden" name="i" value="${esc(id)}">${a ? `<input type="hidden" name="a" value="${a}">` : ''}${inner}</form>`
+  if (act === 'approve') return f('', '<button type="submit" name="a" value="approve">Approve</button><button type="submit" name="a" value="not-now" class="alt">Not now</button>')
+  if (act === 'check') return f('done', '<button type="submit">Done</button>')
+  const rid = `r-${project}-${id}`.replace(/[^a-z0-9-]/g, '-')
+  return f('reply', `<label for="${esc(rid)}">Your reply</label><textarea id="${esc(rid)}" name="t" rows="3" maxlength="${REPLY_MAX}" required></textarea><button type="submit">Send</button>`, ' w-reply')
+}
+const REPLY_MAX = 1000
 function waitingList(cards: Card[]) {
   const withList = cards.filter((c) => c.w), failed = cards.filter((c) => !c.w && !c.older && c.s)
   if (!withList.length && !failed.length) return ''
-  const rows = withList.flatMap((c) => c.w!.items.map((i) => ({ ...i, project: c.project, host: c.host })))
+  const rows = withList.flatMap((c) => c.w!.items.map((i) => ({ ...i, project: c.project, host: c.host, owner: c.role === 'owner' })))
     .sort((a, b) => b.age_min - a.age_min || a.project.localeCompare(b.project) || a.id.localeCompare(b.id))
   const href = (host: string, id: string) => `/s?b=${encodeURIComponent(host)}&amp;r=${encodeURIComponent(`/?item=${id}`)}`
-  const row = (r: typeof rows[number]) => `<li><a href="${href(r.host, r.id)}"><span class="w-ask${r.hot ? ' hot' : ''}">${esc(r.ask)}</span><span class="w-age">${esc(mins(r.age_min))}</span><span class="w-title">${esc(r.title)}</span>${youOf(r.you)}<span class="w-link">${esc(`https://${r.host}/?item=${r.id}`)}</span><span class="w-where"><span class="w-board">${esc(r.project)}</span><span class="w-id">${esc(r.id)}</span></span></a></li>`
+  const row = (r: typeof rows[number]) => `<li><a href="${href(r.host, r.id)}"><span class="w-ask${r.hot ? ' hot' : ''}">${esc(r.ask)}</span><span class="w-age">${esc(mins(r.age_min))}</span><span class="w-title">${esc(r.title)}</span>${youOf(r.you)}<span class="w-link">${esc(`https://${r.host}/?item=${r.id}`)}</span><span class="w-where"><span class="w-board">${esc(r.project)}</span><span class="w-id">${esc(r.id)}</span></span></a>${r.owner ? cardOfRow(r.card) + actsOf(r.project, r.id, r.act) : ''}</li>`
   const more = withList.filter((c) => c.w!.more > 0).map((c) => `<p class="w-note">${esc(c.project)}: ${c.w!.more} more on the board.</p>`).join('')
   const notes = failed.map((c) => `<p class="w-note">${esc(c.project)}: the list is unavailable right now.</p>`).join('')
   return `<section class="waiting" aria-labelledby="waiting-h"><h2 id="waiting-h">Waiting for you${rows.length ? ` <span class="w-n">${rows.length}</span>` : ''}</h2>
 ${rows.length ? `<ol class="w-list">${rows.map(row).join('\n')}</ol>` : '<p class="w-none">Nothing is waiting for you.</p>'}${more}${notes}</section>\n`
 }
-function homePage(name: string, cards: Card[]) {
+function homePage(name: string, cards: Card[], msg = '') {
   const count = (label: string, hint: string, v: number, hot = false) => `<div${hot && v ? ' class="hot"' : ''} title="${hint}"><dt>${label}</dt><dd>${v}</dd></div>`
   const card = (c: typeof cards[number]) => `<section class="card"><h2>${esc(c.project)}</h2>
 <p class="role">You are <b>${esc(c.role)}</b>${c.role === 'viewer' ? ' (read-only)' : ''}</p>
 ${(() => { const w = c.s && worstOf(c.s); return w ? `<p class="worst${w.hot ? ' hot' : ''}">${esc(w.text)}</p>\n` : '' })()}${c.s ? `<dl class="counts">${count('Open', 'open items', c.s.open)}${count('P0', 'open P0 items', c.s.p0, true)}${count('Blocked', 'blocked items', c.s.blocked)}${count('Needs you', 'items that need a human', c.s.needs_you, true)}${count('Mine', 'open items assigned to you', c.s.mine)}</dl>
 ${c.s.last ? `<p class="last">Last activity: ${esc(c.s.last.slice(0, 16).replace('T', ' '))} UTC</p>` : ''}` : '<p class="na">Summary unavailable right now.</p>'}
 <p class="go"><a class="${c.role === 'viewer' ? 'view' : 'open'}" href="/s?b=${encodeURIComponent(c.host)}&amp;r=%2F">${c.role === 'viewer' ? 'View the board (read-only)' : 'Open the board'}</a></p></section>`
-  return shell('Your boards', homeNav('boards', name), cards.length ? `${waitingList(cards)}<div class="cards">${cards.map(card).join('\n')}</div>` : '<p>You have no board yet; the owner can grant you one.</p>')
+  return shell('Your boards', homeNav('boards', name), `${msg ? `<p class="msg" role="status">${esc(msg)}</p>` : ''}${cards.length ? `${waitingList(cards)}<div class="cards">${cards.map(card).join('\n')}</div>` : '<p>You have no board yet; the owner can grant you one.</p>'}`)
 }
 /** The signed-in pages' nav: the boards, the person's Claude token, who, sign out. */
 function homeNav(here: 'boards' | 'token' | 'runs', name: string) {
@@ -1004,6 +1102,17 @@ button.quiet:hover{border-bottom-color:var(--swiss);color:var(--swiss)}
 .w-link{grid-area:link;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--muted);overflow-wrap:anywhere;user-select:all}
 .w-where{grid-area:where;display:flex;flex-wrap:wrap;gap:0 .75rem;font-size:13px;color:var(--muted)}
 .w-id{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.w-card{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.15rem .75rem;margin:0 0 .6rem;font-size:14px}
+.w-card div{display:contents}
+.w-card dt{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding-top:2px;white-space:nowrap}
+.w-card dd{margin:0;overflow-wrap:anywhere}
+.w-act{display:flex;flex-wrap:wrap;gap:.5rem;margin:0 0 .8rem}
+.w-act button.alt{background:var(--bg);color:var(--fg)}
+.w-act button.alt:hover{border-color:var(--swiss);color:var(--swiss);background:var(--bg)}
+.w-reply{flex-direction:column;align-items:stretch}
+.w-reply label{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.w-reply textarea{font:inherit;font-size:16px;width:100%;min-height:88px;padding:.5rem;border:1px solid var(--fg);border-radius:0;background:var(--bg);color:var(--fg);resize:vertical}
+.w-reply button{align-self:flex-start}
 .top nav a{text-decoration:none;padding-bottom:2px;border-bottom:2px solid transparent}
 .top nav a:hover{border-bottom-color:var(--swiss);color:var(--swiss)}
 .msg{font-weight:600;border-left:3px solid var(--fg);padding-left:.5rem}
