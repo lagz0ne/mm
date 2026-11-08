@@ -13,13 +13,18 @@
 // the owner's place to act: the owner card's fields { what, why, you, if_yes, if_no, risk }, only those the card has,
 // each plain text as the title and cut to the card's own limit (CARD_FIELDS); null when the item has no card. Never for
 // anyone else, and never without ?card=1 (an older gateway drops an entry with a key it does not know).
+// With ?card=1&head=1 (sy-hzmu; `cards` 2; an older board reads it as ?card=1) the card also carries `head`, the card's Head (<repo>@<sha>, owner-card.mjs HEAD;
+// only when valid), and an entry whose T2 go the board would refuse for its head (owner-card.mjs headRefusal: review's
+// sign-off names another head, or none) carries `refused`, the reason as plain text (at most REFUSED_MAX): the gateway
+// shows it instead of Approve. The board refuses the go anyway.
 // The answer stays under 32 KB (MAX_BYTES): what doesn't fit is counted in `more`, never cut in the middle.
 // Pure: the board's server feeds it, test/board-pull.mjs checks it.
-import { parseCard } from '../bin/lib/owner-card.mjs'
+import { HEAD, headRefusal, parseCard } from '../bin/lib/owner-card.mjs'
 
 export const MAX_BYTES = 32 * 1024
 export const TITLE_MAX = 200
 export const YOU_MAX = 160
+export const REFUSED_MAX = 200
 // the card's fields as the list sends them: name -> [the card's key, the most characters] (owner-card.mjs KEYS; Risk
 // is its level and up to 80 more)
 export const CARD_FIELDS = { what: ['What', 120], why: ['Why', 120], you: ['You', 160], if_yes: ['If yes', 120], if_no: ['If no', 120], risk: ['Risk', 100] }
@@ -34,12 +39,14 @@ export function youLine(description, labels) {
   const v = parseCard(description, labels).card?.You
   return (v && plain(v, YOU_MAX)) || null
 }
-/** The owner card's fields as plain text (CARD_FIELDS), or null: no card at the top of the description. */
-export function cardFields(description, labels) {
+/** The owner card's fields as plain text (CARD_FIELDS), or null: no card at the top of the description. With `head`
+ *  (?card=1&head=1) also the card's Head, when it is a valid <repo>@<sha>. */
+export function cardFields(description, labels, head = false) {
   const c = parseCard(description, labels).card
   if (!c) return null
   const out = {}
   for (const [k, [key, max]] of Object.entries(CARD_FIELDS)) { const v = c[key] && plain(c[key], max); if (v) out[k] = v }
+  if (head && typeof c.Head === 'string' && HEAD.test(c.Head)) out.head = c.Head
   return out
 }
 function plain(t, max) {
@@ -53,8 +60,8 @@ function plain(t, max) {
  * @param me     the asking person's name (the gateway's assertion)
  * @param owner  true when the assertion says owner
  * @param now    ms
- * @param cards  the owner's entries carry `card` (?card=1)
- * @returns { items: [{ id, title, age_min, labels, you?, card? }], more }
+ * @param cards  the owner's entries carry `card` (?card=1: true or 1; ?card=1&head=1: 2, with `head` and `refused`)
+ * @returns { items: [{ id, title, age_min, labels, you?, card?, refused? }], more }
  */
 export function waitingFor({ items, me, owner, now = Date.now(), max = MAX_BYTES, cards = false }) {
   const has = (i, l) => Array.isArray(i.labels) && i.labels.includes(l)
@@ -70,9 +77,11 @@ export function waitingFor({ items, me, owner, now = Date.now(), max = MAX_BYTES
       if (!me || i.assignee !== me) continue
       labels = []
     }
-    const t = Date.parse(i.updated_at), you = youLine(i.description, i.labels)
+    const t = Date.parse(i.updated_at), you = youLine(i.description, i.labels), v2 = owner && cards === 2
+    const refused = v2 && labels.includes('t2') ? headRefusal(i.description, i.labels) : null
     out.push({ id: i.id, title: plainTitle(i.title), age_min: Math.max(0, Math.floor((now - (Number.isNaN(t) ? now : t)) / 60000)), labels,
-      ...(owner || you ? { you } : {}), ...(owner && cards ? { card: cardFields(i.description, i.labels) } : {}) })
+      ...(owner || you ? { you } : {}), ...(owner && cards ? { card: cardFields(i.description, i.labels, v2) } : {}),
+      ...(refused ? { refused: plain(refused, REFUSED_MAX) } : {}) })
   }
   out.sort((a, b) => b.age_min - a.age_min || a.id.localeCompare(b.id))
   // keep under the cap, with room for the envelope and `more`

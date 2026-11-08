@@ -14,7 +14,7 @@ import { Avatar, PersonaContext, personaOf } from '@/lib/persona'
 import { ThreadPresence } from '@/Presence'
 import { Designs } from '@/Designs'
 import { usePhone } from '@/lib/phone'
-import { parseCard } from '@/lib/owner-card.mjs'
+import { headRefusal, parseCard } from '@/lib/owner-card.mjs'
 import { CopyLink, OwnerCard, itemUrl } from '@/OwnerCard'
 
 const STATUSES = ['open', 'in_progress', 'blocked', 'deferred'] as const
@@ -89,7 +89,10 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   // the T2 go, for the owner on the public side: a signed-off t2 without approved
   // the owner card (sy-z5lz): read first, in its own box; the description below it without the card
   const card = parseCard(i?.description, i?.labels || [], i?.id)
-  const approvable = !!i && !!approval && !!i.labels?.includes('t2') && !!i.labels?.includes('signed-off') && !i.labels?.includes('approved')
+  const t2go = !!i && !!approval && !!i.labels?.includes('t2') && !!i.labels?.includes('signed-off') && !i.labels?.includes('approved')
+  // sy-hzmu: the card names a head review did not sign off (the server refuses the go anyway): the reason, no Approve
+  const headWhy = t2go ? headRefusal(i!.description, i!.labels || []) : null
+  const approvable = t2go && !headWhy
 
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
@@ -172,6 +175,11 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                 </>
               )}
             </div>
+            {headWhy && (
+              <p className="border-b border-l-4 border-l-swiss px-5 py-2 text-[11px] font-semibold text-swiss [overflow-wrap:anywhere]" data-head-refused="">
+                No go yet: {headWhy}. Review signs off the head the card names.
+              </p>
+            )}
             {approvable && approval === 'telegram' && (
               <p className="border-b px-5 py-2 text-[11px] text-muted-foreground">
                 {sent || 'The approval is signed on Telegram: Approve sends this item to your Telegram, and your tap there is the T2 go. Nothing is approved here.'}

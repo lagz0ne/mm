@@ -15,6 +15,7 @@ import { foldRequeues, pullState } from './pull-state.mjs'
 import { exportQuery, flowRows, parseExport, PAIRS } from './flow-rows.mjs'
 import { waitingFor } from './waiting.mjs'
 import { designsApi } from './designs.mjs'
+import { headRefusal, SIGNED_HEAD } from '../bin/lib/owner-card.mjs'
 import * as P_ from '../bin/lib/paseo.mjs'
 import { bridgeSocket, ITEM, loadConf } from '../bin/lib/ledger.mjs'
 
@@ -97,11 +98,13 @@ async function readBody(req) {
 // The local side (no gateway assertion: a self-chosen name, or the default actor) never adds or removes `approved`
 // (sy-h2yt): it says nothing signed about who writes. The owner gives the T2 go on the public side, signed in as the
 // owner, or with the bridge's Approve button; the Supervisor counts `approved` only from those two actors.
+// `signed-head:<repo>@<sha>` (sy-hzmu: the head review signed off) is the leads' as signed-off is.
 const OWNER_ONLY = new Set(['approved', 't1', 't2', 't3']), LEADS_ONLY = new Set(['signed-off', 'audit'])
+const LEADS_ONLY_PREFIX = [SIGNED_HEAD]
 const SIGNED_ONLY = new Set(['approved'])
 function railRefusal(role, added, removed) {
   for (const l of [...added, ...removed]) {
-    if (LEADS_ONLY.has(l)) return `only the leads change "${l}"`
+    if (LEADS_ONLY.has(l) || LEADS_ONLY_PREFIX.some((p) => String(l).startsWith(p))) return `only the leads change "${l}"`
     if (OWNER_ONLY.has(l) && role !== 'owner') return `only the owner changes "${l}" (the T2 go and the risk tiers are the owner's)`
     if (/^by:/.test(l)) return 'the author role label is set by the board'
   }
@@ -151,8 +154,13 @@ function toBridge(sock, item, assertionHeader) {
 // Each one is logged (who, item, what, from where); never the assertion or a cookie.
 const T2_NO_SIGNOFF = 'review has not signed it off yet (a t2 item: plan -> review\'s sign-off -> your go)'
 /** The T2 go comes after review's sign-off (sy-l9uc, review's sy-16ml #2; the bridge's tap checks the same): the item's
- *  labels after the go must not be t2 without signed-off. One check, for rails() and the board's Approve. */
-const goRefusal = (labels) => (labels.has('t2') && !labels.has('signed-off') ? T2_NO_SIGNOFF : null)
+ *  labels after the go must not be t2 without signed-off, and when the item's owner card names a Head, review's
+ *  sign-off must name that head (sy-hzmu, owner-card.mjs headRefusal; checked on the labels without `approved`, as the
+ *  go is not given yet). One check, for rails() and the board's Approve and Not now. */
+const goRefusal = (labels, description) => {
+  if (labels.has('t2') && !labels.has('signed-off')) return T2_NO_SIGNOFF
+  return headRefusal(description, [...labels].filter((l) => l !== 'approved'))
+}
 const REPLY_MAX = 1000, ACTION_BODY_MAX = 8192
 // control characters but the newline, and the bidi controls (a reply is plain text)
 const REPLY_CONTROL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g
@@ -183,13 +191,13 @@ async function ownerAction(req, res, what) {
   const it = await getItem(item)
   if (!it || !Array.isArray(it.labels)) return no(404, `${item}: no such item here (or the board can't read it now).`, `${item} unreadable`)
   if (it.status === 'closed') return no(409, `${item} is closed.`)
-  return { g, item, labels: new Set(it.labels), body }
+  return { g, item, labels: new Set(it.labels), description: typeof it.description === 'string' ? it.description : '', body }
 }
 /** The T2 go's own checks (approve, not-now): a t2 item, review's sign-off, not approved yet. */
-function goState(item, labels) {
+function goState(item, labels, description) {
   if (labels.has('approved')) return { code: 409, title: `${item} is already approved.`, already: true }
   if (!labels.has('t2')) return { code: 403, title: 'Not allowed: not a t2 item, there is no T2 go to give.' }
-  const why = goRefusal(labels); if (why) return { code: 403, title: `Not allowed: ${why}.` }
+  const why = goRefusal(labels, description); if (why) return { code: 403, title: `Not allowed: ${why}.` }
   return null
 }
 async function bdSend(method, apiPath, obj) {
@@ -207,7 +215,7 @@ function refusedGo(req, res, what, a, st) {
 async function webApprove(req, res) {
   const a = await ownerAction(req, res, 'approve'); if (!a) return
   const { g, item } = a
-  const st = goState(item, a.labels); if (st) return refusedGo(req, res, 'approve', a, st)
+  const st = goState(item, a.labels, a.description); if (st) return refusedGo(req, res, 'approve', a, st)
   const c = loadConf()
   if (c.verifier !== 'ledger') {
     // verifier actor: the owner's go, written as the owner (what the Supervisor counts), then said on the item
@@ -231,7 +239,7 @@ async function webApprove(req, res) {
 }
 async function webNotNow(req, res) {
   const a = await ownerAction(req, res, 'not-now'); if (!a) return
-  const st = goState(a.item, a.labels); if (st) return refusedGo(req, res, 'not-now', a, st)
+  const st = goState(a.item, a.labels, a.description); if (st) return refusedGo(req, res, 'not-now', a, st)
   if (!(await bdComment(a.item, a.g.u, `Not now, said ${a.g.u} on the board.`))) return send(res, 502, { title: 'The board could not write it.' })
   const dropped = a.labels.has('needs-you') ? await bdLabels(a.item, a.g.u, { remove_labels: ['needs-you'] }) : null
   did(req, 'not-now', a, { dropped })
@@ -254,10 +262,11 @@ async function webDone(req, res) {
   did(req, 'done', a, { dropped })
   return send(res, 200, { ok: true, title: `Checked: done, said on ${a.item}.` })
 }
-async function currentLabels(id) {
+async function currentItem(id) {
   const r = await fetch(new URL(`/v0/beads/issues/${encodeURIComponent(id)}`, BD)).then((x) => x.json()).catch(() => null)
-  return Array.isArray(r?.labels) ? r.labels : null
+  return Array.isArray(r?.labels) ? { labels: r.labels, description: typeof r.description === 'string' ? r.description : '' } : null
 }
+const currentLabels = async (id) => (await currentItem(id))?.labels ?? null
 const LABEL_FIELDS = { create: ['labels'], patch: ['labels', 'add_labels', 'remove_labels'] }
 const names = (v) => v === undefined || (Array.isArray(v) && v.every((l) => typeof l === 'string'))
 /** The labels a write adds and removes: { added, removed }, or { why } when it can't be told (a field it does not know). */
@@ -281,13 +290,15 @@ async function rails(req, apiPath, data) {
   if (!g) return localRefusal(ch.added, ch.removed) // the local side: as before, but approved
   const why = railRefusal(g.r, ch.added, ch.removed); if (why) return why
   if (ch.added.includes('approved') && ledgerOn()) return LEDGER_LABEL
-  // the T2 go comes after review's sign-off (goRefusal, sy-l9uc)
+  // the T2 go comes after review's sign-off, for the head it signed (goRefusal, sy-l9uc, sy-hzmu)
   if (ch.added.includes('approved')) {
     const create = req.method === 'POST' && apiPath === '/v0/beads/issues'
-    const cur = create ? [] : await currentLabels(apiPath.split('/').pop())
-    if (!cur) return 'could not read the item to check its labels'
-    const after = new Set([...cur, ...ch.added].filter((l) => !ch.removed.includes(l)))
-    const why = goRefusal(after); if (why) return why
+    const it = create ? { labels: [], description: '' } : await currentItem(apiPath.split('/').pop())
+    if (!it) return 'could not read the item to check its labels'
+    const after = new Set([...it.labels, ...ch.added].filter((l) => !ch.removed.includes(l)))
+    // the description after the write: the one it sets, else the item's own (sy-hzmu: the card's Head)
+    const set = create ? data.description : data.patch?.description
+    const why = goRefusal(after, typeof set === 'string' ? set : it.description); if (why) return why
   }
   if (req.method === 'POST' && apiPath === '/v0/beads/issues') data.labels = [...new Set([...(data.labels || []), `by:${g.r}`])]
   else if (apiPath.endsWith('/comments')) data.text = `[${g.r}] ${String(data.text || '')}`
@@ -516,7 +527,11 @@ async function sendSummary(req, res, signal = false) {
 // label or a closed item shows on the next load. Under 32 KB.
 async function sendWaiting(req, res) {
   const items = await allItems()
-  send(res, 200, waitingFor({ items, me: who(req), owner: req.gateway?.r === 'owner', now: Date.now(), cards: new URL(req.url, 'http://x').searchParams.get('card') === '1' }))
+  send(res, 200, waitingFor({ items, me: who(req), owner: req.gateway?.r === 'owner', now: Date.now(), cards: waitingCards(new URL(req.url, 'http://x').searchParams) }))
+}
+// ?card=1: the card's fields (sy-92sg); &head=1 too: its Head and the head's refusal (sy-hzmu)
+function waitingCards(q) {
+  return q.get('card') !== '1' ? false : q.get('head') === '1' ? 2 : true
 }
 
 // ---------- panels (off unless the board's env turns them on: BOARD_PANELS=machine; the system profile does) ----------
