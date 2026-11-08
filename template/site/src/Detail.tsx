@@ -16,6 +16,7 @@ import { Designs } from '@/Designs'
 import { usePhone } from '@/lib/phone'
 import { headRefusal, isNonGoAsk, parseCard, youKind } from '@/lib/owner-card.mjs'
 import { CopyLink, OwnerCard, itemUrl } from '@/OwnerCard'
+import { CommentBody, WaitsOn } from '@/Message'
 
 const STATUSES = ['open', 'in_progress', 'blocked', 'deferred'] as const
 const NONE = '_none'
@@ -251,6 +252,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
             )}
 
             <Section label={`Thread · ${i.comments?.length || 0}`}>
+              <WaitsOn comments={i.comments || []} onRef={jump} />
               <ol className="grid gap-3">
                 {groupComments(i.comments || []).map((g) => {
                   const kind = authorKind(g.author)
@@ -275,7 +277,9 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                           <div key={c.id} id={`c-${i.id}-${n}`} className={cn('grid grid-cols-[2rem_minmax(0,1fr)] scroll-mt-4', flash === n && 'bg-swiss/10')}>
                             <a href={`#c-${n}`} onClick={(e) => { e.preventDefault(); navigator.clipboard?.writeText(`#${n}`); toast.success(`Copied #${n}: use it to refer to this comment`) }}
                               title="Copy reference" className="pt-0.5 font-mono text-[11px] text-muted-foreground hover:text-swiss">#{n}</a>
-                            <Markdown className={cn(kind === 'system' && 'text-xs')} onRef={jump}>{c.text}</Markdown>
+                            {kind === 'lead'
+                              ? <CommentBody text={c.text} onRef={jump} />
+                              : <Markdown className={cn(kind === 'system' && 'text-xs')} onRef={jump}>{c.text}</Markdown>}
                           </div>
                         ))}
                       </div>
