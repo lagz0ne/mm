@@ -58,6 +58,8 @@ printf '%s\n' "$CARD" >"$T/card.md"
 printf 'no card here\n' >"$T/nocard.md"
 
 call() { : >"$T/ran"; : >"$T/shows"; (cd "$T/control" && "$T/bin/bd" "$@") >/dev/null 2>"$T/err"; echo $? >"$T/code"; }
+# as an actor other than ops (the default here): only review adds signed-off and signed-head:* (sy-9bss)
+as() { local who=$1; shift; (export BEADS_ACTOR="$who"; call "$@"); }
 refused() { [ "$(cat "$T/code")" = 1 ] && [ ! -s "$T/ran" ] && grep -q '^bd: refused: needs-you only with a valid owner card' "$T/err" && grep -q 'The format: the description starts with "## Owner"' "$T/err"; }
 passed() { [ "$(cat "$T/code")" = 0 ] && [ -s "$T/ran" ]; }
 noshow() { [ ! -s "$T/shows" ]; }
@@ -115,11 +117,11 @@ call label add sy-t2full needs-you;                     check "t2, a full card, 
 check "...the reason: plan, sign-off, then needs-you" says "plan -> review's sign-off -> needs-you"
 call update sy-t2full --add-label needs-you;            check "...update --add-label needs-you too" refused
 call create "a title" -d "$T2CARD" -l t2,needs-you;     check "create t2,needs-you with a full card, no signed-off" refused
-call create "a title" -d "$T2CARD" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create t2,signed-off,signed-head,needs-you with a full card" passed
+as review create "a title" -d "$T2CARD" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create t2,signed-off,signed-head,needs-you with a full card" passed
 call label add sy-nyfull t2;                            check "adding t2 to an item with needs-you, no signed-off: refused" refused
 call update sy-nyfull --add-label t2;                   check "...update --add-label t2 too" refused
 call update sy-nyfull --add-label=t2;                   check "...--add-label=t2 too" refused
-call update sy-nyfull --add-label t2,signed-off,signed-head:mm@0a1b2c3; check "adding t2 with signed-off and its signed-head in the same call" passed
+as review update sy-nyfull --add-label t2,signed-off,signed-head:mm@0a1b2c3; check "adding t2 with signed-off and its signed-head in the same call" passed
 call label add sy-good t2;                              check "adding t2 to an item without needs-you" passed
 call label add sy-t2x t1;                               check "an id with t2 inside it, another label: no gate" passed
 check "...reads nothing" noshow
@@ -139,8 +141,44 @@ call label add sy-hnone needs-you;                      check "signed off, but n
 check "...the reason" says "review's sign-off names no head (card: mm@0a1b2c3)"
 call update sy-hmatch -d "$(printf '%s' "$HCARD" | sed 's/0a1b2c3/9f8e7d6/')" --add-label needs-you; check "a new head in the call's own description: refused" refused
 call label add sy-hmatch needs-you;                     check "the signed head is the card's head: passed" passed
-call update sy-hnone --add-label signed-head:mm@0a1b2c3,needs-you; check "signed-head added in the same call: passed" passed
-call create "a title" -d "$HCARD" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create with the matching signed-head: passed" passed
+as review update sy-hnone --add-label signed-head:mm@0a1b2c3,needs-you; check "signed-head added in the same call: passed" passed
+as review create "a title" -d "$HCARD" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create with the matching signed-head: passed" passed
+
+echo "== only review signs off: signed-off and signed-head:* (sy-9bss)"
+sorefused() { [ "$(cat "$T/code")" = 1 ] && [ ! -s "$T/ran" ] && grep -q '^bd: refused: only review signs off (signed-off, signed-head:): ask review on the item' "$T/err"; }
+item sy-so "Plan." '["t2","signed-off"]'
+item sy-plain "Plan." '["t2"]'
+call label add sy-plain signed-off;                     check "ops: label add signed-off refused, bd never runs" sorefused
+check "...reads nothing" noshow
+as platform label add sy-plain signed-head:mm@0a1b2c3;  check "platform: label add signed-head:* refused" sorefused
+call label remove sy-so signed-off;                     check "ops: label remove signed-off refused" sorefused
+call update sy-plain --add-label signed-off;            check "ops: update --add-label signed-off refused" sorefused
+call update sy-plain --add-label=t1,signed-off;         check "ops: update --add-label=t1,signed-off refused" sorefused
+call update sy-plain -l signed-head:mm@0a1b2c3;         check "ops: update -l signed-head:* refused" sorefused
+call update sy-so --remove-label signed-off;            check "ops: update --remove-label signed-off refused" sorefused
+call update sy-plain --set-labels t2,signed-off;        check "ops: --set-labels that adds signed-off refused" sorefused
+call update sy-so --set-labels t2;                      check "ops: --set-labels that drops signed-off refused" sorefused
+call create "a title" -l t2,signed-off;                 check "ops: create -l signed-off refused" sorefused
+call q "a title" --labels=signed-head:mm@0a1b2c3;       check "ops: q --labels=signed-head:* refused" sorefused
+call --actor platform/w1 label add sy-plain signed-off; check "--actor platform/w1 (over BEADS_ACTOR) refused" sorefused
+(unset BEADS_ACTOR; export BD_ACTOR=platform; call label add sy-plain signed-off); check "BD_ACTOR=platform refused" sorefused
+as reviewer label add sy-plain signed-off;              check "an actor named reviewer is not review: refused" sorefused
+as review label add sy-plain signed-off;                check "review: label add signed-off passed" passed
+check "...reads nothing" noshow
+as review/w2 update sy-plain --add-label signed-head:mm@0a1b2c3; check "review/<worker>: passed" passed
+as review update sy-so --remove-label signed-off;       check "review: remove passed" passed
+call --actor review label add sy-plain signed-off;      check "--actor review (over BEADS_ACTOR=ops) passed" passed
+call update sy-so --set-labels t2,signed-off,t1;        check "ops: --set-labels that keeps signed-off as it is passed" passed
+check "...and read the item" grep -qx sy-so "$T/shows"
+call update sy-plain --set-labels t2,t1;                check "ops: --set-labels on an item with no sign-off, none set: passed" passed
+call update sy-plain -d "signed-off is review's" --add-label t1; check "ops: signed-off only in a text: passed" passed
+check "...reads nothing" noshow
+call comments add sy-plain "signed-off, signed-head:mm@0a1b2c3"; check "ops: a comment naming them: passed" passed
+check "...reads nothing" noshow
+call label add sy-plain t1;                             check "ops: another label: passed" passed
+check "...reads nothing" noshow
+call label add sy-plain signed-offish;                  check "ops: signed-offish is not signed-off: passed" passed
+call list -l signed-off;                                check "ops: a read with -l signed-off: passed" passed
 
 echo "== the actor check still comes first"
 (unset BEADS_ACTOR; call label add sy-good needs-you; grep -q 'needs an actor' "$T/err" && [ ! -s "$T/shows" ]); check "no actor: refused for the actor, no read" test $? = 0

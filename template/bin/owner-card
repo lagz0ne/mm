@@ -12,11 +12,14 @@
 //                                  needs-you is checked the same way. When the card names a Head (sy-hzmu), review's
 //                                  sign-off must name that head too (label signed-head:<repo>@<sha>; headRefusal).
 //                                  Removing needs-you, or any other call: exit 0.
+//   owner-card signoff -- <bd args> bin/bd runs it when its actor is not review and its arguments name signed-off or
+//                                  signed-head: (or set labels): refuses (exit 1) a call that adds or removes one
+//                                  (sy-9bss: only review signs off). Any other call: exit 0.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { FORMAT, headRefusal, parseCard } from './lib/owner-card.mjs'
+import { FORMAT, SIGNED_HEAD, headRefusal, parseCard } from './lib/owner-card.mjs'
 
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const LABEL = 'needs-you', T2 = 't2', SIGNED = 'signed-off'
@@ -41,7 +44,8 @@ const VALUED = new Set(['--actor', '--db', '-d', '--description', '--body-file',
   '--owner', '--spec-id', '--metadata', '--append-notes', '--repo', '--rig', '--prefix', '--waits-for', '--waits-for-gate', '--sandbox-dir'])
 const GATE_HELP = `The format: ${FORMAT}. Write the card first (bd update <id> --body-file <file>), then add ${LABEL}.`
 
-function gate(argv) {
+/** bd's arguments: the command, its positional words, and readers of the flags' values. */
+function parse(argv) {
   const pos = [], flags = []
   for (let k = 0; k < argv.length; k++) {
     const a = argv[k]
@@ -58,6 +62,35 @@ function gate(argv) {
   const [cmd, ...args] = pos
   const values = (...names) => flags.filter(([f, v]) => names.includes(f) && typeof v === 'string').map(([, v]) => v)
   const list = (...names) => values(...names).flatMap((v) => v.split(',')).map((s) => s.trim()).filter(Boolean)
+  return { cmd, args, values, list }
+}
+
+// Only review signs off (sy-9bss): signed-off and signed-head:<repo>@<sha> are review's. bin/bd runs this only when an
+// argument names one of them and its actor's role (the part before /) is not review: a call that adds or removes one
+// (label add|remove, update/edit --add-label/-l/--remove-label/--set-labels, create/q/new -l/--labels) is refused.
+// --set-labels that keeps the item's sign-off labels as they are is no change: only then is the item read (bd show).
+const isSignoff = (l) => l === SIGNED || l.startsWith(SIGNED_HEAD)
+const SIGNOFF_REFUSED = `bd: refused: only review signs off (${SIGNED}, ${SIGNED_HEAD}): ask review on the item`
+function signoff(argv) {
+  const { cmd, args, values, list } = parse(argv)
+  const no = (why) => { console.error(`${SIGNOFF_REFUSED}${why ? ` (${why})` : ''}`); process.exit(1) }
+  if (cmd === 'create' || cmd === 'q' || cmd === 'new') { if (list('-l', '--labels').some(isSignoff)) no(); process.exit(0) }
+  if (cmd === 'label' && (args[0] === 'add' || args[0] === 'remove')) { if (args.slice(1).some(isSignoff)) no(); process.exit(0) }
+  if (cmd !== 'update' && cmd !== 'edit') process.exit(0)
+  if (list('--add-label', '-l', '--remove-label').some(isSignoff)) no()
+  if (!values('--set-labels').length) process.exit(0)
+  // --set-labels replaces every label: one that names no sign-off still drops the item's, so it is compared too
+  const want = [...new Set(list('--set-labels').filter(isSignoff))].sort().join(',')
+  if (!args.length) no('--set-labels on no item I can name')
+  for (const id of args) {
+    let it; try { it = show(id) } catch (e) { no(e.message) }
+    if ([...new Set(it.labels.filter(isSignoff))].sort().join(',') !== want) no(`--set-labels changes ${id}'s sign-off`)
+  }
+  process.exit(0)
+}
+
+function gate(argv) {
+  const { cmd, args, values, list } = parse(argv)
   // the description this call sets, if any (null: it sets none)
   const newDesc = () => {
     const f = values('--body-file').pop(), d = values('-d', '--description').pop()
@@ -121,4 +154,6 @@ if (cmd === 'check') {
   process.exit(1)
 } else if (cmd === 'gate') {
   gate(rest[0] === '--' ? rest.slice(1) : rest)
-} else die('usage: owner-card check <id> | owner-card check - [--t2] | owner-card gate -- <bd args>')
+} else if (cmd === 'signoff') {
+  signoff(rest[0] === '--' ? rest.slice(1) : rest)
+} else die('usage: owner-card check <id> | owner-card check - [--t2] | owner-card gate -- <bd args> | owner-card signoff -- <bd args>')
