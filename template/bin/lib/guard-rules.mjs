@@ -27,6 +27,9 @@
 //           template/bin/guard, template/bin/lib/ledger.mjs or box/mm-approve): bash only, a file tool's path is absolute
 //   APPROVER an actor whose `approved` counts (bin/supervisor, bin/flow): the bridge's (`bridge`) and the owner's name
 //   BD      bd as a command word (bd, bin/bd, ~/.mm/…/bin/bd, "bd"), then a space
+//   REVIEWER review's actor (review, review/<worker>), whose sign-off alone counts (sy-9bss). bin/guard fills it with
+//           (?!) when its own session's actor is review (BEADS_ACTOR, which config-check renders into each lead's and
+//           worker's settings env, and the hook runs with); another guard that does not fill it denies it to everyone
 // rules, checked in order; the first that matches denies with its reason:
 //   on: bash (tool_input.command) | file (Read Edit Write MultiEdit NotebookEdit Grep Glob: the path) | file-write (not
 //       Read, Grep or Glob). re must match; and, if given, must match too.
@@ -55,6 +58,7 @@ export const RULES = // BEGIN RULES
     "WRITE": "(?:\\bsed\\s+(?:-\\w+\\s+)*-i|\\bperl\\s+(?:-\\w+\\s+)*-\\w*i|\\btee\\b|>>?|\\b(?:cp|mv|rm|install|ln|truncate|chmod|chown|touch|patch|dd|rsync|unlink)\\b|\\b(?:open|write\\w*|append\\w*)\\(\\s*['\"]?)",
     "APPROVER": "(?:[bB][rR][iI][dD][gG][eE]|{{OWNER}})",
     "BD": "(?:^|[\\s;&|(){}`'\"/])bd['\"]?(?=\\s)",
+    "REVIEWER": "review(?:/[\\w.-]+)?",
     "APPROVAL": "(?:\\.claude/settings(?!\\.tmpl)[\\w.-]*\\.json|\\.claude/hooks/|\\.local/lib/(?:paseo-telegram|brain)/|{{MMDIR}}/(?:claude/(?:[\\w.-]+/)?settings[\\w.-]*\\.json|pc/[\\w.-]+\\.ya?ml)|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*bin/(?:guard|lib/(?:guard-rules|ledger)\\.mjs)(?![\\w.-])|{{ROOT}}/bin/(?:guard|lib/(?:guard-rules|ledger)\\.mjs)(?![\\w.-])|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*\\.run/endpoints\\.json(?![\\w.-])|{{ROOT}}/\\.run/endpoints\\.json(?![\\w.-])|(?:^|(?<=[\\s'\"=<>]))(?:\\.\\./)*supervisor\\.json(?![\\w.-])|{{ROOT}}/supervisor\\.json(?![\\w.-])|/etc/mm-approve\\.conf(?![\\w.-])|/var/lib/mm-approve(?![\\w.-]))",
     "APPROVAL_BASE": "(?:^|(?<=[\\s'\"=<>:]))(?!/tmp/)(?:[^\\s'\"=<>;&|]*/)?(?:endpoints\\.json|supervisor\\.json|guard-rules\\.mjs|(?<!template/)bin/guard|(?<!template/bin/lib/)ledger\\.mjs|mm-approve\\.conf|ledger\\.jsonl|(?<!box/)mm-approve)(?![\\w.-])"
   },
@@ -176,6 +180,13 @@ export const RULES = // BEGIN RULES
       "pre": true,
       "re": "(?:--actor['\"]?(?:=|\\s+)|\\b(?:BEADS_ACTOR|BD_ACTOR|USER|LOGNAME)=|\\buser\\.name['\"]?(?:=|\\s+))['\"]?{{APPROVER}}['\"]?(?![\\w.-])|\\bxargs\\b[^;&|\\n]*--actor(?:=|\\s+)?(?:\\{\\}|\\s*(?=$|[;&|\\n)]))",
       "why": "writes to the board as an approver (the bridge or the owner): only their own `approved` counts, so an agent never writes under their name. Write as yourself; the owner approves on the board's public address or with the bridge's button."
+    },
+    {
+      "id": "reviewer-actor",
+      "on": "bash",
+      "pre": true,
+      "re": "(?:--actor['\"]?(?:=|\\s+)|\\b(?:BEADS_ACTOR|BD_ACTOR|USER|LOGNAME)=|\\buser\\.name['\"]?(?:=|\\s+))['\"]?{{REVIEWER}}['\"]?(?![\\w.-])",
+      "why": "writes to the board as review: only review signs off (signed-off, signed-head:), so no other lead writes under its name. Write as yourself and ask review on the item."
     },
     {
       "id": "approver-list",

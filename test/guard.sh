@@ -119,6 +119,12 @@ check "...and none when owner_name is not set" bash -c "PATH='$HOME/.bun/bin:$PA
 check "the guard: the bridge's and the owner's name (any case) and approved are the owner's; other actors and labels pass" node "$SRC/test/lib/guard-run.mjs" "$PROJ" APPROVER
 sed -n 's/^APPROVER: /       /p' "$T/check.out"
 check "...no owner_name: the bridge and approved stay denied, a person's name is free" node "$SRC/test/lib/guard-run.mjs" "$SYS" APPROVER_NO_OWNER
+check "only review signs off (sy-9bss): a session of code or ops never writes as review (a project)" node "$SRC/test/lib/guard-run.mjs" "$PROJ" REVIEWER REVIEWER@ops
+sed -n 's/^REVIEWER[^:]*: /       /p' "$T/check.out"
+check "...nor platform/w1 or reviewer (the system board)" node "$SRC/test/lib/guard-run.mjs" "$SYS" REVIEWER@platform/w1 REVIEWER@reviewer
+sed -n 's/^REVIEWER[^:]*: /       /p' "$T/check.out"
+check "...a session of review or review/w1 may name itself; the approvers stay denied to it" node "$SRC/test/lib/guard-run.mjs" "$SYS" REVIEWER_SELF@review REVIEWER_SELF@review/w1
+sed -n 's/^REVIEWER_SELF[^:]*: /       /p' "$T/check.out"
 
 echo "== the hook's answer"
 G="$PROJ/bin/guard"
