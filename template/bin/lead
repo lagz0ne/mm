@@ -25,14 +25,23 @@ ids() { "$PASEO" ls -g --label "project=$PROJECT" --label "role=$1" -q 2>/dev/nu
 # Archive every lead of a role, and say so when one stays (sy-8n1: a silent failure left two leads of one role).
 # A lead in the middle of a turn refuses a plain archive: wait for it up to LEAD_ARCHIVE_WAIT seconds (default 30),
 # then interrupt it (--force). Returns 1, with paseo's reason, if any lead of the role is still there afterwards.
-# A lead made on another Paseo worker than the daemon's now (sy-vsh5's label) is stale: any resume runs without bin/lead's
-# env (no CLAUDE_CONFIG_DIR: no session, no folder trust). One that refuses archive and --force is deleted (sy-jwzj: a
-# send by id revived such a lead, it refused the archive, and the role had no lead for an hour); its transcript stays in
-# the Claude folder. A lead on the current worker is never deleted; when the daemon can't say its worker, none is stale.
+# A lead made on another Paseo worker than the daemon's now is stale: any resume runs without bin/lead's env (no
+# CLAUDE_CONFIG_DIR: no session, no folder trust). One that refuses archive and --force is deleted (sy-jwzj: a send by
+# id revived such a lead, it refused the archive, and the role had no lead for an hour); its transcript stays in the
+# Claude folder. Only on positive proof (review sy-jwzj #7): its own paseo-worker label is set and is not the daemon's
+# worker now. No label, a worker the daemon can't say, or a list that fails: nothing is stale, nothing is deleted.
 cur_worker() { node --input-type=module -e 'const m = await import(process.argv[1]); process.stdout.write((await m.worker({ fresh: true })) || "")' "$P/bin/lib/paseo.mjs" 2>/dev/null || true; }
+stale_ids() {
+  node --input-type=module -e '
+    const m = await import(process.argv[1]), [, , project, role] = process.argv.slice(1)
+    try {
+      const pw = await m.worker({ fresh: true })
+      if (!pw || !/^[0-9.]+$/.test(pw)) process.exit(0)
+      for (const a of await m.list({ project, role })) { const w = a.labels?.["paseo-worker"]; if (w && w !== pw) console.log(a.id) }
+    } finally { await m.close() }' "$P/bin/lib/paseo.mjs" x "$PROJECT" "$1" 2>/dev/null || true
+}
 archive_role() {
-  pw=$(cur_worker); case $pw in *[!0-9.]*) pw="" ;; esac
-  fresh=""; [ -z "$pw" ] || fresh=" $("$PASEO" ls -g --label "project=$PROJECT" --label "role=$1" --label "paseo-worker=$pw" -q 2>/dev/null | tr '\n' ' ') "
+  stale=" $(stale_ids "$1" | tr '\n' ' ') "
   for id in $(ids "$1"); do
     t=0; why=""; gone=""
     while :; do
@@ -42,7 +51,7 @@ archive_role() {
     [ -z "$gone" ] || continue
     del=""
     if why=$("$PASEO" archive --force "$id" 2>&1 >/dev/null); then echo "archived $2$1 lead $id (interrupted: it was busy for ${t}s)"
-    elif [ -n "$pw" ] && case $fresh in *" $id "*) false ;; *) true ;; esac && del=$("$PASEO" delete "$id" 2>&1 >/dev/null); then
+    elif case $stale in *" $id "*) true ;; *) false ;; esac && del=$("$PASEO" delete "$id" 2>&1 >/dev/null); then
       echo "deleted $2$1 lead $id: made on an older Paseo worker (resumed, it runs without its env), and archive failed: ${why:-no reason given}"
     else echo "lead: could not archive $1 lead $id: ${why:-no reason given}${del:+ (delete: $del)}" >&2; fi
   done
