@@ -7,3 +7,6 @@ export declare function youKind(v: string): 'approve' | 'reply' | 'check' | 'not
 export declare function parseCard(description: string | undefined | null, labels?: string[], id?: string): {
   ok: boolean; found: boolean; card: Record<string, string> | null; errors: string[]; rest: string
 }
+export declare const HEAD: RegExp
+export declare const SIGNED_HEAD: string
+export declare function headRefusal(description: string | undefined | null, labels: Iterable<string> | undefined | null): string | null
