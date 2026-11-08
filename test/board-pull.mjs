@@ -21,7 +21,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const MIN = 60e3, NOW = Date.now(), ago = (m) => new Date(NOW - m * MIN).toISOString()
 
 const { pullState, foldRequeues, leaseOf } = await import(path.join(SRC, 'template', 'site', 'pull-state.mjs'))
-const { waitingFor, plainTitle, MAX_BYTES } = await import(path.join(SRC, 'template', 'site', 'waiting.mjs'))
+const { waitingFor, plainTitle, youLine, MAX_BYTES, YOU_MAX } = await import(path.join(SRC, 'template', 'site', 'waiting.mjs'))
 
 // ---------- the fixture board ----------
 const PROJECT = 'pb'
@@ -82,11 +82,13 @@ ok('setup: no capacity, no lease', P.setup.capacity === null && P.setup.claims[0
 
 step('site/waiting.mjs (the gateway\'s "Waiting for you" list, sy-vdi8)')
 {
+  // an owner card as written by hand (sy-z5lz)
+  const CARD = '## Owner\n- **What:** A fixed short card at the top of each item that needs you.\n- **Why:** You see in 6 lines what is asked and why.\n- **You:** Reply: ok, or say which line to change.\n\nThe thread.'
   const W = [
-    it('pb-20', 'review', 'open', 90, { labels: ['needs-you'], title: 'owner needed' }),
+    it('pb-20', 'review', 'open', 90, { labels: ['needs-you'], title: 'owner needed', description: CARD }),
     it('pb-21', 'ops', 'open', 30, { labels: ['t2', 'signed-off'], title: 'approve me' }),
     it('pb-22', 'ops', 'open', 20, { labels: ['t2', 'signed-off', 'approved'], title: 'approved already' }),
-    it('pb-23', 'alex', 'in_progress', 10, { title: 'alex\'s own', labels: ['needs-you', 'bug'] }),
+    it('pb-23', 'alex', 'in_progress', 10, { title: 'alex\'s own', labels: ['needs-you', 'bug'], description: CARD.replace('Reply: ok, or say which line to change.', 'Check: the\u202e shot,\u0007 artifacts/pb-23/a.png') }),
     it('pb-24', 'alex', 'closed', 5, { title: 'alex closed' }),
     it('pb-25', 'bob', 'open', 5, { title: 'bob\'s' }),
     it('pb-26', 'ops', 'open', 40, { labels: ['needs-you', 't2', 'signed-off'], title: 'both' }),
@@ -96,10 +98,16 @@ step('site/waiting.mjs (the gateway\'s "Waiting for you" list, sy-vdi8)')
   const o = waitingFor({ items: W, me: 'boss', owner: true, now: NOW })
   ok('the owner: needs-you items and the signed-off t2s without approved, oldest first', o.items.map((x) => x.id).join() === 'pb-20,pb-26,pb-21,pb-23' && o.more === 0, JSON.stringify(o))
   ok('...each with only the labels its ask needs (no bug, no approved), age in whole minutes', JSON.stringify(o.items.find((x) => x.id === 'pb-26').labels) === '["needs-you","t2","signed-off"]'
-    && JSON.stringify(o.items.find((x) => x.id === 'pb-23').labels) === '["needs-you"]' && o.items[0].age_min === 90 && o.items.every((x) => Object.keys(x).join() === 'id,title,age_min,labels'))
+    && JSON.stringify(o.items.find((x) => x.id === 'pb-23').labels) === '["needs-you"]' && o.items[0].age_min === 90 && o.items.every((x) => Object.keys(x).join() === 'id,title,age_min,labels,you'))
+  ok('...and each its card\'s You line (sy-z5lz); null when it has no card (the gateway says "card missing")', o.items.find((x) => x.id === 'pb-20').you === 'Reply: ok, or say which line to change.'
+    && o.items.find((x) => x.id === 'pb-26').you === null && o.items.find((x) => x.id === 'pb-21').you === null, JSON.stringify(o.items))
+  ok('...the You line as plain text, like a title: control and bidi characters out', o.items.find((x) => x.id === 'pb-23').you === 'Check: the shot, artifacts/pb-23/a.png')
+  const lng = youLine(CARD.replace('Reply: ok, or say which line to change.', `Reply: ${'w'.repeat(200)}`)), bad = youLine(CARD.replace('**You:** Reply: ok, or say which line to change.', '**You:** \u202e'))
+  ok(`...cut to ${YOU_MAX} characters (an invalid card's You still shows: its own detail says invalid); none for no card, an empty one`, Array.from(lng).length === YOU_MAX && lng.endsWith('…') && youLine('no card') === null && bad === null)
   const m = waitingFor({ items: W, me: 'alex', owner: false, now: NOW })
   ok('a member: only the open items assigned to them (not closed, not the owner\'s needs-you, not a bad id)', m.items.map((x) => x.id).join() === 'pb-23,pb-28', JSON.stringify(m))
   ok('...with no labels at all (needs-you is the owner\'s ask)', m.items.every((x) => x.labels.length === 0))
+  ok('...a You line only where the card has one (no "card missing" for a member)', m.items.find((x) => x.id === 'pb-23').you === 'Check: the shot, artifacts/pb-23/a.png' && !('you' in m.items.find((x) => x.id === 'pb-28')))
   ok('...a title\'s control and bidi characters become spaces', m.items.find((x) => x.id === 'pb-28').title === 'a b evil cd')
   ok('no name (a viewer with none, the local side): nothing', waitingFor({ items: W, me: '', owner: false, now: NOW }).items.length === 0)
   const long = plainTitle('x'.repeat(500)), astral = plainTitle('\u{1F600}'.repeat(300))

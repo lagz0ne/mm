@@ -210,7 +210,8 @@ import fs from 'node:fs'
 const [port, logf] = process.argv.slice(2)
 // the open list (what /api/summary counts): an item title with a script in it, that must never leave the board
 const LIST = [
-  { id: 'it-1', title: '<script>alert(1)</script>', status: 'open', priority: 0, assignee: 'alex', labels: ['needs-you'], updated_at: '2026-11-05T09:00:00Z' },
+  { id: 'it-1', title: '<script>alert(1)</script>', status: 'open', priority: 0, assignee: 'alex', labels: ['needs-you'], updated_at: '2026-11-05T09:00:00Z',
+    description: '## Owner\n- **What:** Fix the page.\n- **Why:** It shows a script.\n- **You:** Check: the <i>page</i>, on the board\n\nThe thread.' },
   { id: 'it-2', title: 'b', status: 'blocked', priority: 2, assignee: 'ops', labels: [], updated_at: '2026-11-05T10:00:00Z' },
   { id: 'it-3', title: 'c', status: 'in_progress', priority: 0, assignee: 'alex', labels: ['t2', 'signed-off'], updated_at: '2026-11-04T10:00:00Z' },
   { id: 'it-4', title: 'd', status: 'open', priority: 3, assignee: 'bob', labels: ['t2', 'signed-off', 'approved'], updated_at: '2026-11-03T10:00:00Z' },
@@ -379,7 +380,7 @@ echo "== the board's \"Waiting for you\" list (/api/waiting: the asking person's
 wl() { curl -s -o "$T/wl" -w '%{http_code}' -H "x-forwarded-host: ${2:-$BOARD}" ${1:+-H "x-mm-assertion: $1"} "http://127.0.0.1:$BP/api/waiting"; }
 export -f wl
 check "the owner: the needs-you item and the signed-off t2 without approved, oldest first, only the labels the ask needs" bash -c "[ \$(wl '$OA') = 200 ] && jq -e '[.items[] | [.id, (.labels | join(\",\"))]] == [[\"it-3\",\"t2,signed-off\"],[\"it-1\",\"needs-you\"]] and .more == 0' '$T/wl'"
-check "...each entry: id, title, age in whole minutes, labels; nothing else (no assignee, no link)" bash -c "wl '$OA' >/dev/null && jq -e '(keys == [\"items\",\"more\"]) and all(.items[]; (keys == [\"age_min\",\"id\",\"labels\",\"title\"]) and (.age_min | type == \"number\" and . == floor and . > 1000))' '$T/wl'"
+check "...each entry: id, title, age in whole minutes, labels, you (the owner card's You line, sy-z5lz); nothing else (no assignee, no link)" bash -c "wl '$OA' >/dev/null && jq -e '(keys == [\"items\",\"more\"]) and all(.items[]; (keys == [\"age_min\",\"id\",\"labels\",\"title\",\"you\"]) and (.age_min | type == \"number\" and . == floor and . > 1000))' '$T/wl'"
 check "a member (alex): only the open items assigned to alex (not the closed one), with no needs-you label" bash -c "[ \$(wl '$MA') = 200 ] && jq -e '([.items[].id] == [\"it-3\",\"it-1\"]) and all(.items[]; .labels == [])' '$T/wl'"
 check "a member with nothing assigned (carol) doesn't see the owner's needs-you items: an empty list" bash -c "[ \$(wl '$(mk carol member "$BOARD" 60000)') = 200 ] && jq -e '.items == [] and .more == 0' '$T/wl'"
 check "a viewer may read it (200), and gets only their own (none)" bash -c "[ \$(wl '$(mk vic viewer "$BOARD" 60000)') = 200 ] && jq -e '.items == []' '$T/wl'"
@@ -401,13 +402,15 @@ http.createServer((req, res) => {
     if (wm === 'older' || wm === 'forbid') { res.writeHead(wm === 'older' ? 404 : 403, { 'content-type': 'application/json' }); return res.end('{"title":"Not allowed from the board"}') }
     const nu = (id, title, age_min, labels = ['needs-you'], more = {}) => ({ id, title, age_min, labels, ...more })
     const LIST = [
-      nu('ao-1', 'Fix the <script>alert(3)</script> page', 190),
-      nu('ao-2', 'Approve the push', 20, ['t2', 'signed-off']),
+      nu('ao-1', 'Fix the <script>alert(3)</script> page', 190, ['needs-you'], { you: 'Reply: <b>which</b> page?' }),
+      nu('ao-2', 'Approve the push', 20, ['t2', 'signed-off'], { you: null }),
       nu('ao-3', 'plain work', 5, []),
       nu('AO-4', 'DROPCAPS', 5), nu('ao-5"><a href=x', 'DROPQUOTE', 5), nu('ao-6', 'L'.repeat(201), 5), nu('ao-7', 'DROPCTL\u0007bell', 5),
       nu('ao-8', 'DROPLINK', 5, ['needs-you'], { url: 'https://evil.example/x' }), nu('ao-9', 'DROPFRAC', 1.5), nu('ao-10', 'DROPAPPROVED', 5, ['approved']),
       nu('ao-11', 'DROPBIDI \u202e', 5), nu('ao-1', 'DROPDUP', 5), nu('ao-13', '', 5), nu('ao-14', 'DROPAGE', -1), nu('ao-15', 42, 5),
       nu('ao-12', 'T'.repeat(200), 1),
+      nu('ao-16', 'DROPYOUBIDI', 5, ['needs-you'], { you: 'Tap \u202eApprove' }), nu('ao-17', 'DROPYOULONG', 5, ['needs-you'], { you: `Reply: ${'y'.repeat(154)}` }),
+      nu('ao-18', 'DROPYOUNUM', 5, ['needs-you'], { you: 5 }), nu('ao-19', 'DROPYOUEMPTY', 5, ['needs-you'], { you: '' }),
     ]
     if (wm === 'list') return json({ items: LIST, more: 0 })
     if (wm === 'more') return json({ items: LIST.slice(0, 2), more: 7 })
@@ -533,8 +536,10 @@ export -f wsec wids nw
 echo list >"$T/fb2.mode.w"; hp "$SB" >/dev/null
 check "the owner: the list is the first thing on the page" bash -c "grep -q '<main class=\"wrap\"><section class=\"waiting\" aria-labelledby=\"waiting-h\"><h2 id=\"waiting-h\">Waiting for you <span class=\"w-n\">5</span></h2>' '$T/hp'"
 check "...5 items from both boards, oldest first (it-3, it-1 from acme-shop; ao-1, ao-2, ao-12 from acme-other)" bash -c "[ \"\$(wids)\" = 'it-3 it-1 ao-1 ao-2 ao-12 ' ]"
-check "...each row: the gateway's ask (needs you, red), the age, the title as text, the board, the id, the gateway's link" bash -c "wsec | grep -qF '<li><a href=\"/s?b=$BOARD2&amp;r=%2F%3Fitem%3Dao-1\"><span class=\"w-ask hot\">needs you</span><span class=\"w-age\">3 h</span><span class=\"w-title\">Fix the &#60;script&#62;alert(3)&#60;/script&#62; page</span><span class=\"w-where\"><span class=\"w-board\">acme-other</span><span class=\"w-id\">ao-1</span></span></a></li>'"
+check "...each row: the gateway's ask (needs you, red), the age, the title as text, the board, the id, the gateway's link" bash -c "wsec | grep -qF '<li><a href=\"/s?b=$BOARD2&amp;r=%2F%3Fitem%3Dao-1\"><span class=\"w-ask hot\">needs you</span><span class=\"w-age\">3 h</span><span class=\"w-title\">Fix the &#60;script&#62;alert(3)&#60;/script&#62; page</span><span class=\"w-you\">You: Reply: &#60;b&#62;which&#60;/b&#62; page?</span><span class=\"w-where\"><span class=\"w-board\">acme-other</span><span class=\"w-id\">ao-1</span></span></a></li>'"
 check "...a signed-off t2: \"approve (t2, signed off)\", red (from the labels, not from board text)" bash -c "wsec | grep -qF '<span class=\"w-ask hot\">approve (t2, signed off)</span><span class=\"w-age\">20 min</span><span class=\"w-title\">Approve the push</span>' && wsec | grep -qF 'r=%2F%3Fitem%3Dit-3\"><span class=\"w-ask hot\">approve (t2, signed off)</span>'"
+check "...the owner card's You line (sy-z5lz): as text; null is \"card missing\"; none from the board: no line" bash -c "wsec | grep -qF '<span class=\"w-title\">Approve the push</span><span class=\"w-you none\">card missing</span>' && wsec | grep -qE '>T{200}</span><span class=\"w-where\">' && [ \$(wsec | grep -o 'class=\"w-you' | wc -l) = 4 ] && wsec | grep -qF '<span class=\"w-you\">You: Check: the &#60;i&#62;page&#60;/i&#62;, on the board</span>'"
+check "...a You line with a bidi character, over 160 characters, not text, or empty: the item is dropped" bash -c "! grep -q -e DROPYOU '$T/hp'"
 check "a title with <script> shows as text (escaped), and no script is on the page" bash -c "wsec | grep -qF '&#60;script&#62;alert(1)&#60;/script&#62;' && ! grep -qi '<script' '$T/hp'"
 check "a link is never taken from the board: each is /s?b=<the board's host>&r=/?item=<its checked id>; the board's url is nowhere" bash -c "[ \$(wsec | grep -o 'href=\"[^\"]*\"' | wc -l) = 5 ] && ! wsec | grep -o 'href=\"[^\"]*\"' | grep -vqE '^href=\"/s\\?b=(board-shop-acme|board-other-acme)\\.example\\.org&amp;r=%2F%3Fitem%3D[a-z]+-[a-z0-9]+\"\$' && ! grep -q evil.example '$T/hp'"
 check "a bad id drops the item (capitals; a quote and markup)" bash -c "! grep -q -e DROPCAPS -e DROPQUOTE -e AO-4 '$T/hp'"
