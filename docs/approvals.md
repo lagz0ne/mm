@@ -200,13 +200,33 @@ what); never the assertion.
 **The head review signed off** (sy-hzmu). A t2 owner card names its head (required, so the check can't be skipped
 by leaving it out), `- **Head:** <repo>@<sha>` (repo
 `[a-z][a-z0-9-]{0,30}`, sha 7 to 40 lowercase hex): the commit or migration review signed off. Review then adds the
-label `signed-head:<repo>@<sha>` next to `signed-off` (a new sign-off replaces the old label); only the leads change
-`signed-head:*`. One check, `headRefusal(description, labels)` in `bin/lib/owner-card.mjs`, refuses the go on a t2
+label `signed-head:<repo>@<sha>` next to `signed-off` (a new sign-off replaces the old label); only review changes
+`signed-head:*` (below). One check, `headRefusal(description, labels)` in `bin/lib/owner-card.mjs`, refuses the go on a t2
 item whose card names a head that no `signed-head:` label names: "review's sign-off names no head (card: X)" or "the
 head changed since review's sign-off (card: X, signed: Y)". The board (Approve, Not now, the label rail), bd's gate
 (adding `needs-you`) use it, and the bridge's tap is to use it too; the Waiting list shows the head and the reason instead of Approve. A t2
 card with no Head (or a t2 item with no card) is refused too: "the card names no head"; an approved item is not
 checked again.
+
+**Only review signs off** (sy-9bss). `signed-off` and every `signed-head:*` are added or removed by the actor `review`
+(or `review/<worker>`: the role is the part before `/`) and by no one else:
+
+- `bin/bd` refuses a label call that adds or removes one (label add|remove, update --add-label/-l/--remove-label/
+  --set-labels, create/q -l/--labels) unless its actor (--actor, else BEADS_ACTOR, else BD_ACTOR) is review: "only
+  review signs off (signed-off, signed-head:): ask review on the item". It looks only when an argument names one of
+  them, or sets the labels; `--set-labels` that keeps the item's sign-off as it is passes (only then is the item read).
+- The board's local side refuses the same change unless its actor (the visitor's chosen name, else the board's
+  default) is review; `review` is a reserved name, so in practice no visitor signs off there. The public side is as it
+  was: only the leads (no person) change them.
+- The guard (`bin/guard`, rule `reviewer-actor`) refuses a session that is not review's naming review as its actor
+  (`--actor review`, the actor variables, git `user.name`). It knows its session from the actor config-check renders
+  into each lead's and worker's settings.
+
+All three are a brake, not a wall: every agent runs as the owner account, which can claim any name with bd-serve or
+the board's files (see the top of this file), or spell the actor so no text rule sees it. **The Supervisor's finding is
+how it is seen**: from the board's journal it records who added `signed-off` and each `signed-head:*` (as it does for
+`approved`), and an open item carrying one that an actor other than review added is `signoff:<item>` (P1, to ops,
+label `audit`). It clears when the label is removed, or review adds it again.
 
 ### The board's web Approve (with the ledger on)
 
@@ -279,3 +299,5 @@ the board's web Approve with a test config and a stub bridge socket: exactly `{i
 label, the owner's message; no socket, a socket that isn't safe, a bridge that refuses or is down: refused, nothing
 approved; with `actor` as before. On a machine where
 `/etc/mm-approve.conf` exists, the verifier cases are skipped: the verifiers never read a test config there.
+Only review signs off: `test/owner-card-bd.sh` (bin/bd), `test/auth.sh` (the board's local side), `test/guard.sh`
+(the guard, as a review session and as others) and `test/supervisor.mjs` (`signoff:<item>`).
