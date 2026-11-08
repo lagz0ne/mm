@@ -183,6 +183,18 @@ export function namesPlan() {
   return { names: now, ...(why ? { invalid: why } : {}), domain, switch_to: to, rows, add, remove, nested }
 }
 /** The gateway's own sign-in host: never a project's. */
+/** The way back after sign-in: a path on the same host, else '/'. Browsers read '\' as '/' and drop tabs and newlines,
+ *  so '/\evil' or '/<tab>/evil' would leave the host (review sy-ua5q): refuse those characters, then keep only what a
+ *  URL parser resolves on the same origin, as path + query + fragment. The parser removes dot segments, so its
+ *  output can start with '//' again ('/.//evil' -> '//evil', review sy-ua5q #2): that gives '/' too. Pure: tested
+ *  on its own (test/auth.sh) and used by the callback, /verify and /s. */
+const BACK_BASE = 'https://board.invalid'
+export const safeBack = (r: string | null) => {
+  if (!r || !r.startsWith('/') || /[\\\u0000-\u001f\u007f]/.test(r)) return '/'
+  let out = '/'
+  try { const b = new URL(r, BACK_BASE); if (b.origin === BACK_BASE) out = b.pathname + b.search + b.hash } catch {}
+  return out.startsWith('/') && !out.startsWith('//') ? out : '/'
+}
 export const gatewayHost = (cfg = loadConfig()) => { const domain = String(getPath(cfg, 'domain') ?? ''); return String(getPath(cfg, 'auth_host') ?? (domain ? `auth.${domain}` : 'auth.localhost')) }
 const sameDir = (a: string, b: string) => { try { return realpathSync(a) === realpathSync(b) } catch { return a === b } }
 /**
@@ -328,14 +340,6 @@ export async function gateway() {
   const signAssertion = (user: string, role: Role, host: string) => {
     const body = Buffer.from(JSON.stringify({ u: user, r: role, h: host, exp: now() + ASSERT_MS, n: randomBytes(6).toString('hex') })).toString('base64url')
     return `${body}.${sign(null, Buffer.from(body), key).toString('base64url')}`
-  }
-  /** The way back after sign-in: a path on the same host, else '/'. Browsers read '\' as '/' and drop tabs and newlines,
-   *  so '/\evil' or '/<tab>/evil' would leave the host (review sy-ua5q): refuse those characters, then keep only what a
-   *  URL parser resolves on the same origin, as path + query + fragment. */
-  const BACK_BASE = 'https://board.invalid'
-  const safeBack = (r: string | null) => {
-    if (!r || !r.startsWith('/') || /[\\\u0000-\u001f\u007f]/.test(r)) return '/'
-    try { const b = new URL(r, BACK_BASE); return b.origin === BACK_BASE ? b.pathname + b.search + b.hash : '/' } catch { return '/' }
   }
   /** The person's session on the gateway host (Better Auth's cookie), with the raw session token for board sessions. */
   const personOf = async (req: Request) => {
