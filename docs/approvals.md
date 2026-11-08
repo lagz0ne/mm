@@ -179,7 +179,7 @@ The owner's **Approve** on an item (and on the gateway's Waiting list, which cal
 
 | Mode | What Approve does | What counts |
 |---|---|---|
-| `verifier = actor` | the board adds `approved` as the owner (the journal's actor is the owner's signed name, from the gateway's assertion) and comments "Approved on the board by <name>." | the label, read with its actor, as before: the board's Approve or the bridge's Telegram tap, whichever comes first; the second answers "already approved" |
+| `verifier = actor` | the board adds `approved` as the owner (the journal's actor is the owner's signed name, from the gateway's assertion) and comments "Approved on the board by <name>."; it then removes `needs-you` (the item no longer waits on the owner) | the label, read with its actor, as before: the board's Approve or the bridge's Telegram tap, whichever comes first; the second answers "already approved" |
 | `verifier = ledger` | the board writes and signs nothing: it sends the item to the bridge, which sends the Telegram offer | only the owner's tap on Telegram (a signed ledger line) |
 
 **Why the board's Approve does not count with the ledger on.** The board trusts the gateway's assertion, and the
