@@ -39,7 +39,8 @@ import { createHash } from 'node:crypto'
 
 export const RAILS = ['needs-you', 'sign-off', 'approval']
 export const SYSTEM = new Set(['wake', 'watchdog', 'ui', 'smoke', 'beads', 'mm-upstream', 'brain']) // brain: ops' actor before 2026-11-05 (sy-u43j)
-const NOT_SIGNED = /\bnot signed[ -]off\b/i
+// a verdict that does not sign off: the words, or a VERDICT message's "Result: blocked" (sy-0gsw)
+const NOT_SIGNED = /\bnot signed[ -]off\b|^Result:[ \t]*blocked\b/im
 const h = (s, n) => createHash('sha256').update(s).digest('hex').slice(0, n)
 export const traceIdOf = (project, id) => h(`${project}/${id}`, 32)
 const rootIdOf = (project, id) => h(`${project}/${id}/root`, 16)

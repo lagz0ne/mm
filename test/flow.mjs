@@ -75,7 +75,7 @@ upd('sy-d', 'review', m(92), { assignee: 'ops' })
 label('sy-d', 'ops', m(95), 'approved') // a lead's approved: does not count
 upd('sy-a', 'review', m(100), { status: 'in_progress' })
 label('sy-d', 'ops', m(100), 'approved', false)
-comment('sy-a', 'review', m(110), 'Not signed off: the test is missing.')
+comment('sy-a', 'review', m(110), 'VERDICT → platform\nHead: mm@1234567\nResult: blocked\nExpect: platform: add the test.')
 upd('sy-a', 'review', m(120), { assignee: 'platform' })
 upd('sy-e', 'platform', m(120), { status: 'closed' })
 comment('sy-a', 'platform', m(125), 'On it.')
