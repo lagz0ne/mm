@@ -14,6 +14,7 @@ import { leadState } from './lead-state.mjs'
 import { foldRequeues, pullState } from './pull-state.mjs'
 import { exportQuery, flowRows, parseExport, PAIRS } from './flow-rows.mjs'
 import { waitingFor } from './waiting.mjs'
+import { toReview } from './review.mjs'
 import { designsApi } from './designs.mjs'
 import { headRefusal, isNonGoAsk, parseCard, SIGNED_HEAD } from '../bin/lib/owner-card.mjs'
 import { readGlossary } from '../bin/lib/glossary.mjs'
@@ -738,17 +739,55 @@ function sendArtifact(res, rel, annotate) {
   try { body = fs.readFileSync(f) } catch { return send(res, 404, { title: 'not found' }) }
   sendBody(res, path.extname(f).toLowerCase(), body, annotate)
 }
-function sendArtifacts(res, id) {
-  if (!ID_RE.test(id)) return send(res, 400, { title: 'bad id' })
+/** The files the board shows of an item's artifacts (none: []). */
+function artifactsOf(id) {
   let names = []
   try { names = fs.readdirSync(path.join(ARTIFACTS, id)) } catch {}
-  const files = names.sort().flatMap((name) => {
+  return names.sort().flatMap((name) => {
     const f = artifactFile(id, name)
     if (!f) return []
     const st = fs.statSync(f)
     return [{ name, path: `artifacts/${id}/${name}`, type: FILE_TYPES[path.extname(name).toLowerCase()].split(';')[0], size: st.size, mtime: st.mtime.toISOString() }]
   })
-  send(res, 200, { id, files })
+}
+function sendArtifacts(res, id) {
+  if (!ID_RE.test(id)) return send(res, 400, { title: 'bad id' })
+  send(res, 200, { id, files: artifactsOf(id) })
+}
+
+// "To review" (sy-c7mh; review.mjs): the items closed or handed over since ?since=<ms> (at most REVIEW_DAYS back) that
+// carry an artifact or an owner card. The event log is read once, then only its new part (bd serve's events carry the
+// item's snapshot), and kept REVIEW_DAYS + 1 days (the extra day says who held an item before a handover) as compact
+// records. Read-only: every role on the public side may read it, like the Waiting list.
+const REVIEW_DAYS = 7, REVIEW_START = 6000 // a first read goes at most this many events back
+const rlog = { head: -1, recs: [], busy: null }
+// one read at a time: a second request waits for the same read
+const reviewEvents = () => (rlog.busy ||= readReviewEvents().finally(() => { rlog.busy = null }))
+async function readReviewEvents() {
+  const page = (since, limit = 500) => fetch(new URL(`/v0/beads/events?since=${since}&limit=${limit}`, BD)).then((x) => (x.ok ? x.json() : Promise.reject(new Error(`bd serve ${x.status}`))))
+  if (rlog.head < 0) rlog.head = Math.max(0, Number((await page(0, 1))?.head || 0) - REVIEW_START)
+  for (let n = 0; n < 40; n++) {
+    const r = await page(rlog.head), recs = Array.isArray(r?.records) ? r.records : []
+    for (const e of recs) {
+      if (!(e?.seq > rlog.head)) continue
+      rlog.head = e.seq
+      const s = e.issue && typeof e.issue === 'object' ? e.issue : null
+      rlog.recs.push({ seq: e.seq, ts: e.ts, op: e.op, issue_id: e.issue_id, actor: e.actor,
+        ...(s ? { issue: { title: s.title, assignee: s.assignee, status: s.status, issue_type: s.issue_type, labels: s.labels, ...(e.op === 'close' ? { description: s.description } : {}) } } : {}) })
+    }
+    if (recs.length < 500) break
+  }
+  const keep = Date.now() - (REVIEW_DAYS + 1) * 86400e3
+  if (rlog.recs.length && !(Date.parse(rlog.recs[0].ts) > keep)) rlog.recs = rlog.recs.filter((e) => Date.parse(e.ts) > keep)
+  return rlog.recs
+}
+async function sendToReview(res, url) {
+  const floor = Date.now() - REVIEW_DAYS * 86400e3, asked = Number(url.searchParams.get('since'))
+  const since = Number.isFinite(asked) && asked > floor ? asked : floor
+  const [events, items] = await Promise.all([reviewEvents(), allItems()])
+  const ids = new Set(events.filter((e) => Date.parse(e.ts) > since && ID_RE.test(e.issue_id || '')).map((e) => e.issue_id))
+  const artifacts = Object.fromEntries([...ids].map((id) => [id, artifactsOf(id)]).filter(([, f]) => f.length))
+  send(res, 200, { since: new Date(since).toISOString(), ...toReview({ events, items, artifacts, since }) })
 }
 
 // Workers on an item: Paseo agents labelled item=<id> (role=<role>-worker) (archived too), their branch's unlanded
@@ -1016,7 +1055,9 @@ async function handle(req, res) {
   if (url.pathname === '/api/whoami' && req.method === 'GET') {
     // the owner on the public side also learns how the T2 go is given: the label (verifier actor) or Telegram (ledger)
     const owner = req.gateway?.r === 'owner'
-    return send(res, 200, { actor: who(req), source: whoSource(req), ...(req.gateway ? { role: req.gateway.r } : {}), ...(owner ? { approval: ledgerOn() ? 'telegram' : 'label' } : {}) })
+    // home (sy-c7mh): the gateway's home page, where the person signs out (mm writes it into .run/endpoints.json "auth")
+    const home = req.gateway && /^https:\/\/[a-z0-9.-]+\/$/.test(String(endpoints().auth?.home || '')) ? endpoints().auth.home : ''
+    return send(res, 200, { actor: who(req), source: whoSource(req), ...(req.gateway ? { role: req.gateway.r } : {}), ...(owner ? { approval: ledgerOn() ? 'telegram' : 'label' } : {}), ...(home ? { home } : {}) })
   }
   if (url.pathname === '/api/approve' && req.method === 'POST') return webApprove(req, res)
   if (url.pathname === '/api/not-now' && req.method === 'POST') return webNotNow(req, res)
@@ -1033,6 +1074,7 @@ async function handle(req, res) {
   if (url.pathname === '/api/meta' && req.method === 'GET') return sendMeta(res)
   if (url.pathname === '/api/summary' && req.method === 'GET') return sendSummary(req, res, url.searchParams.get('signal') === '1').catch(() => send(res, 502, { title: 'summary failed' }))
   if (url.pathname === '/api/waiting' && req.method === 'GET') return sendWaiting(req, res).catch(() => send(res, 502, { title: 'waiting list failed' }))
+  if (url.pathname === '/api/to-review' && req.method === 'GET') return sendToReview(res, url).catch(() => send(res, 502, { title: 'to-review list failed' }))
   if (url.pathname === '/api/pull' && req.method === 'GET') return pull().then((d) => send(res, 200, d), (e) => send(res, 502, { title: `pull failed: ${e.message}` }))
   if (url.pathname === '/api/flow' && req.method === 'GET') return sendFlow(res)
   if (url.pathname === '/api/links' && req.method === 'GET') return sendLinks(res)
