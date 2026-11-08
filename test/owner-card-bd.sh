@@ -3,7 +3,7 @@
 # --add-label / -l / --set-labels, create / q -l / --labels are refused (exit 1, the reasons, the format; bd itself
 # never runs) when the item's description, or the one the call sets (-d, --description, --body-file), has no valid card;
 # t2 asks for If yes, If no, Risk, and review's sign-off first (signed-off; sy-l9uc), also when t2 is added to an item
-# that has needs-you. Allowed: a valid card, removing the label, any other label, any other command (and
+# that has needs-you; a card that names its Head needs review's signed-head for that head (sy-hzmu). Allowed: a valid card, removing the label, any other label, any other command (and
 # those never read the item). bin/owner-card check <id> reads the item through bin/bd show. Hermetic: a copy of the
 # template's bin/bd, bin/owner-card and its lib in a throwaway folder; a stand-in bd (it records its arguments and
 # answers `show` from fixture files) and bin/trace (no span).
@@ -122,6 +122,21 @@ call label add sy-good t2;                              check "adding t2 to an i
 call label add sy-t2x t1;                               check "an id with t2 inside it, another label: no gate" passed
 check "...reads nothing" noshow
 call update sy-nyfull --set-labels t2;                  check "--set-labels t2 (needs-you dropped by the set): allowed" passed
+
+echo "== a t2 card that names its head waits on the owner only when review signed off that head (sy-hzmu)"
+HCARD=$(printf '%s\n- **Head:** mm@0a1b2c3' "$T2CARD")
+item sy-hmoved "$(printf '%s' "$HCARD" | sed 's/0a1b2c3/9f8e7d6/')" '["t2","signed-off","signed-head:mm@0a1b2c3"]'
+item sy-hmatch "$HCARD" '["t2","signed-off","signed-head:mm@0a1b2c3"]'
+item sy-hnone "$HCARD" '["t2","signed-off"]'
+call label add sy-hmoved needs-you;                     check "the head moved after the sign-off: label add needs-you refused" refused
+check "...the reason names both heads" says "the head changed since review's sign-off (card: mm@9f8e7d6, signed: mm@0a1b2c3)"
+call update sy-hmoved --add-label needs-you;            check "...update --add-label needs-you too" refused
+call label add sy-hnone needs-you;                      check "signed off, but no signed-head: refused" refused
+check "...the reason" says "review's sign-off names no head (card: mm@0a1b2c3)"
+call update sy-hmatch -d "$(printf '%s' "$HCARD" | sed 's/0a1b2c3/9f8e7d6/')" --add-label needs-you; check "a new head in the call's own description: refused" refused
+call label add sy-hmatch needs-you;                     check "the signed head is the card's head: passed" passed
+call update sy-hnone --add-label signed-head:mm@0a1b2c3,needs-you; check "signed-head added in the same call: passed" passed
+call create "a title" -d "$HCARD" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create with the matching signed-head: passed" passed
 
 echo "== the actor check still comes first"
 (unset BEADS_ACTOR; call label add sy-good needs-you; grep -q 'needs an actor' "$T/err" && [ ! -s "$T/shows" ]); check "no actor: refused for the actor, no read" test $? = 0
