@@ -31,8 +31,8 @@ case "\$1" in
   ls) case "\$*" in
       *--json*) [ -e "\$S/lsfail" ] && { echo "daemon unreachable" >&2; exit 1; }
         printf '['; sep=''; while read -r id w; do [ -n "\$id" ] || continue
-          if [ "\$w" = - ]; then printf '%s{"id":"%s","labels":{"project":"acme-shop","role":"qa"}}' "\$sep" "\$id"
-          else printf '%s{"id":"%s","labels":{"project":"acme-shop","role":"qa","paseo-worker":"%s"}}' "\$sep" "\$id" "\$w"; fi; sep=','
+          if [ "\$w" = - ]; then printf '%s{"id":"%s-6f90-4f1a-a8d3-15d49dbf25a5","shortId":"%s","labels":{"project":"acme-shop","role":"qa"}}' "\$sep" "\$id" "\$id"
+          else printf '%s{"id":"%s-6f90-4f1a-a8d3-15d49dbf25a5","shortId":"%s","labels":{"project":"acme-shop","role":"qa","paseo-worker":"%s"}}' "\$sep" "\$id" "\$id" "\$w"; fi; sep=','
         done <"\$S/workers"; echo ']' ;;
       *) cat "\$S/agents" 2>/dev/null ;;
     esac ;;
@@ -83,6 +83,7 @@ check "two old leads of the role (the sy-8n1 state): both archived, then one sta
 
 echo '== start: a stale lead that refuses the archive is deleted, only on proof (sy-jwzj)'
 reset old-1 -1; touch "$T/st/stuck"; echo "old-1 1.1" >"$T/st/workers"   # labelled with an older worker
+# (the stub: -q lists old-1, --json old-1-6f90-...: the full uuid; review sy-jwzj #10)
 check "a stale lead (an older worker's label) that can't be archived: deleted, the new one starts, and it says why" bash -c "'$P/bin/lead' start qa >'$T/out' 2>&1 && grep -q 'deleted previous qa lead old-1: made on an older Paseo worker' '$T/out' && grep -qx old-1 '$T/st/deleted' && test -s '$T/st/prompt'"
 reset old-1 -1; touch "$T/st/stuck"; echo "old-1 $CUR" >"$T/st/workers"
 check "...a lead on the current worker is never deleted: exit 1, as before" bash -c "! '$P/bin/lead' start qa >'$T/out' 2>&1 && ! test -e '$T/st/deleted' && grep -q 'could not archive qa lead old-1: daemon refused' '$T/out'"
@@ -92,6 +93,8 @@ reset old-1 -1; touch "$T/st/stuck" "$T/st/lsfail"; echo "old-1 1.1" >"$T/st/wor
 check "...the labelled list fails: nothing is deleted (review #7.1)" bash -c "! '$P/bin/lead' start qa >'$T/out' 2>&1 && ! test -e '$T/st/deleted' && ! test -e '$T/st/prompt'"
 reset old-1 -1; touch "$T/st/stuck" "$T/st/noworker"; echo "old-1 1.1" >"$T/st/workers"
 check "...the daemon can't say its worker: nothing is deleted" bash -c "! '$P/bin/lead' start qa >'$T/out' 2>&1 && ! test -e '$T/st/deleted' && ! test -e '$T/st/prompt'"
+reset old-1 -1; touch "$T/st/stuck"; printf 'old-1 -\nold-10 1.1\n' >"$T/st/workers"
+check "...a stale lead's full id never marks another lead whose id is its prefix's prefix only (old-1 vs old-10)" bash -c "! '$P/bin/lead' start qa >'$T/out' 2>&1 && ! test -e '$T/st/deleted'"
 reset old-1 -1; touch "$T/st/stuck" "$T/st/nodelete"; echo "old-1 1.1" >"$T/st/workers"
 check "...the delete fails too: exit 1, both reasons shown" bash -c "! '$P/bin/lead' start qa >'$T/out' 2>&1 && grep -q 'could not archive qa lead old-1: daemon refused: agent old-1 is locked (delete: daemon refused delete)' '$T/out'"
 reset old-1 -1; touch "$T/st/stuck"; echo "old-1 1.1" >"$T/st/workers"
