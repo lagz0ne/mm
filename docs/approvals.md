@@ -223,10 +223,14 @@ checked again.
   into each lead's and worker's settings.
 
 All three are a brake, not a wall: every agent runs as the owner account, which can claim any name with bd-serve or
-the board's files (see the top of this file), or spell the actor so no text rule sees it. **The Supervisor's finding is
-how it is seen**: from the board's journal it records who added `signed-off` and each `signed-head:*` (as it does for
-`approved`), and an open item carrying one that an actor other than review added is `signoff:<item>` (P1, to ops,
-label `audit`). It clears when the label is removed, or review adds it again.
+the board's files (see the top of this file), or spell the actor so no text rule sees it. **The Supervisor's finding
+sees a sign-off under any other name**: from the board's journal it records who added `signed-off` and each
+`signed-head:*` (as it does for `approved`), and an open item carrying one that an actor other than review added is
+`signoff:<item>` (P1, to ops, label `audit`). It clears when the label is removed, or review adds it again.
+**It does not see a sign-off forged as review** (review sy-9bss #6): the journal's actor is the same claim, so a lead
+that gets past the text rules and writes as review is recorded as review. A real wall needs a sign-off that only
+review's session can make, for example a line signed with a key the other agents can't read (as `mm-approve` signs the
+owner's go). That is not built.
 
 ### The board's web Approve (with the ledger on)
 
