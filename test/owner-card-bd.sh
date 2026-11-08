@@ -2,7 +2,8 @@
 # bin/bd adds needs-you only with a valid owner card (sy-z5lz): label add (the label in any position), update
 # --add-label / -l / --set-labels, create / q -l / --labels are refused (exit 1, the reasons, the format; bd itself
 # never runs) when the item's description, or the one the call sets (-d, --description, --body-file), has no valid card;
-# t2 asks for If yes, If no, Risk. Allowed: a valid card, removing the label, any other label, any other command (and
+# t2 asks for If yes, If no, Risk, and review's sign-off first (signed-off; sy-l9uc), also when t2 is added to an item
+# that has needs-you. Allowed: a valid card, removing the label, any other label, any other command (and
 # those never read the item). bin/owner-card check <id> reads the item through bin/bd show. Hermetic: a copy of the
 # template's bin/bd, bin/owner-card and its lib in a throwaway folder; a stand-in bd (it records its arguments and
 # answers `show` from fixture files) and bin/trace (no span).
@@ -46,7 +47,9 @@ item sy-late "Intro.
 
 $CARD" '[]'
 item sy-t2 "$CARD" '["t2"]'
-item sy-t2ok "$T2CARD" '["t2"]'
+item sy-t2ok "$T2CARD" '["t2","signed-off"]'
+item sy-t2full "$T2CARD" '["t2"]'
+item sy-nyfull "$T2CARD" '["needs-you"]'
 item sy-wrongitem "$(printf '%s' "$CARD" | sed 's|^- \*\*You:\*\* Nothing$|- **You:** Nothing\n- **Item:** https://board-shop.example.org/?item=sy-other|')" '[]'
 item sy-item "$(printf '%s' "$CARD" | sed 's|^- \*\*You:\*\* Nothing$|- **You:** Tap Approve in Telegram, or press Approve on this item\n- **Item:** https://board-shop.example.org/?item=sy-item|')" '[]'
 printf '%s\n' "$CARD" >"$T/card.md"
@@ -91,7 +94,7 @@ call update sy-good --add-label needs-you;              check "update --add-labe
 call update sy-none --body-file "$T/card.md" --add-label needs-you; check "update --body-file (the card) --add-label: the new text counts" passed
 call create "a title" -d "$CARD" -l needs-you;          check "create -d <card> -l needs-you" passed
 call create "a title" --body-file "$T/card.md" --labels needs-you; check "create --body-file <card>" passed
-call label add sy-t2ok needs-you;                       check "t2 item with a full t2 card" passed
+call label add sy-t2ok needs-you;                       check "t2 item with a full t2 card, signed off" passed
 call label add sy-item needs-you;                       check "a You with where to act, and its own Item line" passed
 call label remove sy-none needs-you;                    check "label remove needs-you" passed
 check "...reads nothing" noshow
@@ -104,6 +107,21 @@ check "...reads nothing" noshow
 call comments add sy-none "needs-you, says the text";   check "a comment that names needs-you" passed
 check "...reads nothing" noshow
 call show sy-none --json;                               check "a read" true
+
+echo "== a t2 item waits on the owner only after review's sign-off (sy-l9uc)"
+call label add sy-t2full needs-you;                     check "t2, a full card, no signed-off: label add needs-you refused" refused
+check "...the reason: plan, sign-off, then needs-you" says "plan -> review's sign-off -> needs-you"
+call update sy-t2full --add-label needs-you;            check "...update --add-label needs-you too" refused
+call create "a title" -d "$T2CARD" -l t2,needs-you;     check "create t2,needs-you with a full card, no signed-off" refused
+call create "a title" -d "$T2CARD" -l t2,signed-off,needs-you; check "create t2,signed-off,needs-you with a full card" passed
+call label add sy-nyfull t2;                            check "adding t2 to an item with needs-you, no signed-off: refused" refused
+call update sy-nyfull --add-label t2;                   check "...update --add-label t2 too" refused
+call update sy-nyfull --add-label=t2;                   check "...--add-label=t2 too" refused
+call update sy-nyfull --add-label t2,signed-off;        check "adding t2 with signed-off in the same call" passed
+call label add sy-good t2;                              check "adding t2 to an item without needs-you" passed
+call label add sy-t2x t1;                               check "an id with t2 inside it, another label: no gate" passed
+check "...reads nothing" noshow
+call update sy-nyfull --set-labels t2;                  check "--set-labels t2 (needs-you dropped by the set): allowed" passed
 
 echo "== the actor check still comes first"
 (unset BEADS_ACTOR; call label add sy-good needs-you; grep -q 'needs an actor' "$T/err" && [ ! -s "$T/shows" ]); check "no actor: refused for the actor, no read" test $? = 0
