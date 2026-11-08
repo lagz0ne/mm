@@ -60,14 +60,14 @@ function PresenceAvatar({ b }: { b: Busy }) {
 export function CardPresence({ item }: { item: string }) {
   const busy = useBusyOn(item)
   if (!busy.length) return null
-  return <div className="grid gap-0.5">{busy.map((b) => <CardLine key={b.id} b={b} />)}</div>
+  return <div className="grid min-w-0 gap-0.5">{busy.map((b) => <CardLine key={b.id} b={b} />)}</div>
 }
 function CardLine({ b }: { b: Busy }) {
   const { p, name } = useLabel(b)
   return (
-    <span className="flex items-center gap-1.5 text-[11px]" style={{ color: p?.color }}>
+    <span className="flex min-w-0 items-center gap-1.5 text-[11px]" style={{ color: p?.color }}>
       <Avatar actor={b.actor} size="xs" />
-      <b className="shrink-0">{name}</b>
+      <b className="min-w-0 shrink truncate">{name}</b>
       <TypingDots color={p?.color} />
       <span className="truncate text-muted-foreground">{b.doing}</span>
     </span>

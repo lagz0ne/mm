@@ -481,7 +481,7 @@ function Card({ issue: i, col, waitsOn, last, onOpen, worker }: {
       draggable
       onDragStart={(e) => e.dataTransfer.setData('text/plain', i.id)}
       onClick={() => onOpen(i.id)}
-      className={cn('grid min-w-0 gap-1 border border-border bg-card px-2 py-1.5 text-left hover:border-foreground max-md:px-3 max-md:py-2.5',
+      className={cn('grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1 border border-border bg-card px-2 py-1.5 text-left hover:border-foreground max-md:px-3 max-md:py-2.5',
         i.priority === 0 && !closed && 'border-l-4 border-l-swiss', closed && 'opacity-55')}
     >
       <span className="flex items-center gap-2 text-[11px]">
