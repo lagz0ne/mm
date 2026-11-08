@@ -257,7 +257,7 @@ const READY = [
 http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
   fs.appendFileSync(logf, JSON.stringify({ m: req.method, p: req.url, b: b ? JSON.parse(b) : null }) + '\n')
   res.writeHead(200, { 'content-type': 'application/json' })
-  res.end(JSON.stringify(req.method === 'GET' && /\/issues\/it-1(\?|$)/.test(req.url) ? { id: 'it-1', labels: ['t2', 'bug', 'signed-off'] }
+  res.end(JSON.stringify(req.method === 'GET' && /\/issues\/it-1(\?|$)/.test(req.url) ? { id: 'it-1', labels: ['t2', 'bug', 'signed-off', 'signed-head:mm@0a1b2c3'], description: '## Owner\n- **What:** Fix the page.\n- **Why:** It shows a script.\n- **You:** Tap Approve\n- **If yes:** Ops fixes it.\n- **If no:** It stays.\n- **Risk:** low, a page looks odd\n- **Head:** mm@0a1b2c3\n\nThe thread.' }
     : req.method === 'GET' && /\/issues\/it-9(\?|$)/.test(req.url) ? { id: 'it-9', labels: ['t2', 'bug'] }
     : req.method === 'GET' && /\/issues\/it-10(\?|$)/.test(req.url) ? { id: 'it-10', labels: ['bug'] }
     : req.method === 'GET' && /\/issues\/it-3(\?|$)/.test(req.url) ? { id: 'it-3', status: 'in_progress', labels: ['t2', 'signed-off'] }
@@ -296,7 +296,7 @@ check "mm grant --as designer: kept as designer" bash -c "mm user add dee >/dev/
 check "a member can't create an item labelled approved (403)" test "$(w POST "$MA" '' '{"title":"x","labels":["approved"]}')" = 403
 check "a member can't add approved by a PATCH (403)" test "$(w PATCH "$MA" /it-1 '{"patch":{"labels":["t2","bug","approved"]}}')" = 403
 check "a member can't drop a tier (t2 -> none) (403)" test "$(w PATCH "$MA" /it-1 '{"patch":{"labels":["bug"]}}')" = 403
-check "a member can add an ordinary label" test "$(w PATCH "$MA" /it-1 '{"patch":{"labels":["t2","bug","urgent","signed-off"]}}')" = 200
+check "a member can add an ordinary label" test "$(w PATCH "$MA" /it-1 '{"patch":{"labels":["t2","bug","urgent","signed-off","signed-head:mm@0a1b2c3"]}}')" = 200
 check "a member can assign and close (steering)" bash -c "[ \$(w PATCH '$MA' /it-1 '{\"patch\":{\"assignee\":\"ops\"}}') = 200 ] && [ \$(w POST '$MA' /it-1:close '{}') = 200 ]"
 check "an unknown label field: refused (403)" test "$(w PATCH "$MA" /it-1 '{"patch":{"label_set":["approved"]}}')" = 403
 check "a member can't fake the author role label (403)" test "$(w POST "$MA" '' '{"title":"x","labels":["by:owner"]}')" = 403
@@ -306,7 +306,7 @@ check "...but not on a t2 item review has not signed off (403, says why)" bash -
 check "...nor by adding t2 and approved together to an item with no sign-off (403)" test "$(w PATCH "$OA" /it-10 '{"patch":{"add_labels":["t2","approved"]}}')" = 403
 check "...nor on a new t2 item (403)" test "$(w POST "$OA" '' '{"title":"x","labels":["t2","approved"]}')" = 403
 check "...an item with no tier may get approved (200)" test "$(w PATCH "$OA" /it-10 '{"patch":{"add_labels":["approved"]}}')" = 200
-check "the owner changes a tier" test "$(w PATCH "$OA" /it-1 '{"patch":{"labels":["t1","bug","signed-off"]}}')" = 200
+check "the owner changes a tier" test "$(w PATCH "$OA" /it-1 '{"patch":{"labels":["t1","bug","signed-off","signed-head:mm@0a1b2c3"]}}')" = 200
 check "not even the owner signs off for review (403)" test "$(w PATCH "$OA" /it-1 '{"patch":{"add_labels":["signed-off"]}}')" = 403
 check "a comment carries its author's role" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"looks good\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.text == \"[member] looks good\" and .b.author == \"alex\"'"
 check "...and its author is the signed-in person, whatever the body says" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"x\",\"author\":\"owner\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.author == \"alex\"'"

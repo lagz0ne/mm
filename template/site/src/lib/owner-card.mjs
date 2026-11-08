@@ -9,7 +9,7 @@
 //   - **If yes:** <at most 120>                 (required with the label t2)
 //   - **If no:** <at most 120>                  (required with the label t2)
 //   - **Risk:** low|medium|high, <at most 80>   (required with the label t2)
-//   - **Head:** <repo>@<sha>                    (optional; sy-hzmu: the one head review signs off, a commit or a
+//   - **Head:** <repo>@<sha>                    (required with the label t2; sy-hzmu: the one head review signs off, a commit or a
 //                                                migration: repo [a-z][a-z0-9-]{0,30}, sha 7 to 40 lowercase hex)
 //   - **Link:** <artifact path or URL>          (optional)
 //   - **Item:** <the item's URL>                (optional; the board shows its own: an http(s) URL that ends in
@@ -19,11 +19,11 @@
 // Pure, no imports: bin/owner-card, bin/bd (through it), the Supervisor, the board's server (waiting.mjs) and, as an
 // identical copy, the board's browser code (site/src/lib/owner-card.mjs; test/owner-card.mjs keeps them equal).
 
-export const FORMAT = 'the description starts with "## Owner", then one line per key: "- **What:** ...", "- **Why:** ...", "- **You:** Tap Approve | Reply: <question> | Check: <what, where> | Nothing", with t2 also "- **If yes:** ...", "- **If no:** ...", "- **Risk:** low|medium|high, ..."; optional "- **Head:** <repo>@<sha>", "- **Link:** ...", "- **Item:** <URL ending in ?item=<id>>"; a blank line ends it (the leads\' brief, "Asking the owner: the owner card")'
+export const FORMAT = 'the description starts with "## Owner", then one line per key: "- **What:** ...", "- **Why:** ...", "- **You:** Tap Approve | Reply: <question> | Check: <what, where> | Nothing", with t2 also "- **If yes:** ...", "- **If no:** ...", "- **Risk:** low|medium|high, ...", "- **Head:** <repo>@<sha>"; optional "- **Link:** ...", "- **Item:** <URL ending in ?item=<id>>"; a blank line ends it (the leads\' brief, "Asking the owner: the owner card")'
 // key -> its limit in characters; the order is the card's
 export const KEYS = { What: 120, Why: 120, You: 160, 'If yes': 120, 'If no': 120, Risk: 80, Head: 72, Link: 300, Item: 300 }
 export const REQUIRED = ['What', 'Why', 'You']
-export const REQUIRED_T2 = ['If yes', 'If no', 'Risk']
+export const REQUIRED_T2 = ['If yes', 'If no', 'Risk', 'Head'] // Head: review sy-hzmu #3, no fail-open
 const HEADING = /^##[ \t]+Owner[ \t]*$/
 const LINE = /^[-*][ \t]+\*\*([^*]+?):\*\*[ \t]*(.*?)[ \t]*$/
 const RISK = /^(low|medium|high)(?:[ \t]*[,:;–—-][ \t]*(.*))?$/i
@@ -102,13 +102,14 @@ export function parseCard(description, labels = [], id = '') {
  * Not now, the Waiting list) and the bridge.
  * @param {string} description  the item's description
  * @param {Iterable<string>} labels  the item's labels (as they are, or as they will be after the call)
- * @returns {string|null} null: no objection (not t2, already approved, or the card names no Head); else the reason.
+ * @returns {string|null} null: no objection (not t2, already approved, or the card's Head is the head review signed);
+ *   else the reason (a t2 card with no Head is refused too: review sy-hzmu #3, no fail-open).
  */
 export function headRefusal(description, labels) {
   const ls = [...(labels ?? [])].map(String)
   if (!ls.includes('t2') || ls.includes('approved')) return null
   const head = parseCard(description, ls).card?.Head
-  if (head === undefined) return null
+  if (head === undefined) return `the card names no head (required with t2: - **Head:** <repo>@<sha>)`
   if (!HEAD.test(head)) return `the card's Head is not <repo>@<sha> (card: ${clip(head)})`
   const signed = ls.filter((l) => l.startsWith(SIGNED_HEAD)).map((l) => l.slice(SIGNED_HEAD.length))
   if (signed.includes(head)) return null
