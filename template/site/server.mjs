@@ -562,6 +562,10 @@ async function sendFile(res, rel, rev, annotate = false) {
         (e, out) => (e ? no(e) : ok(out))))
     } else body = fs.readFileSync(path.join(CODE, p))
   } catch { return send(res, 404, { title: 'not found' }) }
+  sendBody(res, ext, body, annotate)
+}
+// The answer for a file the board shows (code/ or artifacts/): its type, no sniffing, HTML and SVG sandboxed.
+function sendBody(res, ext, body, annotate) {
   if (ext === '.html' && annotate) {
     const tag = `<script>${fs.readFileSync(path.join(here, 'annotate.js'), 'utf8')}</script>`
     const html = body.toString('utf8')
@@ -571,6 +575,42 @@ async function sendFile(res, rel, rev, annotate = false) {
   if (ext === '.html' || ext === '.svg') headers['content-security-policy'] = 'sandbox allow-scripts allow-popups; frame-ancestors \'self\''
   res.writeHead(200, headers)
   res.end(body)
+}
+
+// An item's artifacts (sy-wxzx): artifacts/<item-id>/<name> in the project root (bin/artifact copies them there and
+// commits them), so a board with no code/ (the system board) shows screenshots, logs and notes too. One folder per
+// item, plain names (no dotfile, no sub-folder), the viewer's types; no symlinked file, and no item folder that a
+// symlink takes out of artifacts/ (realpath).
+const ARTIFACTS = path.join(ROOT, 'artifacts')
+const ARTIFACT_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/
+/** The real path of artifacts/<id>/<name>, or null when it is not one the board shows. */
+function artifactFile(id, name) {
+  if (!ID_RE.test(id || '') || !ARTIFACT_NAME.test(name || '') || !FILE_TYPES[path.extname(name).toLowerCase()]) return null
+  try {
+    const dir = fs.realpathSync(path.join(ARTIFACTS, id)), f = path.join(dir, name)
+    if (dir !== path.join(fs.realpathSync(ARTIFACTS), id) || !fs.lstatSync(f).isFile() || path.dirname(fs.realpathSync(f)) !== dir) return null
+    return f
+  } catch { return null }
+}
+function sendArtifact(res, rel, annotate) {
+  const parts = String(rel || '').split('/')
+  const f = parts.length === 2 ? artifactFile(parts[0], parts[1]) : null
+  if (!f) return send(res, 404, { title: 'not available' })
+  let body
+  try { body = fs.readFileSync(f) } catch { return send(res, 404, { title: 'not found' }) }
+  sendBody(res, path.extname(f).toLowerCase(), body, annotate)
+}
+function sendArtifacts(res, id) {
+  if (!ID_RE.test(id)) return send(res, 400, { title: 'bad id' })
+  let names = []
+  try { names = fs.readdirSync(path.join(ARTIFACTS, id)) } catch {}
+  const files = names.sort().flatMap((name) => {
+    const f = artifactFile(id, name)
+    if (!f) return []
+    const st = fs.statSync(f)
+    return [{ name, path: `artifacts/${id}/${name}`, type: FILE_TYPES[path.extname(name).toLowerCase()].split(';')[0], size: st.size, mtime: st.mtime.toISOString() }]
+  })
+  send(res, 200, { id, files })
 }
 
 // Workers on an item: Paseo agents labelled item=<id> (role=<role>-worker) (archived too), their branch's unlanded
@@ -852,6 +892,13 @@ async function handle(req, res) {
   if (wm && req.method === 'GET') return sendWorkers(res, wm[1]).catch((e) => send(res, 500, { title: e.message }))
   const cm = /^\/api\/content\/([\w.-]+)$/.exec(url.pathname)
   if (cm && req.method === 'GET') return sendContent(res, cm[1]).catch((e) => send(res, 500, { title: e.message }))
+  const am = /^\/api\/artifacts\/([\w.-]+)$/.exec(url.pathname)
+  if (am && req.method === 'GET') return sendArtifacts(res, am[1])
+  if (url.pathname.startsWith('/files/artifacts/') && req.method === 'GET') {
+    let rel = null
+    try { rel = decodeURIComponent(url.pathname.slice('/files/artifacts/'.length)) } catch {}
+    return sendArtifact(res, rel, url.searchParams.get('annotate') === '1')
+  }
   if (url.pathname.startsWith('/files/') && req.method === 'GET') return sendFile(res, decodeURIComponent(url.pathname.slice(7)), url.searchParams.get('rev'), url.searchParams.get('annotate') === '1')
   if (PANELS.includes('machine') && url.pathname === '/api/machine' && req.method === 'GET') return sendMachine(res).catch((e) => send(res, 502, { title: e.message }))
   if (PANELS.includes('machine') && url.pathname === '/api/project-item' && req.method === 'POST') return sendProjectItem(req, res).catch((e) => send(res, 500, { title: e.message }))
