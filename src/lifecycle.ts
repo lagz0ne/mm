@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync,
 import { dirname, isAbsolute, join, relative } from 'node:path'
 import { forgetGranted, granted } from './apistate'
 import { canon, DIRS, HOME, run, within } from './env'
-import { BOXES, boxHook, boxish, engineRefusal, gitRefusal, headDrift, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, resolve, routeRm, sealEngine, templateRecFile, templateVars, up, writeRunFiles } from './project'
+import { BOXES, boxHook, boxish, engineRefusal, gitRefusal, headDrift, hostGitEnv, loadAll, PROJECTS_PC, readAnswers, recordedTemplate, recordTemplate, removeAll, resolve, routeRm, sealEngine, templateRecFile, templateVars, up, writeRunFiles } from './project'
 import { template, templateCommit } from './template'
 import { boxRoute } from './names'
 import { withUpdateLock } from './updlock'
@@ -306,9 +306,8 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
   // and what mm kept for it (src/box.ts hostDir). A folder there that isn't this user's (Docker makes a missing mount
   // source as root, sy-avky) stops only this step: the rest of the archive goes on, and the step says what is left
   if (a.box) {
-    const hd = join(DIRS.mm, 'box', a.project)
-    try { rmSync(hd, { recursive: true, force: true }) }
-    catch (e) { steps.push({ step: 'box folder', status: 'fail', detail: `${hd.replace(HOME, '~')} not removed (${(e as NodeJS.ErrnoException).code || (e as Error).message}): a part of it is another user's (Docker makes a missing mount folder as root); remove it as root` }) }
+    const r = removeAll([join(DIRS.mm, 'box', a.project)])
+    if (r.left.length) steps.push({ step: 'box folder', status: 'fail', detail: r.fix }) // names what is left and how (sy-4jc6)
   }
   // its opened secrets (the memory-backed folder mm opens them in, vault.runtimeDir): nothing of an archived project stays
   // open there (a box's key and Paseo password were left behind; mm doctor's secret modes failed on them)
@@ -363,9 +362,10 @@ export function archive(root: string, o: { dryRun?: boolean } = {}): { steps: St
     if (existsSync(cdir)) { rmSync(cdir, { recursive: true, force: true }); steps.push({ step: 'claude folder', status: 'ok', detail: `${cdir.replace(HOME, '~')} removed` }) }
     // a box's Paseo (its daemon's state, as the Claude folder) and its password: a box made again under this name gets
     // a new password (review sy-b15.8 2); and its egress list
-    const left = [join(DIRS.mm, 'paseo', a.project), join(DIRS.mm, 'paseo', `${a.project}.password`), join(DIRS.mm, 'egress', a.project)].filter(existsSync)
-    for (const p of left) rmSync(p, { recursive: true, force: true })
-    if (left.length) steps.push({ step: 'box state', status: 'ok', detail: `removed ${left.map((p) => p.replace(HOME, '~')).join(', ')}` })
+    // (a folder there that is another user's is named, with how to remove it, and the archive still ends: sy-4jc6)
+    const r = removeAll([join(DIRS.mm, 'paseo', a.project), join(DIRS.mm, 'paseo', `${a.project}.password`), join(DIRS.mm, 'egress', a.project)])
+    if (r.removed.length) steps.push({ step: 'box state', status: 'ok', detail: `removed ${r.removed.map((p) => p.replace(HOME, '~')).join(', ')}` })
+    if (r.left.length) steps.push({ step: 'box state', status: 'fail', detail: r.fix })
   }
   const clientDir = join(DIRS.projects, a.client)
   if (existsSync(clientDir) && !readdirSync(clientDir).length) rmSync(clientDir, { recursive: true })
