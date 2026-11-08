@@ -41,6 +41,8 @@ const BY = /^(next wake|today|([0-2][0-9]):([0-5][0-9]) UTC|([0-9]{4}-[0-9]{2}-[
 const EXPECT = /^([a-z][a-z0-9_-]*):[ \t]*(\S.*)$/
 const ARROW = /^(.*\S)[ \t]*(?:→|->)[ \t]*(\S.*)$/
 const len = (s) => Array.from(s).length
+/** The article before an intent's name: an ASK, an ANSWER; a HANDOFF, a VERDICT, a DONE, a NOTE. */
+const an = (intent) => (/^A/.test(intent) ? `an ${intent}` : `a ${intent}`)
 const clip = (s) => (len(s) > 60 ? `${Array.from(s).slice(0, 59).join('')}…` : s)
 
 /** Does the text start like a message (its first line names an intent)? For "not a message at all" vs "a bad one". */
@@ -75,7 +77,7 @@ export function parseMessage(text, o = {}) {
   out.re = h[3] ? Number(h[3]) : null
   if (out.re !== null && out.re < 1) errors.push('re #0: comments count from #1')
   if (roles && ['ASK', 'HANDOFF', 'VERDICT'].includes(intent) && !roles.includes(out.to.split('/')[0]))
-    errors.push(`${intent} → ${out.to}: an ${intent} goes to a role (${roles.join(', ')}); ask a person with an owner card, never in a message`)
+    errors.push(`${intent} → ${out.to}: ${an(intent)} goes to a role (${roles.join(', ')}); ask a person with an owner card, never in a message`)
   if (len(t) > MAX) errors.push(`the message is too long (${len(t)} characters; at most ${MAX}): put tables, logs and test output in an artifact (artifact <id> <file>) and link it`)
 
   const body = lines.slice(1)
@@ -105,7 +107,7 @@ export function parseMessage(text, o = {}) {
     else errors.push(`line "${clip(l)}" is not "Key: value" (a list line "1. …" or "- …" goes under a key)`)
   }
   const k = out.keys
-  for (const r of spec.req) if (!(r in k)) errors.push(`${r} is missing (required on ${intent === 'ANSWER' || intent === 'ASK' ? 'an' : 'a'} ${intent})`)
+  for (const r of spec.req) if (!(r in k)) errors.push(`${r} is missing (required on ${an(intent)})`)
   if (intent === 'ANSWER' && out.re === null) errors.push('an ANSWER says what it answers: "ANSWER → <role> · re #<n>"')
   if (k.Head && !HEAD.test(k.Head)) errors.push('Head is not <repo>@<sha> (repo: a lowercase letter, then up to 30 of a-z, 0-9, -; sha: 7 to 40 lowercase hex)')
   if (intent === 'VERDICT' && k.Result && !/^(signed off|blocked)\b/.test(k.Result)) errors.push('Result on a VERDICT is "signed off" or "blocked"')
@@ -115,7 +117,7 @@ export function parseMessage(text, o = {}) {
   else if (k.Expect) {
     const none = /^none\.?$/i.test(k.Expect), e = EXPECT.exec(k.Expect)
     if (none) {
-      if (spec.expect === 'role') errors.push(`Expect on ${intent === 'ASK' ? 'an' : 'a'} ${intent} names a role and one instruction ("Expect: <role>: <instruction>"), never none`)
+      if (spec.expect === 'role') errors.push(`Expect on ${an(intent)} names a role and one instruction ("Expect: <role>: <instruction>"), never none`)
     } else if (spec.expect === 'none') errors.push(`Expect on a DONE is "none": a follow-up is a new item (Follow-ups) or a new ASK`)
     else if (!e) errors.push('Expect is not "<role>: <one instruction>" (or "none")')
     else {
