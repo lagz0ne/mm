@@ -176,6 +176,24 @@ try {
   at(135); await supervise()
   const W2 = openOf('digest:ops')
   ok('a link appears: sy-30\'s line drops off, the same item, no comment', W2?.id === W.id && !/sy-30/.test(W2.description) && /sy-35/.test(W2.description) && W2.comments.length === 0)
+
+  console.log('== no answer after By (sy-0gsw): an ASK or HANDOFF with no re #n after its By is a line for the role it expects')
+  const HANDOFF = 'HANDOFF → review\nHead: mm@1234567\nExpect: review: sign off or block this head.\nDone when: the item has signed-off.\nVerify: bd show sy-40 → labels include signed-off\nBy: next wake · Else: ops waits\nReady: the gate'
+  const ASK = 'ASK → ops\nExpect: ops: name the cause of the 504.\nDone when: the cause is named.\nVerify: curl -I <url> → 302\nBy: next wake · Else: the test stays blocked\nWhy: the gate fails.'
+  item('sy-40', { assignee: 'platform' }, 'platform'); comment('sy-40', 'platform', HANDOFF)
+  item('sy-41', { assignee: 'platform' }, 'platform'); comment('sy-41', 'platform', ASK)
+  item('sy-42', { assignee: 'platform' }, 'platform'); comment('sy-42', 'platform', ASK); comment('sy-42', 'ops', 'ANSWER → platform · re #1\nExpect: none\nAnswer: GitHub\'s edge.\nVerify: artifacts/sy-42/edges.txt → 504 on one edge')
+  item('sy-43', { assignee: 'platform' }, 'platform'); comment('sy-43', 'platform', 'HANDOFF to review, please look') // not a message: never a line
+  at(194); await supervise()
+  ok('+59 min: under next wake (60 min): no waits line', !/^- no answer after By/m.test(openOf('digest:review')?.description || '') && !/^- no answer after By/m.test(openOf('digest:ops')?.description || ''))
+  at(196); await supervise()
+  const RV = openOf('digest:review'), OP = openOf('digest:ops')
+  ok('+61 min: digest:review has sy-40 #1 (HANDOFF from platform)', /^- no answer after By: sy-40 #1 HANDOFF from platform → review \(by next wake\)/m.test(RV?.description || ''))
+  ok('...digest:ops has sy-41 #1 (ASK); not sy-42 (answered), not sy-43 (no message)', /^- no answer after By: sy-41 #1 ASK/m.test(OP?.description || '') && !/sy-42|sy-43/.test(`${RV?.description}${OP?.description}`))
+  ok('...it says what to do', /answer the message \(re #<n>/.test(RV?.description || ''))
+  comment('sy-40', 'review', 'VERDICT → platform · re #1\nHead: mm@1234567\nResult: signed off\nExpect: platform: hand it to ops.\nDone when: ops has it.\nVerify: bd show sy-40 → assignee ops\nBy: next wake · Else: it waits')
+  at(200); await supervise()
+  ok('a VERDICT re #1 answers it: sy-40\'s line drops off', !/sy-40/.test(openOf('digest:review')?.description || ''))
 } finally {
   srv.close()
   if (fail) console.log(out.slice(-3000))

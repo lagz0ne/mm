@@ -17,6 +17,8 @@
 //       long thread, no artifact   an open item with more than 15 comments (supervisor.json "wordy") and no linked
 //                        file (docs/, plans/, ... .md) in its description or comments: the substance belongs in an
 //                        artifact (sy-kmhx; the leads' brief, "Short comments, the work in artifacts"). Low, as blocked
+//       no answer after By   an ASK or HANDOFF message (bin/lib/message.mjs, sy-0gsw) that no later message answers
+//                        (re #<n>) after its By ("next wake": minutes.answer, 60); to the role its Expect names
 //                        (stall:<item>, handoff:<item>, idle:<role>: the keys of earlier Supervisors, closed as cleared)
 //     card:<item>        an open item labelled needs-you whose description has no valid owner card (sy-z5lz; the
 //                        format: bin/lib/owner-card.mjs), with the reasons; to the item's role (its assignee), else ops.
@@ -59,7 +61,7 @@
 // The board is the truth for which items are open (label `supervisor`, line "supervisor key: `<key>`"); .supervisor.json
 // keeps the journal position and a summary per item, notes, mutes, and when leads were seen running or idle.
 // Optional config supervisor.json (this board's root):
-//   { "assignee": "ops", "ignore": ["<regex on a key>"], "minutes": { "stall": 60, "handoff": 30, "idle": 10, "blocked": 10, "dirty": 30 },
+//   { "assignee": "ops", "ignore": ["<regex on a key>"], "minutes": { "stall": 60, "handoff": 30, "idle": 10, "blocked": 10, "dirty": 30, "answer": 60 },
 //     "repos": ["<more git repos to watch; the mm repo is ~/mm, the template's place for it>"] }
 // Env (tests): SUPERVISOR_STATE, SUPERVISOR_CONFIG, SUPERVISOR_NOW (ms), SUPERVISOR_APPROVERS, BRAIN_STATE, MM_BIN,
 // SVC_URL_BD_SERVE, PASEO_BIN, PASEO_NO_SDK.
@@ -73,6 +75,7 @@ import * as paseo from './lib/paseo.mjs'
 import { loadConf as approveConf, migrationSubject, readLedger } from './lib/ledger.mjs'
 import { places, projectCap, total, workersOf } from './lib/places.mjs'
 import { SIGNED_HEAD, parseCard } from './lib/owner-card.mjs'
+import { openWaits } from './lib/message.mjs'
 
 cli('supervisor')
 const E = process.env
@@ -81,7 +84,7 @@ const CONF = (() => { try { return JSON.parse(fs.readFileSync(E.SUPERVISOR_CONFI
 const MM = E.MM_BIN || 'mm'
 const HOME = E.HOME || os.homedir()
 const ASSIGNEE = CONF.assignee || 'ops'
-const MIN = { stall: 60, handoff: 30, idle: 10, blocked: 10, dirty: 30, ...(CONF.minutes || {}) }
+const MIN = { stall: 60, handoff: 30, idle: 10, blocked: 10, dirty: 30, answer: 60, ...(CONF.minutes || {}) }
 const IGNORE = (CONF.ignore || []).map((r) => new RegExp(r)) // never applied to t2-unapproved keys (sy-1jmi)
 const BD = requireUrl('bd-serve')
 const ACTOR = 'watchdog' // a system author for wake and the lead briefs (not a human, not a lead)
@@ -321,7 +324,30 @@ async function wordy() {
   return lines
 }
 
+// "no answer after By" (sy-0gsw; bin/lib/message.mjs): an ASK or HANDOFF message on an open item that no later message
+// answers (re #<n>) once its By passed ("next wake": CONF.minutes.answer, 60 min). Its line goes to the role it expects
+// to act. The comments of an item are read again only when it changed (updated_at, comment_count; state.waits keeps them).
+async function unanswered() {
+  const lines = [], seen = {}, prev = state.waits || {}
+  for (const i of await issues()) {
+    if (i.status === 'closed' || mine(i) || !(i.comment_count > 0)) continue
+    const u = `${i.updated_at}|${i.comment_count}` // a comment may leave updated_at as it was
+    let w = prev[i.id]?.u === u ? prev[i.id].w : null
+    if (!w) {
+      const full = await bd('GET', `/v0/beads/issues/${encodeURIComponent(i.id)}?include_comments=true`)
+      w = openWaits(full.comments || [], { roles: ROLES, nextWakeMin: MIN.answer, now: NOW }).map(({ n, intent, from, role, action, by, due }) => ({ n, intent, from, role, action, by, due }))
+    }
+    seen[i.id] = { u, w }
+    for (const x of w) if (x.due !== null && NOW > x.due)
+      lines.push({ role: ROLES.includes(x.role) ? x.role : ASSIGNEE, k: `waits:${i.id}#${x.n}`,
+        line: `no answer after By: ${i.id} #${x.n} ${x.intent} from ${x.from || 'nobody'} → ${x.role} (by ${x.by}): ${x.action.slice(0, 120)}` })
+  }
+  state.waits = seen
+  return lines
+}
+
 const HOW = {
+  unanswered: 'no answer after By: answer the message (re #<n>: an ANSWER, a VERDICT or a DONE), or say on the item why it waits, with a new By',
   wordy: 'long thread, no artifact: ask its role to put the substance in a file (a design, plan or review in docs/ or plans/, diagrams in it), link it, and keep the description as the current state',
   stall:'stalled: find out why (ask on the item, look at the lead), and get it moving or set it back to open or blocked',
   handoff: 'handoff waits: check that the role was woken and can work (its lead, wake)',
@@ -332,7 +358,7 @@ const HOW = {
 /** One "Supervisor digest" per role from the flow checks' lines. A check that fails keeps its lines from the last run
  * (its part of each digest is left as it is), and is reported as supervisor:<check>. */
 async function digest() {
-  const checks = { stall, handoff, idle, blocked, twoleads, wordy }, byRole = {}, prev = state.lines || {}
+  const checks = { stall, handoff, idle, blocked, twoleads, wordy, unanswered }, byRole = {}, prev = state.lines || {}
   state.lines = {}
   for (const [name, fn] of Object.entries(checks)) {
     let got
@@ -349,7 +375,8 @@ async function digest() {
       body: `What waits in the **${role}** role, as the Supervisor sees it (stalled: a P0/P1 in progress with nothing for ${MIN.stall} min; ` +
         `handoff waits: no reply ${MIN.handoff} min after a handover; idle: a lead not working for ${MIN.idle} min while ready P0 work waits; ` +
         `blocked with nothing it waits on: blocked by hand for ${MIN.blocked} min, with no open blocker and no needs-you; two leads: two lead agents of the role on two passes in a row; ` +
-        `long thread, no artifact: more than ${WORDY} comments and no linked file):\n\n` +
+        `long thread, no artifact: more than ${WORDY} comments and no linked file; ` +
+        `no answer after By: an ASK or HANDOFF message with no answer (re #n) after its By):\n\n` +
         `${ls.map((l) => `- ${l.line}`).join('\n')}\n\nWhat to do:\n\n${kinds.map((c) => `- ${HOW[c]}`).join('\n')}\n\n` +
         'One item for the role, edited in place: a line drops off when it clears, and the item closes itself when none is left. ' +
         'Items that wait by design (blocked by an open item, or labelled needs-you) are left out.' })
