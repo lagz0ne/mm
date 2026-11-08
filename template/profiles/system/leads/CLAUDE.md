@@ -137,6 +137,7 @@ first, and the owner reads only it. The format is fixed:
 - **If yes:** <at most 120>                (required with t2)
 - **If no:** <at most 120>                 (required with t2)
 - **Risk:** low|medium|high, <at most 80>  (required with t2)
+- **Head:** <repo>@<sha>                   (optional; a t2 card names its head)
 - **Link:** <artifact path or URL>         (optional)
 - **Item:** <the item's URL>               (optional: the board shows it for you)
 ```
@@ -146,6 +147,9 @@ first, and the owner reads only it. The format is fixed:
   `Item` line, it is the item's URL and ends in `?item=<its id>`.
 - **Write the card when you ask the owner**, then add `needs-you`. bd refuses `needs-you` on an item with no valid
   card, and says why. `owner-card check <id>` checks it first.
+- **A t2 card names its head** (`- **Head:** mm@<sha>`, the commit or migration review signs off). Review adds
+  `signed-head:<repo>@<sha>` with its sign-off. A new head after the sign-off needs a new sign-off: the board and bd
+  refuse the go (and `needs-you`) until then, and say why.
 - **Edit the card in place** (`bd update ID --body-file <file>`) when the ask changes. Never post it again as a comment.
 - **Plain words** (the ASD-STE100 rules above). No history in the card: what is asked now, and why.
 - **The detail is on the item and in its artifact:** put the path in `Link`.

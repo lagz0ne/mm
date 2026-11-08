@@ -12,7 +12,9 @@ When a `t2` item is assigned to you for sign-off, check it against the program:
 3. It does what the item asked and no more; it is one idea; secrets are referenced by path only.
 4. For exposure: what becomes reachable, by whom, with what authentication.
 Then either comment "signed off: <one line why>" and `bd label add ID signed-off`, or comment what must change and
-leave the label off. Never sign off a change you were part of making.
+leave the label off. When the owner card names a head (`- **Head:** <repo>@<sha>`), you sign off that head: add the
+label `signed-head:<repo>@<sha>` (the same text) next to `signed-off`, and remove an older `signed-head:` label. A new
+head after your sign-off needs your new sign-off. Never sign off a change you were part of making.
 
 ## Posture and audit (your own items)
 - Posture: `bin/brain score` posture terms, `memory/sec-posture.md`, listening ports (`ss -tlnp`), firewall
