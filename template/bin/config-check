@@ -19,7 +19,9 @@ const bad = (m) => problems.push(m)
 import os from 'node:os'
 import { dirs, projectName, svcUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
+import { secretsIn } from './lib/secret-scan.mjs'
 cli('config-check')
+const ARTIFACT_MAX = 5 << 20
 const HOME = process.env.HOME || os.homedir()
 // Every agent here, leads and setup, in every profile: no SSH keys (whatever they are named, the user's or root's), and
 // no filling machine or project inputs (a human's step: it never shows a value, but it can replace one).
@@ -462,6 +464,15 @@ if (process.argv.includes('--staged')) {
   // an assistant's permissions: the owner (a human, SETUP_HUMAN=1) or the setup agent, never the person it serves or a lead
   const ap = staged.filter((f) => /^assistants\/[^/]+\/\.claude\/settings/.test(f) || /^assistants\/[^/]+\/\.claude\/?$/.test(f))
   if (ap.length && process.env.SETUP_HUMAN !== '1' && process.env.GIT_AUTHOR_NAME !== 'setup') bad(`assistant permissions are changed by the owner or setup only (${ap.join(', ')})`)
+  // items' artifacts (sy-wxzx), however they are committed (bin/artifact or by hand): artifacts/<item-id>/<name>, a
+  // type the board shows, at most 5 MB, and nothing in the shape of a key or token (the staged bytes are scanned)
+  const added = execFileSync('git', ['-C', P, 'diff', '--cached', '--name-only', '--diff-filter=ACMR'], { encoding: 'utf8' }).split('\n').filter((f) => f.startsWith('artifacts/'))
+  for (const f of added) {
+    if (!/^artifacts\/[a-z]+-[a-z0-9]+(\.[0-9]+)*\/[A-Za-z0-9_-][A-Za-z0-9._-]*\.(html|md|txt|json|css|js|svg|png|jpg|webp)$/.test(f)) { bad(`${f}: an artifact is artifacts/<item-id>/<name>, of a type the board shows (bin/artifact puts it there)`); continue }
+    const blob = execFileSync('git', ['-C', P, 'show', `:${f}`], { maxBuffer: 64 << 20 })
+    if (blob.length > ARTIFACT_MAX) bad(`${f}: an artifact is at most 5 MB (${(blob.length / 1048576).toFixed(1)} MB)`)
+    for (const kind of secretsIn(blob)) bad(`${f}: looks like ${kind}; an artifact never holds a secret`)
+  }
 }
 
 if (problems.length) { console.error(`config-check: ${problems.length} problem(s)\n- ${problems.join('\n- ')}`); process.exit(1) }
