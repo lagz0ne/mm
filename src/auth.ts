@@ -329,7 +329,14 @@ export async function gateway() {
     const body = Buffer.from(JSON.stringify({ u: user, r: role, h: host, exp: now() + ASSERT_MS, n: randomBytes(6).toString('hex') })).toString('base64url')
     return `${body}.${sign(null, Buffer.from(body), key).toString('base64url')}`
   }
-  const safeBack = (r: string | null) => (r && r.startsWith('/') && !r.startsWith('//') ? r : '/')
+  /** The way back after sign-in: a path on the same host, else '/'. Browsers read '\' as '/' and drop tabs and newlines,
+   *  so '/\evil' or '/<tab>/evil' would leave the host (review sy-ua5q): refuse those characters, then keep only what a
+   *  URL parser resolves on the same origin, as path + query + fragment. */
+  const BACK_BASE = 'https://board.invalid'
+  const safeBack = (r: string | null) => {
+    if (!r || !r.startsWith('/') || /[\\\u0000-\u001f\u007f]/.test(r)) return '/'
+    try { const b = new URL(r, BACK_BASE); return b.origin === BACK_BASE ? b.pathname + b.search + b.hash : '/' } catch { return '/' }
+  }
   /** The person's session on the gateway host (Better Auth's cookie), with the raw session token for board sessions. */
   const personOf = async (req: Request) => {
     const s = await auth.api.getSession({ headers: req.headers }).catch(() => null)

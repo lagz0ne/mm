@@ -104,7 +104,12 @@ check "...with the same headers as before (CSP, no-store, nosniff, no referrer)"
 cbfor() { gw -D - -o /dev/null -H "cookie: $S1" "$G/s?b=$BOARD&r=$1" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip'; }
 CBQ=$(cbfor '%2F%3Fq%3D%22%3E%3Cb%3Ex')
 curl -s -H "x-forwarded-host: $BOARD" -o "$T/bq" "$G$CBQ"
-check "...the way back is escaped in the page (a quote and markup in it stay text)" bash -c "grep -qF 'url=/?q=&#34;&#62;&#60;b&#62;x\"' '$T/bq' && ! grep -qF '<b>x' '$T/bq'"
+check "...the way back stays text in the page (a quote and markup in it: encoded, never markup)" bash -c "grep -qF 'url=/?q=%22%3E%3Cb%3Ex\"' '$T/bq' && ! grep -qF '<b>x' '$T/bq'"
+# review sy-ua5q: browsers read '\' as '/' and drop tab and newline, so these would leave the host after sign-in
+backof() { curl -s -D - -o /dev/null -H "x-forwarded-host: $BOARD" -H "x-forwarded-uri: $1" "$G/verify" | sed -n 's/^location: .*[?&]r=\([^&[:space:]]*\).*/\1/ip'; }
+export -f backof
+check "the way back never leaves the host: /\\\\evil, /%5Cevil (as sent), /<tab>/evil, //evil, /\\\\/evil all become /" bash -c "for r in '/\\evil.example' '/\\\\evil.example' \$'/\\t/evil.example' '//evil.example' '/\\/evil.example'; do [ \"\$(backof \"\$r\")\" = '%2F' ] || { echo \"\$r -> \$(backof \"\$r\")\"; exit 1; }; done"
+check "...a plain path with a query and a fragment stays as it is" bash -c "[ \"\$(backof '/items?x=1#top')\" = '%2Fitems%3Fx%3D1%23top' ]"
 echo '== a sign-in loop stops (sy-wbdn)'
 # the sessions above count: after 3 board sessions in 10 s for this person and host, no new one is made
 for i in 1 2 3; do curl -s -H "x-forwarded-host: $BOARD" -D "$T/hl$i" -o "$T/bl$i" "$G$(cbfor %2Fitems)"; done
