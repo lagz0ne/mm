@@ -42,6 +42,10 @@ export BEADS_DOLT_AUTO_START=1
 # Its temporary Dolt listens on a port bd derives from the path, inside the kernel's ephemeral range: on a busy machine
 # an outgoing connection can hold that port for a moment, and bd init fails (sy-92ch, twice while other boards were being
 # made). So its whole output is kept, and it is tried once more, from zero (control/.beads did not exist before: above).
+# bd waits 10 s for that Dolt to answer; a fresh Dolt on a loaded machine (another board being made, a build) can take
+# longer, and bd init then fails although nothing is wrong (sy-92ch: again with the retry, while a second project was made
+# in a container, so with no port shared). bd's own knob for slow hardware gives it 60 s; the caller's value wins.
+export BEADS_DOLT_READY_TIMEOUT="${BEADS_DOLT_READY_TIMEOUT:-60}"
 log="$P/.run/init-bd.log"; try=1
 until HOME="$P/.config" "$P/bin/bd" init --quiet --stealth --skip-hooks --skip-agents --server --prefix "$PREFIX" --non-interactive --role maintainer >"$log" 2>&1; do
   [ "$try" -lt 2 ] || { echo "init: bd init failed twice; its output ($log):" >&2; tail -n 20 "$log" >&2; exit 1; }

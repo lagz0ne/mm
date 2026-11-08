@@ -2,6 +2,7 @@
 # sy-92ch: bin/init keeps bd init's whole output in .run/init-bd.log and tries it once more, from zero, when it fails (its
 # temporary Dolt's port can be held for a moment on a busy machine). Hermetic: template/bin/init in a throwaway project
 # whose tools/bd and tools/dolt are stand-ins (their sha256 in tools.json); bd's init fails a set number of times.
+# Also: bd init gets 60 s (BEADS_DOLT_READY_TIMEOUT) to see its Dolt ready, unless the caller sets another value.
 #   test/init-retry.sh
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -19,7 +20,7 @@ proj() { # <dir> <n>
 #!/bin/sh
 P=$(cd "$(dirname "$0")/.." && pwd); f="$P/.fails-left"
 case "$1" in
-  init) n=$(cat "$f" 2>/dev/null || echo 0)
+  init) echo "${BEADS_DOLT_READY_TIMEOUT:-unset}" >"$P/.ready-timeout"; n=$(cat "$f" 2>/dev/null || echo 0)
     if [ "$n" -gt 0 ]; then echo $((n-1)) >"$f"; mkdir -p .beads/half; echo "Error: dolt server did not start on 127.0.0.1:38111: bind: address already in use" >&2
       echo "To disable auto-start: set dolt.auto-start: false in .beads/config.yaml" >&2; exit 1; fi
     [ ! -e .beads/half ] || { echo "a half-made .beads was left" >&2; exit 3; }
@@ -41,6 +42,11 @@ proj "$T/a" 0; run_init "$T/a"
 [ "$(cat "$T/a/.rc")" = 0 ] && [ -e "$T/a/control/.beads/made" ] && ok "init ends ok, control/.beads made" || { bad "first-time init"; tail -5 "$T/a/.out"; }
 grep -q "bd init: done" "$T/a/.run/init-bd.log" && ok "...bd init's output is kept in .run/init-bd.log" || bad "no init-bd.log"
 ! grep -q "failed once" "$T/a/.out" && ok "...and no retry was said" || bad "a retry was said"
+[ "$(cat "$T/a/.ready-timeout")" = 60 ] && ok "...bd init waits up to 60 s for its Dolt (BEADS_DOLT_READY_TIMEOUT)" || bad "ready timeout: $(cat "$T/a/.ready-timeout")"
+
+echo "== the caller's ready timeout wins"
+proj "$T/d" 0; (cd "$T/d" && BEADS_DOLT_READY_TIMEOUT=120 MM_TRACE_SELF="$T/d/bin/init" "$T/d/bin/init" ab >"$T/d/.out" 2>&1)
+[ "$(cat "$T/d/.ready-timeout")" = 120 ] && ok "BEADS_DOLT_READY_TIMEOUT=120 reaches bd init" || bad "caller's timeout lost: $(cat "$T/d/.ready-timeout")"
 
 echo "== bd init fails once (a busy machine), then works"
 proj "$T/b" 1; run_init "$T/b"
