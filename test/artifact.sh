@@ -3,7 +3,8 @@
 # config-check --staged (the pre-commit hook) checks every staged artifact, however it was committed. Hermetic: a
 # system-like board in a throwaway folder (the template's bin and the system profile's leads), its own git repo.
 # Proves: the refusals (bad id, no actor, a type the viewer can't show, over 5 MB, a dot name, a name with other
-# characters, a file in secrets/, a key or token shape: nothing copied, nothing committed); a good run copies and
+# characters, a file in secrets/, a key or token shape, a symlinked artifacts/ or item folder: nothing copied, nothing
+# committed); a good run copies and
 # commits only those files (message, author = the caller's role, other staged work left alone) and prints the paths;
 # the same files again change nothing; a refused commit (the hook) keeps nothing; config-check refuses a staged
 # artifact with a token shape, a bad path or over 5 MB, and passes a clean one.
@@ -94,6 +95,19 @@ out=$("$A" ab-1.2 "$T/notes.md" "$T/new.md" 2>&1); rc=$?
 check "exit 2, says so" sh -c "[ $rc = 2 ] && printf '%s' '$out' | grep -q 'refused'"
 check "no commit, nothing staged, the old version back, the new file gone" sh -c "[ \$(git -C '$B' rev-list --count HEAD) = $n ] && [ -z \"\$(git -C '$B' status --porcelain)\" ] && grep -q v2 '$B/artifacts/ab-1.2/notes.md' && [ ! -e '$B/artifacts/ab-1.2/new.md' ]"
 rm -f "$B/.git/hooks/pre-commit"
+
+echo '== a symlinked artifact folder is refused, nothing written through it (sy-6zi5)'
+mkdir -p "$T/outside"; ln -s "$T/outside" "$B/artifacts/ab-9"
+out=$("$A" ab-9 "$T/run.txt" 2>&1); rc=$?
+check "a symlinked item folder: exit 2, says so" sh -c "[ $rc = 2 ] && printf '%s' '$out' | grep -q 'symlink'"
+check "...nothing written through it" sh -c "[ -z \"\$(ls -A '$T/outside')\" ]"
+rm "$B/artifacts/ab-9"
+mv "$B/artifacts" "$T/real-artifacts"; ln -s "$T/real-artifacts" "$B/artifacts"
+n=$(G rev-list --count HEAD)
+out=$("$A" ab-8 "$T/run.txt" 2>&1); rc=$?
+check "a symlinked artifacts/: exit 2, says so" sh -c "[ $rc = 2 ] && printf '%s' '$out' | grep -q 'symlink'"
+check "...nothing written through it, no commit" sh -c "[ ! -e '$T/real-artifacts/ab-8' ] && [ \$(git -C '$B' rev-list --count HEAD) = $n ]"
+rm "$B/artifacts"; mv "$T/real-artifacts" "$B/artifacts"
 
 echo '== config-check --staged checks every staged artifact (the pre-commit hook)'
 cc() { (cd "$B" && node bin/config-check "$@"); }
