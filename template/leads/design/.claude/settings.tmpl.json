@@ -21,6 +21,7 @@
       "Bash(git -C {root}/worktrees/lead-design commit*)",
       "Bash(wt *)",
       "Bash(land *)",
+      "Bash(artifact *)",
       "Bash(ls *)",
       "Bash(mkdir -p *)",
       "Write(//tmp/**)",

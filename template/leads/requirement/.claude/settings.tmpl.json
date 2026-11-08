@@ -20,6 +20,7 @@
       "Bash(git -C {root}/worktrees/lead-requirement commit*)",
       "Bash(wt *)",
       "Bash(land *)",
+      "Bash(artifact *)",
       "Bash(ls *)",
       "Bash(mkdir -p *)",
       "Write(//tmp/**)",

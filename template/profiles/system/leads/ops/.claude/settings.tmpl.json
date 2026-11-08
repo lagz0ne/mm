@@ -71,6 +71,7 @@
       "Bash(lead worker stop ops *)",
       "Bash(lead worker report ops *)",
       "Bash(lead worker ls*)",
+      "Bash(artifact *)",
       "Bash(wt ls)",
       "Bash(wt rm ops-*)"
     ],

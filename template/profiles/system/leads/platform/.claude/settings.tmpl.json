@@ -49,6 +49,7 @@
       "Bash(lead worker stop platform *)",
       "Bash(lead worker report platform *)",
       "Bash(lead worker ls*)",
+      "Bash(artifact *)",
       "Bash(wt ls)",
       "Bash(wt rm platform-*)",
       "Bash(git merge --ff-only *)",
