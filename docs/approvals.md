@@ -208,6 +208,15 @@ head changed since review's sign-off (card: X, signed: Y)". The board (Approve, 
 card with no Head (or a t2 item with no card) is refused too: "the card names no head"; an approved item is not
 checked again.
 
+**A go ask and a non-go ask** (sy-t9tg). Only a t2 card whose `You` starts with "Tap Approve" asks for the go
+(`isGoAsk(card)`): it needs If yes, If no, Risk and Head, `needs-you` only after `signed-off`, and the go as above. A
+t2 card whose `You` is "Check: …", "Reply: …" or "Nothing" (`isNonGoAsk(card)`) asks the owner something else, before
+any head exists: those four lines are optional (checked when there) and bd's gate lets `needs-you` on without
+`signed-off`. It never gets the go: `headRefusal` refuses it ("this item asks for no go", even with a signed head), so
+the label rail refuses `approved`; the board's Approve and Not now refuse it ("this item asks you something else; there
+is no go to give here"); the board's item view and the Waiting list offer its Reply box or Done instead. The checks read
+the card at the go, so a card changed to "Tap Approve" meets the go's checks at once.
+
 **Only review signs off** (sy-9bss). `signed-off` and every `signed-head:*` are added or removed by the actor `review`
 (or `review/<worker>`: the role is the part before `/`) and by no one else:
 
