@@ -50,6 +50,7 @@
       "Bash(lead worker report platform *)",
       "Bash(lead worker ls*)",
       "Bash(artifact *)",
+      "Bash(owner-card check *)",
       "Bash(wt ls)",
       "Bash(wt rm platform-*)",
       "Bash(git merge --ff-only *)",

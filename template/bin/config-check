@@ -398,6 +398,13 @@ for (const f of [path.join(P, 'leads', 'CLAUDE.md'), path.join(ASSIST_ROOT, 'CLA
   if (!brief.includes(WRITE_RULE)) bad(`${path.relative(P, f)}: lost its "${WRITE_RULE}" section (how every lead and assistant writes to a person)`)
   if (!brief.includes(ARTIFACT_RULE)) bad(`${path.relative(P, f)}: lost its "${ARTIFACT_RULE}" section (short comments; the substance in linked files)`)
 }
+// Asking the owner (sy-z5lz, the owner): the leads' shared brief carries the owner card rule (bd refuses needs-you
+// without a valid card; the brief says how to write one).
+const CARD_RULE = '## Asking the owner: the owner card'
+{
+  const f = path.join(P, 'leads', 'CLAUDE.md')
+  if (fs.existsSync(f) && !fs.readFileSync(f, 'utf8').includes(CARD_RULE)) bad(`leads/CLAUDE.md: lost its "${CARD_RULE}" section (how a lead asks the owner: the card at the top of the item)`)
+}
 // Assistants: read-only by permissions, whatever their brief says.
 const SYSTEM_NAMES = new Set(['wake', 'watchdog', 'brain', 'ui', 'beads', 'smoke', 'system', 'admin', 'setup', 'guest', 'human', 'mm-upstream'])
 for (const u of ASSISTANTS) {
