@@ -2,13 +2,46 @@
 // plain text (never Markdown: the card is what the owner reads, word for word); Link as a link. An invalid card shows
 // what it could read and a small "card invalid: <reason>" note; an item that needs the owner with no card says
 // "card missing". The parser is the one bin/bd and the Supervisor use (lib/owner-card.mjs, an identical copy).
-import { useState } from 'react'
+// The card's last line is Item: the item's own URL (this board's origin + /?item=<id>, the link that opens it), made
+// here, with a copy button; it wins over an Item line a lead wrote.
+import { useRef, useState } from 'react'
 import { KEYS, parseCard } from '@/lib/owner-card.mjs'
 import { Viewer, fileRef, fileUrl } from '@/Markdown'
 
 export type Card = ReturnType<typeof parseCard>
 
-export function OwnerCard({ card, needsYou }: { card: Card; needsYou: boolean }) {
+/** The link that opens an item on this board (App opens ?item=<id>). */
+export const itemUrl = (id: string) => `${window.location.origin}/?item=${encodeURIComponent(id)}`
+
+/** A copy-link button (40 px+ target). Where the clipboard is not allowed (an http page, an old phone), it shows the link
+ *  in a field, selected, so the person copies it by hand. */
+export function CopyLink({ url, className = '' }: { url: string; className?: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'select'>('idle')
+  const field = useRef<HTMLInputElement>(null)
+  async function copy() {
+    try {
+      if (!navigator.clipboard || !window.isSecureContext) throw new Error('no clipboard')
+      await navigator.clipboard.writeText(url)
+      setState('copied'); window.setTimeout(() => setState('idle'), 1600)
+    } catch {
+      setState('select'); window.setTimeout(() => { field.current?.focus(); field.current?.select() }, 0)
+    }
+  }
+  return (
+    <span className={`inline-flex min-w-0 flex-wrap items-center gap-2 ${className}`}>
+      <button type="button" data-copy-link onClick={copy} aria-label="Copy the link to this item"
+        className="inline-flex min-h-10 min-w-10 items-center border border-foreground bg-background px-3 text-xs font-semibold hover:bg-muted">
+        {state === 'copied' ? 'Copied' : 'Copy link'}
+      </button>
+      {state === 'select' && (
+        <input ref={field} readOnly value={url} data-copy-field aria-label="The link to this item: copy it"
+          onFocus={(e) => e.currentTarget.select()} className="min-h-10 w-full min-w-0 border px-2 font-mono text-xs" />
+      )}
+    </span>
+  )
+}
+
+export function OwnerCard({ card, needsYou, id }: { card: Card; needsYou: boolean; id: string }) {
   const [open, setOpen] = useState<string | null>(null)
   if (!card.found) {
     if (!needsYou) return null
@@ -18,7 +51,8 @@ export function OwnerCard({ card, needsYou }: { card: Card; needsYou: boolean })
       </p>
     )
   }
-  const keys = Object.keys(KEYS).filter((k) => card.card && k in card.card)
+  const keys = Object.keys(KEYS).filter((k) => k !== 'Item' && card.card && k in card.card)
+  const url = itemUrl(id)
   return (
     <section data-owner-card={card.ok ? 'ok' : 'invalid'} aria-label="For you" className="border-b px-4 py-3 md:px-5">
       <div className="border-2 border-foreground">
@@ -32,6 +66,13 @@ export function OwnerCard({ card, needsYou }: { card: Card; needsYou: boolean })
               </dd>
             </div>
           ))}
+          <div data-key="Item" className="contents">
+            <dt className="font-bold whitespace-nowrap">Item</dt>
+            <dd className="min-w-0">
+              <span data-item-url className="block font-mono text-xs [overflow-wrap:anywhere] select-all">{url}</span>
+              <CopyLink url={url} className="mt-1.5 w-full" />
+            </dd>
+          </div>
         </dl>
         {!card.ok && (
           <p data-owner-card-note className="border-t px-3 py-1.5 text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
