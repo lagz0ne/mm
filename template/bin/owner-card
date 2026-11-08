@@ -7,7 +7,9 @@
 //   owner-card gate -- <bd args>   bin/bd runs it when its arguments name needs-you: refuses (exit 1, the reasons) a
 //                                  call that adds needs-you (label add, update --add-label/-l/--set-labels, create/q
 //                                  -l/--labels) to an item whose description (the one in the call, else the item's own)
-//                                  has no valid card. Removing needs-you, or any other call: exit 0, nothing read.
+//                                  has no valid card. With t2 (on the item or in the call) it also needs signed-off
+//                                  (sy-l9uc: plan -> review's sign-off -> needs-you); adding t2 to an item that has
+//                                  needs-you is checked the same way. Removing needs-you, or any other call: exit 0.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -15,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { FORMAT, parseCard } from './lib/owner-card.mjs'
 
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const LABEL = 'needs-you'
+const LABEL = 'needs-you', T2 = 't2', SIGNED = 'signed-off'
 const die = (m, code = 2) => { console.error(`owner-card: ${m}`); process.exit(code) }
 
 /** The item as bd shows it: { description, labels }. Throws with a short reason. */
@@ -63,29 +65,33 @@ function gate(argv) {
     }
     return d ?? null
   }
-  let ids = [], adding = [], creating = false
+  let ids = [], adding = [], creating = false, set = null
   if ((cmd === 'create' || cmd === 'q' || cmd === 'new')) { adding = list('-l', '--labels'); creating = true }
-  else if (cmd === 'update' || cmd === 'edit') { adding = list('--add-label', '-l', '--set-labels'); ids = args }
-  else if (cmd === 'label' && args[0] === 'add') {
+  else if (cmd === 'update' || cmd === 'edit') {
+    adding = list('--add-label', '-l', '--set-labels'); ids = args
+    if (values('--set-labels').length) set = list('--set-labels')
+  } else if (cmd === 'label' && args[0] === 'add') {
     const rest = args.slice(1)
-    if (!rest.includes(LABEL)) process.exit(0)
-    adding = rest // bd takes the last as the label and the others as ids; any position of needs-you is checked, safely
-    ids = rest.filter((x) => x !== LABEL && x !== 't2')
+    if (!rest.includes(LABEL) && !rest.includes(T2)) process.exit(0)
+    adding = rest // bd takes the last as the label and the others as ids; any position of needs-you or t2 is checked, safely
+    ids = rest.filter((x) => x !== LABEL && x !== T2)
   }
-  if (!adding.includes(LABEL)) process.exit(0)
-  const t2 = adding.includes('t2')
+  const addsNY = adding.includes(LABEL), addsT2 = adding.includes(T2)
+  if (!addsNY && !addsT2) process.exit(0)
   const desc = newDesc()
-  if (creating) {
-    const r = parseCard(desc ?? '', t2 ? ['t2'] : [])
-    if (!r.ok) refuse(['the new item'], null, r)
-    process.exit(0)
+  /** Refuse unless `labels` (the item's labels after this call) are fine: needs-you needs a valid card, and with t2
+   *  review's sign-off first (sy-l9uc, review's sy-16ml: plan -> review's sign-off -> needs-you). */
+  const check = (who, description, labels, id) => {
+    if (!labels.includes(LABEL)) return
+    const r = parseCard(description, labels, id)
+    if (!r.ok) refuse([who], null, r)
+    if (labels.includes(T2) && !labels.includes(SIGNED)) refuse([who], `a t2 item waits on the owner only after review signed it off (label ${SIGNED}): plan -> review's sign-off -> ${LABEL}. Ask review first; add ${LABEL} after.`)
   }
-  if (!ids.length) refuse(['(the call)'], `${LABEL} is added to no item I can name`)
+  if (creating) { check('the new item', desc ?? '', adding); process.exit(0) }
+  if (!ids.length) refuse(['(the call)'], `${addsNY ? LABEL : T2} is added to no item I can name`)
   for (const id of ids) {
     let it; try { it = show(id) } catch (e) { refuse([id], e.message) }
-    const labels = [...it.labels, ...(t2 ? ['t2'] : [])]
-    const r = parseCard(desc ?? it.description, labels, id)
-    if (!r.ok) refuse([id], null, r)
+    check(id, desc ?? it.description, set ?? [...new Set([...it.labels, ...adding])], id)
   }
   process.exit(0)
 }

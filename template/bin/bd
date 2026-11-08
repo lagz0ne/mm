@@ -26,7 +26,8 @@ esac
 # and removing the label, costs nothing more than this loop over the arguments.
 case "$cmd:$sub" in
   create:*|q:*|new:*|update:*|edit:*|label:add)
-    for a in "$@"; do case "$a" in --) break ;; *needs-you*) "$P/bin/owner-card" gate -- "$@" || exit 1; break ;; esac; done ;;
+    # ...and adding t2 to an item that waits on the owner (sy-l9uc): t2 is matched as a whole label, never inside an id
+    for a in "$@"; do case "$a" in --) break ;; *needs-you*|t2|t2,*|*,t2|*,t2,*|*=t2|*=t2,*) "$P/bin/owner-card" gate -- "$@" || exit 1; break ;; esac; done ;;
 esac
 unset actor cmd sub next
 export BEADS_DIR="$P/control/.beads" XDG_CONFIG_HOME="$P/.config" DOLT_ROOT_PATH="$P/.dolt-root" PATH="$P/tools:$PATH"
