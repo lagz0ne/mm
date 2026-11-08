@@ -325,7 +325,24 @@ check "...through a label field it does not know (403)" test "$(lw PATCH /it-1 '
 check "...nothing of it reached bd (only reads)" bash -c "tail -n +$((n0 + 1)) '$T/bd.jsonl' | jq -e -s 'length > 0 and all(.m == \"GET\")'"
 check "...each refusal is logged" bash -c "grep -c 'refused on the local side' '$T/board/.run/logs/ops.log' | grep -qx 5"
 check "local side: other labels as before (200, no author role label)" bash -c "[ \$(lw PATCH /it-1 '{\"patch\":{\"add_labels\":[\"urgent\"]}}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.patch.add_labels == [\"urgent\"] and .b.actor == \"boss\"'"
-check "...a new item with a tier, a full label set without approved (200)" bash -c "[ \$(lw POST '' '{\"title\":\"x\",\"labels\":[\"t2\"]}') = 200 ] && [ \$(lw PATCH /it-1 '{\"patch\":{\"labels\":[\"t2\",\"bug\",\"urgent\"]}}') = 200 ]"
+check "...a new item with a tier, a full label set without approved that keeps the sign-off (200)" bash -c "[ \$(lw POST '' '{\"title\":\"x\",\"labels\":[\"t2\"]}') = 200 ] && [ \$(lw PATCH /it-1 '{\"patch\":{\"labels\":[\"t2\",\"bug\",\"urgent\",\"signed-off\"]}}') = 200 ]"
+# sy-9bss: only review signs off; a self-chosen name is never a role's, so the local side refuses it to every visitor
+n3=$(wc -l <"$T/bd.jsonl")
+check "local side: adding signed-off is refused (403), and it says to ask review" bash -c "[ \$(lw PATCH /it-10 '{\"patch\":{\"add_labels\":[\"signed-off\"]}}') = 403 ] && grep -q 'only review signs off' '$T/wb'"
+check "...a signed-head:* (403)" test "$(lw PATCH /it-10 '{"patch":{"add_labels":["signed-head:mm@0a1b2c3"]}}')" = 403
+check "...removing signed-off (403)" test "$(lw PATCH /it-1 '{"patch":{"remove_labels":["signed-off"]}}')" = 403
+check "...a full label set that drops it (403)" test "$(lw PATCH /it-1 '{"patch":{"labels":["t2","bug"]}}')" = 403
+check "...on a new item (403)" test "$(lw POST '' '{"title":"x","labels":["signed-off"]}')" = 403
+check "...a visitor with no name (the default actor guest): 403" test "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH -H 'content-type: application/json' -d '{"patch":{"add_labels":["signed-off"]}}' "http://127.0.0.1:$BL/api/v0/beads/issues/it-10")" = 403
+check "...a self-chosen name can't be review's (400)" test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{"name":"review"}' "http://127.0.0.1:$BL/api/whoami")" = 400
+check "...nothing of it reached bd (only reads)" bash -c "tail -n +$((n3 + 1)) '$T/bd.jsonl' | jq -e -s 'all(.m == \"GET\")'"
+# a board whose default actor is review (BOARD_ACTOR): its local side signs off
+BRL=$(( PORT + 20 )); BRP=$(( PORT + 21 ))
+(cd "$T/board" && PORT=$BRL BOARD_PUBLIC_PORT=$BRP BD_SERVE=http://127.0.0.1:$BDP MM_AUTH_PUBLIC_KEY="$PUB" BOARD_ACTOR=review PASEO_NO_SDK=1 PASEO_BIN=false MM_PROJECT=acme-shop \
+  exec node site/server.mjs >"$T/board-review.log" 2>&1) & BSR=$!
+for _ in $(seq 1 150); do curl -s -o /dev/null "http://127.0.0.1:$BRL/api/whoami" && break; sleep 0.2; done
+check "a local side whose actor is review: adding signed-off and a signed-head:* goes through (200), as review" bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X PATCH -H 'content-type: application/json' -d '{\"patch\":{\"add_labels\":[\"signed-off\",\"signed-head:mm@0a1b2c3\"]}}' http://127.0.0.1:$BRL/api/v0/beads/issues/it-10) = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.actor == \"review\" and .b.patch.add_labels == [\"signed-off\",\"signed-head:mm@0a1b2c3\"]'"
+kill $BSR 2>/dev/null; wait $BSR 2>/dev/null
 check "a self-chosen name can't be the bridge's (400)" test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{"name":"bridge"}' "http://127.0.0.1:$BL/api/whoami")" = 400
 check "...nor the owner's, whose approved counts (400; sy-1jmi)" test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{"name":"dana"}' "http://127.0.0.1:$BL/api/whoami")" = 400
 check "...and a board_user cookie with the owner's name is nobody (source default)" bash -c "curl -s -H 'cookie: board_user=dana' http://127.0.0.1:$BL/api/whoami | jq -e '.source == \"default\"'"

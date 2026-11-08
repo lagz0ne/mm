@@ -56,7 +56,8 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 // Self-identification: the visitor picks a name (cookie board_user). Lead and system names are reserved, so a human
 // can never post as a lead. On the public side the gateway's assertion always wins: it is the only identity there, and
 // no request header names anyone (sy-y7th).
-const RESERVED = new Set([...ROLES, 'setup', 'wake', 'watchdog', 'smoke', 'ui', 'beads', 'system', 'admin', 'brain', 'mm-upstream', 'bridge'])
+// review is reserved on every board, a role or not: its actor's sign-off is the only one bin/bd and the rails accept (sy-9bss)
+const RESERVED = new Set([...ROLES, 'setup', 'wake', 'watchdog', 'smoke', 'ui', 'beads', 'system', 'admin', 'brain', 'mm-upstream', 'bridge', 'review'])
 function cookieUser(req) {
   const m = /(?:^|;\s*)board_user=([^;]*)/.exec(req.headers.cookie || '')
   const name = m ? decodeURIComponent(m[1]).trim().toLowerCase() : ''
@@ -110,9 +111,15 @@ function railRefusal(role, added, removed) {
   }
   return null
 }
-function localRefusal(added, removed) {
+// Only review signs off (sy-9bss): on the local side signed-off and signed-head:* change only under the actor review
+// (or review/<worker>), as bin/bd refuses them to any other. A self-chosen name is never a role's (validName), so in
+// practice that is a board whose default actor is review. A brake, not a wall (docs/approvals.md): the Supervisor's
+// signoff:<item> finding is how a sign-off by anyone else is seen.
+const isReviewActor = (a) => a === 'review' || String(a || '').startsWith('review/')
+function localRefusal(actor, added, removed) {
   for (const l of [...added, ...removed]) {
     if (SIGNED_ONLY.has(l)) return `"${l}" is not changed on the local side (the owner gives the T2 go signed in on the board's public address, or with the bridge's Approve button)`
+    if ((LEADS_ONLY_PREFIX.some((p) => String(l).startsWith(p)) || l === 'signed-off') && !isReviewActor(actor)) return `only review signs off (signed-off, signed-head:): ask review on the item ("${l}")`
   }
   return null
 }
@@ -287,7 +294,7 @@ async function labelChange(req, apiPath, data) {
 async function rails(req, apiPath, data) {
   const g = req.gateway, ch = await labelChange(req, apiPath, data)
   if (ch.why) return ch.why
-  if (!g) return localRefusal(ch.added, ch.removed) // the local side: as before, but approved
+  if (!g) return localRefusal(who(req), ch.added, ch.removed) // the local side: as before, but approved and review's sign-off
   const why = railRefusal(g.r, ch.added, ch.removed); if (why) return why
   if (ch.added.includes('approved') && ledgerOn()) return LEDGER_LABEL
   // the T2 go comes after review's sign-off, for the head it signed (goRefusal, sy-l9uc, sy-hzmu)
