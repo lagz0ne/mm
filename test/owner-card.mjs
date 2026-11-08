@@ -59,6 +59,10 @@ step('valid cards')
   ok('You: Tap Approve', parseCard(B.replace('**You:** Nothing', '**You:** Tap Approve')).ok)
   ok('a value of exactly 120 characters is ok', parseCard(B.replace(/\*\*What:\*\* .*/, `**What:** ${'x'.repeat(120)}`)).ok)
   ok('Risk with 80 characters after the level is ok', parseCard(T2.replace(/\*\*Risk:\*\* .*/, `**Risk:** low, ${'r'.repeat(80)}`), ['t2']).ok)
+  ok('a form with more words after it (where to act), up to 160 characters', parseCard(B.replace('**You:** Nothing', '**You:** Tap Approve in Telegram, or press Approve on this item')).ok
+    && parseCard(B.replace('**You:** Nothing', `**You:** Reply: ${'q'.repeat(153)}`)).ok && parseCard(B.replace('**You:** Nothing', '**You:** Nothing for you now.')).ok)
+  ok('an Item line: an http(s) URL ending in ?item=<this id>', parseCard(B.replace('- **You:** Nothing', '- **You:** Nothing\n- **Item:** https://board-shop.example.org/?item=ab-12'), [], 'ab-12').ok
+    && parseCard(B.replace('- **You:** Nothing', '- **You:** Nothing\n- **Item:** http://127.0.0.1:4100/?item=ab-12.3')).ok)
   ok('youKind: the four forms', youKind('Tap Approve') === 'approve' && youKind('Reply: which?') === 'reply' && youKind('Check: x, y') === 'check' && youKind('Nothing') === 'nothing' && youKind('Look at it') === null)
 }
 
@@ -78,6 +82,13 @@ step('invalid cards, each with its reason')
   bad('Risk over 80', T2.replace(/\*\*Risk:\*\* .*/, `**Risk:** high, ${'r'.repeat(81)}`), /Risk is too long/, ['t2'])
   bad('an empty value', B.replace('**Why:** You see', '**Why:**').replace(/(\*\*Why:\*\*).*/, '$1'), /Why is empty/)
   bad('You of no form', B.replace('**You:** Nothing', '**You:** Please look at it'), /You starts with none of/)
+  bad('a form glued to more letters ("Tap Approved")', B.replace('**You:** Nothing', '**You:** Tap Approved'), /You starts with none of/)
+  bad('You over 160', B.replace('**You:** Nothing', `**You:** Reply: ${'q'.repeat(154)}`), /You is too long \(161 characters; at most 160\)/)
+  bad('an Item that is no URL', B.replace('- **You:** Nothing', '- **You:** Nothing\n- **Item:** the board, ab-12'), /Item is not an http\(s\) URL that ends in \?item=/)
+  bad('an Item with no ?item=', B.replace('- **You:** Nothing', '- **You:** Nothing\n- **Item:** https://board-shop.example.org/'), /Item is not an http\(s\) URL/)
+  bad('an Item with more after the id', B.replace('- **You:** Nothing', '- **You:** Nothing\n- **Item:** https://board-shop.example.org/?item=ab-12&x=1'), /Item is not an http\(s\) URL/)
+  { const r = parseCard(B.replace('- **You:** Nothing', '- **You:** Nothing\n- **Item:** https://board-shop.example.org/?item=ab-99'), [], 'ab-12')
+    ok('an Item to another item: invalid, "Item points to ab-99, not to this item (ab-12)"', !r.ok && r.errors.includes('Item points to ab-99, not to this item (ab-12)'), JSON.stringify(r.errors)) }
   bad('You: Reply: with no question', B.replace('**You:** Nothing', '**You:** Reply:'), /You starts with none of/)
   bad('Risk without a level', T2.replace(/\*\*Risk:\*\* .*/, '**Risk:** some, it may break'), /Risk does not start with low, medium or high/, ['t2'])
   bad('Risk "lowish"', T2.replace(/\*\*Risk:\*\* .*/, '**Risk:** lowish'), /Risk does not start/, ['t2'])

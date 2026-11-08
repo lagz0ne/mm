@@ -3,31 +3,38 @@
 //   ## Owner
 //   - **What:** <one sentence, at most 120 characters>
 //   - **Why:** <one sentence, at most 120>
-//   - **You:** Tap Approve | Reply: <the question> | Check: <what, where> | Nothing
+//   - **You:** Tap Approve | Reply: <the question> | Check: <what, where> | Nothing   (at most 160; one of the four
+//              forms first, then more words may follow: where to act, e.g. "Tap Approve in Telegram, or press Approve
+//              on this item")
 //   - **If yes:** <at most 120>                 (required with the label t2)
 //   - **If no:** <at most 120>                  (required with the label t2)
 //   - **Risk:** low|medium|high, <at most 80>   (required with the label t2)
 //   - **Link:** <artifact path or URL>          (optional)
+//   - **Item:** <the item's URL>                (optional; the board shows its own: an http(s) URL that ends in
+//                                                ?item=<this item's id>)
 // `## Owner` is the first line of the description (blank lines before it are ok); a Markdown list follows, one line per
 // key; a blank line (or the end) ends it. Lengths count characters (code points), after trimming.
 // Pure, no imports: bin/owner-card, bin/bd (through it), the Supervisor, the board's server (waiting.mjs) and, as an
 // identical copy, the board's browser code (site/src/lib/owner-card.mjs; test/owner-card.mjs keeps them equal).
 
-export const FORMAT = 'the description starts with "## Owner", then one line per key: "- **What:** ...", "- **Why:** ...", "- **You:** Tap Approve | Reply: <question> | Check: <what, where> | Nothing", with t2 also "- **If yes:** ...", "- **If no:** ...", "- **Risk:** low|medium|high, ..."; optional "- **Link:** ..."; a blank line ends it (the leads\' brief, "Asking the owner: the owner card")'
+export const FORMAT = 'the description starts with "## Owner", then one line per key: "- **What:** ...", "- **Why:** ...", "- **You:** Tap Approve | Reply: <question> | Check: <what, where> | Nothing", with t2 also "- **If yes:** ...", "- **If no:** ...", "- **Risk:** low|medium|high, ..."; optional "- **Link:** ...", "- **Item:** <URL ending in ?item=<id>>"; a blank line ends it (the leads\' brief, "Asking the owner: the owner card")'
 // key -> its limit in characters; the order is the card's
-export const KEYS = { What: 120, Why: 120, You: 160, 'If yes': 120, 'If no': 120, Risk: 80, Link: 300 }
+export const KEYS = { What: 120, Why: 120, You: 160, 'If yes': 120, 'If no': 120, Risk: 80, Link: 300, Item: 300 }
 export const REQUIRED = ['What', 'Why', 'You']
 export const REQUIRED_T2 = ['If yes', 'If no', 'Risk']
 const HEADING = /^##[ \t]+Owner[ \t]*$/
 const LINE = /^[-*][ \t]+\*\*([^*]+?):\*\*[ \t]*(.*?)[ \t]*$/
 const RISK = /^(low|medium|high)(?:[ \t]*[,:;–—-][ \t]*(.*))?$/i
 const len = (s) => Array.from(s).length
+const ID = '[a-z]+-[a-z0-9]+(?:\\.[0-9]+)*'
+const ITEM_URL = new RegExp(`^https?://[^\\s/?#<>"]+/?[^\\s?#<>"]*\\?item=(${ID})$`)
 
-/** What the `You` line asks: approve | reply | check | nothing; null when it starts with none of the four forms. */
+/** What the `You` line asks: approve | reply | check | nothing; null when it starts with none of the four forms. A
+ * form may be followed by more words (where to act): "Tap Approve in Telegram, or press Approve on this item". */
 export function youKind(v) {
   const s = String(v ?? '').trim()
-  if (/^Tap Approve\.?$/.test(s)) return 'approve'
-  if (/^Nothing\.?$/.test(s)) return 'nothing'
+  if (/^Tap Approve(?=$|[\s.,;:!])/.test(s)) return 'approve'
+  if (/^Nothing(?=$|[\s.,;:!])/.test(s)) return 'nothing'
   const m = /^(Reply|Check):[ \t]*(.*)$/.exec(s)
   if (m && m[2].trim()) return m[1] === 'Reply' ? 'reply' : 'check'
   return null
@@ -37,12 +44,13 @@ export function youKind(v) {
  * Read the owner card at the top of a description.
  * @param {string} description  the item's description (Markdown)
  * @param {string[]} [labels]   the item's labels (t2 makes If yes, If no and Risk required)
+ * @param {string} [id]         the item's id, when known: an Item line must end in ?item=<id>
  * @returns {{ ok: boolean, found: boolean, card: Record<string,string>|null, errors: string[], rest: string }}
  *   found: a `## Owner` heading is at the top (the card's lines are then taken out of `rest`, valid or not);
- *   card: the keys read (by their names: What, Why, You, If yes, If no, Risk, Link), null when not found;
+ *   card: the keys read (by their names: What, Why, You, If yes, If no, Risk, Link, Item), null when not found;
  *   rest: the description without the card (all of it when not found).
  */
-export function parseCard(description, labels = []) {
+export function parseCard(description, labels = [], id = '') {
   const text = String(description ?? '').replace(/\r\n?/g, '\n')
   const lines = text.split('\n')
   let k = 0
@@ -70,6 +78,11 @@ export function parseCard(description, labels = []) {
       continue
     }
     if (len(value) > KEYS[key]) errors.push(`${key} is too long (${len(value)} characters; at most ${KEYS[key]})`)
+    if (key === 'Item') {
+      const u = ITEM_URL.exec(value)
+      if (!u) errors.push('Item is not an http(s) URL that ends in ?item=<the item\'s id>')
+      else if (id && u[1] !== id) errors.push(`Item points to ${u[1]}, not to this item (${id})`)
+    }
     if (key === 'You' && !youKind(value)) errors.push('You starts with none of "Tap Approve", "Reply: <the question>", "Check: <what, where>", "Nothing"')
   }
   const t2 = Array.isArray(labels) && labels.includes('t2')

@@ -72,7 +72,7 @@ check "...both back: both boards pass again" sh -c "(cd '$PROJ' && node bin/conf
 C='## Asking the owner: the owner card'
 echo "== the briefs carry the owner card rule (sy-z5lz)"
 for f in "$PROJ/leads/CLAUDE.md" "$SYS/leads/CLAUDE.md"; do
-  check "${f#$MM_HOME/}: the section, the format, edit in place, never needs-you without it" sh -c "grep -qF '$C' '$f' && grep -qF -- '- **You:** Tap Approve | Reply: <the question> | Check: <what, where> | Nothing' '$f' && grep -qF 'bd update ID --body-file' '$f' && grep -q 'bd refuses .needs-you. on an item with no valid' '$f'"
+  check "${f#$MM_HOME/}: the section, the format, edit in place, never needs-you without it" sh -c "grep -qF '$C' '$f' && grep -qF -- '- **You:** Tap Approve | Reply: <the question> | Check: <what, where> | Nothing' '$f' && grep -qF 'Tap Approve in Telegram, or press' '$f' && grep -qF 'bd update ID --body-file' '$f' && grep -q 'bd refuses .needs-you. on an item with no valid' '$f'"
 done
 echo "== config-check holds the owner card rule"
 cp "$PROJ/leads/CLAUDE.md" "$T/l.bak"; grep -vF "$C" "$T/l.bak" >"$PROJ/leads/CLAUDE.md"

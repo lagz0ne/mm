@@ -47,6 +47,8 @@ item sy-late "Intro.
 $CARD" '[]'
 item sy-t2 "$CARD" '["t2"]'
 item sy-t2ok "$T2CARD" '["t2"]'
+item sy-wrongitem "$(printf '%s' "$CARD" | sed 's|^- \*\*You:\*\* Nothing$|- **You:** Nothing\n- **Item:** https://board-shop.example.org/?item=sy-other|')" '[]'
+item sy-item "$(printf '%s' "$CARD" | sed 's|^- \*\*You:\*\* Nothing$|- **You:** Tap Approve in Telegram, or press Approve on this item\n- **Item:** https://board-shop.example.org/?item=sy-item|')" '[]'
 printf '%s\n' "$CARD" >"$T/card.md"
 printf 'no card here\n' >"$T/nocard.md"
 
@@ -79,6 +81,8 @@ check "...the t2 reason" says "If yes is missing (required with t2)"
 call create "a title" --description "$CARD" -l t2,needs-you; check "create t2 with a card lacking the t2 keys" refused
 call label add sy-missing needs-you;                    check "an item bd cannot show" refused
 call --json update sy-none --add-label needs-you;       check "a global flag first" refused
+call label add sy-wrongitem needs-you;                  check "an Item line to another item" refused
+check "...the reason" says "Item points to sy-other, not to this item (sy-wrongitem)"
 
 echo "== allowed"
 call label add sy-good needs-you;                       check "label add on an item with a valid card" passed
@@ -88,6 +92,7 @@ call update sy-none --body-file "$T/card.md" --add-label needs-you; check "updat
 call create "a title" -d "$CARD" -l needs-you;          check "create -d <card> -l needs-you" passed
 call create "a title" --body-file "$T/card.md" --labels needs-you; check "create --body-file <card>" passed
 call label add sy-t2ok needs-you;                       check "t2 item with a full t2 card" passed
+call label add sy-item needs-you;                       check "a You with where to act, and its own Item line" passed
 call label remove sy-none needs-you;                    check "label remove needs-you" passed
 check "...reads nothing" noshow
 call update sy-none --remove-label needs-you;           check "update --remove-label needs-you" passed

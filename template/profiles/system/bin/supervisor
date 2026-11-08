@@ -385,7 +385,7 @@ async function card() {
   const problems = []
   for (const i of await issues()) {
     if (i.status === 'closed' || mine(i) || !(i.labels || []).includes('needs-you')) continue
-    const r = parseCard(i.description || '', i.labels || [])
+    const r = parseCard(i.description || '', i.labels || [], i.id)
     if (r.ok) continue
     const why = r.errors.join('; ')
     problems.push({ key: `card:${i.id}`, priority: 2, assignee: roleOf(i.assignee) || ASSIGNEE,

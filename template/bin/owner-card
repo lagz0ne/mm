@@ -84,7 +84,7 @@ function gate(argv) {
   for (const id of ids) {
     let it; try { it = show(id) } catch (e) { refuse([id], e.message) }
     const labels = [...it.labels, ...(t2 ? ['t2'] : [])]
-    const r = parseCard(desc ?? it.description, labels)
+    const r = parseCard(desc ?? it.description, labels, id)
     if (!r.ok) refuse([id], null, r)
   }
   process.exit(0)
@@ -104,7 +104,7 @@ if (cmd === 'check') {
   if (args[0] === '-') r = parseCard(fs.readFileSync(0, 'utf8'), t2 ? ['t2'] : [])
   else {
     let it; try { it = show(args[0]) } catch (e) { die(e.message) }
-    r = parseCard(it.description, t2 ? [...it.labels, 't2'] : it.labels)
+    r = parseCard(it.description, t2 ? [...it.labels, 't2'] : it.labels, args[0])
   }
   if (r.ok) { console.log(`owner card ok${args[0] === '-' ? '' : ` (${args[0]})`}`); process.exit(0) }
   console.error(`owner-card: ${args[0] === '-' ? 'the description' : args[0]} has ${r.found ? 'an invalid' : 'no'} owner card:\n${say(r)}\nThe format: ${FORMAT}.`)
