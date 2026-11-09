@@ -8,9 +8,23 @@
 //   - **Verify:** <the exact check> → <the expected output>     ("->" is the same as "→")
 //   - **Head:** <repo>@<sha>                                     (when it exists)
 // A Markdown list follows the heading, one line per key; a blank line (or the end) ends it.
-// Pure; imports only its neighbour owner-card.mjs (the card it comes after, and the Head format). Used by bin/task
+// The structured form (sy-rfup, step 1): a ```mm-task v1 block in the same place (bin/lib/structured.mjs; bd task builds
+// it), checked by its schema (bin/lib/schemas/task.v1.json) and Act against leads/raci.json; it maps to the same keys
+// (Task: "<do> <on>"), and .json is its data. Both forms pass for now.
+// Pure; imports only its neighbours structured.mjs and owner-card.mjs (the card it comes after, and the Head format). Used by bin/task
 // (bin/bd's gate) and the Supervisor.
 import { HEAD, parseCard } from './owner-card.mjs'
+import { readBlock, taskKeys, validate } from './structured.mjs'
+
+/** parseTask for a ```mm-task v1 block: the schema, then Act against leads/raci.json. */
+function taskBlock(b, o) {
+  const errors = [...b.errors]
+  if (errors.length || !b.data) return { ok: false, found: true, task: {}, errors, rest: b.rest, json: b.data }
+  errors.push(...validate('task', b.data))
+  const task = taskKeys(b.data), acts = Array.isArray(o.acts) ? o.acts : null
+  if (acts && task.Act && !acts.includes(task.Act)) errors.push(`act: ${clip(task.Act)} is not an activity of leads/raci.json (${acts.length ? acts.join(', ') : 'it has none'})`)
+  return { ok: errors.length === 0, found: true, task, errors, rest: b.rest, json: b.data }
+}
 
 export const KEYS = ['Task', 'Act', 'Done when', 'Verify', 'Head']
 export const REQUIRED = ['Task', 'Act', 'Done when', 'Verify']
@@ -45,6 +59,8 @@ export function parseTask(description, o = {}) {
   const text = String(description ?? '').replace(/\r\n?/g, '\n')
   const card = parseCard(text)
   const lines = (card.found ? card.rest : text).split('\n')
+  const b = readBlock(card.found ? card.rest : text)
+  if (b?.kind === 'task') return taskBlock(b, o)
   let k = 0
   while (k < lines.length && !lines[k].trim()) k++
   if (k >= lines.length || !HEADING.test(lines[k])) {

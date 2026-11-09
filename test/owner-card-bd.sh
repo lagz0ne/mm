@@ -17,7 +17,8 @@ check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then printf '  \033[32mok\
 
 mkdir -p "$T/bin/lib" "$T/tools" "$T/control" "$T/items"
 cp "$SRC/template/bin/bd" "$SRC/template/bin/owner-card" "$SRC/template/bin/message" "$SRC/template/bin/task" "$T/bin/"
-cp "$SRC/template/bin/lib/owner-card.mjs" "$SRC/template/bin/lib/message.mjs" "$SRC/template/bin/lib/writing.mjs" "$SRC/template/bin/lib/glossary.mjs" "$SRC/template/bin/lib/task.mjs" "$SRC/template/bin/lib/raci.mjs" "$T/bin/lib/"
+cp "$SRC/template/bin/lib/owner-card.mjs" "$SRC/template/bin/lib/message.mjs" "$SRC/template/bin/lib/writing.mjs" "$SRC/template/bin/lib/glossary.mjs" "$SRC/template/bin/lib/task.mjs" "$SRC/template/bin/lib/raci.mjs" "$SRC/template/bin/lib/structured.mjs" "$SRC/template/bin/lib/schema.mjs" "$SRC/template/bin/lib/schemas.mjs" "$T/bin/lib/"
+cp -R "$SRC/template/bin/lib/schemas" "$T/bin/lib/"
 printf '#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n' >"$T/bin/trace"
 # the stand-in bd: `show <id> --json` from items/<id>.json (shows are logged apart), everything else recorded in ran
 cat >"$T/tools/bd" <<EOF

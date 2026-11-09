@@ -15,11 +15,15 @@
 // "none"), so the receiver knows what to restart, rebuild or check.
 // The words follow the writing rules (sy-ko6r, writing.mjs): with o.writing, the lines after the header are checked;
 // the problems are out.writing (warnings), and from the glossary's refuse_from on also errors.
-// Pure; imports only its neighbours owner-card.mjs (the Head format) and writing.mjs. Used by bin/message (bin/bd's gate), the
+// The structured form (sy-rfup, step 1): a comment that is one ```mm-message v1 block (bin/lib/structured.mjs; bd msg builds
+// it) is checked by its schema (bin/lib/schemas/message.v1.json) and the same run-time rules (roles, the reviewer, the
+// writing check on its text parts), and maps to the same keys; out.json is its data. Both forms pass for now.
+// Pure; imports only its neighbours owner-card.mjs (the Head format), writing.mjs and structured.mjs. Used by bin/message (bin/bd's gate), the
 // Supervisor (openWaits), and, as an identical copy, the board's browser code (site/src/lib/message.mjs;
 // test/message.mjs keeps them equal).
 import { HEAD } from './owner-card.mjs'
 import { writingCheck } from './writing.mjs'
+import { messageKeys, partsText, readBlock, validate } from './structured.mjs'
 
 export const MAX = 600
 /** The role that writes a VERDICT (review sy-0gsw #8): as only it signs off (bin/owner-card signoff). */
@@ -86,6 +90,8 @@ export function parseMessage(text, o = {}) {
   const lines = t.split('\n')
   const errors = []
   const out = { ok: false, found: false, intent: null, to: null, re: null, keys: {}, expect: null, by: null, text: t, errors, writing: [] }
+  const b = readBlock(t)
+  if (b) return fromBlock(b, out, o, roles)
   const h = HEADER.exec(lines[0].trim())
   if (!h) {
     errors.push(looksLikeMessage(t)
@@ -164,6 +170,28 @@ export function parseMessage(text, o = {}) {
       if ((b[2] && Number(b[2]) > 23) || (b[5] && Number(b[5]) > 23)) errors.push('By: the hour is 00 to 23')
     }
   }
+  out.ok = errors.length === 0
+  return out
+}
+
+/** parseMessage for a ```mm-message v1 block: the schema, then the rules a schema cannot say. */
+function fromBlock(b, out, o, roles) {
+  const errors = out.errors
+  errors.push(...b.errors)
+  if (!errors.length && b.kind !== 'message') errors.push(`an mm-${b.kind} block is no message: a comment is one mm-message block (bd msg)`)
+  if (errors.length) return out
+  const m = messageKeys(b.data)
+  out.json = b.data
+  if (m.intent && m.intent in INTENTS) Object.assign(out, { found: true, intent: m.intent, to: m.to, re: m.re, keys: m.keys, expect: m.expect, by: m.by })
+  errors.push(...validate('message', b.data))
+  if (b.rest.trim()) errors.push('nothing goes after the block: put more in its parts')
+  const intent = out.intent, reviewer = o.reviewer || REVIEWER
+  if (intent === 'VERDICT' && o.author !== undefined && String(o.author).split('/')[0] !== reviewer)
+    errors.push(`only ${reviewer} writes a VERDICT (as only ${reviewer} signs off); ${o.author || 'nobody'} writes an ANSWER, a NOTE or a HANDOFF`)
+  if (roles && out.to && ['ASK', 'HANDOFF', 'VERDICT'].includes(intent) && !roles.includes(out.to.split('/')[0]))
+    errors.push(`to: ${out.to} is not a role (${roles.join(', ')}); ask a person with an owner card, never in a message`)
+  if (roles && out.expect && !roles.includes(out.expect.role)) errors.push(`expect.role: ${clip(out.expect.role)} is not a role (${roles.join(', ')}); ask a person with an owner card, never in a message`)
+  out.writing = writingCheck(partsText(b.data.parts), o.writing && { roles: roles || [], ...o.writing }, errors)
   out.ok = errors.length === 0
   return out
 }

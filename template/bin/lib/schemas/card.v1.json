@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mm:schema:card:v1",
+  "title": "The owner card (v1): the first block of the description of an item that needs the owner, stored as a fenced block mm-card v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["what", "why", "you"],
+  "properties": {
+    "what": { "$comment": "what is asked of the owner, as a step", "$ref": "urn:mm:schema:common:v1#/$defs/step" },
+    "why": { "enum": ["security", "access", "outage", "cost", "compliance", "request", "upkeep", "feature", "data", "policy"] },
+    "you": { "type": "object", "additionalProperties": false, "required": ["kind"],
+      "properties": { "kind": { "enum": ["approve", "reply", "check", "nothing"] }, "at": { "$comment": "check: where", "anyOf": [{ "$ref": "urn:mm:schema:common:v1#/$defs/url" }, { "$ref": "urn:mm:schema:common:v1#/$defs/path" }, { "$ref": "urn:mm:schema:common:v1#/$defs/id" }] } },
+      "allOf": [{ "if": { "required": ["kind"], "properties": { "kind": { "const": "check" } } }, "then": { "required": ["at"] } }] },
+    "ifYes": { "$ref": "urn:mm:schema:common:v1#/$defs/step" },
+    "ifNo": { "$ref": "urn:mm:schema:common:v1#/$defs/step" },
+    "risk": { "type": "object", "additionalProperties": false, "required": ["level"],
+      "properties": { "level": { "enum": ["low", "medium", "high"] },
+        "of": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "enum": ["lockout", "data-loss", "downtime", "exposure", "cost", "rework", "none"] } } } },
+    "head": { "$ref": "urn:mm:schema:common:v1#/$defs/head" },
+    "link": { "anyOf": [{ "$ref": "urn:mm:schema:common:v1#/$defs/url" }, { "$ref": "urn:mm:schema:common:v1#/$defs/path" }] },
+    "item": { "description": "an http(s) URL that ends in ?item=<id>", "type": "string", "pattern": "^https?://[^\\s/?#<>\"]+/?[^\\s?#<>\"]*\\?item=[a-z]+-[a-z0-9]+(\\.[0-9]+)*$" },
+    "parts": { "$ref": "urn:mm:schema:common:v1#/$defs/parts" }
+  }
+}

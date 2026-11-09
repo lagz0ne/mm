@@ -1,0 +1,259 @@
+#!/usr/bin/env node
+// structured — build a message, a Task or an owner card as a structured block (sy-rfup, step 1; the format:
+// bin/lib/structured.mjs, the schemas bin/lib/schemas/*.v1.json; the leads' brief, "Structured messages (step 1)").
+// bin/bd runs it for bd msg, bd task and bd card:
+//   bd msg <INTENT> <item> --to <role> [flags]   a comment: one ```mm-message v1 block, posted with bd comments add -f
+//   bd task new --title <title> [flags]          a new item whose description is one ```mm-task v1 block (bd create)
+//   bd task set <item> [flags]                   the item's Task, replaced in place (the card above it and the rest of
+//                                                the description stay); bd update --body-file
+//   bd card set <item> [flags]                   the item's owner card, the first block of its description, replaced
+//                                                in place (the rest stays); bd update --body-file
+//   bd msg|task|card --help                      the flags
+// Each builds the JSON from its flags (or --from <file.json>, the flags on top), checks it as the gate will (the schema,
+// the roles of leads/roles.json, the activities of leads/raci.json, the writing check on its text parts), and only then
+// calls this project's bin/bd, so every gate of today still runs. A wrong call prints what is wrong, with the flag, and
+// exits 1: nothing reaches the board. --print prints the block and posts nothing (no actor needed).
+// The writer is --actor <name> or BEADS_ACTOR / BD_ACTOR, as for any board write.
+import { execFileSync, spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { readGlossary } from './lib/glossary.mjs'
+import { SETUP_BRIEF, messageRoles, parseMessage } from './lib/message.mjs'
+import { parseTask } from './lib/task.mjs'
+import { parseCard } from './lib/owner-card.mjs'
+import { formatBlock, readBlock } from './lib/structured.mjs'
+import { sayWriting } from './lib/writing.mjs'
+
+const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const BD = path.join(P, 'bin', 'bd')
+const readJson = (f) => { try { return JSON.parse(fs.readFileSync(path.join(P, 'leads', f), 'utf8')) } catch { return null } }
+const roleIds = () => (readJson('roles.json')?.roles || []).map((r) => r?.id).filter((x) => typeof x === 'string')
+const acts = () => { const j = readJson('raci.json'); return j ? (j.activities || []).map((a) => a?.id).filter((x) => typeof x === 'string') : undefined }
+function writing() {
+  const g = readGlossary((f) => { try { return fs.readFileSync(path.join(P, f), 'utf8') } catch { return null } })
+  return { terms: g.terms, words: g.words, refuseFrom: g.refuseFrom }
+}
+
+// A flag: [name, path in the JSON, kind]. kind: s (a string), i (an integer), l (a list: the flag again adds one),
+// c (a list, comma separated), t (a switch: sets the path to a value), m (a Must change: path[:line][:rule]).
+const PARTS = [['--text', 'parts', 'part:text'], ['--markdown', 'parts', 'part:markdown'], ['--mermaid', 'parts', 'part:mermaid'], ['--part', 'parts', 'part:json']]
+const DONE = [['--done', 'done.is', 's'], ['--done-item', 'done.item', 's'], ['--done-check', 'done.check', 's'], ['--done-expect', 'done.expect', 's'],
+  ['--verify-check', 'verify.check', 's'], ['--verify-expect', 'verify.expect', 's']]
+const FLAGS = {
+  message: [['--to', 'to', 's'], ['--re', 're', 'i'], ['--head', 'head', 's'], ['--expect-role', 'expect.role', 's'], ['--expect', 'expect.do', 's'],
+    ['--expect-on', 'expect.on', 's'], ['--expect-none', 'expect', 't:none'], ...DONE, ['--by', 'by', 's'], ['--else', 'else.do', 's'], ['--else-to', 'else.to', 's'],
+    ['--need', 'need', 's'], ['--option', 'options', 'l'], ['--ready', 'ready', 'l'], ['--surface', 'surfaces', 'l'],
+    ['--tests-artifact', 'tests.artifact', 's'], ['--tests-passed', 'tests.passed', 'i'], ['--tests-failed', 'tests.failed', 'i'], ['--open', 'open', 'l'],
+    ['--result', 'result', 's'], ['--must-change', 'mustChange', 'm'], ['--follow-up', 'followUps', 'l'], ['--artifact', 'artifacts', 'l'], ['--answer', 'answer', 's'], ...PARTS],
+  task: [['--act', 'act', 's'], ['--do', 'do', 's'], ['--on', 'on', 's'], ...DONE, ['--head', 'head', 's'], ['--rollback-run', 'rollback.run', 's'],
+    ['--rollback-migration', 'rollback.migration', 's'], ['--safeguard-check', 'safeguard.check', 's'], ['--safeguard-expect', 'safeguard.expect', 's'], ...PARTS],
+  card: [['--what', 'what.do', 's'], ['--what-on', 'what.on', 's'], ['--what-role', 'what.role', 's'], ['--why', 'why', 's'], ['--you', 'you.kind', 's'], ['--you-at', 'you.at', 's'],
+    ['--if-yes', 'ifYes.do', 's'], ['--if-yes-role', 'ifYes.role', 's'], ['--if-yes-on', 'ifYes.on', 's'], ['--if-yes-by', 'ifYes.by', 's'],
+    ['--if-no', 'ifNo.do', 's'], ['--if-no-role', 'ifNo.role', 's'], ['--if-no-on', 'ifNo.on', 's'], ['--if-no-by', 'ifNo.by', 's'],
+    ['--risk', 'risk.level', 's'], ['--risk-of', 'risk.of', 'l'], ['--head', 'head', 's'], ['--link', 'link', 's'], ['--item', 'item', 's'], ...PARTS],
+}
+// bd create's flags bd task new passes on (with a value)
+const CREATE = new Set(['--title', '-t', '--type', '-p', '--priority', '-l', '--labels', '--parent', '-a', '--assignee', '--deps'])
+
+const HELP = {
+  message: `bd msg <INTENT> <item> --to <role> [flags] [--print]
+  INTENT: ASK, HANDOFF, VERDICT, ANSWER, DONE, NOTE. The comment is one \`\`\`mm-message v1 block (bin/lib/schemas/message.v1.json).
+  every intent but NOTE:
+    --expect-role <role> --expect <action> [--expect-on <ref>]   who must do what (or --expect-none: on a DONE, an ANSWER)
+    --done <state> [--done-item <id>]  |  --done-check <cmd> --done-expect <output>     the visible result
+    --verify-check <cmd> --verify-expect <output>                the exact check and what it shows
+    --by next-wake|today|hh:mm|YYYY-MM-DD[ hh:mm] (UTC) --else proceed|block|escalate|ask-again|reassign|close [--else-to <role>]
+    --head <repo>@<sha>      --re <n> (the comment it answers; required on an ANSWER)
+  ASK: --need decision|info|review|access|sign-off|resource|fix|test [--option <key>]...
+  HANDOFF: --ready <ref>... --surface none|<place>[:<name>]... [--tests-artifact <path> --tests-passed <n> --tests-failed <n>] [--open <id>]...
+  VERDICT (review only): --result signed-off|blocked --head <repo>@<sha> [--must-change <path>[:<line>][:<rule>]]...
+  ANSWER: --answer yes|no|<option key> --re <n>
+  DONE: --result done|partial|dropped --expect-none --verify-check ... [--follow-up <id>]... [--artifact <path>]...
+  NOTE: one part at least; no Expect, Done, Verify, By.`,
+  task: `bd task new --title <title> [-t <type>] [-p <n>] [-l <labels>] [--parent <id>] [-a <who>] [flags] [--print]
+bd task set <item> [flags] [--print]
+  The Task is one \`\`\`mm-task v1 block (bin/lib/schemas/task.v1.json), after the owner card when there is one.
+    --act <activity of leads/raci.json> --do <action> [--on <ref>]
+    --done <state> [--done-item <id>]  |  --done-check <cmd> --done-expect <output>
+    --verify-check <cmd> --verify-expect <output>    [--head <repo>@<sha>]
+    [--rollback-run <cmd> | --rollback-migration <path>] [--safeguard-check <cmd> --safeguard-expect <output>]`,
+  card: `bd card set <item> [flags] [--print]
+  The owner card is one \`\`\`mm-card v1 block (bin/lib/schemas/card.v1.json), the first thing in the description. To ask
+  the owner, label the item needs-you after (bd label add <item> needs-you): the gate checks the card then.
+    --what <action> [--what-on <ref>] [--what-role <role>]      what is asked
+    --why security|access|outage|cost|compliance|request|upkeep|feature|data|policy
+    --you approve|reply|check|nothing [--you-at <url|path|id>]  (reply: the question is the first --text; check: --you-at)
+    with t2 and --you approve: --if-yes <action> [--if-yes-role <role>] [--if-yes-on <ref>], --if-no ..., --risk low|medium|high
+      [--risk-of lockout|data-loss|downtime|exposure|cost|rework|none]..., --head <repo>@<sha>
+    [--link <url|path>] [--item <the item's URL>]`,
+}
+const COMMON_HELP = `
+  parts (the free field, in order): --text <words> (the writing check reads it), --markdown <md>, --mermaid <source>,
+    --part '<json>' (any part: {"type":"table","columns":[...],"rows":[[...]]}, {"type":"image","artifact":"<path>","alt":"..."},
+    {"type":"html","artifact":"<path>"}, {"type":"log","artifact":"<path>"}, ...)
+  --from <file.json>  the JSON to start from (the flags go on top)      --print  print the block, post nothing
+  --actor <name>      who writes (else BEADS_ACTOR / BD_ACTOR)`
+
+const fail = (lines, kind) => {
+  console.error(`bd ${kind === 'message' ? 'msg' : kind}: refused, nothing was posted:\n${lines.map((l) => `  - ${l}`).join('\n')}\nSee bd ${kind === 'message' ? 'msg' : kind} --help.`)
+  process.exit(1)
+}
+
+/** Set a dotted path of an object. */
+function put(o, p, v) {
+  const ks = p.split('.')
+  let x = o
+  for (const k of ks.slice(0, -1)) { if (!x[k] || typeof x[k] !== 'object' || Array.isArray(x[k])) x[k] = {}; x = x[k] }
+  x[ks.at(-1)] = v
+}
+
+/** Read the flags of one kind: { data, rest (positional), print, actor, create (bd create's flags), errors }. */
+function read(kind, argv) {
+  const spec = new Map(FLAGS[kind].map(([n, p, t]) => [n, { p, t }]))
+  const out = { data: {}, rest: [], print: false, actor: process.env.BEADS_ACTOR || process.env.BD_ACTOR || '', create: [], errors: [] }
+  const set = []
+  for (let k = 0; k < argv.length; k++) {
+    let a = argv[k], v
+    const eq = a.startsWith('--') ? a.indexOf('=') : -1
+    if (eq > 0) { v = a.slice(eq + 1); a = a.slice(0, eq) }
+    const val = () => (v !== undefined ? v : k + 1 < argv.length ? argv[++k] : (out.errors.push(`${a} needs a value`), ''))
+    if (a === '--print') { out.print = true; continue }
+    if (a === '--actor') { out.actor = val(); continue }
+    if (a === '--from') { const f = val(); try { const j = JSON.parse(fs.readFileSync(f, 'utf8')); if (j && typeof j === 'object' && !Array.isArray(j)) out.data = { ...j, ...out.data }; else out.errors.push(`--from ${f}: not one JSON object`) } catch (e) { out.errors.push(`--from ${f}: ${String(e.message).slice(0, 120)}`) } continue }
+    if (kind === 'task' && CREATE.has(a)) { out.create.push(a, val()); continue }
+    const s = spec.get(a)
+    if (!s) { if (a.startsWith('-')) out.errors.push(`${a} is not a flag of bd ${kind === 'message' ? 'msg' : kind}`); else out.rest.push(a); continue }
+    set.push([a, s, s.t.startsWith('t:') ? null : val()])
+  }
+  const d = out.data
+  for (const [a, { p, t }, v] of set) {
+    if (t.startsWith('t:')) put(d, p, t.slice(2))
+    else if (t === 'i') { if (/^[0-9]+$/.test(v)) put(d, p, Number(v)); else out.errors.push(`${a} ${JSON.stringify(v)}: a whole number`) }
+    else if (t === 'l') { const cur = p.split('.').reduce((x, k) => x?.[k], d); if (Array.isArray(cur)) cur.push(v); else put(d, p, [v]) }
+    else if (t === 'm') {
+      const [file, line, rule] = v.split(':')
+      const m = { path: file }
+      if (line !== undefined && line !== '') { if (/^[0-9]+$/.test(line)) m.line = Number(line); else out.errors.push(`${a} ${JSON.stringify(v)}: <path>[:<line>][:<rule>], line a number`) }
+      if (rule) m.rule = rule
+      ;(d.mustChange = Array.isArray(d.mustChange) ? d.mustChange : []).push(m)
+    } else if (t.startsWith('part:')) {
+      const type = t.slice(5)
+      let part
+      if (type === 'json') { try { part = JSON.parse(v) } catch { out.errors.push(`--part: not JSON (${String(v).slice(0, 40)})`); continue } }
+      else part = { type, [type]: v }
+      ;(d.parts = Array.isArray(d.parts) ? d.parts : []).push(part)
+    } else put(d, p, v)
+  }
+  return out
+}
+
+/** "expect.do: ..." -> "expect.do: ... (--expect)": the flag that sets the path an error names. */
+function withFlag(kind, e) {
+  const p = /^([A-Za-z.[\]0-9]+):/.exec(e)?.[1]?.replace(/\[[0-9]+\]/g, '')
+  if (!p) return e
+  // the flag of that path; else of the path above it (expect.role -> --expect-none sets expect); else those below it
+  const exact = FLAGS[kind].filter(([, fp]) => fp === p).map(([n]) => n)
+  const above = FLAGS[kind].filter(([, fp]) => p.startsWith(`${fp}.`)).map(([n]) => n)
+  const below = FLAGS[kind].filter(([, fp]) => fp.startsWith(`${p}.`)).map(([n]) => n)
+  const names = [...new Set(exact.length ? exact : above.length ? above : below)]
+  return names.length ? `${e} (${names.slice(0, 4).join(', ')})` : e
+}
+
+function show(id) {
+  let out
+  try { out = execFileSync(BD, ['show', id, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000, maxBuffer: 16 << 20 }) }
+  catch (e) { console.error(`bd: cannot read ${id} (bd show: ${String(e.stderr || e.message).trim().split('\n').pop().slice(0, 200)})`); process.exit(2) }
+  let j; try { j = JSON.parse(out) } catch { console.error(`bd: cannot read ${id} (bd show gave no JSON)`); process.exit(2) }
+  const i = Array.isArray(j) ? j[0] : j
+  if (!i) { console.error(`bd: no item ${id}`); process.exit(2) }
+  return { description: typeof i.description === 'string' ? i.description.replace(/\r\n?/g, '\n') : '', labels: Array.isArray(i.labels) ? i.labels : [] }
+}
+
+/** The description without its Task (either form) at the top. */
+function dropTask(text) {
+  const b = readBlock(text)
+  if (b?.kind === 'task') return b.rest
+  const lines = text.split('\n')
+  let k = 0
+  while (k < lines.length && !lines[k].trim()) k++
+  if (k < lines.length && /^##[ \t]+Task[ \t]*$/.test(lines[k])) {
+    k++
+    while (k < lines.length && !lines[k].trim()) k++
+    while (k < lines.length && lines[k].trim()) k++
+    return lines.slice(k).join('\n').replace(/^\n+/, '')
+  }
+  return text
+}
+const join = (...xs) => xs.filter((x) => x && x.trim()).map((x) => x.replace(/\s+$/, '')).join('\n\n')
+
+/** Run this project's bd with a file, then remove the file; exit with bd's status. */
+function post(args, body, actor) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bd-structured-'))
+  const f = path.join(dir, 'body.md')
+  fs.writeFileSync(f, `${body}\n`, { mode: 0o600 })
+  const r = spawnSync(BD, [...args.map((a) => (a === '@FILE' ? f : a)), ...(actor ? ['--actor', actor] : [])], { stdio: 'inherit' })
+  fs.rmSync(dir, { recursive: true, force: true })
+  process.exit(r.status ?? 1)
+}
+const warn = (ws) => { if (ws?.length) console.error(`bd: writing (ASD-STE100): ${ws.length} warning(s) on the text parts; it goes through:\n${sayWriting(ws)}`) }
+
+const [verb, ...argv] = process.argv.slice(2)
+const kind = { msg: 'message', task: 'task', card: 'card' }[verb]
+if (!kind) { console.error('usage: bd msg|task|card ... (bd msg --help)'); process.exit(2) }
+if (argv.includes('--help') || argv.includes('-h') || !argv.length) { console.log(HELP[kind] + COMMON_HELP); process.exit(argv.length ? 0 : 2) }
+
+const o = read(kind, argv)
+if (kind === 'message') {
+  const [intent, item, ...more] = o.rest
+  if (!intent || !item) o.errors.push('bd msg <INTENT> <item>: both are needed')
+  if (more.length) o.errors.push(`more words than <INTENT> <item>: ${more.join(' ').slice(0, 60)} (each value goes after its flag)`)
+  if (intent) o.data = { intent: intent.toUpperCase(), ...o.data }
+  if (o.errors.length) fail(o.errors, kind)
+  const block = formatBlock('message', order(o.data))
+  const r = parseMessage(block, { roles: messageRoles(roleIds(), fs.existsSync(path.join(P, SETUP_BRIEF))), author: o.actor || undefined, writing: writing() })
+  if (!r.ok) fail(r.errors.map((e) => withFlag(kind, e)), kind)
+  if (o.print) { console.log(block); process.exit(0) }
+  warn(r.writing)
+  post(['comments', 'add', item, '-f', '@FILE'], block, o.actor)
+} else if (kind === 'task') {
+  const [sub, item, ...more] = o.rest
+  if (sub !== 'new' && sub !== 'set') o.errors.push('bd task new --title <title> ... | bd task set <item> ...')
+  if (sub === 'new' && item) o.errors.push(`bd task new takes no item (${item}): bd task set <item> changes one`)
+  if (sub === 'set' && !item) o.errors.push('bd task set <item>: the item is needed')
+  if (sub === 'set' && o.create.length) o.errors.push(`${o.create[0]} is a flag of bd task new`)
+  if (sub === 'new' && !o.create.includes('--title')) o.errors.push('bd task new needs --title <title>')
+  if (more.length) o.errors.push(`more words than expected: ${more.join(' ').slice(0, 60)} (each value goes after its flag)`)
+  if (o.errors.length) fail(o.errors, kind)
+  const block = formatBlock('task', order(o.data))
+  const desc = sub === 'set' ? (() => {
+    const d = show(item).description, c = parseCard(d)
+    const head = c.found ? d.slice(0, d.length - c.rest.length) : ''
+    return join(head, block, dropTask(c.found ? c.rest : d))
+  })() : block
+  const r = parseTask(desc, { acts: acts() })
+  if (!r.ok) fail(r.errors.map((e) => withFlag(kind, e)), kind)
+  if (o.print) { console.log(sub === 'set' ? desc : block); process.exit(0) }
+  post(sub === 'new' ? ['create', ...o.create, '--body-file', '@FILE'] : ['update', item, '--body-file', '@FILE'], desc, o.actor)
+} else {
+  const [sub, item, ...more] = o.rest
+  if (sub !== 'set' || !item) o.errors.push('bd card set <item> ...')
+  if (more.length) o.errors.push(`more words than expected: ${more.join(' ').slice(0, 60)} (each value goes after its flag)`)
+  if (o.errors.length) fail(o.errors, kind)
+  const block = formatBlock('card', order(o.data))
+  const cur = show(item), c = parseCard(cur.description)
+  const desc = join(block, c.found ? c.rest : cur.description)
+  const r = parseCard(desc, cur.labels, item, { writing: writing() })
+  if (!r.ok) fail(r.errors.map((e) => withFlag(kind, e)), kind)
+  if (o.print) { console.log(desc); process.exit(0) }
+  warn(r.writing)
+  post(['update', item, '--body-file', '@FILE'], desc, o.actor)
+}
+
+/** The keys in the schema's order (stable blocks: the same call gives the same text). */
+function order(d) {
+  const KEYS = ['intent', 'to', 're', 'head', 'act', 'what', 'why', 'you', 'do', 'on', 'expect', 'done', 'verify', 'by', 'else', 'need', 'options', 'ready', 'surfaces',
+    'tests', 'open', 'result', 'mustChange', 'answer', 'followUps', 'artifacts', 'ifYes', 'ifNo', 'risk', 'rollback', 'safeguard', 'link', 'item', 'parts']
+  return Object.fromEntries([...KEYS.filter((k) => k in d), ...Object.keys(d).filter((k) => !KEYS.includes(k))].map((k) => [k, d[k]]))
+}
