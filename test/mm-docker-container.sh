@@ -13,7 +13,7 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 . "$HERE/test/lib/docker.sh"
 W=$DOCKER; RAW=${MM_DOCKER_RAW:-}
-BASE=${MM_DOCKER_TEST_BASE:-ubuntu:24.04}   # a local image the test builds on (no pull here)
+BASE=${MM_DOCKER_TEST_BASE:-ubuntu:24.04}   # the image the test builds on; not local: the build through the wrapper pulls it
 T=$(mm_test_dir dct); P=$(basename "$T"); IMG="mm-box:test-$$"; NET="mm-net-$P"; BOX="mm-box-$P"; CPC="mm-egress-$P"
 ONE="mm-doop-$P"; FAKE="mm-box-${P}x"
 w() { $W "$@"; }
@@ -28,7 +28,8 @@ pass=0; fail=0
 ok() { pass=$((pass+1)); echo "  ok   $*"; }; bad() { fail=$((fail+1)); echo "  FAIL $*"; }
 U=$(id -u); G=$(id -g)
 echo "== through: $W  (the tests' area: $T)"
-[ -n "$(w images -q "$BASE" 2>/dev/null)" ] || { echo "no local $BASE (MM_DOCKER_TEST_BASE names another), or no wrapper"; exit 2; }
+w images -q >/dev/null 2>&1 || { echo "no wrapper (or it does not answer): $W"; exit 2; }
+[ -n "$(w images -q "$BASE" 2>/dev/null)" ] || echo "  no local $BASE: the build brings it (FROM, through the wrapper)"
 
 PR="$T/proj"
 mkdir -p "$PR" "$T/box/cfg" "$T/out" "$T/in"; printf 'project: %s\n' "$P" >"$PR/.mm-answers.yaml"
