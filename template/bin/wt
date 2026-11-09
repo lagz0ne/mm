@@ -38,10 +38,13 @@ case "${1:-}" in
        # Workers run arbitrary code (npm, node): every shell command they run is jailed by bubblewrap through
        # Claude Code's sandbox. Writes: this worktree + npm cache + temp. Reads: nothing else under $HOME.
        # Network: the npm registry only. The profile itself is read-only to the worker.
+       # In a box, the box is the jail (its own uid, the egress proxy, read-only mounts) and bwrap can't start there
+       # (the box's seccomp refuses user namespaces): no sandbox block, the permissions stay (sy-fk51, the owner's
+       # call: "already in docker, no more wrap"). "In a box" is the image's /etc/mm-box, owned by root: only root
+       # makes it, so on the host no lead can fake it (an environment variable could be).
        case "$1" in w-*)
          mkdir -p "$W/.claude"
-         cat > "$W/.claude/settings.local.json" <<JSON
-{
+         if [ -f /etc/mm-box ] && [ "$(stat -c %u /etc/mm-box 2>/dev/null)" = 0 ]; then SANDBOX=; else SANDBOX=$(cat <<JSON
   "sandbox": {
     "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false, "autoAllowBashIfSandboxed": true,
     "filesystem": {
@@ -52,6 +55,12 @@ case "${1:-}" in
     },
     "network": { "allowedDomains": ["registry.npmjs.org"] }
   },
+JSON
+)
+         fi
+         cat > "$W/.claude/settings.local.json" <<JSON
+{
+$SANDBOX
   "permissions": {
     "deny": ["Edit($W/.claude/**)", "Write($W/.claude/**)", "Bash(git push*)", "Bash(*SANDBOX*)"]
   }

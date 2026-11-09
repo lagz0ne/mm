@@ -22,6 +22,10 @@ RUN apt-get update -qq \
  # *.localhost is 127.0.0.1 for every program (Node too, not only curl), as on the host: the services' portless names
  && sed -i 's/^hosts:.*/hosts:          files myhostname dns/' /etc/nsswitch.conf \
  && dpkg-query -W -f '${Package} ${Version}\n' >/etc/mm-box.packages && rm -rf /var/lib/apt/lists/*
+# the marker "this is a box" (sy-fk51): root's, 0644, in the image only. bin/wt reads it: in a box the box is the code
+# worker's jail, so it gets no bubblewrap sandbox (the box's seccomp refuses the user namespace bwrap needs). Only root
+# can make it, on the host as here, so a lead can't fake it there to drop its workers' sandbox
+RUN printf 'mm box image: the box is the jail (no bwrap sandbox for code workers)\n' >/etc/mm-box && chown 0:0 /etc/mm-box && chmod 0644 /etc/mm-box
 
 # node (nodejs.org, sha256 pinned here)
 RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o /tmp/node.tar.xz https://nodejs.org/dist/v${NODE}/node-v${NODE}-linux-x64.tar.xz \
