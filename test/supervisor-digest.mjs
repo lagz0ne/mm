@@ -194,6 +194,25 @@ try {
   comment('sy-40', 'review', 'VERDICT → platform · re #1\nHead: mm@1234567\nResult: signed off\nExpect: platform: hand it to ops.\nDone when: ops has it.\nVerify: bd show sy-40 → assignee ops\nBy: next wake · Else: it waits')
   at(200); await supervise()
   ok('a VERDICT re #1 answers it: sy-40\'s line drops off', !/sy-40/.test(openOf('digest:review')?.description || ''))
+
+  console.log('== the monitored placements (sy-rfup): once a UTC day, the parts of the structured blocks, data only')
+  ok('a day with no block: no placements:daily', !openOf('placements:daily'))
+  const blk = (d) => '```mm-message v1\n' + JSON.stringify(d) + '\n```'
+  const next = Date.UTC(new Date(clock).getUTCFullYear(), new Date(clock).getUTCMonth(), new Date(clock).getUTCDate() + 1, 6) // 06:00 UTC the next day
+  item('sy-50', { assignee: 'ops', description: '```mm-task v1\n' + JSON.stringify({ act: 'incident', do: 'fix', done: { is: 'closed' }, verify: { check: 'a', expect: 'b' }, parts: [{ type: 'mermaid', mermaid: 'graph LR; a-->b' }] }) + '\n```' }, 'ops', next - 3600e3)
+  comment('sy-50', 'ops', blk({ intent: 'NOTE', to: 'ops', parts: [{ type: 'text', text: 'I claim this item now.' }, { type: 'table', columns: ['a'], rows: [['xy']] }] }), next - 3000e3)
+  comment('sy-50', 'ops', blk({ intent: 'NOTE', to: 'ops', parts: [{ type: 'text', text: 'I claim this one too.' }] }), next - 2000e3)
+  comment('sy-50', 'ops', 'NOTE → ops\nThe old form is not counted.', next - 1000e3)
+  clock = next; await supervise()
+  const PL = openOf('placements:daily')
+  ok('the next day: placements:daily, P4, for ops', PL?.priority === 4 && PL?.assignee === 'ops', PL && `${PL.priority} ${PL.assignee}`)
+  ok('...the blocks: 2 messages (2 with parts), 1 task', /2 messages \(2 with parts\), 1 task \(1 with parts\)/.test(PL?.description || ''), PL?.description)
+  ok('...a row per kind and type: count, median, max', /\| message \| text \| 2 \| 22 \| 22 \|/.test(PL?.description || '') && /\| message \| table \| 1 \| 3 \| 3 \|/.test(PL?.description || '') && /\| task \| mermaid \| 1 \| 15 \| 15 \|/.test(PL?.description || ''))
+  ok('...the most common leading words of text parts', /- message, text: "i claim this" 2/.test(PL?.description || ''))
+  const before = PL?.description
+  comment('sy-50', 'ops', blk({ intent: 'NOTE', to: 'ops', parts: [{ type: 'markdown', markdown: 'x' }] }), clock + 60e3)
+  clock += 3600e3; await supervise()
+  ok('the same day again: not counted again (the item stays as it was)', openOf('placements:daily')?.description === before)
 } finally {
   srv.close()
   if (fail) console.log(out.slice(-3000))
