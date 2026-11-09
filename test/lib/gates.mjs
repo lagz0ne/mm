@@ -406,8 +406,13 @@ export function counts(log) {
 
 const interp = (p) => p.endsWith('.mjs') || p.endsWith('.js') ? ['node'] : p.endsWith('.ts') ? ['bun'] : ['bash']
 
+// A suite past its timeout gets a TERM to its process group, then a KILL this many seconds later. The grace is a
+// suite's own cleanup: its EXIT trap removes its containers, and a container whose PID 1 ignores TERM (sleep infinity)
+// costs podman rm -f its 10 s stop timeout; a KILL inside that left restore-drill's containers running (sy-khal).
+export const KILL_GRACE = 60
+
 // run one command into a log file (appending); resolves {code, secs}
-function runTo(cmd, args, { cwd, env, log, timeout }) {
+export function runTo(cmd, args, { cwd, env, log, timeout, grace = KILL_GRACE }) {
   return new Promise((done) => {
     const fd = fs.openSync(log, 'a')
     const t0 = Date.now()
@@ -416,7 +421,7 @@ function runTo(cmd, args, { cwd, env, log, timeout }) {
       fs.writeSync(fd, `gates: cannot start ${cmd}: ${e.message}\n`); fs.closeSync(fd); return done({ code: 127, secs: 0 })
     }
     let timedOut = false
-    const timer = timeout ? setTimeout(() => { timedOut = true; try { process.kill(-child.pid, 'SIGTERM') } catch {} ; setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL') } catch {} }, 10000) }, timeout * 1000) : null
+    const timer = timeout ? setTimeout(() => { timedOut = true; try { process.kill(-child.pid, 'SIGTERM') } catch {} ; setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL') } catch {} }, grace * 1000) }, timeout * 1000) : null
     child.on('error', (e) => fs.writeSync(fd, `gates: ${cmd}: ${e.message}\n`))
     child.on('close', (code, sig) => {
       if (timer) clearTimeout(timer)

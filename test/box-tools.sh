@@ -53,7 +53,7 @@ fi
 W=$DOCKER
 T=$(mm_test_dir tools); P=$(basename "$T"); BOX="mm-box-$P"; G=$(id -g); BUID=$((200000 + $$ % 50000))
 IMG=${BOX_IMAGE:-}; BUILT=""; RAN=""
-cleanup() { $W rm -f "$BOX" >/dev/null 2>&1
+cleanup() { $W kill "$BOX" >/dev/null 2>&1; $W rm -f "$BOX" >/dev/null 2>&1
   # what the box's uid wrote in the copy: removed by that uid
   [ -n "$RAN" ] && $W run --rm --name "$BOX" --label "mm.project=$P" --network none --user "$BUID:$G" --cap-drop ALL -v "$T:$T" "$IMG" sh -c "rm -rf '$T'/* '$T'/.[!.]*" >/dev/null 2>&1
   [ -n "$BUILT" ] && $W rmi -f "$BUILT" >/dev/null 2>&1

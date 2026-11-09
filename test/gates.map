@@ -82,6 +82,7 @@ suite test/sysworkers.sh          hermetic
 suite test/template-base.sh       hermetic
 suite test/trace-refused.sh       hermetic
 suite test/update-lock.sh         hermetic
+suite test/signal-cleanup.sh      hermetic
 suite test/worker-cleanup.sh      hermetic
 suite test/vault.sh               hermetic
 suite test/writing-rule.sh        hermetic
@@ -448,7 +449,7 @@ rule template/profiles/system/services.yaml test/sysworkers.sh test/sentinel-ass
 # a changed suite runs itself (test/gates adds that on its own too); its helpers run the suites that use them
 rule test/gates                   test/gates.mjs
 rule test/gates.map               test/gates.mjs
-rule test/lib/gates.mjs           test/gates.mjs
+rule test/lib/gates.mjs           test/gates.mjs test/signal-cleanup.sh
 rule test/lib/docker.sh           test/box-egress.sh test/box.sh test/doop-container.sh test/doop-designs.sh test/doop-gateway.sh test/front-container.sh test/mm-docker-container.sh
 rule test/lib/stock.sh            test/auth-e2e.sh test/box-gateway.sh test/clean-box.sh test/in-box.sh test/restore-drill.sh
 rule test/lib/expose              test/names.sh test/routes.sh test/box.sh test/doop.sh test/lifecycle.sh test/machine-panel.sh test/sentinel.sh

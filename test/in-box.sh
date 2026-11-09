@@ -11,7 +11,7 @@ IMAGE=ubuntu:24.04
 IMAGE=$(stock_image "$IMAGE")
 [ $# -ge 2 ] || { echo "usage: $0 [--image <image>] <mm binary> <test.sh>..."; exit 2; }
 BIN=$(readlink -f "$1"); shift; HERE=$(cd "$(dirname "$0")" && pwd)
-NAME=mm-inbox-$$; WORK=$(mktemp -d); trap '$DOCKER rm -f "$NAME" >/dev/null 2>&1; rm -rf -- "$WORK"' EXIT
+NAME=mm-inbox-$$; WORK=$(mktemp -d); trap '$DOCKER kill "$NAME" >/dev/null 2>&1; $DOCKER rm -f "$NAME" >/dev/null 2>&1; rm -rf -- "$WORK"' EXIT
 # laid out as the repo (/w/test/<t>, /w/template): a test that compares with mm's template finds it ($SRC/template)
 mkdir "$WORK/test"; cp "$BIN" "$WORK/mm"; cp -r "$HERE/../template" "$WORK/template"
 for t in "$@"; do cp "$HERE/$t" "$WORK/test/"; done; chmod -R a+rX "$WORK"

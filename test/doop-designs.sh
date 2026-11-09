@@ -19,7 +19,7 @@ free_port() { node -e "const s=require('net').createServer().listen(0,'127.0.0.1
 PORT=$(free_port); URL="http://doop.$PROJECT.localhost:1355"; B="http://127.0.0.1:$PORT"
 RUN=""
 stoprun() { [ -n "$RUN" ] && kill -TERM "$RUN" 2>/dev/null; for _ in $(seq 1 150); do [ -n "$RUN" ] && [ -d "/proc/$RUN" ] || break; sleep 0.2; done; RUN=""; }
-cleanup() { stoprun; $DOCKER rm -f "$C" >/dev/null 2>&1; $DOCKER network rm "$NET" >/dev/null 2>&1; rm -rf "$T" 2>/dev/null || true; }
+cleanup() { stoprun; $DOCKER kill "$C" >/dev/null 2>&1; $DOCKER rm -f "$C" >/dev/null 2>&1; $DOCKER network rm "$NET" >/dev/null 2>&1; rm -rf "$T" 2>/dev/null || true; }
 trap cleanup EXIT
 
 # the project, as mm stamps it (what doop-run and the board read)

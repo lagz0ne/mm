@@ -22,7 +22,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { BUILD_STAMP, BUILDS_KEEP, CONFLICT_FILE, GROUPS, HISTORY_MAX, buildName, pruneBuilds, appendHistory, defaultJobs, fetchTool, gatesDir, globMatch, markRun, oldTemplateRef, parseMap, procStart, mapChanges, resolve, select, selectAll, selectMapChange, waitLine } from './lib/gates.mjs'
+import { BUILD_STAMP, BUILDS_KEEP, CONFLICT_FILE, GROUPS, HISTORY_MAX, KILL_GRACE, buildName, pruneBuilds, appendHistory, defaultJobs, fetchTool, gatesDir, globMatch, markRun, oldTemplateRef, parseMap, procStart, mapChanges, resolve, select, selectAll, selectMapChange, waitLine } from './lib/gates.mjs'
 import { gatesVerdict } from '../template/bin/lib/gates-file.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
@@ -181,6 +181,19 @@ ok('clean-box takes the built mm (--local {mm})', real.suites.find((x) => x.path
 ok('machine-panel.sh has needs=site (gates gives it SITE_NODE_MODULES) and mm', (() => { const m = real.suites.find((x) => x.path === 'test/machine-panel.sh'); return m.needs.includes('site') && m.needs.includes('mm') })())
 ok('a needs=site suite gets SITE_NODE_MODULES (the site\'s packages gates installed)', /SITE_NODE_MODULES: path\.join\(wt, 'template', 'site', 'node_modules'\)/.test(fs.readFileSync(path.join(SRC, 'test', 'lib', 'gates.mjs'), 'utf8')))
 ok('lifecycle.sh takes the base\'s template and the mm (MM_BIN_DIR)', (() => { const l = real.suites.find((x) => x.path === 'test/lifecycle.sh'); return l.args.join() === '{old-template}' && l.needs.includes('mm') })())
+// sy-khal: a suite's cleanup (its EXIT trap, its cleanup()) that removes containers kills them first: a container whose
+// PID 1 ignores TERM (sleep infinity) makes rm -f wait its 10 s stop timeout, and a stopped run's cleanup must end
+// within gates' KILL_GRACE. "<docker> rm -f <names>" needs "<docker> kill <names>" before it, the same names.
+const exitTrap = (t) => t.split('\n').filter((l) => /\btrap\s+(?!-\s)[^\n]*\bEXIT\b/.test(l))
+const cleanupText = (t) => exitTrap(t).join('\n') + '\n' + (t.match(/^cleanup\(\)[^\n]*(?:\n(?!\S)[^\n]*)*(?:\n[^\n]*\})?/m)?.[0] || '')
+const NAMES = String.raw`(?:"[^"\s]*"|\$\{\w+:\+"\$\w+"\}|\$\w+)(?:\s+(?:"[^"\s]*"|\$\{\w+:\+"\$\w+"\}|\$\w+))*`
+const containerRms = (c) => [...c.matchAll(new RegExp(String.raw`(?<![\w$-])(\$\w+|[A-Za-z]\w*)\s+rm\s+-f\s+(${NAMES})`, 'g'))]
+  .filter((m) => !['trap', 'then', 'do', 'else', 'sudo', 'command'].includes(m[1]))
+const rmSuites = real.suites.filter((x) => x.path.endsWith('.sh')).map((x) => ({ ...x, c: cleanupText(fs.readFileSync(path.join(SRC, x.path), 'utf8')) }))
+  .map((x) => ({ ...x, rms: containerRms(x.c) })).filter((x) => x.rms.length)
+const noKill = rmSuites.filter((x) => x.rms.some((m) => !x.c.slice(0, m.index).includes(`${m[1]} kill ${m[2]} `))).map((x) => x.path)
+ok(`a cleanup that removes containers kills them first (${rmSuites.length - noKill.length}/${rmSuites.length})`, rmSuites.length >= 10 && noKill.length === 0, noKill.join(' '))
+ok('test/gates: a timed-out suite gets KILL_GRACE (60 s) between its TERM and its KILL', KILL_GRACE === 60)
 ok('lifecycle.sh honours MM_BIN_DIR', /MM_BIN_DIR/.test(fs.readFileSync(path.join(SRC, 'test', 'lifecycle.sh'), 'utf8')))
 
 step('test/gates on a fixture repo')

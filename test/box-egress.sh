@@ -25,7 +25,7 @@ BUILT=""; IMG=${EGRESS_IMAGE:-}; BOXIMG=${BOX_IMAGE:-}
 cleanup() {
   [ -n "$AIPID" ] && kill "$AIPID" 2>/dev/null
   [ -n "$KEEP" ] && { echo "kept: $BOX $PX $NET $BUILT $TMP"; return; }
-  D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1
+  D kill "$BOX" "$PX" >/dev/null 2>&1; D rm -f "$BOX" "$PX" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1
   [ -n "$BUILT" ] && D rmi -f $BUILT >/dev/null 2>&1
   rm -rf "$TMP"
 }

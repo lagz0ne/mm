@@ -25,7 +25,7 @@ IN() { D exec "$BOX" sh -c "umask 002; $*"; }   # as mm shell does
 cleanup() { [ -n "${AIGW:-}" ] && kill $AIGW 2>/dev/null; [ -n "${APIGW:-}" ] && kill $APIGW 2>/dev/null; [ -n "${TGPID:-}" ] && kill $TGPID 2>/dev/null; [ -n "${SYSPID:-}" ] && kill $SYSPID 2>/dev/null; [ -n "${AIUP:-}" ] && kill $AIUP 2>/dev/null; [ -n "${AIT:-}" ] && rm -rf "$AIT"
   [ -n "${KEEP:-}" ] && return
   # archive only a project still there: after the archive step it is gone, and a second archive is a false failure (sy-ha9x)
-  { [ -n "${ROOT:-}" ] && [ ! -e "$ROOT" ]; } || mm archive "$REF" >/dev/null 2>&1; [ -n "${BKP:-}" ] && rm -rf "$BKP"; [ -n "${CAN:-}" ] && rm -rf "$CAN"; D rm -f "$BOX" "$PX" ${OBOX:+"$OBOX"} >/dev/null 2>&1; D network rm "$NET" ${ONET:+"$ONET"} >/dev/null 2>&1; }
+  { [ -n "${ROOT:-}" ] && [ ! -e "$ROOT" ]; } || mm archive "$REF" >/dev/null 2>&1; [ -n "${BKP:-}" ] && rm -rf "$BKP"; [ -n "${CAN:-}" ] && rm -rf "$CAN"; D kill "$BOX" "$PX" ${OBOX:+"$OBOX"} >/dev/null 2>&1; D rm -f "$BOX" "$PX" ${OBOX:+"$OBOX"} >/dev/null 2>&1; D network rm "$NET" ${ONET:+"$ONET"} >/dev/null 2>&1; }
 trap cleanup EXIT
 export -f D IN; export BOX PX NET MM_DOCKER
 # mm's AI gateway for this test only (sy-b15.10): its own store, a fake upstream that answers like the Messages API,

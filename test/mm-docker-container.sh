@@ -18,7 +18,7 @@ T=$(mm_test_dir dct); P=$(basename "$T"); IMG="mm-box:test-$$"; NET="mm-net-$P";
 ONE="mm-doop-$P"; FAKE="mm-box-${P}x"
 w() { $W "$@"; }
 cleanup() {
-  w rm -f "$BOX" "$CPC" "$ONE" >/dev/null 2>&1; [ -n "$RAW" ] && $RAW rm -f "$FAKE" >/dev/null 2>&1; w network rm "$NET" >/dev/null 2>&1
+  w kill "$BOX" "$CPC" "$ONE" >/dev/null 2>&1; w rm -f "$BOX" "$CPC" "$ONE" >/dev/null 2>&1; [ -n "$RAW" ] && { $RAW kill "$FAKE" >/dev/null 2>&1; $RAW rm -f "$FAKE" >/dev/null 2>&1; }; w network rm "$NET" >/dev/null 2>&1
   # what the box's uid may have left: removed by a throwaway container as that uid, then the image
   [ -n "${BUID:-}" ] && w run --rm --network none --user "$BUID:$(id -g)" --cap-drop ALL -v "$T:/t" "$IMG" sh -c 'rm -rf /t/proj/* /t/proj/.[!.]*' >/dev/null 2>&1
   w rmi -f "$IMG" >/dev/null 2>&1; rm -rf "$T"

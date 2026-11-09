@@ -28,7 +28,7 @@ PORT=$(free_port); PUB=$(free_port); URL="http://doop.$PROJECT.localhost:1355"; 
 B="http://127.0.0.1:$PORT"; PB="http://127.0.0.1:$PUB"
 RUN=""
 stoprun() { [ -n "$RUN" ] && kill -TERM "$RUN" 2>/dev/null; for _ in $(seq 1 150); do [ -n "$RUN" ] && [ -d "/proc/$RUN" ] || break; sleep 0.2; done; RUN=""; }
-cleanup() { stoprun; D rm -f "$C" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1; D rmi -f "$TAG" >/dev/null 2>&1; rm -rf "$T"; }
+cleanup() { stoprun; D kill "$C" >/dev/null 2>&1; D rm -f "$C" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1; D rmi -f "$TAG" >/dev/null 2>&1; rm -rf "$T"; }
 trap cleanup EXIT
 upl() { for _ in $(seq 1 180); do curl -sf -o /dev/null "$B/healthz" && return 0; sleep 1; done; return 1; }
 code() { curl -s -o "$T/body" -w '%{http_code}' "$@"; }

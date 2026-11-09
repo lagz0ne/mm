@@ -16,7 +16,7 @@ IMAGE=$(stock_image "$IMAGE")
 [ -n "$LOCAL" ] || { echo "--local <mm binary> is required"; exit 2; }
 NAME=mm-auth-e2e-$$
 SHIM=${MM_SHIM_URL:-https://raw.githubusercontent.com/lagz0ne/mm/main/bin/mm}
-WORK=$(mktemp -d); trap '[ -n "$KEEP" ] || $DOCKER rm -f "$NAME" >/dev/null 2>&1; rm -rf -- "$WORK"' EXIT
+WORK=$(mktemp -d); trap '[ -n "$KEEP" ] || { $DOCKER kill "$NAME" >/dev/null 2>&1; $DOCKER rm -f "$NAME" >/dev/null 2>&1; }; rm -rf -- "$WORK"' EXIT
 chmod 755 "$WORK"; cp "$LOCAL" "$WORK/mm"
 
 cat >"$WORK/as-root.sh" <<'EOF'

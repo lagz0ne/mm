@@ -16,7 +16,7 @@ while [ $# -gt 0 ]; do case "$1" in
 IMAGE=$(stock_image "$IMAGE")
 NAME=mm-cleanbox-$$
 SHIM=${MM_SHIM_URL:-https://raw.githubusercontent.com/lagz0ne/mm/main/bin/mm}
-WORK=$(mktemp -d); trap 'rm -rf "$WORK"; [ -n "$KEEP" ] || $DOCKER rm -f "$NAME" >/dev/null 2>&1' EXIT
+WORK=$(mktemp -d); trap 'rm -rf "$WORK"; [ -n "$KEEP" ] || { $DOCKER kill "$NAME" >/dev/null 2>&1; $DOCKER rm -f "$NAME" >/dev/null 2>&1; }' EXIT
 chmod 755 "$WORK"
 [ -n "$LOCAL" ] && cp "$LOCAL" "$WORK/mm"
 

@@ -20,7 +20,7 @@ IMAGE=$(stock_image "$IMAGE")
 [ -n "$LOCAL" ] || { echo "--local <mm binary> is required (the drill tests a build)"; exit 2; }
 A=mm-drill-a-$$; B=mm-drill-b-$$; C=mm-drill-c-$$
 SHIM=${MM_SHIM_URL:-https://raw.githubusercontent.com/lagz0ne/mm/main/bin/mm}
-WORK=$(mktemp -d); trap '[ -n "$KEEP" ] || $DOCKER rm -f "$A" "$B" "$C" >/dev/null 2>&1; rm -rf -- "$WORK"' EXIT
+WORK=$(mktemp -d); trap '[ -n "$KEEP" ] || { $DOCKER kill "$A" "$B" "$C" >/dev/null 2>&1; $DOCKER rm -f "$A" "$B" "$C" >/dev/null 2>&1; }; rm -rf -- "$WORK"' EXIT
 chmod 755 "$WORK"; cp "$LOCAL" "$WORK/mm"
 
 cat >"$WORK/as-root.sh" <<'EOF'

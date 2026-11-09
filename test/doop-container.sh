@@ -20,8 +20,8 @@ PROJECT=$(basename "$T"); P="$T/$PROJECT"; C="mm-doop-$PROJECT"; NET="mm-doop-ne
 free_port() { node -e "const s=require('net').createServer().listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"; }
 PORT=$(free_port); URL="http://doop.$PROJECT.localhost:1355"; B="http://127.0.0.1:$PORT"
 RUN=""
-cleanup() { [ -n "$RUN" ] && kill "$RUN" 2>/dev/null; sleep 1; D rm -f "$C" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1
-  [ -z "$RAW" ] || { R rm -f "$OLDC" >/dev/null 2>&1; R network rm "$OLDNET" >/dev/null 2>&1; }
+cleanup() { [ -n "$RUN" ] && kill "$RUN" 2>/dev/null; sleep 1; D kill "$C" >/dev/null 2>&1; D rm -f "$C" >/dev/null 2>&1; D network rm "$NET" >/dev/null 2>&1
+  [ -z "$RAW" ] || { R kill "$OLDC" >/dev/null 2>&1; R rm -f "$OLDC" >/dev/null 2>&1; R network rm "$OLDNET" >/dev/null 2>&1; }
   kill "${OLDFWD:-}" "${BOXFWD:-}" 2>/dev/null; rm -rf "$T"; }
 trap cleanup EXIT
 up() { for _ in $(seq 1 "${2:-150}"); do curl -sf -o /dev/null "$1/healthz" && return 0; sleep 1; done; return 1; }

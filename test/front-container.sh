@@ -13,7 +13,7 @@ W=$DOCKER
 IMG=${MM_FRONT_IMAGE:-$($W images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep '^mm-box:' | grep -v '<none>' | sort -V | tail -1)}
 [ -n "$IMG" ] || { echo "no mm-box image here (mm box build), and no MM_FRONT_IMAGE"; exit 2; }
 T=$(mm_test_dir front); P=$(basename "$T"); NET="mm-net-$P"; BOX="mm-box-$P"; G=$(id -g)
-cleanup() { $W rm -f "$BOX" >/dev/null 2>&1; $W network rm "$NET" >/dev/null 2>&1
+cleanup() { $W kill "$BOX" >/dev/null 2>&1; $W rm -f "$BOX" >/dev/null 2>&1; $W network rm "$NET" >/dev/null 2>&1
   [ -n "${BUID:-}" ] && $W run --rm --name "$BOX" --label "mm.project=$P" --network none --user "$BUID:$G" --cap-drop ALL -v "$T:$T" "$IMG" sh -c "rm -rf '$T'/* '$T'/.[!.]*" >/dev/null 2>&1
   rm -rf "$T"; }
 trap cleanup EXIT

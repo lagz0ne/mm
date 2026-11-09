@@ -14,7 +14,7 @@ while [ $# -gt 0 ]; do case "$1" in --local) LOCAL=$(readlink -f "$2"); shift 2 
 ID=$$; NET=mm-boxgw-$ID; BOX=mm-boxgw-box-$ID; TR=mm-boxgw-traefik-$ID
 SHIM=${MM_SHIM_URL:-https://raw.githubusercontent.com/lagz0ne/mm/main/bin/mm}
 WORK=$(mktemp -d); chmod 755 "$WORK"; cp "$LOCAL" "$WORK/mm"
-cleanup() { [ -n "$KEEP" ] || { $DOCKER rm -f "$BOX" "$TR" >/dev/null 2>&1; $DOCKER network rm "$NET" >/dev/null 2>&1; }; rm -rf -- "$WORK"; }
+cleanup() { [ -n "$KEEP" ] || { $DOCKER kill "$BOX" "$TR" >/dev/null 2>&1; $DOCKER rm -f "$BOX" "$TR" >/dev/null 2>&1; $DOCKER network rm "$NET" >/dev/null 2>&1; }; rm -rf -- "$WORK"; }
 trap cleanup EXIT
 D=example.test; BOARD=board-shop-acme.$D; AUTH=auth.$D
 

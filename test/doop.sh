@@ -14,7 +14,7 @@ pass=0; fail=0
 ok() { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }; bad() { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
 check() { local d=$1; shift; if "$@" >/tmp/doop-test.out 2>&1; then ok "$d"; else bad "$d"; tail -3 /tmp/doop-test.out | sed 's/^/       /'; fi; }
 T=$(mktemp -d); C="mm-doop-$PROJECT"; URL="http://doop.$PROJECT.localhost:1355"
-cleanup() { [ -n "${KEEP:-}" ] && return; mm archive "$REF" >/dev/null 2>&1; D rm -f "$C" >/dev/null 2>&1; D network rm "mm-doop-net-$PROJECT" >/dev/null 2>&1; rm -rf "$T"; }
+cleanup() { [ -n "${KEEP:-}" ] && return; mm archive "$REF" >/dev/null 2>&1; D kill "$C" >/dev/null 2>&1; D rm -f "$C" >/dev/null 2>&1; D network rm "mm-doop-net-$PROJECT" >/dev/null 2>&1; rm -rf "$T"; }
 trap cleanup EXIT
 export -f D; export MM_DOCKER
 # the MCP's tools with the key from its file (never printed)
