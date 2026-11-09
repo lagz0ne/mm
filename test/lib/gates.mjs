@@ -154,20 +154,60 @@ export function select(map, files) {
   return { files: out, suites }
 }
 
-// selectBoth(head, base, files): a range that changes test/gates.map itself must not choose its own gates (review
-// sy-v47f #3): the suites either map selects, the union. A suite both maps declare runs as the head declares it; one
-// only the base declares (the range dropped it) still runs, as the base declared it, and its why says so.
-export function selectBoth(head, base, files) {
-  const h = select(head, files), b = select(base, files), out = new Map(h.suites.map((s) => [s.path, s]))
-  for (const s of b.suites) {
-    const w = s.why.map((x) => ({ ...x, rule: `${x.rule} (the base's map)` }))
-    if (out.has(s.path)) { const o = out.get(s.path); o.why = [...o.why, ...w.filter((x) => !o.why.some((y) => y.file === x.file && y.rule.startsWith(x.rule.replace(/ \(the base's map\)$/, ''))))] }
-    else out.set(s.path, { ...(head.suites.find((x) => x.path === s.path) || s), why: w })
+// ruleSuites(map) -> Map(glob -> Set of the suites its rules name; '(fallback)' for the fallback)
+function ruleSuites(map) {
+  const out = new Map()
+  const put = (g, ts) => { if (!out.has(g)) out.set(g, new Set()); for (const t of ts) for (const p of resolve(map, t)) out.get(g).add(p) }
+  for (const r of map.rules) put(r.glob, r.targets)
+  put('(fallback)', map.fallback?.targets || [])
+  return out
+}
+
+// mapChanges(head, base) -> [{path, rule}]: the suites a change of the map itself needs. A suite a rule (or the
+// fallback) names in the head's map and not in the base's: a new rule, a target added to one, or a set that grew; and
+// a suite the head declares new or otherwise (group, needs, arguments). A suite a rule no longer names needs no run
+// for that (its own files still choose it), and one the head no longer declares cannot run.
+export function mapChanges(head, base) {
+  const out = []
+  const hr = ruleSuites(head), br = ruleSuites(base)
+  for (const [g, ps] of hr) for (const p of ps) if (!br.get(g)?.has(p)) out.push({ path: p, rule: g === '(fallback)' ? 'fallback (changed)' : `rule ${g} (changed)` })
+  const sig = (s) => JSON.stringify([s.group, s.needs, s.args])
+  for (const s of head.suites) {
+    const b = base.suites.find((x) => x.path === s.path)
+    if (!b) out.push({ path: s.path, rule: 'suite (new in the map)' })
+    else if (sig(s) !== sig(b)) out.push({ path: s.path, rule: 'suite (its declaration changed)' })
   }
-  const order = (s) => [GROUPS.indexOf(s.group), (head.suites.find((x) => x.path === s.path) || { line: 1e6 + s.line }).line]
-  const suites = [...out.values()].sort((a, c) => { const [g1, l1] = order(a), [g2, l2] = order(c); return g1 - g2 || l1 - l2 })
+  return out
+}
+
+// selectMapChange(head, base, files, mapFile): a range that changes test/gates.map itself (sy-sbjh.1). The head's map
+// chooses for the range's files; plus the suites whose rules changed (mapChanges, their why names the map file); plus,
+// for each file, a suite the base's map chose for it that the head's no longer does (a range cannot drop its own gates,
+// review sy-v47f #3), when the head still declares it. Never every suite: a file the base left to its fallback adds
+// nothing from the base.
+export function selectMapChange(head, base, files, mapFile = 'test/gates.map') {
+  const h = select(head, files)
+  const out = new Map(h.suites.map((s) => [s.path, { ...s, why: [...s.why] }]))
+  const add = (p, file, rule) => {
+    const decl = head.suites.find((x) => x.path === p)
+    if (!decl) return
+    if (!out.has(p)) out.set(p, { ...decl, why: [] })
+    const o = out.get(p)
+    if (!o.why.some((w) => w.file === file && w.rule === rule)) o.why.push({ file, rule })
+  }
+  for (const c of mapChanges(head, base)) add(c.path, mapFile, c.rule)
+  for (const file of files) {
+    const hs = new Set(select(head, [file]).suites.map((s) => s.path))
+    const b = select(base, [file])
+    if (b.files[0].rules.includes('(fallback)')) continue
+    for (const s of b.suites) if (!hs.has(s.path)) for (const w of s.why) add(s.path, file, `${w.rule} (the base's map)`)
+  }
+  const suites = [...out.values()].sort((a, c) => GROUPS.indexOf(a.group) - GROUPS.indexOf(c.group) || a.line - c.line)
   return { files: h.files, suites }
 }
+
+// unmapped(sel) -> the changed files no rule names (they ran the fallback's default set)
+export const unmapped = (sel) => sel.files.filter((f) => f.rules.includes('(fallback)')).map((f) => f.file)
 
 // why(suite): its rules, each with its first file and how many more: "template/site/src/** (template/site/src/A.tsx +2)"
 export function why(s) {
@@ -464,18 +504,25 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
   }
   const map = parseMap(mapText)
   if (map.errors.length) { for (const e of map.errors) warn(`${mapFrom}: ${e}`); return 2 }
-  // the range changes the map itself: the base's map chooses too (selectBoth), unless --map names one
+  // the range changes the map itself: the head's map, plus what the change of the map needs (selectMapChange), unless
+  // --map names one
   let baseMap = null
   if (!o.map && files.includes('test/gates.map')) {
     const t = git(repo, ['show', `${mergeBase}:test/gates.map`], { ok: true })
     if (t != null) {
       baseMap = parseMap(t)
       if (baseMap.errors.length) { for (const e of baseMap.errors) warn(`test/gates.map at ${mergeBase.slice(0, 7)} (the base): ${e}`); return 2 }
-      mapFrom += ` and at ${mergeBase.slice(0, 7)} (the base's: this range changes the map)`
+      mapFrom += `; this range changes the map: plus its changed rules' suites, and what the base's (${mergeBase.slice(0, 7)}) chose that it drops`
     }
   }
-  const sel = baseMap ? selectBoth(map, baseMap, files) : select(map, files)
+  const sel = baseMap ? selectMapChange(map, baseMap, files) : select(map, files)
   const skipLive = (s) => o.noLive && s.group === 'live'
+  const noRule = unmapped(sel)
+  if (noRule.length) {
+    const n = (map.fallback?.targets || []).flatMap((t) => resolve(map, t)).length
+    warn(`${noRule.length} changed file(s) no rule of test/gates.map names: ${noRule.join(' ')}`)
+    warn(`  they run only the fallback's default set (${n} suite(s)); give each its rule in test/gates.map`)
+  }
 
   if (o.list) {
     say(`gates ${o.range}: ${files.length} file(s) changed since ${mergeBase.slice(0, 7)}, ${sel.suites.length} suite(s); map: ${mapFrom}`)
@@ -485,6 +532,11 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
     for (const f of sel.files) {
       const none = f.rules.length && f.rules.every((g) => map.rules.find((r) => r.glob === g)?.targets.every((t) => t === '-'))
       say(`  ${f.file.padEnd(w)}  ${f.rules.join(', ')}${none ? '  (no suite)' : ''}`)
+    }
+    if (noRule.length) {
+      say('')
+      say('unmapped (no rule names them; they run the fallback\'s default set):')
+      for (const f of noRule) say(`  ${f}`)
     }
     say('')
     say('suites (in run order):')
