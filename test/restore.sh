@@ -146,5 +146,23 @@ check "a drill refused at trust (no typed hash, no signed tag): ok false, no HEA
 # the writer itself: a folder that was 0755 becomes 0700, an old 0644 record is replaced whole by a 0600 one
 U="$T/unit/state"; mkdir -p "$U" && chmod 755 "$U" && echo old >"$U/drill.json" && chmod 644 "$U/drill.json"
 check "unit: writeDrillRecord replaces the old record whole (0600 in 0700), the shape round-trips" bash -c "cd '$SRC' && umask 000 && bun -e \"import { writeDrillRecord } from './src/restore'; writeDrillRecord({ at: '2026-01-02T03:04:05.000Z', ok: true, data_only: false, mastermind: 'abc', report: ['ok x: y'] }, '$U/drill.json')\" && [ \$(stat -c %a '$U') = 700 ] && [ \$(stat -c %a '$U/drill.json') = 600 ] && [ \"\$(ls '$U')\" = drill.json ] && jq -e '. == {at: \"2026-01-02T03:04:05.000Z\", ok: true, data_only: false, mastermind: \"abc\", report: [\"ok x: y\"]}' '$U/drill.json'"
+echo '== the forms of a sealed file: parts, and the old one-file uncompressed tar (sy-cagz)'
+box a; export MM_LAYOUT=one-root; CK="$MM_HOME/state/mastermind"
+{ echo parts-marker-8812; head -c 2000 /dev/urandom | base64 -w0; echo; } >>"$MM_HOME/projects/acme/shop/.board-state"   # over the part size, gzipped
+echo "split-brain-4410" >>"$MM_HOME/brain/memory/fact.md" && git -C "$MM_HOME/brain" commit -qam split
+MM_SYNC_PART_BYTES=256 mm sync >>"$LOG" 2>&1 && ok "box A: a sync with a tiny part size" || { bad "sync (parts)"; tail -5 "$LOG"; }
+# the system board as an older mm wrote it: one file, a plain tar (no gzip); MANIFEST follows, as that mm's did
+age -d -i "$T/recovery.key" "$CK/system/board.tar.age" | gzip -dc >"$T/old.tar" && age -e -R "$MM_HOME/vault/recipients.txt" -o "$CK/system/board.tar.age" "$T/old.tar" \
+  && sed -i "s|^[0-9a-f]\{64\}  system/board.tar.age\$|$(sha256sum <"$CK/system/board.tar.age" | cut -c1-64)  system/board.tar.age|" "$CK/MANIFEST" \
+  && git -C "$CK" commit -qam 'an older mm' && git -C "$CK" push -q origin HEAD:main 2>>"$LOG"; C3=$(git -C "$CK" rev-parse HEAD)
+unset MM_LAYOUT
+check "mastermind holds the brain and the shop's board in parts, the system board as one uncompressed tar" bash -c "t=\$(git -C '$R' ls-tree -r --name-only main) && grep -qx brain/repo.bundle.01.age <<<\"\$t\" && ! grep -qx brain/repo.bundle.age <<<\"\$t\" && grep -qx projects/acme/shop/board.tar.01.age <<<\"\$t\" && grep -qx system/board.tar.age <<<\"\$t\" && [ \"\$(git -C '$R' rev-parse main)\" = '$C3' ] && age -d -i '$T/recovery.key' '$CK/system/board.tar.age' | tar -tf - | grep -qx board.jsonl"
+box m
+mm restore --data-only "$R" --identity "$T/recovery.key" --accept "$C3" -o json >"$T/m.json" 2>>"$LOG" && ok "a blank box restores from it" || { bad "restore (parts)"; jq -r '.[] | select(.status=="fail") | "       \(.step): \(.detail)"' "$T/m.json" 2>/dev/null; }
+check "...the brain, joined from its parts" grep -qx split-brain-4410 "$MM_HOME/brain/memory/fact.md"
+check "...the shop's board data, joined from its parts" grep -qx parts-marker-8812 "$MM_HOME/projects/acme/shop/.restore/board.jsonl"
+check "...the system's board data, from the old one-file uncompressed tar" bash -c "grep -q '$M_BOARD' '$MM_HOME/system/.restore/board.jsonl' && test -d '$MM_HOME/system/.restore/board.dolt'"
+check "...the product repo, from its one file (gzip-compressed parts and one files side by side)" grep -qx "$M_CODE" "$MM_HOME/projects/acme/shop/code/app.txt"
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

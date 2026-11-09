@@ -16,8 +16,24 @@ type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
 export const CHECKOUT = join(DIRS.mm, 'state', 'mastermind')
 const STATE = join(DIRS.mm, 'state', 'mastermind.json') // path -> fingerprint of what was sealed there (local only)
 const ID = '[a-z][a-z0-9-]{0,30}'
+/** A sealed item over the part size is written as numbered parts, each its own age file (`board.tar.00.age`, ...): a
+ *  file on GitHub must stay under 100 MB. One that fits keeps its one-file name (`board.tar.age`). */
+const PART = '(\\.[0-9]{2})?\\.age'
 /** What may be in mastermind, and nothing else (the pre-commit hook in the checkout checks the same). */
-export const ALLOW = new RegExp(`^(MANIFEST|README\\.md|config\\.yaml\\.age|vault/(recipients\\.txt|digests\\.txt|[a-z][a-z0-9_.-]{1,63}\\.age)|brain/repo\\.bundle\\.age|system/(config\\.bundle|board\\.tar)\\.age|projects/${ID}/${ID}/(config\\.bundle|code\\.bundle|board\\.tar|box\\.json)\\.age)$`)
+export const ALLOW = new RegExp(`^(MANIFEST|README\\.md|config\\.yaml${PART}|vault/(recipients\\.txt|digests\\.txt|[a-z][a-z0-9_.-]{1,63}\\.age)|brain/repo\\.bundle${PART}|system/(config\\.bundle|board\\.tar)${PART}|projects/${ID}/${ID}/(config\\.bundle|code\\.bundle|board\\.tar|box\\.json)${PART})$`)
+/** The default part size and the largest file sync will commit (GitHub refuses a file over 100 MB). Env: tests. */
+const partBytes = () => Number(process.env.MM_SYNC_PART_BYTES) || 90 * 1024 * 1024
+const maxBytes = () => Number(process.env.MM_SYNC_MAX_BYTES) || 95_000_000
+/** The checkout files that hold item `path` now: its one file, or its parts in order (`x.age` -> `x.00.age`, ...). */
+export function forms(dir: string, path: string): string[] {
+  if (existsSync(join(dir, path))) return [path]
+  const out: string[] = []
+  for (let n = 0; n < 100 && existsSync(join(dir, partName(path, n))); n++) out.push(partName(path, n))
+  return out
+}
+export const partName = (path: string, n: number) => `${path.slice(0, -'.age'.length)}.${String(n).padStart(2, '0')}.age`
+/** The item a checkout file belongs to (a part's one-file name; any other file is its own). */
+export const itemOf = (f: string) => (f.startsWith('vault/') ? f : f.replace(/\.[0-9]{2}\.age$/, '.age')) // the vault's: copied as is, never split
 const SECRET_KEY = 'AGE-SECRET-KEY-'
 const AGE_HEADER = 'age-encryption.org/v1\n'
 const sha = (b: Buffer | Uint8Array | string) => createHash('sha256').update(b).digest('hex')
@@ -169,8 +185,9 @@ function bundle(dir: string): Uint8Array {
   if (p.exitCode !== 0) throw new Error(`git bundle ${tl(dir)}: ${p.stderr.toString().trim().slice(0, 200)}`)
   return p.stdout
 }
+/** gzip-compressed: restore's `tar -xf <file>` detects it (and still reads the old uncompressed ones). */
 function tarOf(dir: string, names: string[]): Uint8Array {
-  const p = Bun.spawnSync(['tar', '-cf', '-', '-C', dir, ...names], { stderr: 'pipe' })
+  const p = Bun.spawnSync(['tar', '-czf', '-', '-C', dir, ...names], { stderr: 'pipe' })
   if (p.exitCode !== 0) throw new Error(`tar ${names.join(' ')}: ${p.stderr.toString().trim().slice(0, 200)}`)
   return p.stdout
 }
@@ -193,7 +210,28 @@ export function refusals(): string[] {
   return bad
 }
 
-export type SyncOpts = { dryRun?: boolean; push?: boolean; fresh?: boolean; force?: boolean }
+/** `--redo-unpushed`: the checkout's commits that never reached the remote (a push refused, e.g. a file over GitHub's
+ *  limit) are dropped, the checkout reset to the remote branch, and the fingerprints of every file that differs from
+ *  it forgotten, so the sync that follows seals those again on top of the pushed history. The remote is not changed;
+ *  the dropped commits stay in the checkout's reflog. Refused when nothing is unpushed. */
+function redo(): Step {
+  const b = branch(), up = `refs/remotes/origin/${b}`, no = (detail: string): Step => ({ step: 'redo', status: 'fail', detail })
+  const f = git(['fetch', '-q', 'origin', `+refs/heads/${b}:${up}`])
+  if (!f.ok) return no(`could not fetch ${b} from ${remote() || 'origin'} (${short(f)}); nothing changed`)
+  const n = Number(git(['rev-list', '--count', `${up}..HEAD`]).out.trim() || 0)
+  if (!n) return no(`nothing unpushed: the checkout has no commit that ${remote() || 'origin'} ${b} lacks; nothing changed`)
+  const differ = git(['diff', '--name-only', '-z', up, 'HEAD']).out.split('\0').filter(Boolean)
+  const r = git(['reset', '-q', '--hard', up])
+  if (!r.ok) return no(`reset: ${short(r)}`)
+  let prev: Record<string, string> = {}
+  try { prev = JSON.parse(readFileSync(STATE, 'utf8')) } catch {}
+  const forgot = [...new Set(differ.map(itemOf))].filter((p) => p in prev)
+  for (const p of forgot) delete prev[p]
+  writeFileSync(STATE, JSON.stringify(prev, null, 1), { mode: 0o600 })
+  return { step: 'redo', status: 'ok', detail: `dropped ${n} unpushed commit(s) (kept in the checkout's reflog); reset to origin/${b}; ${forgot.length} fingerprint(s) forgotten (${forgot.join(', ') || 'none'}): sealed again below` }
+}
+
+export type SyncOpts = { dryRun?: boolean; push?: boolean; fresh?: boolean; force?: boolean; redoUnpushed?: boolean }
 /**
  * Bring mastermind up to date: seal what changed since the last sync, drop what's gone (an archived project), write
  * MANIFEST, commit, push. A file is resealed only when its source changed (age output differs on every run, so
@@ -206,9 +244,11 @@ export function sync(o: SyncOpts = {}): { steps: Step[]; ok: boolean; commit?: s
   if (held()) return fail('hold', 'this box is a restore on hold: it must not write to mastermind while the old box may still be up (mm restore --release)')
   if (!vault.ready()) return fail('vault', 'no vault on this machine yet (mm vault init): mastermind is sealed to its recipients')
   if (o.fresh && !o.force) return fail('fresh', `--fresh replaces mastermind's whole history on ${remote()} (${branch()}) with one new commit. It's a t2 step: add --force once it's approved.`)
+  if (o.redoUnpushed && (o.fresh || o.dryRun)) return fail('redo', '--redo-unpushed drops local commits and seals again: not with --fresh or --dry-run')
   const dirty = git(['status', '--porcelain']).out.trim()
   if (dirty && !o.fresh) return fail('checkout', `${tl(CHECKOUT)} has changes mm didn't commit:\n${dirty.slice(0, 400)}`)
   writeFileSync(join(CHECKOUT, '.git', 'hooks', 'pre-commit'), HOOK, { mode: 0o755 })
+  if (o.redoUnpushed) { const r = redo(); steps.push(r); if (r.status === 'fail') return { steps, ok: false } }
 
   mkdirSync(join(DIRS.mm, 'state'), { recursive: true, mode: 0o700 })
   const work = mkdtempSync(join(DIRS.mm, 'state', 'sync-work-')) // fresh backups (plaintext, like ~/.mm/backups): removed below
@@ -233,38 +273,55 @@ export function sync(o: SyncOpts = {}): { steps: Step[]; ok: boolean; commit?: s
       prev = {}
     }
     const want = new Set(items.map((i) => i.path).concat('MANIFEST', 'README.md')), next: Record<string, string> = {}
-    for (const f of files()) if (!want.has(f)) { rmSync(join(CHECKOUT, f)); steps.push({ step: 'drop', status: 'ok', detail: f }) }
+    const drop = (f: string) => { rmSync(join(CHECKOUT, f)); steps.push({ step: 'drop', status: 'ok', detail: f }) }
+    for (const f of files()) if (!want.has(itemOf(f))) drop(f)
     let sealed = 0, kept = 0
+    const PARTB = partBytes(), written: [path: string, outs: string[]][] = []
     // a board's items go together (sy-bey8): each is sealed to a staged file, and they move in only when all of that
     // board's made it. A board whose backup fails keeps what mastermind has of it; the other boards still go.
     const groups: Item[][] = []
     for (const i of items) { const g = groups[groups.length - 1]; if (i.board && g?.[0].board === i.board) g.push(i); else groups.push([i]) }
     for (const g of groups) {
-      const board = g[0].board, fps: Record<string, string> = {}, staged: [to: string, out: string][] = []
+      const board = g[0].board, fps: Record<string, string> = {}, staged: [to: string, out: string][] = [], mine: [string, string[]][] = []
       let k = 0
       try {
         for (const i of g) {
-          const out = join(CHECKOUT, i.path), fp = i.fp()
+          const fp = i.fp()
           fps[i.path] = fp
-          if (prev[i.path] === fp && existsSync(out)) { k++; continue }
-          mkdirSync(dirname(out), { recursive: true })
-          const to = board ? `${out}.mm-new` : out
-          staged.push([to, out])
-          if (i.plain) writeFileSync(to, i.bytes(), { mode: 0o600 }); else vault.sealTo(i.bytes(), to)
+          if (prev[i.path] === fp && forms(CHECKOUT, i.path).length) { k++; continue }
+          mkdirSync(dirname(join(CHECKOUT, i.path)), { recursive: true })
+          const b = i.bytes()
+          // over the part size: numbered parts, each sealed on its own (each an age file); else the one file
+          const n = i.plain || b.length <= PARTB ? 1 : Math.ceil(b.length / PARTB)
+          if (n > 100) throw new Error(`${i.path}: ${b.length} bytes is over 100 parts of ${PARTB}`)
+          const outs = n === 1 ? [i.path] : Array.from({ length: n }, (_, j) => partName(i.path, j))
+          mine.push([i.path, outs])
+          outs.forEach((rel, j) => {
+            const out = join(CHECKOUT, rel), to = board ? `${out}.mm-new` : out
+            staged.push([to, out])
+            const chunk = n === 1 ? b : b.subarray(j * PARTB, (j + 1) * PARTB)
+            if (i.plain) writeFileSync(to, chunk, { mode: 0o600 }); else vault.sealTo(chunk, to)
+          })
         }
       } catch (e) {
         if (!board) throw e
         for (const [to] of staged) { rmSync(to, { force: true }); rmSync(`${to}.tmp-${process.pid}`, { force: true }) }
         // what mastermind has of it stays, with the fingerprint it was sealed from: the next run seals it again
         let had = 0
-        for (const i of g) if (existsSync(join(CHECKOUT, i.path))) { had++; if (prev[i.path]) next[i.path] = prev[i.path] }
+        for (const i of g) if (forms(CHECKOUT, i.path).length) { had++; if (prev[i.path]) next[i.path] = prev[i.path] }
         const m = (e as Error).message, why = m.startsWith(`${board}: `) ? m.slice(board.length + 2) : m
         failed.push(board)
         steps.push({ step: `backup ${board}`, status: 'fail', detail: `${why.split('\n')[0]} (${had ? 'mastermind keeps its last backup' : 'none in mastermind yet'})` })
         continue
       }
       for (const [to, out] of staged) if (to !== out) renameSync(to, out)
-      Object.assign(next, fps); sealed += staged.length; kept += k
+      Object.assign(next, fps); sealed += mine.length; kept += k; written.push(...mine)
+    }
+    // the other form of what was just written goes: parts past the new count, the one file for parts, parts for one file
+    for (const [path, outs] of written) {
+      const keep = new Set(outs), stem = path.slice(0, -'.age'.length)
+      for (const f of files()) if (!keep.has(f) && (f === path || (f.startsWith(`${stem}.`) && itemOf(f) === path))) drop(f)
+      if (outs.length > 1) steps.push({ step: 'split', status: 'ok', detail: `${path}: ${outs.length} parts (${outs[0]} ...)` })
     }
     steps.push({ step: 'seal', status: 'ok', detail: `${sealed} sealed, ${kept} unchanged` })
     writeFileSync(join(CHECKOUT, 'README.md'), README)
@@ -273,6 +330,13 @@ export function sync(o: SyncOpts = {}): { steps: Step[]; ok: boolean; commit?: s
     const old = existsSync(join(CHECKOUT, 'MANIFEST')) ? readFileSync(join(CHECKOUT, 'MANIFEST'), 'utf8') : ''
     if (old.replace(/^mm .*$/m, '') !== manifest.replace(/^mm .*$/m, '') || o.fresh) writeFileSync(join(CHECKOUT, 'MANIFEST'), manifest)
 
+    // never commit what can't be pushed: GitHub refuses any file over 100 MB, and a commit that holds one blocks every
+    // push after it
+    const max = maxBytes(), big = files().map((f) => [f, statSync(join(CHECKOUT, f)).size] as const).filter(([, n]) => n > max)
+    if (big.length) {
+      undo()
+      return fail('size', `nothing committed: ${big.map(([f, n]) => `${f} is ${(n / 1e6).toFixed(1)} MB`).join('; ')} (over ${(max / 1e6).toFixed(max < 1e6 ? 3 : 0)} MB: the remote would refuse it). If a commit that was never pushed holds it: mm sync --redo-unpushed`)
+    }
     const bad = refusals()
     if (bad.length) { undo(); return fail('refuse', `nothing committed: ${bad.join('; ')}`) }
     git(['add', '-A'])
@@ -290,7 +354,7 @@ export function sync(o: SyncOpts = {}): { steps: Step[]; ok: boolean; commit?: s
     if (o.fresh) git(['branch', '-M', branch()])
     if (o.push === false) { steps.push({ step: 'push', status: 'skip', detail: '--no-push' }); return done({ ok: true, commit: head }) }
     const p = git(['push', '-q', ...(o.fresh ? ['--force'] : []), 'origin', `HEAD:refs/heads/${branch()}`])
-    steps.push(p.ok ? { step: 'push', status: 'ok', detail: `${remote()} ${branch()}${o.fresh ? ' (history replaced)' : ''}` } : { step: 'push', status: 'fail', detail: short(p) })
+    steps.push(p.ok ? { step: 'push', status: 'ok', detail: `${remote()} ${branch()}${o.fresh ? ' (history replaced)' : ''}` } : { step: 'push', status: 'fail', detail: `${short(p)} (the commit stays in the checkout; to drop the commits that never went and seal again on what the remote has: mm sync --redo-unpushed)` })
     return done({ ok: p.ok, commit: head })
   } catch (e) {
     undo(); return fail('sync', (e as Error).message)

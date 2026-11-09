@@ -79,7 +79,7 @@ check "no age secret key anywhere in mastermind" bash -c "! (allobj | grep -aq A
 
 echo '== the recovery key opens it'
 check "brain: bundle -> clone -> the memory is there" bash -c "age -d -i '$T/recovery.key' '$CK/brain/repo.bundle.age' >'$T/b.bundle' && git clone -q '$T/b.bundle' '$T/b' && grep -qx '$M_BRAIN' '$T/b/memory/fact.md'"
-check "project: board data and product repo" bash -c "age -d -i '$T/recovery.key' '$CK/projects/acme/shop/board.tar.age' | tar -xOf - board.jsonl | grep -q '$M_BOARD acme-shop' && age -d -i '$T/recovery.key' '$CK/projects/acme/shop/code.bundle.age' >'$T/c.bundle' && git clone -q '$T/c.bundle' '$T/c' && grep -qx '$M_CODE' '$T/c/app.txt'"
+check "project: board data and product repo" bash -c "age -d -i '$T/recovery.key' '$CK/projects/acme/shop/board.tar.age' | tar -xzOf - board.jsonl | grep -q '$M_BOARD acme-shop' && age -d -i '$T/recovery.key' '$CK/projects/acme/shop/code.bundle.age' >'$T/c.bundle' && git clone -q '$T/c.bundle' '$T/c' && grep -qx '$M_CODE' '$T/c/app.txt'"
 check "config.yaml" bash -c "age -d -i '$T/recovery.key' '$CK/config.yaml.age' | grep -q '$M_CFG'"
 
 echo '== incremental'
@@ -118,6 +118,52 @@ hooked() { (cd "$CK" && printf '%s\n' "$2" >"$1" && git add "$1" && git commit -
 check "hook: a file off the allowlist can't be committed in the checkout" hooked notes.txt x 'not on the allowlist'
 check "hook: a secret key can't be committed in the checkout" hooked vault/x.age AGE-SECRET-KEY-1X 'holds an age secret key'
 check "control: the hook lets an allowlisted file through" bash -c "cd '$CK' && echo x >>README.md && git commit -qam ok && git reset -q --hard HEAD~1"
+
+echo '== big files: compressed, split in parts, never over the limit (sy-cagz)'
+SB=projects/acme/shop/board.tar
+# the board's state with <n> random bytes (base64: gzip can't shrink it much); the marker line stays first
+grow() { { echo "$M_BOARD acme-shop"; head -c "$1" /dev/urandom | base64 -w0; echo; } >"$SH/.board-state"; }
+shop() { git -C "$R" ls-tree -r --name-only main projects/acme/shop/ | grep '/board\.tar' | tr '\n' ' ' | sed 's/ $//'; }
+joined() { for f in $(git -C "$CK" ls-files "$SB.*"); do age -d -i "$T/recovery.key" "$CK/$f" || return 1; done; }   # in order: .00, .01, ...
+export -f joined shop; export SB T
+check "the board tar is gzip-compressed" bash -c "[ \"\$(age -d -i '$T/recovery.key' '$CK/system/board.tar.age' | head -c 2 | od -An -tx1 | tr -d ' ')\" = 1f8b ]"
+grow 30000; PB=16384
+MM_SYNC_PART_BYTES=$PB mm sync -o json >"$T/split.json" 2>>"$LOG" && ok "a board over the part size: mm sync" || { bad "sync (split)"; tail -5 "$T/split.json"; }
+N1=$(shop | wc -w)
+check "...written as numbered parts (.00, .01, ...), the one file gone, pushed" bash -c "[ $N1 -ge 3 ] && [ \"\$(git -C '$R' rev-parse main)\" = \"\$(git -C '$CK' rev-parse HEAD)\" ] && [ \"$(shop)\" = \"\$(for n in \$(seq 0 $((N1-1))); do printf '$SB.%02d.age ' \$n; done | sed 's/ \$//')\" ]"
+check "...each part an age file, each opened on its own, each at most the part size" bash -c "cd '$CK' && for f in \$(git ls-files '$SB.*'); do head -c 21 \"\$f\" | grep -qx 'age-encryption.org/v1' && [ \$(age -d -i '$T/recovery.key' \"\$f\" | wc -c) -le $PB ] || exit 1; done"
+check "...on the allowlist (mm's and the hook's) and in MANIFEST" bash -c "cd '$CK' && grep -q ' $SB.00.age\$' MANIFEST && grep -v '^#\|^mm ' MANIFEST | sha256sum -c --quiet && ALLOW=\$(sed -n \"s/^ALLOW='\\(.*\\)'\$/\\1/p\" .git/hooks/pre-commit) && git ls-files '$SB.*' | grep -Evc \"\$ALLOW\" | grep -qx 0"
+check "...joined in order, they are the board's tar" bash -c "joined | tar -xzOf - board.jsonl | grep -q '$M_BOARD acme-shop'"
+check "...the report says so" jq -e --arg p "$SB.age" '[.[] | select(.step == "split" and (.detail | startswith($p)))] | length == 1' "$T/split.json"
+grow 20000; MM_SYNC_PART_BYTES=$PB mm sync >>"$LOG" 2>&1; N2=$(shop | wc -w)
+check "it shrinks: fewer parts, the stale ones dropped" bash -c "[ $N2 -ge 2 ] && [ $N2 -lt $N1 ] && ! git -C '$R' ls-tree -r --name-only main | grep -qx '$SB.0$((N1-1)).age' && [ \"\$(git -C '$CK' ls-files '$SB.*' | wc -l)\" = $N2 ] && joined | tar -xzOf - board.jsonl | grep -q '$M_BOARD acme-shop'"
+grow 100; MM_SYNC_PART_BYTES=$PB mm sync >>"$LOG" 2>&1
+check "under the part size again: the one file, every part dropped" test "$(shop)" = "$SB.age"
+grow 30000; MM_SYNC_PART_BYTES=$PB mm sync >>"$LOG" 2>&1
+check "...and back to parts: the one file dropped" bash -c "[ \"\$(shop | wc -w)\" -ge 3 ] && ! git -C '$R' ls-tree -r --name-only main | grep -qx '$SB.age'"
+H6=$(heads); grow 30000
+check "a file over the limit (a tiny one here): refused before the commit, naming it" bash -c "! MM_SYNC_MAX_BYTES=20000 mm sync >'$T/big.out' 2>&1 && grep -q 'size.*nothing committed: $SB.age is [0-9.]* MB (over 0.020 MB' '$T/big.out' && [ \"\$(git -C '$R' rev-parse main)\" = '$H6' ] && [ \"\$(git -C '$CK' rev-parse HEAD)\" = '$H6' ]"
+check "...the checkout left clean" test -z "$(git -C "$CK" status --porcelain)"
+# a remote that refuses any file over 30000 bytes, as GitHub does over 100 MB: the push fails, the commit stays local
+cat >"$R/hooks/pre-receive" <<'EOF'
+#!/bin/sh
+while read old new ref; do
+  git rev-list --objects "$new" --not --all | while read sha path; do
+    [ "$(git cat-file -s "$sha")" -le 30000 ] || { echo "error: File $path is too large; this exceeds the file size limit" >&2; exit 1; }
+  done || exit 1
+done
+EOF
+chmod +x "$R/hooks/pre-receive"
+mm sync -o json >"$T/stuck.json" 2>>"$LOG"; RC=$?
+check "a remote that refuses a big file: the push fails, the commit stays in the checkout" bash -c "[ $RC != 0 ] && jq -e '.[] | select(.step == \"push\") | .status == \"fail\" and (.detail | test(\"redo-unpushed\"))' '$T/stuck.json' && [ \"\$(git -C '$R' rev-parse main)\" = '$H6' ] && [ \"\$(git -C '$CK' rev-list --count $H6..HEAD)\" = 1 ]"
+MM_SYNC_PART_BYTES=$PB mm sync --redo-unpushed -o json >"$T/redo.json" 2>>"$LOG" && ok "mm sync --redo-unpushed" || { bad "redo"; tail -8 "$T/redo.json"; }
+check "...dropped the unpushed commit and forgot the board's fingerprint" jq -e --arg p "$SB.age" '.[] | select(.step == "redo") | .status == "ok" and (.detail | test("dropped 1 unpushed")) and (.detail | contains($p))' "$T/redo.json"
+check "...sealed again on top of the pushed history, in parts, and pushed" bash -c "[ \"\$(git -C '$R' rev-parse main)\" = \"\$(git -C '$CK' rev-parse HEAD)\" ] && [ \"\$(git -C '$R' rev-parse main~1)\" = '$H6' ] && [ \"\$(shop | wc -w)\" -ge 3 ] && joined | tar -xzOf - board.jsonl | grep -q '$M_BOARD acme-shop'"
+check "...no file over the remote's limit anywhere in its history" bash -c "[ \$(git -C '$R' rev-list --objects --all | cut -c1-40 | git -C '$R' cat-file --batch-check='%(objectsize)' | sort -n | tail -1) -le 30000 ]"
+H7=$(heads)
+check "--redo-unpushed with nothing unpushed: refused, nothing changed" bash -c "! mm sync --redo-unpushed >'$T/redo2.out' 2>&1 && grep -q 'nothing unpushed' '$T/redo2.out' && [ \"\$(git -C '$R' rev-parse main)\" = '$H7' ] && [ \"\$(git -C '$CK' rev-parse HEAD)\" = '$H7' ]"
+check "--redo-unpushed with --fresh: refused" bash -c "! mm sync --redo-unpushed --fresh --force >/dev/null 2>&1 && [ \"\$(git -C '$R' rev-parse main)\" = '$H7' ]"
+rm -f "$R/hooks/pre-receive"
 
 echo "== a box project: the host's record (sy-b15.19)"
 # a docker stand-in: `exec` runs the box's job here (its staging folder is the host's); `run --rm` (giveBack's regroup,

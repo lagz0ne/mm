@@ -14,7 +14,7 @@ import { onboard } from './onboard'
 import { spanNote } from './obs'
 import { pcRunning } from './pc'
 import { BOX_RECORD_FILES, type BoxRecord, engineRefusal, hostGitEnv, installTools, processes, readAnswers, repairKernel, sealFile, templateRecFile, up, writeInProject } from './project'
-import { ALLOW } from './sync'
+import { ALLOW, forms } from './sync'
 import * as vault from './vault'
 
 type Step = { step: string; status: 'ok' | 'fail' | 'skip'; detail: string }
@@ -75,10 +75,18 @@ export function manifestOk(dir: string): string[] {
   return bad
 }
 
-const open = (file: string, identity: string): Uint8Array => {
+const openOne = (file: string, identity: string): Uint8Array => {
   const r = spawnSync('age', ['-d', '-i', identity, file], { maxBuffer: 1 << 30 })
   if (r.status !== 0) throw new Error(`${file.split('/').slice(-3).join('/')}: the recovery identity could not open it (${String(r.stderr).trim().slice(0, 120)})`)
   return r.stdout
+}
+/** Is item `<M>/<rel>` there: its one file (`x.age`) or its parts (`x.00.age`, ...; mm sync splits a big one). */
+const has = (M: string, rel: string) => forms(M, rel).length > 0
+/** Item `<M>/<rel>` opened: its one file, or each part opened and joined in order. */
+const open = (M: string, rel: string, identity: string): Uint8Array => {
+  const fs = forms(M, rel)
+  if (!fs.length) throw new Error(`${rel}: not in mastermind`)
+  return fs.length === 1 ? openOne(join(M, fs[0]), identity) : Buffer.concat(fs.map((f) => openOne(join(M, f), identity)))
 }
 /** No repo hook runs in what restore does itself (its checkouts and commits, and the board tools it runs): a bundle can
  *  carry a box's own ops/githooks (sy-b15.19). core.hooksPath is set only after the box record is applied and, for a
@@ -208,7 +216,7 @@ async function restoreWith(src: string, o: RestoreOpts, seen: Seen): Promise<{ s
   try {
     const rec = recoveryPublic(M, o.identity)
     // 1. config.yaml (always one-root: this process already runs with one-root paths on a blank box)
-    const cfg = Buffer.from(open(join(M, 'config.yaml.age'), o.identity)).toString('utf8')
+    const cfg = Buffer.from(open(M, 'config.yaml.age', o.identity)).toString('utf8')
     const layout = /^layout:\s*["']?([\w-]+)/m.exec(cfg)?.[1]
     writeFileSync(DIRS.config, cfg, { mode: 0o600 })
     // the hold goes in before anything can start: nothing outward-facing until the human says the old box is down
@@ -221,8 +229,8 @@ async function restoreWith(src: string, o: RestoreOpts, seen: Seen): Promise<{ s
     const names = vault.resealWith(o.identity, rec)
     steps.push({ step: 'vault', status: 'ok', detail: `new machine key; ${names.length} secret(s) resealed to it and the recovery key` })
     // 3. the brain (its migrations are root: the human applies them)
-    const unseal = (rel: string) => { const f = join(work, rel.replace(/\//g, '_').replace(/\.age$/, '')); writeFileSync(f, open(join(M, rel), o.identity), { mode: 0o600 }); return f }
-    if (existsSync(join(M, 'brain', 'repo.bundle.age'))) {
+    const unseal = (rel: string) => { const f = join(work, rel.replace(/\//g, '_').replace(/\.age$/, '')); writeFileSync(f, open(M, rel, o.identity), { mode: 0o600 }); return f }
+    if (has(M, 'brain/repo.bundle.age')) {
       fromBundle(unseal('brain/repo.bundle.age'), DIRS.brain, { name: 'brain', email: 'brain@localhost' })
       steps.push({ step: 'brain', status: 'ok', detail: `${tl(DIRS.brain)} (its migrations are yours to apply: they run as root)` })
     }
@@ -233,7 +241,7 @@ async function restoreWith(src: string, o: RestoreOpts, seen: Seen): Promise<{ s
       fromBundle(unseal(`${d}/config.bundle.age`), root, { name: 'mm', email: 'mm@localhost' })
       // a box's bundle is the box's own history: the host's record (mm sync) decides its privilege files and whether it
       // is a box, over whatever the box committed (sy-b15.19)
-      const rec = existsSync(join(M, d, 'box.json.age')) ? applyBoxRecord(root, Buffer.from(open(join(M, d, 'box.json.age'), o.identity)).toString('utf8')) : null
+      const rec = has(M, `${d}/box.json.age`) ? applyBoxRecord(root, Buffer.from(open(M, `${d}/box.json.age`, o.identity)).toString('utf8')) : null
       const a = Bun.YAML.parse(readFileSync(join(root, '.mm-answers.yaml'), 'utf8')) as { project: string; root?: string; box?: boolean }
       run(['git', '-C', root, 'config', 'user.email', `mm@${a.project}.local`])
       const commit: string[] = rec ? [...rec.files] : []
@@ -255,7 +263,7 @@ async function restoreWith(src: string, o: RestoreOpts, seen: Seen): Promise<{ s
       // governance pre-commit for the commits made in it, as mm new --box sets it; the host's own git on a box still
       // runs no hook (hostGitEnv; review sy-atqr)
       if (existsSync(join(root, 'ops', 'githooks'))) run(['git', '-C', root, 'config', 'core.hooksPath', 'ops/githooks'])
-      if (existsSync(join(M, d, 'code.bundle.age'))) fromBundle(unseal(`${d}/code.bundle.age`), join(root, 'code'), { name: 'mm', email: `mm@${a.project}.local` })
+      if (has(M, `${d}/code.bundle.age`)) fromBundle(unseal(`${d}/code.bundle.age`), join(root, 'code'), { name: 'mm', email: `mm@${a.project}.local` })
       const stage = join(root, '.restore'); mkdirSync(stage, { recursive: true, mode: 0o700 })
       const x = run(['tar', '-xf', unseal(`${d}/board.tar.age`), '-C', stage], { timeoutMs: 600_000 })
       if (!x.ok) throw new Error(`${d}: board data: ${short(x)}`)

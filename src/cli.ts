@@ -477,11 +477,12 @@ program.command('sync').description('seal what can\'t be rebuilt into the master
   .option('--no-push', 'commit in the checkout only')
   .option('--fresh', 'one-time fresh start: replace mastermind\'s whole history with one commit (t2; needs --force)')
   .option('--force', 'with --fresh: really rewrite it')
+  .option('--redo-unpushed', 'a push keeps failing: drop the checkout\'s commits that never reached the remote, reset to the remote branch, and seal again on top of it (the remote\'s history is not changed; refused when nothing is unpushed)')
   .action((opts) => {
     const o = fmt()
     try {
       if (opts.init) { print(syncMod.init(opts.init), o); return }
-      const r = syncMod.sync({ dryRun: opts.dryRun, push: opts.push, fresh: opts.fresh, force: opts.force })
+      const r = syncMod.sync({ dryRun: opts.dryRun, push: opts.push, fresh: opts.fresh, force: opts.force, redoUnpushed: opts.redoUnpushed })
       print(r.steps, o); process.exit(r.ok ? 0 : 1)
     } catch (e) { console.error(`mm sync: ${(e as Error).message}`); process.exit(1) }
   })

@@ -12,10 +12,17 @@ A private git repo (the machine's backup), laid out like `$MM_HOME` but only wha
 | `config.yaml` | `$MM_HOME/config.yaml` | sealed (`config.yaml.age`): it decides access and routes (sy-fto 3) |
 | `vault/*.age`, `vault/recipients.txt`, `vault/digests.txt` | `$MM_HOME/vault/` | an allowlist; **never** `vault/key`; any blob with `AGE-SECRET-KEY-` is refused, by `mm sync` and by a pre-commit hook in the sync checkout |
 | `brain/repo.bundle.age` | the brain repo | its git bundle (`--all`), sealed (a bundle keeps history; the restore clones from it) |
-| `system/`, `projects/<client>/<name>/` | each board: a fresh `bin/backup` | sealed, one file per kind: `config.bundle.age` (config repo), `code.bundle.age` (product repo, if any), `board.tar.age` (Dolt backup + JSONL + releases) |
+| `system/`, `projects/<client>/<name>/` | each board: a fresh `bin/backup` | sealed, one file per kind: `config.bundle.age` (config repo), `code.bundle.age` (product repo, if any), `board.tar.age` (Dolt backup + JSONL + releases, a gzip-compressed tar; restore still reads an older uncompressed one) |
 | `projects/<client>/<name>/box.json.age` | a box project (or one that was a box): the host's disk, never the box's backup | sealed: that it is a box, the host's copies of its privilege files (`.mm-answers.yaml`, `services.yaml`, `secrets.json`, `governance.json`, `tools.json`), the engine's seal and the mm-template record. A box's backup runs in the box, so its bundle is the box's own history: restore takes these files from the record over the bundle's, restores a recorded box as a box, and runs no repo hook for its own commits (sy-b15.19). The seal covers `bin/`, `site/`, `ops/` and `setup/`: before anything runs, each file of `ops/` and `setup/` that is neither mm's render nor sealed is written over with mm's render, or removed. Only then does restore point the repo's hooks at `ops/githooks`, for a box too (its hooks are mm's again; the host's own git on a box runs none; sy-atqr) |
 | `MANIFEST` | mm | each file's sha256 and the mm version that wrote it (plain text: names and hashes only) |
 | `README.md` | mm | what this repo is (plain text, nothing machine-specific) |
+
+**Parts.** A sealed file over 90 MiB of plaintext (GitHub refuses any file over 100 MB) is written as numbered parts
+instead, each sealed on its own and each an age file: `board.tar.00.age`, `board.tar.01.age`, ... (any sealed item:
+`brain/repo.bundle.00.age`, `code.bundle.00.age`, ...). One that fits keeps its one-file name. When the count changes,
+or a file goes from parts to one file or back, the other form is dropped in the same commit. MANIFEST lists each part;
+restore opens each part and joins them in order, and still reads the one-file form. (`MM_SYNC_PART_BYTES` sets the
+part size, for tests.)
 
 Nothing else may be in it. `mm sync` checks the whole checkout before it commits (the allowlist above, every `.age`
 really an age file, no age secret key in any file), and the checkout's pre-commit hook checks the same for a commit
@@ -36,10 +43,18 @@ say hourly, and after a promote):
    never pushed) keeps a fingerprint of each source: a repo's refs, the board's JSONL and release log, a file's
    sha256. A board whose Dolt history changed without any item changing waits for the next item change;
 3. drops files whose source is gone (an archived project; history keeps them), writes `MANIFEST`, checks the rails,
+   refuses to commit when any file in the checkout is over 95 MB (naming it; `MM_SYNC_MAX_BYTES` for tests),
    commits ("sync <time>"; no commit when nothing changed) and pushes with the mastermind deploy key (the
    `mastermind-deploy-key` input, used by path through `GIT_SSH_COMMAND`; mm never reads it).
 
 A failed sync puts the checkout back to its last commit.
+
+**A push that keeps failing** (the remote refused a commit, e.g. one with a file over its limit, made by an older mm):
+each later commit sits on top of it and none can go. `mm sync --redo-unpushed` fetches the branch, drops the
+checkout's commits that the remote doesn't have (they stay in the checkout's reflog), resets the checkout to the
+remote branch, forgets the fingerprints in `mastermind.json` of every file that differs from it (so they are sealed
+again, not kept as "unchanged"), then runs a normal sync and pushes. The remote's history is not changed (unlike
+`--fresh`). It is refused when nothing is unpushed.
 
 A push is outward-facing, but it's the backup the human asked for: allowed for `mm sync` only, through the deploy
 key, never by a lead.
