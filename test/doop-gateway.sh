@@ -62,6 +62,8 @@ EOF
 node "$T/keys.mjs" "$T"
 # the fork's source (sy-9a30): the tag mm pins (src/project.ts DOOP_TAG), and its URL as mm makes it from a repository
 # in its config (doopSource; a throwaway HOME, so no machine config is read)
+# src/project.ts imports the packed template (src/template.gen.json, gitignored): pack it when a fresh checkout has none
+[ -f "$HERE/src/template.gen.json" ] || (cd "$HERE" && bun scripts/pack-template.ts >/dev/null)
 DTAG=$(sed -n "s/^export const DOOP_TAG = '\([^']*\)'.*/\1/p" "$HERE/src/project.ts")
 srcurl() { HOME="$T/home" MM_HOME="$T/home/mm" bun -e "import { doopSource } from '$HERE/src/project.ts'; process.stdout.write(doopSource(process.argv[1]))" "$@"; }
 SRC=$(srcurl "https://git.example.test/someone/doop.git")

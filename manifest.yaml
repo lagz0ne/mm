@@ -70,8 +70,8 @@ machine:
     github:    { kind: account, check: ["gh", "auth", "status"],
                  for: "pushes and releases (mm, mastermind) and the gh CLI",
                  how: "a GitHub account; `gh auth login` on this machine" }
-    # Doop: the mm fork (box/doop, published as a public fork, tag v0.12.0-mm.1), pinned by digest in src/project.ts
-    # (DOOP_IMAGE: sha256:dd22179d19bd264ede9190cd4347fcedff5db59916a726d8ef280176eb6e9c72). bin/doop-run refuses a tag.
+    # Doop: the mm fork (box/doop, published as a public fork, tag v0.12.0-mm.2), pinned by digest in src/project.ts
+    # (DOOP_IMAGE: sha256:ba5ac540cf63c9373fb4371dc733bcac252853fad7f1250fd4c8fa0980d2aba2). bin/doop-run refuses a tag.
     # The image is built locally (box/doop/build.sh); a machine that builds it sets the id it gets with
     # mm config set doop.image sha256:<id>, which wins over the default. Its source link (AGPL section 13): the fork's tag
     # is DOOP_TAG in src/project.ts (v0.12.0-mm.2 with box/doop/0002), its repository mm config set doop.source <https URL>.

@@ -22,8 +22,9 @@ export interface Answers { client: string; name: string; project: string; short:
   services_on?: string[] } // optional services this project runs (services.yaml optional: true), e.g. doop
 const ID = /^[a-z][a-z0-9-]{0,30}$/
 export const PROJECTS_PC = join(DIRS.pc, 'projects')
-/** The mm fork of Doop, v0.12.0-mm.1 (box/doop), by digest: the default when mm's config has no doop.image (sy-3yz). */
-export const DOOP_IMAGE = 'sha256:dd22179d19bd264ede9190cd4347fcedff5db59916a726d8ef280176eb6e9c72'
+/** The mm fork of Doop, v0.12.0-mm.2 (box/doop: both patches, DOOP_TAG), by digest: the default when mm's config has
+ *  no doop.image (sy-3yz). It moves with DOOP_TAG; `MM_DOOP_GW_IMAGE=<it> test/doop-gateway.sh` passes on it. */
+export const DOOP_IMAGE = 'sha256:ba5ac540cf63c9373fb4371dc733bcac252853fad7f1250fd4c8fa0980d2aba2'
 /** The fork's tag: box/doop's patches, all of them, as one commit each on upstream (sy-9a30). Its public side links to
  *  the fork's source at this tag (the AGPL's section 13; doopSource). It moves with the patches and the image. */
 export const DOOP_TAG = 'v0.12.0-mm.2'
