@@ -41,7 +41,16 @@ const T2NH = `## Owner
 - **If no:** The alerts stay on the board only.
 - **Risk:** medium, a wrong rule can close the SSH port; the rollback is tested.
 
+## Task
+- **Task:** Open the mail port to the relay.
+- **Act:** t2-change
+- **Done when:** one alert reaches the relay.
+- **Verify:** the alert test → sent
+- **Rollback:** close the port again with the plan's rule.
+- **Safeguard:** none, no access change
+
 The plan: plans/mail.md`
+const GO_TASK = '## Task\n- **Task:** Check the admin login.\n- **Act:** t2-change\n- **Done when:** sudo works.\n- **Verify:** sudo -v → no error\n- **Rollback:** remove the account.\n- **Safeguard:** a second admin session stays open.\n\nThe rest.'
 const T2 = T2NH.replace('- **Risk:**', '- **Head:** mm@0a1b2c3\n- **Risk:**')
 
 step('valid cards')
@@ -139,7 +148,9 @@ The rest.`
   ok('headRefusal: a card whose You is no form, with a signed Head: refused (fail-closed)',
     /asks for no go/.test(headRefusal(CH.replace(/\*\*You:\*\* .*/, '**You:** Look at it'), ['t2', 'signed-off', `signed-head:${H}`]) || ''))
   ok('headRefusal: the card changed to a go ask: the go checks apply at once', headRefusal(CH.replace(/\*\*You:\*\* .*/, '**You:** Tap Approve'), ['t2', 'signed-off']) === `review's sign-off names no head (card: ${H})`
-    && headRefusal(CH.replace(/\*\*You:\*\* .*/, '**You:** Tap Approve'), ['t2', 'signed-off', `signed-head:${H}`]) === null)
+    && headRefusal(CH.replace(/\*\*You:\*\* .*/, '**You:** Tap Approve').replace('The rest.', GO_TASK), ['t2', 'signed-off', `signed-head:${H}`]) === null)
+  ok('...and its Task needs a Rollback and a Safeguard then (sy-w5az)', /^the item's Task has no Rollback and no Safeguard line/.test(headRefusal(CH.replace(/\*\*You:\*\* .*/, '**You:** Tap Approve'), ['t2', 'signed-off', `signed-head:${H}`]) || ''))
+  ok('a t2 non-go ask needs no Rollback or Safeguard (sy-w5az): NO_GO, never the Task\'s reason', headRefusal(CH, ['t2', 'signed-off', `signed-head:${H}`]) === NO_GO)
 }
 
 step('a blank line ends the card')
@@ -172,6 +183,15 @@ step('the Head key and headRefusal (sy-hzmu)')
   ok('headRefusal: approved is not re-checked: null', headRefusal(D2, ['t2', 'signed-off', `signed-head:${H}`, 'approved']) === null)
   ok('headRefusal: not t2: null', headRefusal(D2, ['signed-off', `signed-head:${H}`]) === null && headRefusal(D, []) === null)
   ok('headRefusal: an invalid Head is refused, with the reason', /the card's Head is not <repo>@<sha>/.test(headRefusal(withHead('mm@main'), ['t2', 'signed-off', 'signed-head:mm@main']) || ''))
+  // sy-w5az: the go needs the Task's Rollback and Safeguard (task.mjs goTaskRefusal), after the head checks
+  const SIG = ['t2', 'signed-off', `signed-head:${H}`]
+  ok('headRefusal: no Rollback: refused, the reason names it', headRefusal(D.replace(/- \*\*Rollback:\*\*.*\n/, ''), SIG)
+    === 'the item\'s Task has no Rollback line: a t2 go needs both (- **Rollback:** how to undo it; - **Safeguard:** the lockout safeguard, or none, no access change)')
+  ok('headRefusal: no Safeguard: refused, the reason names it', /^the item's Task has no Safeguard line/.test(headRefusal(D.replace(/- \*\*Safeguard:\*\*.*\n/, ''), SIG) || ''))
+  ok('headRefusal: an empty Safeguard counts as none', /has no Safeguard line/.test(headRefusal(D.replace(/(- \*\*Safeguard:\*\*).*/, '$1'), SIG) || ''))
+  ok('headRefusal: no Task at all: both named', /has no Rollback and no Safeguard line/.test(headRefusal(D.replace(/## Task[\s\S]*?\n\n/, ''), SIG) || ''))
+  ok('headRefusal: the head checks come first (a moved head with no Task: the head\'s reason)', /the head changed/.test(headRefusal(D2.replace(/## Task[\s\S]*?\n\n/, ''), SIG) || ''))
+  ok('headRefusal: the reason fits the Waiting list (at most 200 characters)', headRefusal(D.replace(/## Task[\s\S]*?\n\n/, ''), SIG).length <= 200)
   ok('headRefusal: a t2 with no card is refused; nothing to check without t2', /the card names no head/.test(headRefusal('Some text.', ['t2', 'signed-off']) || '') && headRefusal(undefined, undefined) === null)
 }
 

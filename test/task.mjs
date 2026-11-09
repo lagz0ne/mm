@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { formatTask, parseTask } from '../template/bin/lib/task.mjs'
+import { formatTask, goGaps, goTaskRefusal, hasGoKeys, parseTask } from '../template/bin/lib/task.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 let pass = 0, fail = 0
@@ -59,6 +59,20 @@ ok('a bad Head: refused', /Head is not <repo>@<sha>/.test(errs(TASK.replace('\n\
 ok('an unknown key, a key twice, a line that is no key: refused',
   /unknown key "Owner"/.test(errs(TASK.replace('\n\nThe rest.', '\n- **Owner:** x'))) && /Act is there twice/.test(errs(TASK.replace('\n\nThe rest.', '\n- **Act:** t2-change'))) &&
   /is not "- \*\*Key:\*\* value"/.test(errs(TASK.replace('\n\nThe rest.', '\nfree words'))))
+
+console.log('== Rollback and Safeguard (sy-w5az)')
+const GO = TASK.replace('\n\nThe rest.', '\n- **Rollback:** git revert the commit.\n- **Safeguard:** none, no access change\n\nThe rest.')
+r = parseTask(GO, { acts: ACTS })
+ok('Rollback and Safeguard are keys: read', r.ok && r.task.Rollback === 'git revert the commit.' && r.task.Safeguard === 'none, no access change', r.errors.join(' | '))
+ok('...optional in general: a Task without them is valid', parseTask(TASK, { acts: ACTS }).ok && !hasGoKeys(parseTask(TASK).task))
+ok('hasGoKeys: both, non-empty', hasGoKeys(r.task) && !hasGoKeys({ Rollback: 'x' }) && !hasGoKeys({ Rollback: 'x', Safeguard: ' ' }) && !hasGoKeys(null))
+ok('goGaps: the missing ones, in order', goGaps({}).join() === 'Rollback,Safeguard' && goGaps({ Rollback: 'x' }).join() === 'Safeguard' && goGaps(r.task).length === 0)
+ok('goTaskRefusal: null with both (after the owner card too)', goTaskRefusal(GO) === null && goTaskRefusal(`${CARD}\n${GO}`) === null)
+ok('goTaskRefusal: one missing: named', goTaskRefusal(GO.replace(/- \*\*Safeguard:\*\*.*\n/, '')) === 'the item\'s Task has no Safeguard line: a t2 go needs both (- **Rollback:** how to undo it; - **Safeguard:** the lockout safeguard, or none, no access change)')
+ok('goTaskRefusal: no Task: both named', /^the item's Task has no Rollback and no Safeguard line/.test(goTaskRefusal('free words') || ''))
+ok('an empty Rollback: an error of the Task, and a gap', /Rollback is empty/.test(errs(GO.replace('git revert the commit.', ''))) && /no Rollback line/.test(goTaskRefusal(GO.replace('git revert the commit.', '')) || ''))
+ok('template/site/src/lib/task.mjs is the same file as template/bin/lib/task.mjs',
+  fs.readFileSync(path.join(SRC, 'template/site/src/lib/task.mjs'), 'utf8') === fs.readFileSync(path.join(SRC, 'template/bin/lib/task.mjs'), 'utf8'))
 
 console.log('== bin/bd and bin/task')
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'task-'))

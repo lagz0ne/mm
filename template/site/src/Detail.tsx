@@ -92,7 +92,8 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   const card = parseCard(i?.description, i?.labels || [], i?.id)
   // sy-t9tg: a non-go ask (You: Reply:/Check:/Nothing) never gets Approve or Not now, only its own action (Reply, Done)
   const t2go = !!i && !!approval && !!i.labels?.includes('t2') && !!i.labels?.includes('signed-off') && !i.labels?.includes('approved') && !isNonGoAsk(card.card)
-  // sy-hzmu: the card names a head review did not sign off (the server refuses the go anyway): the reason, no Approve
+  // sy-hzmu: the card names a head review did not sign off, or (sy-w5az) the Task has no Rollback or Safeguard (the
+  // server refuses the go anyway): the reason, no Approve
   const headWhy = t2go ? headRefusal(i!.description, i!.labels || []) : null
   const approvable = t2go && !headWhy
   // the owner's answer the card asks for (sy-t9tg), on the public side: a Reply box or Done
