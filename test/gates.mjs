@@ -97,6 +97,8 @@ ok('docs/** -> nothing', pick('docs/vault.md').length === 0)
 ok('a suite that builds the site has needs=site (built once by gates)', real.suites.filter((x) => /board-(message|owner-card|phone|phone-space|space|artifacts)\.mjs$/.test(x.path)).every((x) => x.needs.includes('site')))
 const mmSuites = real.suites.filter((x) => x.args.some((a) => a.includes('{mm}'))).map((x) => x.path)
 ok('clean-box takes the built mm (--local {mm})', real.suites.find((x) => x.path === 'test/clean-box.sh')?.args.join(' ') === '--local {mm}', mmSuites)
+ok('machine-panel.sh has needs=site (gates gives it SITE_NODE_MODULES) and mm', (() => { const m = real.suites.find((x) => x.path === 'test/machine-panel.sh'); return m.needs.includes('site') && m.needs.includes('mm') })())
+ok('a needs=site suite gets SITE_NODE_MODULES (the site\'s packages gates installed)', /SITE_NODE_MODULES: path\.join\(wt, 'template', 'site', 'node_modules'\)/.test(fs.readFileSync(path.join(SRC, 'test', 'lib', 'gates.mjs'), 'utf8')))
 ok('lifecycle.sh takes the base\'s template and the mm (MM_BIN_DIR)', (() => { const l = real.suites.find((x) => x.path === 'test/lifecycle.sh'); return l.args.join() === '{old-template}' && l.needs.includes('mm') })())
 ok('lifecycle.sh honours MM_BIN_DIR', /MM_BIN_DIR/.test(fs.readFileSync(path.join(SRC, 'test', 'lifecycle.sh'), 'utf8')))
 

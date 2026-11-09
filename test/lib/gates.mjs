@@ -436,7 +436,8 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
       if (failedPrep.has(s.path)) { fs.writeFileSync(log, `gates: not run: ${failedPrep.get(s.path)}\n`); return Object.assign(r, { status: 'failed', note: 'not prepared', secs: 0 }) }
       if (!fs.existsSync(path.join(wt, s.path))) { fs.writeFileSync(log, `gates: ${s.path} is not in ${short}\n`); return Object.assign(r, { status: 'failed', note: 'not in the head', secs: 0 }) }
       const args = s.args.map(fill)
-      const extra = s.needs.includes('site') ? { BOARD_PHONE_NOBUILD: '1' } : {} // the site is built once, above
+      // the site is built once, above; a suite that builds its own copy links these packages (SITE_NODE_MODULES)
+      const extra = s.needs.includes('site') ? { BOARD_PHONE_NOBUILD: '1', SITE_NODE_MODULES: path.join(wt, 'template', 'site', 'node_modules') } : {}
       if (mmBin && (s.needs.includes('mm') || uses(s, '{mm}'))) extra.MM_BIN_DIR = mmDir
       fs.writeFileSync(log, `# gates: ${[...interp(s.path), s.path, ...args].join(' ')}   (in the worktree of ${short}, group ${s.group})\n`)
       const x = await runTo(interp(s.path)[0], [s.path, ...args], { cwd: wt, env: { ...env, ...extra }, log, timeout: o.timeout })

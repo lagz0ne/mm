@@ -21,7 +21,8 @@
 # Arguments may name what test/gates makes: {mm} (an mm built from the head, or --bin), {bd} {dolt} (the releases
 # template/tools.json pins, checksums checked; or GATES_BD / GATES_DOLT), {old-template} (the base's template/).
 # needs: mm (MM_BIN_DIR: a folder whose mm is that binary, first on PATH for a live suite), site (template/site's
-# packages and one build before the suites start; they get BOARD_PHONE_NOBUILD=1, so no two build the site at once).
+# packages and one build before the suites start; they get BOARD_PHONE_NOBUILD=1, so no two build the site at once, and
+# SITE_NODE_MODULES, those packages, for a suite that builds its own copy of the site).
 
 # --- suites -------------------------------------------------------------------------------------------------------
 
@@ -164,7 +165,7 @@ suite test/lifecycle.sh           live needs=mm -- {old-template}
 suite test/box.sh                 live needs=mm
 suite test/doop.sh                live needs=mm
 suite test/sentinel.sh            live needs=mm
-suite test/machine-panel.sh       live needs=mm
+suite test/machine-panel.sh       live needs=mm,site
 suite test/paseo-lib.mjs          live
 
 # --- sets ---------------------------------------------------------------------------------------------------------
