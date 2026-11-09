@@ -119,6 +119,7 @@ suite test/board-links.mjs        hermetic needs=site
 suite test/board-presence.mjs     hermetic needs=site
 suite test/board-thread.mjs       hermetic needs=site
 suite test/board-structured.mjs   hermetic needs=site
+suite test/board-for-you.mjs      hermetic needs=site
 suite test/wake-person-to.mjs     hermetic
 suite test/schema.mjs             hermetic
 suite test/placements.mjs         hermetic
