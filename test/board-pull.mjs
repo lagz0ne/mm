@@ -87,7 +87,12 @@ step('site/waiting.mjs (the gateway\'s "Waiting for you" list, sy-vdi8)')
   const W = [
     it('pb-20', 'review', 'open', 90, { labels: ['needs-you'], title: 'owner needed', description: CARD }),
     it('pb-21', 'ops', 'open', 30, { labels: ['t2', 'signed-off'], title: 'approve me' }),
-    it('pb-22', 'ops', 'open', 20, { labels: ['t2', 'signed-off', 'approved'], title: 'approved already' }),
+    // approved for the card's Head (sy-6gz6: approved-head:<repo>@<sha>, review's signed-head too): waits on nobody
+    it('pb-22', 'ops', 'open', 20, { labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3', 'approved', 'approved-head:mm@0a1b2c3'], title: 'approved already',
+      description: '## Owner\n- **What:** Open a port.\n- **Why:** The service needs it.\n- **You:** Tap Approve\n- **If yes:** Ops opens it.\n- **If no:** It stays shut.\n- **Risk:** low, one port\n- **Head:** mm@0a1b2c3\n\nThread.' }),
+    // approved for an old head (sy-6gz6): a new go is needed, so it waits on the owner again
+    it('pb-29', 'ops', 'open', 15, { labels: ['t2', 'signed-off', 'signed-head:mm@9f8e7d6', 'approved', 'approved-head:mm@0a1b2c3'], title: 'approved for an old head',
+      description: '## Owner\n- **What:** Open a port.\n- **Why:** The service needs it.\n- **You:** Tap Approve\n- **If yes:** Ops opens it.\n- **If no:** It stays shut.\n- **Risk:** low, one port\n- **Head:** mm@9f8e7d6\n\nThread.' }),
     it('pb-23', 'alex', 'in_progress', 10, { title: 'alex\'s own', labels: ['needs-you', 'bug'], description: CARD.replace('Reply: ok, or say which line to change.', 'Check: the\u202e shot,\u0007 artifacts/pb-23/a.png') }),
     it('pb-24', 'alex', 'closed', 5, { title: 'alex closed' }),
     it('pb-25', 'bob', 'open', 5, { title: 'bob\'s' }),
@@ -96,7 +101,7 @@ step('site/waiting.mjs (the gateway\'s "Waiting for you" list, sy-vdi8)')
     it('pb-28', 'alex', 'blocked', 3, { title: 'a\u0007b\u202eevil\ncd' }),
   ]
   const o = waitingFor({ items: W, me: 'boss', owner: true, now: NOW })
-  ok('the owner: needs-you items and the signed-off t2s without approved, oldest first', o.items.map((x) => x.id).join() === 'pb-20,pb-26,pb-21,pb-23' && o.more === 0, JSON.stringify(o))
+  ok('the owner: needs-you items and the signed-off t2s without approved, oldest first', o.items.map((x) => x.id).join() === 'pb-20,pb-26,pb-21,pb-29,pb-23' && o.more === 0, JSON.stringify(o))
   ok('...each with only the labels its ask needs (no bug, no approved), age in whole minutes', JSON.stringify(o.items.find((x) => x.id === 'pb-26').labels) === '["needs-you","t2","signed-off"]'
     && JSON.stringify(o.items.find((x) => x.id === 'pb-23').labels) === '["needs-you"]' && o.items[0].age_min === 90 && o.items.every((x) => Object.keys(x).join() === 'id,title,age_min,labels,you'))
   ok('...and each its card\'s You line (sy-z5lz); null when it has no card (the gateway says "card missing")', o.items.find((x) => x.id === 'pb-20').you === 'Reply: ok, or say which line to change.'
