@@ -2,7 +2,7 @@
 // bin/wake, a kept role (roles.json `keep`, the owner's contact) whose agent can't be found and then comes back
 // (sy-ujtp): one note item for the owner (assigned to mm's owner_name, needs-you, kept:<role>; its count follows the
 // board), needs-you only on the P0/P1 items that wait, written one at a time (never two at once) with a Dolt 1213
-// retried (the stub refuses the first label write once); wake remembers its labels in .wake-state.json, also over a
+// retried (the stub refuses the first label write once); wake remembers its labels in its state (.run/wake-state.json), also over a
 // restart; a label someone removes is never written again and is no longer wake's; when the agent is back, the note
 // is closed and only wake's own labels are removed: one a person or a lead set stays.
 // Hermetic: temp folder and MM_HOME, a fake board (bd serve's API, and a stub bin/bd that changes it), stub paseo and
@@ -116,7 +116,7 @@ let w, out = ''
 const start = () => { w = spawn('node', [path.join(PROJ, 'bin', 'wake')], { env, stdio: ['ignore', 'pipe', 'pipe'] }); w.stdout.on('data', (d) => (out += d)); w.stderr.on('data', (d) => (out += d)) }
 const stop = async () => { w.kill(); await new Promise((r) => (w.exitCode !== null ? r() : w.on('exit', r))) }
 const bdlog = () => read(BDLOG), log = () => read(path.join(PROJ, '.run', 'logs', 'ops.log'))
-const wstate = () => { try { return JSON.parse(read(path.join(PROJ, '.wake-state.json'))) } catch { return {} } }
+const wstate = () => { try { return JSON.parse(read(path.join(PROJ, '.run', 'wake-state.json'))) } catch { return {} } }
 const I = (id) => items.get(id), has = (id) => I(id).labels.includes('needs-you')
 const adds = () => (bdlog().match(/^label add \S+ needs-you --actor wake$/gm) || []).length
 const notes = () => [...items.values()].filter((i) => i.labels.includes('kept:ops'))
@@ -139,7 +139,7 @@ try {
   ok('...51 writes and the one retry, no more', adds() === 52)
   ok('the P2 items are not labelled', [1, 2, 3, 4, 5, 6, 7, 8].every((k) => !has(`l-${k}`)))
   ok('h-1 (needs-you from a person) is not written again', !/label add h-1 /.test(bdlog()))
-  ok('wake remembers its 51 labels in .wake-state.json', await until(() => Object.keys(wstate()._kept?.ops?.labelled || {}).length === 51) && !wstate()._kept.ops.labelled['h-1'])
+  ok('wake remembers its 51 labels in .run/wake-state.json', await until(() => Object.keys(wstate()._kept?.ops?.labelled || {}).length === 51) && !wstate()._kept.ops.labelled['h-1'])
   ok('the note lists the items (40 at most), the labelled ones marked', /p-1 \(P1, open, labelled needs-you by wake\)/.test(I(n.id)?.description || '')  && /- \.\.\. and 20 more/.test(I(n.id)?.description || ''))
   ok('ops is never started', !read(STARTED))
 

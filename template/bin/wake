@@ -310,7 +310,7 @@ function transition(e, byLead) {
 // An upstream:* item set blocked waits on the system board, not on the human (68290a5). Not forever (sy-mkva): with no
 // answer from the system side (a comment by mm-upstream) for WAKE_UPSTREAM_WAIT_MS (24 h) since it was set blocked or
 // since the last answer, whichever is later, wake labels it needs-you (and says why on it), once per such wait
-// (.wake-state.json `_upWait`): a needs-you the owner removes stays off until the next answer or the next block.
+// (wake's state `_upWait`): a needs-you the owner removes stays off until the next answer or the next block.
 const UP_WAIT = Number(process.env.WAKE_UPSTREAM_WAIT_MS || 86400000)
 const blockedAt = new Map(), answeredAt = new Map() // item id -> when (ms), from the journal
 function upSeen(e) {
@@ -655,12 +655,24 @@ function projectCap() {
   const m = /^wake:[ \t]*\n(?:[ \t]+.*\n)*?[ \t]+cap:[ \t]*["']?(\d+)/m.exec(machineConfig())
   return m ? Number(m[1]) : 0
 }
+// wake's own state (sy-965o): in .run/, which a box's uid may write (its folders are group-writable, setgid); the
+// project's top level is not (review sy-b15.6 2), so a tmp file there was refused and the state stopped. The old
+// .wake-state.json in the root is read once when .run/ has none yet (what a box can't remove stays, unused).
+const STATE_FILE = path.join(P, '.run', 'wake-state.json'), OLD_STATE = path.join(P, '.wake-state.json')
+const readState = () => { for (const f of [STATE_FILE, OLD_STATE]) { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch (e) { if (e.code !== 'ENOENT') return {} } } return {} }
+const saveFailed = new Set() // the causes of a failed save already logged: one warn line each, not one per event
 function editState(fn) {
-  const f = path.join(P, '.wake-state.json')
   // written whole and renamed into place: a reader (the board's Leads page) never sees half a file
-  try { const st = (() => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return {} } })(); fn(st); fs.writeFileSync(`${f}.tmp`, JSON.stringify(st)); fs.renameSync(`${f}.tmp`, f) } catch {}
+  try {
+    const st = readState(); fn(st)
+    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true })
+    fs.writeFileSync(`${STATE_FILE}.tmp`, JSON.stringify(st)); fs.renameSync(`${STATE_FILE}.tmp`, STATE_FILE)
+    saveFailed.clear()
+  } catch (e) {
+    const why = e.code || clip(e.message, 80)
+    if (!saveFailed.has(why)) { saveFailed.add(why); olog('warn', `wake state not saved (${STATE_FILE}): ${clip(e.message, 200)}`); count('mm_wake_state_save_failed_total', {}) }
+  }
 }
-const readState = () => { try { return JSON.parse(fs.readFileSync(path.join(P, '.wake-state.json'), 'utf8')) } catch { return {} } }
 // a person's run (sy-q8fv): mm run-as <person> (their own token, from the vault), with only their items in progress; in
 // a box, the host starts it (askHost, sy-9618)
 const leadStart = (role, next, person = null, own = [], items = []) => (person && BOXED) ? askHost(role, [...new Set([...own, ...items])], next) : new Promise((ok, no) => execFile(...(person ? [MM, ['run-as', person, PROJECT, role]] : [path.join(P, 'bin', 'lead'), ['start', role]]),
@@ -757,7 +769,7 @@ function askHuman(items, why) {
 // owner's chat points at the old one): it tells the owner once, with one note item for the whole board ("the ops lead's
 // agent can't be found: N item(s) wait for it"; assigned to the owner, mm's `owner_name`, labelled needs-you and
 // kept:<role>; its title follows N), and labels needs-you only the P0/P1 items that wait. It remembers each label it
-// added, in .wake-state.json `_kept.<role>.labelled` (item id -> when). When the role's agent is found again, it
+// added, in wake's state `_kept.<role>.labelled` (item id -> when). When the role's agent is found again, it
 // closes the note and removes those labels, and only those: a needs-you a person or a lead set is never touched. A label
 // of wake's that someone removes (an event, or a later read of the board, without it) is forgotten, so if they set it
 // again, it is theirs. A note the owner closes stays closed until the agent is back (and gone again).
@@ -1125,7 +1137,7 @@ async function closeIdle(role, a, own) {
 //     it (test/gates --item <id> writes .run/gates/<id>.<pid>.pid while it runs; alive = that pid is alive and, where
 //     /proc is, started when the file says). When that work ends, the lease counts again from the last pass that saw it.
 //     The requeue's comment on the item is the only report (the Supervisor raises no finding for it).
-//     The 3rd expiry of one item labels it needs-you (counted in .wake-state.json `_expiries`).
+//     The 3rd expiry of one item labels it needs-you (counted in wake's state `_expiries`).
 //   - each role's queue head(s), as many as it has free capacity (share()), are handed to it (a reason; again after
 //     WAKE_LEASE_MS while still unclaimed); the items after them wait.
 //   - a role with work it may be sent now, or items of its own in progress or blocked, and no running lead: started.
@@ -1301,7 +1313,6 @@ async function reconcile1() {
 // the poll delivers them (catch-up), logs an error (mm obs and the system's sentinel see it) and the stream reconnects.
 const STALL_MS = Number(process.env.WAKE_STALL_MS || 90000), CHECK_MS = Number(process.env.WAKE_CHECK_MS || 30000)
 let since = 0, stream = null, behind = 0
-const STATE = path.join(P, '.wake-state.json')
 let saveT = null
 const saveSeq = () => { saveT ||= setTimeout(() => { saveT = null; editState((st) => { st._seq = since }) }, 2000) }
 const deliver = (e) => { if (!e || (e.seq || 0) <= since) return; since = e.seq; onEvent(e); saveSeq() } // each event once, in order
@@ -1346,7 +1357,7 @@ async function watch() {
 
 since = await catchUp()
 // events after the last one this wake delivered before it stopped (a restart, a crash): replay them, so none is lost
-const saved = (() => { try { return Number(JSON.parse(fs.readFileSync(STATE, 'utf8'))._seq) || 0 } catch { return 0 } })()
+const saved = Number(readState()._seq) || 0
 if (saved && saved < since) {
   const head = since; since = saved
   try {

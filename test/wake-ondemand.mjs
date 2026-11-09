@@ -79,7 +79,7 @@ const w = spawn('node', [path.join(T, 'proj', 'bin', 'wake')], { env, stdio: ['i
 let out = ''; w.stdout.on('data', (d) => (out += d)); w.stderr.on('data', (d) => (out += d))
 const read = (f) => { try { return fs.readFileSync(f, 'utf8') } catch { return '' } }
 const sent = () => read(SENT), bdlog = () => read(BDLOG), archived = () => read(ARCH), opsLog = () => read(path.join(T, 'proj', '.run', 'logs', 'ops.log'))
-const wstate = () => { try { return JSON.parse(read(path.join(T, 'proj', '.wake-state.json'))) } catch { return {} } }
+const wstate = () => { try { return JSON.parse(read(path.join(T, 'proj', '.run', 'wake-state.json'))) } catch { return {} } }
 const to = (role) => sent().split('----\n').filter((b) => b.startsWith(`TO agent-${role}\n`)).join('\n')
 const starts = (r) => (read(STARTED).match(new RegExp(`^START ${r}$`, 'gm')) || []).length
 let seq = 0
