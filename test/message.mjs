@@ -175,10 +175,22 @@ step('bin/message check and gate')
 const D = fs.mkdtempSync(path.join(os.tmpdir(), 'message-'))
 fs.mkdirSync(path.join(D, 'bin', 'lib'), { recursive: true }); fs.mkdirSync(path.join(D, 'leads'))
 fs.copyFileSync(path.join(SRC, 'template/bin/message'), path.join(D, 'bin/message'))
-for (const f of ['message.mjs', 'owner-card.mjs', 'task.mjs', 'writing.mjs', 'glossary.mjs', 'raci.mjs', 'structured.mjs', 'schema.mjs', 'schemas.mjs']) fs.copyFileSync(path.join(SRC, 'template/bin/lib', f), path.join(D, 'bin/lib', f))
+for (const f of ['message.mjs', 'gates-file.mjs', 'owner-card.mjs', 'task.mjs', 'writing.mjs', 'glossary.mjs', 'raci.mjs', 'structured.mjs', 'schema.mjs', 'schemas.mjs']) fs.copyFileSync(path.join(SRC, 'template/bin/lib', f), path.join(D, 'bin/lib', f))
 fs.cpSync(path.join(SRC, 'template/bin/lib/schemas'), path.join(D, 'bin/lib/schemas'), { recursive: true })
 fs.writeFileSync(path.join(D, 'leads/roles.json'), JSON.stringify({ roles: ROLES.map((id) => ({ id })) }))
-const run = (args, input, env = {}) => spawnSync(process.execPath, [path.join(D, 'bin/message'), ...args], { input, encoding: 'utf8', env: { PATH: process.env.PATH, ...env } })
+// a clean PATH (node's folder and the system's): nothing a spawned tool finds there writes to a real board
+const CLEAN = `${path.dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`
+const run = (args, input, env = {}) => spawnSync(process.execPath, [path.join(D, 'bin/message'), ...args], { input, encoding: 'utf8', env: { PATH: CLEAN, ...env } })
+/** A test/gates result for item id, head sha: passed | failed (test/b.sh failed) | live (the live group skipped). */
+const gatesFile = (id, sha, how = 'passed', name = `gates-${sha.slice(0, 7)}.txt`) => {
+  const r = { passed: 'passed: 2 passed, 0 failed, 0 skipped, of 2', failed: 'failed: 1 passed, 1 failed, 0 skipped, of 2', live: 'passed (live skipped: --no-live): 2 passed, 0 failed, 1 skipped, of 3' }[how]
+  fs.mkdirSync(path.join(D, 'artifacts', id), { recursive: true })
+  fs.writeFileSync(path.join(D, 'artifacts', id, name), `head: ${sha} a subject\nrange: main..${sha.slice(0, 7)}\nresult: ${r}\n\n` +
+    'test/a.sh   hermetic  passed                3 ok, 0 FAIL   2s  logs/a.log\n' +
+    `test/b.sh   hermetic  ${how === 'failed' ? 'failed (exit 1)     ' : 'passed              '}  3 ok, 1 FAIL   2s  logs/b.log\n` +
+    (how === 'live' ? 'test/c.sh   live      skipped (--no-live)   -   0s  logs/c.log\n' : ''))
+}
+gatesFile('sy-1', '56ebb96') // EX.handoff's head, for the gate checks below
 {
   let r = run(['check', '-'], EX.handoff)
   ok('check -: a valid message, exit 0', r.status === 0, r.stderr)
@@ -259,6 +271,65 @@ const run = (args, input, env = {}) => spawnSync(process.execPath, [path.join(D,
   fs.rmSync(path.join(D, 'setup'), { recursive: true })
   r = run(['waits', 'sy-9'])
   ok('...without setup/: nothing waits (the ASK is no valid message)', /sy-9: nothing waits/.test(r.stdout), r.stdout + r.stderr)
+}
+
+step('a HANDOFF → review brings its head\'s gates file (sy-6avk; bin/lib/gates-file.mjs)')
+{
+  const SHA = '1122334'
+  const HO = EX.handoff.replaceAll('56ebb96', SHA).replaceAll('sy-wxzx', 'sy-g1')
+  const gate = (id, text, actor = 'platform') => run(['gate', actor, '--', 'comments', 'add', id, text])
+  const item = (labels) => fs.writeFileSync(path.join(D, 'item.json'), JSON.stringify([{ id: 'sy-g1', labels, comments: [{ author: 'platform', text: HO, created_at: new Date().toISOString() }] }]))
+  item([])
+  const MISSING = `HANDOFF → review needs the gates result for mm@${SHA}: no artifacts/sy-g1/gates-${SHA}.txt. Run test/gates <base>..${SHA} --item sy-g1 first`
+  let r = gate('sy-g1', HO)
+  ok('gate: no gates file: refused (exit 1), the file to make named', r.status === 1 && r.stderr.includes(`bd: refused (platform): ${MISSING}`), r.stderr)
+  r = run(['gate', 'platform', '--', 'comment', 'sy-g1', HO])
+  ok('gate: bd comment <id> …: the same', r.status === 1 && r.stderr.includes(MISSING), r.stderr)
+  r = run(['check', 'sy-g1', '1'])
+  ok('check <id> <n>: the same reason', r.status === 1 && r.stderr.includes(`message: sy-g1 #1: ${MISSING}`), r.stderr)
+  r = run(['check', '-', '--item', 'sy-g1'], HO)
+  ok('check - --item <id>: the same reason', r.status === 1 && r.stderr.includes(MISSING), r.stderr)
+  r = run(['check', '-'], HO)
+  ok('check - without --item: no item, so no gates check (ok)', r.status === 0, r.stderr)
+  r = gate('sy-g1', HO.replace('HANDOFF → review', 'HANDOFF → ops').replace('Expect: review:', 'Expect: ops:'))
+  ok('gate: the same HANDOFF → ops: not checked', r.status === 0, r.stderr)
+  r = gate('sy-g1', HO.replace(`Head: mm@${SHA}`, `Head: brain@${SHA}`))
+  ok('gate: a Head of a repo not in gates.json: not checked', r.status === 0, r.stderr)
+  r = gate('sy-g1', HO.replace(/\nHead: .*/, ''))
+  ok('gate: a HANDOFF → review with no Head: not checked', r.status === 0, r.stderr)
+  r = gate('sy-g1', EX.ask.replace('ASK → ops', 'ASK → review').replace('Expect: ops:', 'Expect: review:') + `\nHead: mm@${SHA}`)
+  ok('gate: an ASK → review naming the head: not checked', r.status === 0, r.stderr)
+  fs.writeFileSync(path.join(D, 'gates.json'), JSON.stringify({ repos: ['mm', 'brain'] }))
+  r = gate('sy-g1', HO.replace(`Head: mm@${SHA}`, `Head: brain@${SHA}`))
+  ok('gate: brain listed in gates.json: its head is checked too', r.status === 1 && r.stderr.includes(`for brain@${SHA}: no artifacts/sy-g1/gates-${SHA}.txt`), r.stderr)
+  fs.rmSync(path.join(D, 'gates.json'))
+  gatesFile('sy-g1', SHA, 'failed')
+  r = gate('sy-g1', HO)
+  ok('gate: a failed gates file: refused, the failed suite named', r.status === 1 && r.stderr.includes(`HANDOFF → review needs a passing gates result for mm@${SHA}: the gates failed for ${SHA}: test/b.sh. Run test/gates`), r.stderr)
+  gatesFile('sy-g1', 'abcdef0', 'passed', `gates-${SHA}.txt`)
+  r = gate('sy-g1', HO)
+  ok('gate: a file for another head: refused', r.status === 1 && r.stderr.includes('is for another head (abcdef0)'), r.stderr)
+  gatesFile('sy-g1', SHA, 'passed')
+  r = gate('sy-g1', HO)
+  ok('gate: a passing gates file: ok', r.status === 0, r.stderr)
+  r = gate('sy-g1', HO, 'platform/w1')
+  ok('gate: ...from a worker too', r.status === 0, r.stderr)
+  r = run(['check', '-', '--item', 'sy-g1'], HO)
+  ok('check - --item: ok', r.status === 0 && /message ok \(HANDOFF → review\)/.test(r.stdout), r.stderr)
+  gatesFile('sy-g1', SHA, 'live')
+  r = gate('sy-g1', HO)
+  ok('gate: live skipped on an item that is not t2: ok', r.status === 0, r.stderr)
+  item(['t2'])
+  r = gate('sy-g1', HO)
+  ok('gate: live skipped on a t2 item: refused as gates-file says', r.status === 1 && r.stderr.includes(`a t2 head needs every group, live too; artifacts/sy-g1/gates-${SHA}.txt skipped test/c.sh (--no-live)`) && r.stderr.includes('without --no-live: the item is t2'), r.stderr)
+  fs.rmSync(path.join(D, 'artifacts', 'sy-g1', `gates-${SHA}.txt`))
+  fs.mkdirSync(path.join(D, 'elsewhere'), { recursive: true }); gatesFile('elsewhere', SHA)
+  fs.symlinkSync(path.join(D, 'artifacts', 'elsewhere', `gates-${SHA}.txt`), path.join(D, 'artifacts', 'sy-g1', `gates-${SHA}.txt`))
+  item([])
+  r = gate('sy-g1', HO)
+  ok('gate: a symlink to a passing file counts as none', r.status === 1 && r.stderr.includes(MISSING), r.stderr)
+  r = gate('../x', HO)
+  ok('gate: an id that is no item id: refused', r.status === 1 && r.stderr.includes('not an item id'), r.stderr)
 }
 
 step('messageRoles: the roles, and setup when the board has it')

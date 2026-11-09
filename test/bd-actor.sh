@@ -60,6 +60,22 @@ call comments add sy-1 --actor platform -- "NOTE → ops
 Claimed; plan in #2.";                                      check "platform: a valid NOTE passes" passed
 call comment sy-1 "free text" --actor alex;                 check "alex (a person): passes" passed
 
+echo "== a HANDOFF → review brings its head's gates file (sy-6avk)"
+HO="HANDOFF → review
+Head: mm@1122334
+Expect: review: sign off or block this head.
+Done when: the item has signed-head:mm@1122334, or a VERDICT blocked.
+Verify: bd show sy-g --json → labels include signed-head:mm@1122334
+By: next wake · Else: nothing rolls out
+Ready: the check
+Surfaces: none"
+call comments add sy-g --actor platform/w -- "$HO";        check "no gates file: refused, bd never runs" test "$(cat "$T/code")" = 1 -a ! -s "$T/ran"
+check "...the reason names the file to make" grep -qF "bd: refused (platform/w): HANDOFF → review needs the gates result for mm@1122334: no artifacts/sy-g/gates-1122334.txt. Run test/gates <base>..1122334 --item sy-g first" "$T/err"
+mkdir -p "$T/artifacts/sy-g"
+printf 'head: 1122334 a subject\nresult: passed: 1 passed, 0 failed, 0 skipped, of 1\n\ntest/a.sh   hermetic  passed   1 ok   1s  logs/a.log\n' >"$T/artifacts/sy-g/gates-1122334.txt"
+call comments add sy-g --actor platform/w -- "$HO";        check "a passing gates file: passed" passed
+call comments add sy-h --actor platform -- "${HO//review/ops}"; check "the same HANDOFF → ops: not checked, passed" passed
+
 echo "== reads need no actor"
 for r in "list --json" "show sy-1 --json" "ready --json" "comments sy-1 --json" "label list sy-1" "dep list sy-1" "dep tree sy-1" "config get no-hooks" "export --all"; do
   # shellcheck disable=SC2086

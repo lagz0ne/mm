@@ -49,6 +49,11 @@ check "...the body is one mm-message v1 block" grep -qx '```mm-message v1' "$T/b
 check "...its JSON: intent, to, expect, by, else, misc in order" json 'd.intent==="ASK"&&d.to==="review"&&d.expect.role==="review"&&d.expect.do==="review"&&d.expect.on==="mm@abcdef1"&&d.by==="today"&&d.else.do==="escalate"&&d.misc.length===2&&d.misc[1].type==="mermaid"'
 check "...message check - reads it as a valid ASK" sh -c "'$T/bin/message' check - <'$T/body' | grep -qF 'message ok (ASK → review)'"
 check "...the temp file is gone" sh -c "! ls '${TMPDIR:-/tmp}'/bd-structured-* >/dev/null 2>&1 || ! grep -l 'Read the three schemas first' '${TMPDIR:-/tmp}'/bd-structured-*/body.md"
+HO=(msg HANDOFF sy-1 --to review --expect-role review --expect sign-off --expect-on mm@abcdef1 --head mm@abcdef1 --done signed-off
+  --verify-check 'bash test/structured.sh' --verify-expect '0 failed' --by next-wake --else block --ready mm@abcdef1 --surface bin --actor platform/sy-1)
+call "${HO[@]}"; check "HANDOFF → review with no gates file for its head: refused, the file named (sy-6avk)" refused 'no artifacts/sy-1/gates-abcdef1.txt. Run test/gates <base>..abcdef1 --item sy-1 first'
+mkdir -p "$T/artifacts/sy-1"
+printf 'head: abcdef1 a subject\nresult: passed: 1 passed, 0 failed, 0 skipped, of 1\n\ntest/a.sh   hermetic  passed   1 ok   1s  logs/a.log\n' >"$T/artifacts/sy-1/gates-abcdef1.txt"
 call msg HANDOFF sy-1 --to review --expect-role review --expect sign-off --expect-on mm@abcdef1 --head mm@abcdef1 --done signed-off \
   --verify-check 'bash test/structured.sh' --verify-expect '0 failed' --by next-wake --else block --ready mm@abcdef1 --ready artifacts/sy-1/plan.md \
   --surface bin --surface site:board --tests-artifact artifacts/sy-1/tests.txt --tests-passed 40 --tests-failed 0 --actor platform/sy-1 \
