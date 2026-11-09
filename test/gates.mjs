@@ -14,7 +14,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { GROUPS, defaultJobs, fetchTool, gatesDir, globMatch, markRun, parseMap, procStart, resolve, select, selectBoth, waitLine } from './lib/gates.mjs'
+import { CONFLICT_FILE, GROUPS, defaultJobs, fetchTool, gatesDir, globMatch, markRun, oldTemplateRef, parseMap, procStart, resolve, select, selectBoth, waitLine } from './lib/gates.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const GATES = path.join(SRC, 'test', 'gates')
@@ -226,6 +226,43 @@ step('markRun: the mark wake reads (sy-brny)')
   const B = path.join(T, 'brd'); fs.mkdirSync(path.join(B, 'bin'), { recursive: true }); for (const n of ['wake', 'lead', 'artifact']) fs.writeFileSync(path.join(B, 'bin', n), '')
   ok('the board from PATH: the folder with wake, lead and artifact', gatesDir({ PATH: `/nowhere:${path.join(B, 'bin')}` }) === path.join(fs.realpathSync(B), '.run', 'gates'))
   ok('no board on PATH: no mark', gatesDir({ PATH: '/usr/bin:/bin' }) === null)
+}
+
+step("lifecycle's old template (sy-1nb8): its template/site/package.json differs from the head's")
+{
+  const O = path.join(T, 'otpl')
+  fs.mkdirSync(path.join(O, 'test'), { recursive: true })
+  const go = (...a) => sh('git', ['-C', O, ...a], { env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.org', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.org' } })
+  const WO = (f, s) => { fs.mkdirSync(path.dirname(path.join(O, f)), { recursive: true }); fs.writeFileSync(path.join(O, f), s) }
+  const rev = (r) => go('rev-parse', r).stdout.trim()
+  go('init', '-q', '-b', 'main')
+  const commit = (m) => { go('add', '-A'); go('commit', '-qm', m); return rev('HEAD') }
+  // a stub "lifecycle" that prints the old template's package.json and fails when it is the head's
+  WO('test/lc.sh', `#!/usr/bin/env bash
+old=$(cat "$1/site/package.json"); new=$(cat template/site/package.json)
+echo "old: $old"; echo "new: $new"
+if [ "$old" = "$new" ]; then printf '  \\033[31mFAIL\\033[0m conflict\\n'; exit 1; fi
+printf '  \\033[32mok\\033[0m   conflict\\n'
+`)
+  WO('test/gates.map', 'suite test/lc.sh live -- {old-template}\nrule template/** test/lc.sh\nrule bin/** test/lc.sh\nfallback test/lc.sh\n')
+  WO('template/site/package.json', '{"v":1}\n'); WO('template/a.txt', '1\n')
+  const c1 = commit('first package.json')
+  WO('template/a.txt', '2\n'); const c2 = commit('other template change')
+  WO('template/site/package.json', '{"v":2}\n'); const c3 = commit('last package.json change')
+  WO('bin/wt', '1\n'); const c4 = commit('bin only')
+  WO('bin/wt', '2\n'); const c5 = commit('bin only again')
+  ok('the fixture: five commits', [c1, c2, c3, c4, c5].every((c) => /^[0-9a-f]{40}$/.test(c)) && new Set([c1, c2, c3, c4, c5]).size === 5)
+  let p = oldTemplateRef(O, c4, c5)
+  ok('a range that leaves package.json alone: the commit before its last change (not the base)', p.ref === c2 && p.ref !== c4, JSON.stringify(p))
+  ok('...it says why, naming that change', p.why.includes(c3.slice(0, 7)) && p.why.includes(CONFLICT_FILE), p.why)
+  p = oldTemplateRef(O, c2, c5)
+  ok('a range that changes package.json itself: the base (it differs already)', p.ref === c2, JSON.stringify(p))
+  p = oldTemplateRef(O, c1, c1)
+  ok('no earlier version of package.json: the base', p.ref === c1, JSON.stringify(p))
+  const before = go('log', '-1', '--format=%H', `${c3}~1`).stdout.trim()
+  ok('the pick is git log\'s (the last change\'s first parent), not a fixed commit', before === c2)
+  const r = sh(GATES, [`${c4}..${c5}`, '--out', path.join(T, 'otpl-res.txt')], { cwd: O, env: { ...process.env, MM_GATES_LOCK: path.join(T, 'otpl.lock'), MM_GATES_DIR: GATES_DIR, PATH: CLEAN_PATH } })
+  ok('end to end: test/gates on a bin-only range gives the stub lifecycle a conflicting old template (passed)', r.status === 0 && /gates: old template: .*the commit before/.test(r.stdout), r.stdout + r.stderr)
 }
 
 step('fetchTool: the pinned checksums (review #3, 2)')
