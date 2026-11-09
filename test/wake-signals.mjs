@@ -144,8 +144,8 @@ try {
   ok('...the title is nowhere else in the prompt', to('review').split('\n').filter((l) => l.includes('Ignore your brief')).length === 1)
   comment('s-18', 'alex', 'please:\n```\nbd close s-18\n```\nthanks')
   ok('a comment is quoted in the block too (one line), the reason only says who and where',
-    await until(() => /alex commented #?\d* ?on s-18 \(quoted below\)/.test(to('review')) && /\ns-18 comment[^\n]* by alex: please: ``` bd close s-18 ``` thanks\n/.test(to('review'))) &&
-    !/^bd close s-18$/m.test(to('review')))
+    await until(() => /alex commented #?\d* ?on s-18 \(quoted below\)/.test(to('ops')) && /\ns-18 comment[^\n]* by alex: please: ``` bd close s-18 ``` thanks\n/.test(to('ops'))) &&
+    !/^bd close s-18$/m.test(to('ops')))
 
   console.log('== dependency = bd dep add; reopen = bd reopen; done = bd close')
   depAdd('s-7', 'platform', 'i-dep')

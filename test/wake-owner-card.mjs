@@ -154,7 +154,7 @@ try {
   const q2 = sent()
   comment('p-2', 'alex', 'Go on with option B.')
   ok('wake removes paused itself', await until(() => /label remove p-2 paused --actor wake/.test(bdlog()) && !has('p-2', 'paused')))
-  ok('...and the assignee (review) is woken for the human comment', await until(() => /alex commented[\s\S]*Go on with option B/.test(to('review').slice(0)) && sent().length > q2.length))
+  ok('...and the board\'s Lead (ops) is woken for the human comment (sy-uykv)', await until(() => /alex commented[\s\S]*Go on with option B/.test(to('ops')) && sent().length > q2.length))
 
   console.log('== wake asks the owner only with an owner card')
   change('h-1', 'platform', { assignee: 'alex' })
