@@ -48,6 +48,9 @@
 //     overcap:<role>     a role with workers holds more places than its capacity (each live worker one, each item in
 //                        progress no worker works on one; +1 while it holds a P0), or, while any role has workers, the
 //                        board more than its cap (overcap:board)                                                    P2
+//     placements:daily   once a UTC day, the parts of the structured blocks (sy-rfup; bin/lib/placements.mjs) on items
+//                        changed in the last 24 h: per kind and part type the count, the size (median, max), the most
+//                        common leading words of text parts. Data only; edited in place; none on a day with no block P4
 //     supervisor:<check> the supervisor could not read a source (that check's items are left as they are)     P2
 // Sources, all read-only: the board (bd serve: items, ready, the event journal), Paseo (leads by label project/role),
 // `mm ls` (project roots), git (log, status, worktree list). A reply, a comment or a change means one by a lead, its
@@ -84,6 +87,7 @@ import { SIGNED_HEAD, parseCard } from './lib/owner-card.mjs'
 import { dueAt, openWaits, parseMessage } from './lib/message.mjs'
 import { actOf, lettersOf, mayAsk, noInputOk, rowOf } from './lib/raci.mjs'
 import { formatTask, parseTask } from './lib/task.mjs'
+import { countPlacements, formatPlacements } from './lib/placements.mjs'
 
 cli('supervisor')
 const E = process.env
@@ -408,6 +412,30 @@ async function tasks() {
       'Its role writes the Task at the top of the description (`bd update <id> --body-file <file>`). This item is edited in place and closes itself when none is left.' }] }
 }
 
+// The monitored placements (sy-rfup, step 1; bin/lib/placements.mjs): once a UTC day, what went into the free field
+// `parts` of the structured blocks (messages, Tasks, owner cards) on items changed in the last 24 h: per kind and type
+// of part, the count, the size (median, max) and the most common leading words of the text parts. Data only: a shape
+// that comes back often can become a typed field in v2. One item, edited in place each day; none on a day with no block.
+async function placements() {
+  const day = now.slice(0, 10), prev = state.placements
+  if (prev?.day === day) return { prefix: 'placements:', problems: prev.problem ? [prev.problem] : [] }
+  const since = NOW - 24 * 3600e3, texts = []
+  for (const i of await issues()) {
+    if (mine(i) || ms(i.updated_at) < since) continue
+    if (i.description) texts.push(i.description)
+    if (!(i.comment_count > 0)) continue
+    const full = await bd('GET', `/v0/beads/issues/${encodeURIComponent(i.id)}?include_comments=true`)
+    for (const c of full.comments || []) if (ms(c.created_at) >= since && c.text) texts.push(c.text)
+  }
+  const c = countPlacements(texts)
+  const problem = Object.keys(c.blocks).length ? { key: 'placements:daily', priority: 4, parts: [day], title: `Supervisor digest: the parts of structured blocks (${day})`,
+    note: c.rows.map((r) => `${r.kind} ${r.type} ${r.count}`).join('\n'),
+    body: `What went into the free field \`parts\` of the structured blocks (bin/lib/placements.mjs), on items changed in the 24 h before ${at(NOW)}:\n\n` +
+      `${formatPlacements(c)}\n\nData only, no judgement: a shape that comes back often can become a typed field in v2 of the schemas. This item is edited in place each day.` } : null
+  state.placements = { day, problem }
+  return { prefix: 'placements:', problems: problem ? [problem] : [] }
+}
+
 const HOW = {
   unanswered: 'no answer after By: answer the message (re #<n>: an ANSWER, a VERDICT or a DONE), or say on the item why it waits, with a new By. ' +
     'No VERDICT after By: V writes the VERDICT on that head. ASK outside the RACI: ask a role that is C, V, R or A in the item\'s row (an I is told once, at DONE), or fix the item\'s act:',
@@ -727,7 +755,7 @@ for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')
 }
 const results = [], failed = []
 const failure = (name, e) => ({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) })
-for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card, signoff, tasks })) {
+for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card, signoff, tasks, placements })) {
   try { results.push(...[await fn()].flat()) } catch (e) { failed.push(failure(name, e)) }
 }
 await paseo.close()
