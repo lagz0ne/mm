@@ -14,7 +14,8 @@ const STATE = process.env.HEALTH_STATE || path.join(P, '.health.json')
 // in or out of a box keeps its open incidents (sy-6n9w): a run starts from the newer of the two files (a regular file,
 // never a link), so the incidents the other side opened are checked and closed here
 const STATES = [...new Set([STATE, path.join(P, '.health.json'), path.join(P, '.run', 'health.json')])]
-const ISSUE = /^[\w.-]{1,64}$/
+// the board's ids (a prefix, a dash, a hash, then .N children): '..', a slash or a path never reaches a URL
+const ISSUE = /^[a-z][a-z0-9]*-[a-z0-9]+(\.\d+)*$/
 function loadState() {
   const files = STATES.map((f) => { try { const st = fs.lstatSync(f); return st.isFile() ? { f, t: st.mtimeMs } : null } catch { return null } })
     .filter(Boolean).sort((a, b) => b.t - a.t)
@@ -74,10 +75,32 @@ async function bd(method, p, body) {
   const r = await fetch(`${BD}${p}`, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(8000) })
   return r.json().catch(() => ({}))
 }
+// An id from the state is data (the box writes .run/health.json, sy-6n9w): before the watchdog comments on or closes it,
+// it reads the item and acts only on its own: open, owner watchdog, the label and the title health gives it. Returns
+// null when it is, else why not (the caller drops the id). A board it can't reach throws: the id stays for the next run.
+const MEM_TITLE = 'Stale memories: '
+async function notOurs(id, label, title) {
+  if (typeof id !== 'string' || !ISSUE.test(id)) return 'not an item id'
+  const r = await fetch(`${BD}/v0/beads/issues/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(8000) })
+  if (r.status >= 500) throw new Error(`board answered ${r.status}`)
+  const i = await r.json().catch(() => null)
+  if (!r.ok || !i || typeof i !== 'object' || i.id !== id) return 'no such item'
+  if (i.status === 'closed') return 'closed already'
+  if (i.owner !== 'watchdog') return `owner is ${i.owner || 'nobody'}, not watchdog`
+  if (!Array.isArray(i.labels) || !i.labels.includes(label)) return `no ${label} label`
+  if (typeof i.title !== 'string' || !title(i.title)) return 'not the title health gives it'
+  return null
+}
 
 for (const c of checks) {
   const s = state[c.id] ||= { fails: 0, incident: null }
   const good = c.id === FORCE ? false : await c.run()
+  // a forged or stale id would be closed (when good) or keep a real incident from opening (when failing)
+  if (s.incident) {
+    const why = await notOurs(s.incident, 'incident', (t) => t === `Incident: ${c.title}`).catch((e) => { console.log(`${c.id}: could not read ${s.incident} (${e.message}); kept`); return undefined })
+    if (why === undefined && good) continue
+    if (why) { console.log(`${c.id}: dropped ${String(s.incident).slice(0, 64)} from the state: ${why}`); s.incident = null }
+  }
   if (good) {
     if (s.incident) {
       await bd('POST', `/v0/beads/issues/${s.incident}/comments`, { author: 'watchdog', text: `Recovered at ${new Date().toISOString()} after ${s.fails} failed check(s).` }).catch(() => {})
@@ -99,7 +122,7 @@ for (const c of checks) {
       description: `${formatTask({ task: 'Find why the check fails, and make it pass again.', act: actHere('incident', 'release'),
         done: 'the check passes again, and this item closes itself', verify: [`bin/health`, `no "${c.id}: FAILED" line`] })}\n\n` +
         `The watchdog found **${c.title}** on ${s.fails} checks in a row (one per minute) and could not fix it by restarting${c.service ? ` \`${c.service}\`` : ''}.\n\nCheck the process manager's log for ${c.service || 'it'}. This item closes itself when the check passes again.` }).catch(() => ({}))
-    if (r.id) { s.incident = r.id; console.log(`${c.id}: opened incident ${r.id}`) }
+    if (typeof r.id === 'string' && ISSUE.test(r.id)) { s.incident = r.id; console.log(`${c.id}: opened incident ${r.id}`) }
   }
 }
 // Memories past verified + ttl_days (memory/README.md): one item for setup with the list, updated when it changes,
@@ -113,12 +136,16 @@ const stale = (fs.existsSync(MEM) ? fs.readdirSync(MEM) : []).filter((f) => f.en
 const mem = state.memory ||= { item: null, list: [] }
 const listed = stale.map((f) => `- \`memory/${f}\``).join('\n')
 try {
+  if (mem.item) {
+    const why = await notOurs(mem.item, 'memory', (t) => t.startsWith(MEM_TITLE))
+    if (why) { console.log(`memory: dropped ${String(mem.item).slice(0, 64)} from the state: ${why}`); mem.item = null; mem.list = [] }
+  }
   if (stale.length && !mem.item) {
-    const r = await bd('POST', '/v0/beads/issues', { title: `Stale memories: ${stale.length} past their ttl_days`, issue_type: 'task', priority: 3, labels: ['memory'], assignee: 'setup', actor: 'watchdog', owner: 'watchdog',
+    const r = await bd('POST', '/v0/beads/issues', { title: `${MEM_TITLE}${stale.length} past their ttl_days`, issue_type: 'task', priority: 3, labels: ['memory'], assignee: 'setup', actor: 'watchdog', owner: 'watchdog',
       description: `${formatTask({ task: 'Check each stale memory again: set a new verified, fix it, or delete it.', act: actHere('project-governance', 'incident', 'release'),
         done: 'no memory is past verified plus ttl_days, and this item closes itself', verify: ['bin/config-check', 'config-check: ok'] })}\n\n` +
         `These project memories are older than their \`verified\` date plus \`ttl_days\`:\n\n${listed}\n\nFor each: check the fact again and set a new \`verified\`, fix it, or delete the file (and its line in \`memory/MEMORY.md\`). This item closes itself when none is left.` })
-    if (r.id) { mem.item = r.id; mem.list = stale; console.log(`memory: ${stale.length} stale; opened ${r.id}`) }
+    if (typeof r.id === 'string' && ISSUE.test(r.id)) { mem.item = r.id; mem.list = stale; console.log(`memory: ${stale.length} stale; opened ${r.id}`) }
   } else if (stale.length && mem.list.join() !== stale.join()) {
     await bd('POST', `/v0/beads/issues/${mem.item}/comments`, { author: 'watchdog', text: `Now ${stale.length} stale:\n\n${listed}` }); mem.list = stale
   } else if (!stale.length && mem.item) {
