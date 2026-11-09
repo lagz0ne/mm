@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run hermetic tests (vault.sh, sync.sh, ...) in a throwaway container that has age, git and jq, against a local build.
+# Run hermetic tests (vault.sh, sync.sh, ...) in a throwaway container that has age, git, jq and python3, against a local
+# build (no bun, no src/: a check that imports the source skips itself there).
 # For a box without age, or to check on another distro. Nothing on the host is touched except the container.
 #   test/in-box.sh dist/mm vault.sh sync.sh       options: --image ubuntu:24.04 (default)
 #   rootless podman by default (test/lib/stock.sh); DOCKER="sudo -n docker" or DOCKER=docker for docker.
@@ -15,7 +16,7 @@ NAME=mm-inbox-$$; WORK=$(mktemp -d); trap '$DOCKER rm -f "$NAME" >/dev/null 2>&1
 mkdir "$WORK/test"; cp "$BIN" "$WORK/mm"; cp -r "$HERE/../template" "$WORK/template"
 for t in "$@"; do cp "$HERE/$t" "$WORK/test/"; done; chmod -R a+rX "$WORK"
 $DOCKER run -d --name "$NAME" -v "$WORK:/w:$STOCK_RO" "$IMAGE" sleep infinity >/dev/null || exit 1
-$DOCKER exec "$NAME" sh -c 'if command -v apt-get >/dev/null; then export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null && apt-get install -y -qq age jq git openssh-client >/dev/null 2>&1; else dnf install -y -q epel-release >/dev/null 2>&1; dnf install -y -q age jq git openssh >/dev/null; fi && useradd -m dev' || { echo "container setup failed"; exit 1; }
+$DOCKER exec "$NAME" sh -c 'if command -v apt-get >/dev/null; then export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null && apt-get install -y -qq age jq git openssh-client python3 >/dev/null 2>&1; else dnf install -y -q epel-release >/dev/null 2>&1; dnf install -y -q age jq git openssh python3 >/dev/null; fi && useradd -m dev' || { echo "container setup failed"; exit 1; }
 echo "== $IMAGE: age $($DOCKER exec "$NAME" age --version)"
 rc=0
 for t in "$@"; do echo "== $t"; $DOCKER exec -u dev -w /home/dev "$NAME" bash "/w/test/$t" /w/mm || rc=1; done
