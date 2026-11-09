@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // health — the project's watchdog (run every minute by the machine's scheduler). Checks every service and endpoint; restarts
-// what is down; after 3 failed checks in a row opens a P0 incident on the board (label incident, needs-you) and closes
+// what is down; after 3 failed checks in a row opens a P0 incident on the board (label incident, for the board's Lead; sy-48bt) and closes
 // it when the check passes again. State: .health.json. Prints one line per problem (its log: the scheduler's).
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -21,6 +21,14 @@ function actHere(...prefer) {
   let ids = []
   try { ids = (JSON.parse(fs.readFileSync(path.join(P, 'leads', 'raci.json'), 'utf8')).activities || []).map((a) => a.id) } catch {}
   return prefer.find((a) => ids.includes(a)) || ids[0] || prefer[0]
+}
+// who gets an incident (sy-48bt): the board's Lead (roles.json `lead`), else ops when the board has it, else its first
+// role. Never needs-you: the owner is asked only with an owner card, and the incident row is the leads' (ops R·A).
+function incidentOwner() {
+  let j = {}
+  try { j = JSON.parse(fs.readFileSync(path.join(P, 'leads', 'roles.json'), 'utf8')) } catch {}
+  const ids = (j.roles || []).map((r) => r?.id).filter(Boolean)
+  return (ids.includes(j.lead) && j.lead) || (ids.includes('ops') && 'ops') || ids[0] || undefined
 }
 // Checks come from services.json (each service's `ready` probe) and where the manager put them (.run/endpoints.json).
 const SVC = servicesDef()
@@ -64,7 +72,7 @@ for (const c of checks) {
   const selfHealing = !!endpoints().self_healing
   if (c.service && c.id !== FORCE && (selfHealing ? s.fails === 3 : s.fails <= 3)) { try { restartService(c.service); console.log(`${c.id}: restarted`) } catch (e) { console.log(`${c.id}: restart failed: ${e.message}`) } }
   if (s.fails >= 3 && !s.incident) {
-    const r = await bd('POST', '/v0/beads/issues', { title: `Incident: ${c.title}`, issue_type: 'bug', priority: 0, labels: ['incident', 'needs-you'], actor: 'watchdog', owner: 'watchdog',
+    const r = await bd('POST', '/v0/beads/issues', { title: `Incident: ${c.title}`, issue_type: 'bug', priority: 0, labels: ['incident', `act:${actHere('incident', 'release')}`], assignee: incidentOwner(), actor: 'watchdog', owner: 'watchdog',
       description: `${formatTask({ task: 'Find why the check fails, and make it pass again.', act: actHere('incident', 'release'),
         done: 'the check passes again, and this item closes itself', verify: [`bin/health`, `no "${c.id}: FAILED" line`] })}\n\n` +
         `The watchdog found **${c.title}** on ${s.fails} checks in a row (one per minute) and could not fix it by restarting${c.service ? ` \`${c.service}\`` : ''}.\n\nCheck the process manager's log for ${c.service || 'it'}. This item closes itself when the check passes again.` }).catch(() => ({}))
