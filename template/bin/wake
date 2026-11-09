@@ -117,7 +117,8 @@ const isHuman = (actor) => !!actor && actor !== 'mm' && !leadOf(actor) && !SYSTE
 
 // The hop limit (sy-0omb): a person never gets a pause for an agent loop. wake labels the item `paused`, says so once on
 // it, and wakes the board's Lead (roles.json `lead`) with it; while `paused` is on, no lead is woken for the item.
-// Removing `paused` (anyone), or a human comment or change, resets the count and resumes it (pauseSeen()). The Lead
+// The Lead removing `paused`, or a human (a comment, a change, or the label), resets the count and resumes it
+// (pauseSeen()); another lead's removal is undone, and the Lead is told. The Lead
 // resumes it, or writes an owner card and needs-you when a person must decide. A board with no Lead: the owner (askOwner).
 function stopLoop(id, title) {
   for (const r of ROLES) pending[r].delete(id) // what waited for it waits for the Lead's word now
@@ -143,7 +144,14 @@ function pauseSeen(e) {
   const was = paused.has(id)
   if (Array.isArray(ls)) {
     if (ls.includes(PAUSED)) { pauseOn.add(id); paused.add(id) }
-    else if (pauseOn.has(id)) { pauseOn.delete(id); paused.delete(id); hops.delete(id); log(`${id}: ${PAUSED} removed (by ${actorName(e.actor)}): resumed`); return }
+    else if (pauseOn.has(id)) {
+      // only the board's Lead itself or a human resumes it (review sy-0omb #4): a looping lead must not unpause itself
+      if (isHuman(e.actor) || (BOARD_LEAD && e.actor === BOARD_LEAD)) { pauseOn.delete(id); paused.delete(id); hops.delete(id); log(`${id}: ${PAUSED} removed (by ${actorName(e.actor)}): resumed`); return }
+      log(`${id}: ${PAUSED} removed by ${actorName(e.actor)}, who is not the Lead (${BOARD_LEAD || 'none'}) or a human: labelled again`)
+      labelQ(['label', 'add', id, PAUSED], `label ${id}`)
+      if (BOARD_LEAD) note(BOARD_LEAD, id, `PAUSED: ${actorName(e.actor)} removed \`${PAUSED}\` from ${id}; only you (the board's Lead) or a human resume it, so wake put it back. Resume it yourself if the loop is settled.`, false, 'talk', [boardLine(id, e.issue?.title)], true)
+      return
+    }
   }
   if (was && isHuman(e.actor)) {
     paused.delete(id); hops.delete(id)
