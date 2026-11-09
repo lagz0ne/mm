@@ -7,6 +7,8 @@ the owner. Nothing inside the box, and no label on a board, decides one. Design 
 Status: **built** (`src/api.ts`, `src/apistate.ts`; `test/api.sh`, and the project API section of `test/box.sh`).
 Off until the machine turns it on (`mm config set api.enabled true`, then `mm onboard` or `mm up` of any project to
 load `mm.api`): a t2 change, after review's sign-off and the owner's approval.
+Its setting: `api.code_length` (`mm config set api.code_length 2`), the length of a new one-time code, 2 to 8
+(default 8); a bad value gives 8, with a warning in mm.api's log. A code already sent keeps its length.
 
 ## The way in
 - `mm.api` is a machine service under mm's process manager (namespace `mm`), like `mm.auth` and `mm.ai`.
@@ -67,7 +69,8 @@ load `mm.api`): a t2 change, after review's sign-off and the owner's approval.
    and the undo (`mm api undo <id>`) on the item, labels it `approved` (the state) and closes it.
 5. **An approval shows the owner made it: the one-time code** (sy-35f2). The hash is printed in the item, and every
    host session runs as the same user, so the hash alone doesn't prove the owner decided. So:
-   - Each request gets a random code: 8 base32 characters (`A-Z`, `2-7`; 40 bits). mm.api sends it **only** to the
+   - Each request gets a random code: `api.code_length` base32 characters (`A-Z`, `2-7`; 5 bits each; 8 by default,
+     40 bits; at 2, 1024 codes). mm.api sends it **only** to the
      owner on Telegram (the bot and `telegram.owner_id`, as mm.auth's notices) and keeps only a slow hash of it
      (scrypt, with its own salt) in `api.db`. The code is in no item, no board text, no log line, and no file.
    - It is valid until the request is decided, or for 24 h. `/approve` needs it, together with the id and the hash.
