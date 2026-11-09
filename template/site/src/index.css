@@ -186,8 +186,9 @@
 /* Presence: "typing…" dots, a soft ring pulse on busy avatars, and a gentle entrance for typing bubbles. */
 @keyframes typing { 0%, 60%, 100% { transform: translateY(0); opacity: .35 } 30% { transform: translateY(-3px); opacity: 1 } }
 .typing-dot { animation: typing 1.1s ease-in-out infinite; }
-@keyframes ring { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--ring, #e2231a) 55%, transparent) } 100% { box-shadow: 0 0 0 6px transparent } }
-.presence-ring { animation: ring 1.6s ease-out infinite; }
+/* The ring is inset: drawn in the avatar slot's own 2px padding, never over a neighbour or the text (sy-o817). */
+@keyframes ring { 0%, 100% { box-shadow: inset 0 0 0 2px var(--presence, #e2231a) } 50% { box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--presence, #e2231a) 30%, transparent) } }
+.presence-ring { box-shadow: inset 0 0 0 2px var(--presence, #e2231a); animation: ring 1.6s ease-in-out infinite; }
 @keyframes typing-in { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
 .typing-in { animation: typing-in .25s ease-out both; }
 @media (prefers-reduced-motion: reduce) { .typing-dot, .presence-ring, .typing-in { animation: none } }
