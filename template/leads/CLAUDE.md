@@ -88,11 +88,13 @@ says which line is missing.
 you did and where (as in step 6), then make one of these changes:
 - **Hand over** to another role: `bd update ID -a <role> -s open --if-assignee <you> --if-status <its status now>`.
   The item lands in that role's queue (`bd ready -a <role>`), and wake wakes that role, also when you were the
-  assignee. Hand it to the human the same way, with their name (e.g. for an approval): wake labels it `needs-you`.
+  assignee. Hand it to the human the same way, with their name (e.g. for an approval): wake labels it `needs-you` only
+  when you wrote its owner card first (wake never writes one for your act).
   Exit code 13 means the item changed under you (someone else took or moved it). Read it again (`bd show ID --json`)
   and decide again; never force it.
 - **Blocked**: `bd update ID -s blocked`. wake wakes the role Accountable for the item's activity, else the board's
-  Lead, else the human (`needs-you`).
+  Lead, else nobody. wake never asks the owner for a block: when a person must decide, write the owner card and add
+  `needs-you` yourself.
 - **Waits on another item**: `bd dep add ID OTHER`. wake wakes OTHER's assignee.
 - **Reopen** an item whose task does not hold (its outcome, constraints or verify): comment why on it, then
   `bd reopen OTHER`. wake wakes its assignee.
@@ -104,8 +106,9 @@ board's Lead with it. While `paused` is on, no lead is woken for it. **The Lead*
 (`bd label remove ID paused`), or, when a person must decide, writes the owner card and adds `needs-you`. A human
 comment or change resumes it too. Only the Lead or a human resumes it: when another lead removes `paused`, wake puts it
 back.
-Where wake asks the owner itself (`needs-you`), it writes a minimal owner card first when the item has none, above the
-description; it never writes over a card someone wrote: an invalid one goes to the Lead to fix.
+Where wake asks the owner itself (`needs-you`: an upstream wait, its own failures), it writes a minimal owner card first
+when the item has none, above the description; it never writes over a card someone wrote: an invalid one goes to the
+Lead to fix. A claim that expires 3 times gets `paused` and goes to the Lead, never `needs-you`.
 
 ## Upstream: what only the machine can change
 Some fixes are not yours to make: anything under `bin/` or `site/` (the engine, from mm's template), mm itself, and
@@ -279,7 +282,10 @@ first, and the owner reads only it. The format is fixed:
 - **Edit the card in place** (`bd update ID --body-file <file>`) when the ask changes. Never post it again as a comment.
 - **Plain words** (the ASD-STE100 rules above). No history in the card: what is asked now, and why.
 - **The detail is on the item and in its artifact:** put the path in `Link`.
-- When the owner answered, remove `needs-you` and set `You` to `Nothing`.
+- **The owner's answer is a comment.** On a `Reply:` or `Check:` ask, any comment by the owner on the item is the
+  answer (the board's Reply box and Done post one): wake removes `needs-you` and wakes the Lead with it. A go ask is
+  answered only by Approve or Not now. After the answer, set `You` to `Nothing`. bd refuses `needs-you` on a card
+  whose `You` is `Nothing`: it asks the owner nothing.
 
 ## NEVER
 Each row failed once, for real. Do the safe way instead.
