@@ -42,6 +42,7 @@ suite test/brain-deny.sh          hermetic
 suite test/denies.sh              hermetic
 suite test/dolt-run.sh            hermetic
 suite test/engine-drift.sh        hermetic
+suite test/publish.sh             hermetic
 suite test/guard.sh               hermetic
 suite test/init-retry.sh          hermetic
 suite test/lead.sh                hermetic
@@ -219,7 +220,8 @@ rule src/sync.ts                  test/sync.sh test/restore.sh test/restore-dril
 rule src/vault.ts                 test/vault.sh test/paseo-token.sh test/in-box.sh
 rule src/onboard.ts               test/outside.sh test/clean-box.sh test/auth-e2e.sh
 rule src/install.ts               test/outside.sh test/npm-lock.sh test/clean-box.sh
-rule src/cron.ts                  test/sentinel.sh
+rule src/cron.ts                  test/sentinel.sh test/publish.sh
+rule src/publish.ts               test/publish.sh
 rule src/portless-claim.mjs       test/portless-claim.sh test/pc-skipped.sh
 rule scripts/pack-template.ts     @cli test/clean-box.sh
 rule package.json                 @cli test/ba-spike.ts @site test/clean-box.sh
@@ -256,6 +258,7 @@ rule template/site/src/**         @browser test/machine-panel.sh
 rule template/site/*              @site test/auth.sh test/board-approve.sh test/front.sh test/sync.sh test/doop-designs.sh test/machine-panel.sh
 
 rule template/bin/lib/obs.mjs     @engine test/obs-home.sh
+rule template/bin/lib/secret-scan.mjs test/artifact.sh test/publish.sh
 rule template/bin/lib/svc.mjs     @engine test/engine-drift.sh
 rule template/bin/lib/paseo.mjs   test/paseo-refuse.mjs test/lead.sh test/lead-workspace.sh test/npm-lock.sh test/wake-*.mjs test/paseo-lib.mjs
 rule template/bin/lib/run-as.mjs  test/wake-person-runs.mjs test/wake-box-person-runs.mjs test/person-run.sh test/box-person-runs.sh test/paseo-refuse.mjs

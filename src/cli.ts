@@ -489,6 +489,15 @@ program.command('sync').description('seal what can\'t be rebuilt into the master
 program.command('cron').description('(run by mm-pc) run every project\'s schedules (health, backup, ...)')
   .option('--run <project/job>', 'run one job now, once (e.g. acme-shop/backup), and exit with its code')
   .action(async (opts) => { if (opts.run) process.exit(await runOnce(opts.run)); await cron() })
+program.command('publish').description('push mm\'s main to its public remote: a fast-forward only, after the secret and private-word scans (config publish.*)')
+  .option('--auto', 'as mm cron runs it: nothing unless publish.auto is on; a refused main stays refused until main moves')
+  .action(async (opts) => {
+    const { describe, runPublish } = await import('./publish')
+    const { result } = runPublish(!!opts.auto)
+    const lines = describe(result)
+    if (result.status === 'refused') { for (const l of lines) console.error(`mm publish: ${l}`); process.exit(1) }
+    for (const l of lines) console.log(l)
+  })
 program.command('ship').description('(run by mm-pc) ship service log files to VictoriaLogs')
   .option('--dry-run', 'one pass from the start of every file: print the records, send nothing')
   .action(async (opts) => { await ship(2000, !!opts.dryRun) })

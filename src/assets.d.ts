@@ -13,3 +13,8 @@ declare module '*/ledger.mjs' {
   export function loadConf(o?: { etc?: string; env?: Record<string, string | undefined> }): ApproveConf
   export function problems(c: ApproveConf): string[]
 }
+// the key and token shapes (template/bin/lib/secret-scan.mjs), shared with mm publish (src/publish.ts)
+declare module '*/secret-scan.mjs' {
+  export const SHAPES: [string, RegExp][]
+  export function secretsIn(buf: Uint8Array | string): string[]
+}
