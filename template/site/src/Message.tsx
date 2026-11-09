@@ -1,6 +1,7 @@
 // A lead's comment as a message (sy-0gsw; the format: lib/message.mjs, the one bin/bd's gate and the Supervisor use):
 // its intent as a tag, whom it is for, what it answers (re #n, a link), its Head, and its keys as a short list; a
 // comment that is not a valid message shows as text. And "Waits on": the item's ASKs and HANDOFFs with no answer yet.
+import { memo } from 'react'
 import { Markdown } from '@/Markdown'
 import { cn } from '@/lib/utils'
 import { MESSAGE_ROLES } from '@/lib/board'
@@ -25,7 +26,7 @@ export function IntentTag({ intent, className }: { intent: string; className?: s
 }
 
 /** One comment: a valid message as its parts; anything else (a person's words, the system's, an older comment) as text. */
-export function CommentBody({ text, author, onRef, className }: { text: string; author: string; onRef: (n: number) => void; className?: string }) {
+export const CommentBody = memo(function CommentBody({ text, author, onRef, className }: { text: string; author: string; onRef: (n: number) => void; className?: string }) {
   // a VERDICT not written by review shows as text (review sy-0gsw #8: only review writes one)
   const m: Message = parseMessage(text, { roles: MESSAGE_ROLES, author })
   if (!m.ok) return <Markdown className={className} onRef={onRef} breaks fold>{text}</Markdown>
@@ -60,7 +61,7 @@ export function CommentBody({ text, author, onRef, className }: { text: string; 
       {m.json && <><Misc misc={m.json.misc} onRef={onRef} /><Original raw={m.text} /></>}
     </div>
   )
-}
+})
 
 /** "Waits on": each ASK or HANDOFF on the item that no later message answers (re #n), whom it waits on, by when. */
 export function WaitsOn({ comments, onRef }: { comments: { author: string; text: string; created_at: string }[]; onRef: (n: number) => void }) {
