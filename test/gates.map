@@ -288,7 +288,7 @@ rule template/bin/init            test/init-retry.sh test/bd-autostart.sh test/b
 rule template/bin/land            test/trace-refused.sh test/box.sh
 rule template/ops/land-check      test/trace-refused.sh
 rule template/ops/githooks/**     test/artifact.sh test/sync.sh test/template-base.sh test/restore-drill.sh
-rule template/bin/lead            test/lead.sh test/worker-cleanup.shtest/lead-workspace.sh test/memory-links.sh test/paseo-refuse.mjs test/person-run.sh test/box-person-runs.sh test/wake-*.mjs
+rule template/bin/lead            test/lead.sh test/worker-cleanup.sh test/lead-workspace.sh test/memory-links.sh test/paseo-refuse.mjs test/person-run.sh test/box-person-runs.sh test/wake-*.mjs
 rule template/bin/svc             test/upstream.mjs test/sockets.sh
 rule template/bin/trace           test/trace-refused.sh test/bd-actor.sh test/owner-card-bd.sh test/span-answers.sh test/bd-home.sh
 rule template/bin/wake            test/wake-*.mjs test/restore-drill.sh
