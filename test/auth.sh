@@ -257,7 +257,7 @@ const READY = [
 http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
   fs.appendFileSync(logf, JSON.stringify({ m: req.method, p: req.url, b: b ? JSON.parse(b) : null }) + '\n')
   res.writeHead(200, { 'content-type': 'application/json' })
-  res.end(JSON.stringify(req.method === 'GET' && /\/issues\/it-1(\?|$)/.test(req.url) ? { id: 'it-1', labels: ['t2', 'bug', 'signed-off', 'signed-head:mm@0a1b2c3'], description: '## Owner\n- **What:** Fix the page.\n- **Why:** It shows a script.\n- **You:** Tap Approve\n- **If yes:** Ops fixes it.\n- **If no:** It stays.\n- **Risk:** low, a page looks odd\n- **Head:** mm@0a1b2c3\n\nThe thread.' }
+  res.end(JSON.stringify(req.method === 'GET' && /\/issues\/it-1(\?|$)/.test(req.url) ? { id: 'it-1', labels: ['t2', 'bug', 'signed-off', 'signed-head:mm@0a1b2c3'], description: '## Owner\n- **What:** Fix the page.\n- **Why:** It shows a script.\n- **You:** Tap Approve\n- **If yes:** Ops fixes it.\n- **If no:** It stays.\n- **Risk:** low, a page looks odd\n- **Head:** mm@0a1b2c3\n\n## Task\n- **Task:** Fix the page.\n- **Act:** t2-change\n- **Done when:** the page shows text.\n- **Verify:** open the page → no script runs\n- **Rollback:** put the old page back.\n- **Safeguard:** none, no access change\n\nThe thread.' }
     : req.method === 'GET' && /\/issues\/it-9(\?|$)/.test(req.url) ? { id: 'it-9', labels: ['t2', 'bug'] }
     : req.method === 'GET' && /\/issues\/it-10(\?|$)/.test(req.url) ? { id: 'it-10', labels: ['bug'] }
     : req.method === 'GET' && /\/issues\/it-3(\?|$)/.test(req.url) ? { id: 'it-3', status: 'in_progress', labels: ['t2', 'signed-off'] }
