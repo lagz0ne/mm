@@ -174,8 +174,10 @@ try {
   ok('...said on the item, and counted (expiry 1)', await until(() => (I('q-1').comments || []).some((c) => c.author === 'wake' && /Requeued: .*expiry 1 of 3/.test(c.text))) && wstate()._expiries?.['q-1'] === 1)
   ok('...and it is in qa\'s queue: handed to qa', await until(() => /q-1 \(P2\) is next in your queue/.test(to('qa'))))
   ok('the guard says 13 (q-2 moved first): left as it is, not counted', await until(() => /lease of q-2 expired, but it changed first \(the guard\): left as it is/.test(log())) && I('q-2').status === 'in_progress' && !wstate()._expiries?.['q-2'] && !(I('q-2').comments || []).length)
-  ok('the 3rd expiry of one item (q-3): needs-you', await until(() => I('q-3').labels.includes('needs-you') && wstate()._expiries?.['q-3'] === 3))
-  ok('...with an owner card wake wrote (sy-0omb; the fake board refuses needs-you without one)', parseCard(I('q-3').description, I('q-3').labels, 'q-3').ok && /claim on q-3 expired 3 times/.test(I('q-3').description))
+  ok('the 3rd expiry of one item (q-3): paused, never needs-you (sy-e234)', await until(() => I('q-3').labels.includes('paused') && wstate()._expiries?.['q-3'] === 3) && !I('q-3').labels.includes('needs-you'))
+  ok('...no owner card written, why said on the item', !parseCard(I('q-3').description || '', I('q-3').labels, 'q-3').found && !/update q-3 --body-file/.test(bdlog())
+    && (I('q-3').comments || []).some((c) => c.author === 'wake' && /^Paused: its claim expired 3 times/.test(c.text)))
+  ok('...and qa is not handed it again while paused', await until(() => /q-3: its claim expired 3 times: paused/.test(log())) && !/q-3 \(P\d\) is next in your queue/.test(to('qa')))
   ok('a lead in a turn keeps its claim (r-1, arch running)', I('r-1').status === 'in_progress' && !/update r-1/.test(bdlog()))
 
   console.log('== a reassign lands in review\'s queue')

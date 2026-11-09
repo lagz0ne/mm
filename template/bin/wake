@@ -1183,9 +1183,21 @@ async function expire(b, running) {
     count('mm_wake_lease_expired_total', { role })
     log(`lease of ${i.id} expired (${holder}, no update for ${Math.round((Date.now() - t) / 60000)} min): back in ${role}'s queue (expiry ${n})`)
     bdRun(['comments', 'add', i.id, `Requeued: in progress with no update for ${Math.round(LEASE / 60000)} min, so wake put it back in the ${role} queue (status open; expiry ${n} of ${TRIES}). Claim it again with bd update ${i.id} --claim.`], `comment ${i.id}`)
-    if (n >= TRIES) askHuman([i.id], `the claim on ${i.id} expired ${n} times`)
+    if (n === TRIES) expiredPause(i.id, i.title, n)
   }
   if (changed) editState((s) => { s._expiries = { ...(s._expiries || {}), ...counts } })
+}
+/** The 3rd expiry of one item's claim (sy-e234): `paused` (no lead is woken for it), why on the item, and the board's
+ *  Lead woken to settle it; never needs-you. A board with no Lead: paused and the comment (a human resumes it). */
+function expiredPause(id, title, n) {
+  for (const r of ROLES) pending[r].delete(id)
+  paused.add(id); pauseOn.add(id)
+  log(`${id}: its claim expired ${n} times: paused${BOARD_LEAD ? `, handed to the Lead (${BOARD_LEAD})` : ''}; not needs-you`)
+  count('mm_wake_paused_total', {})
+  labelQ(['label', 'add', id, PAUSED], `label ${id}`)
+  bdRun(['comments', 'add', id, `Paused: its claim expired ${n} times (in progress with no update), so wake wakes no lead for it now. ${BOARD_LEAD ? `The Lead (${BOARD_LEAD}) resumes it (bd label remove ${id} ${PAUSED}) with a clear next owner, or writes an owner card and adds needs-you when a person must decide.` : 'A human comment or change resumes it.'}`], `comment ${id}`)
+  if (BOARD_LEAD) note(BOARD_LEAD, id, `PAUSED: the claim on ${id} expired ${n} times (in progress, no update), so wake labelled it \`${PAUSED}\` and wakes no lead for it. You are the board's Lead: read its thread, then resume it with a clear next owner (bd label remove ${id} ${PAUSED}), or, when a person must decide, write its owner card and add needs-you.`,
+    false, 'talk', [boardLine(id, title)], true)
 }
 // A worker that finished its turn (seen running on a pass, idle on the next) wakes its lead with a reason (talk: never
 // held back): read its report, integrate it, give the verdict. Only for roles whose workers bin/lead starts (a `worker`
