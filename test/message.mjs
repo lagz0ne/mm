@@ -274,15 +274,15 @@ step('the structured form (sy-rfup, step 1): one ```mm-message v1 block, read as
 {
   const J = (d) => '```mm-message v1\n' + JSON.stringify(d, null, 2) + '\n```'
   const W1 = { done: { is: 'signed-off' }, verify: { check: 'bd show sy-1 --json', expect: 'signed-off' }, else: { do: 'escalate', to: 'ops' } }
-  const ask = { intent: 'ASK', to: 'review', expect: { role: 'review', do: 'review', on: 'mm@abcdef1' }, ...W1, by: '11:00', need: 'review', parts: [{ type: 'text', text: 'Read the plan first.' }] }
+  const ask = { intent: 'ASK', to: 'review', expect: { role: 'review', do: 'review', on: 'mm@abcdef1' }, ...W1, by: '11:00', need: 'review', misc: [{ type: 'text', text: 'Read the plan first.' }] }
   const R1 = { roles: ROLES, author: 'platform' }
   const m = parseMessage(J(ask), R1)
   ok('a valid ASK block: ok, found, intent, to', m.ok && m.found && m.intent === 'ASK' && m.to === 'review', m.errors.join('; '))
   ok('...expect { role, action } as the text form has it', m.expect?.role === 'review' && m.expect?.action === 'review mm@abcdef1')
   ok('...by "11:00 UTC": dueAt reads it', m.by === '11:00 UTC' && dueAt(m.by, '2026-01-02T10:00:00Z') === Date.parse('2026-01-02T11:00:00Z'))
   ok('...keys: Expect, Done when, Verify, By, Why', m.keys.Expect === 'review: review mm@abcdef1' && m.keys['Done when'] === 'this item is signed-off' && m.keys.Verify === 'bd show sy-1 --json → signed-off' && m.keys.By === '11:00 UTC · Else: escalate ops' && m.keys.Why === 'review')
-  ok('...json: the data', m.json?.parts?.[0]?.text === 'Read the plan first.')
-  ok('the MAX of the text form does not apply (the block has its caps)', parseMessage(J({ ...ask, parts: [{ type: 'markdown', markdown: 'x'.repeat(MAX + 100) }] }), R1).ok)
+  ok('...json: the data', m.json?.misc?.[0]?.text === 'Read the plan first.')
+  ok('the MAX of the text form does not apply (the block has its caps)', parseMessage(J({ ...ask, misc: [{ type: 'markdown', markdown: 'x'.repeat(MAX + 100) }] }), R1).ok)
   const bad = (d, x, s, o = R1) => { const r = parseMessage(typeof x === 'string' ? x : J(x), o); ok(`${d}: "${s}"`, !r.ok && r.errors.some((e) => e.includes(s)), r.errors.join('; ')) }
   bad('to a person', { ...ask, to: 'owner' }, 'to: owner is not a role (ops, review, platform)')
   bad('Expect of a person', { ...ask, expect: { role: 'owner', do: 'decide' } }, 'expect.role: owner is not a role')
@@ -303,7 +303,7 @@ step('the structured form (sy-rfup, step 1): one ```mm-message v1 block, read as
   ok('openWaits: the block ASK answered (re #1) by a block ANSWER waits no more; the second waits, late', w.length === 1 && w[0].n === 3 && w[0].role === 'review' && w[0].late, JSON.stringify(w))
   // the writing check runs on the text parts (and only on them)
   const words = new Map(['read', 'the', 'plan', 'first'].map((x) => [x, { pos: '', base: '' }]))
-  const wr = parseMessage(J({ ...ask, parts: [{ type: 'text', text: 'Read the zorblax first.' }, { type: 'markdown', markdown: 'zorblax' }] }), { ...R1, writing: { words, terms: [], refuseFrom: '2020-01-01' } })
+  const wr = parseMessage(J({ ...ask, misc: [{ type: 'text', text: 'Read the zorblax first.' }, { type: 'markdown', markdown: 'zorblax' }] }), { ...R1, writing: { words, terms: [], refuseFrom: '2020-01-01' } })
   ok('the writing check: a text part\'s unknown word refuses from refuse_from on', !wr.ok && wr.errors.some((e) => /writing \(ASD-STE100\), line 1: .*zorblax/.test(e)) && wr.writing.length === 1, JSON.stringify(wr.errors))
   const wk = parseMessage(J(ask), { ...R1, writing: { words, terms: [], refuseFrom: '2020-01-01' } })
   ok('...known words: ok', wk.ok, wk.errors.join('; '))

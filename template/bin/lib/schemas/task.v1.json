@@ -15,6 +15,6 @@
     "rollback": { "$comment": "how to undo it: a command, or a migration's file", "type": "object", "additionalProperties": false, "minProperties": 1,
       "properties": { "run": { "$ref": "urn:mm:schema:common:v1#/$defs/command" }, "migration": { "$ref": "urn:mm:schema:common:v1#/$defs/path" } } },
     "safeguard": { "$comment": "the lockout safeguard: the check that shows access still works", "$ref": "urn:mm:schema:common:v1#/$defs/verify" },
-    "parts": { "$ref": "urn:mm:schema:common:v1#/$defs/parts" }
+    "misc": { "$ref": "urn:mm:schema:common:v1#/$defs/misc" }
   }
 }

@@ -19,6 +19,6 @@
     "head": { "$ref": "urn:mm:schema:common:v1#/$defs/head" },
     "link": { "anyOf": [{ "$ref": "urn:mm:schema:common:v1#/$defs/url" }, { "$ref": "urn:mm:schema:common:v1#/$defs/path" }] },
     "item": { "description": "an http(s) URL that ends in ?item=<id>", "type": "string", "pattern": "^https?://[^\\s/?#<>\"]+/?[^\\s?#<>\"]*\\?item=[a-z]+-[a-z0-9]+(\\.[0-9]+)*$" },
-    "parts": { "$ref": "urn:mm:schema:common:v1#/$defs/parts" }
+    "misc": { "$ref": "urn:mm:schema:common:v1#/$defs/misc" }
   }
 }

@@ -23,7 +23,7 @@
 // test/message.mjs keeps them equal).
 import { HEAD } from './owner-card.mjs'
 import { writingCheck } from './writing.mjs'
-import { messageKeys, partsText, readBlock, validate } from './structured.mjs'
+import { messageKeys, miscText, readBlock, validate } from './structured.mjs'
 
 export const MAX = 600
 /** The role that writes a VERDICT (review sy-0gsw #8): as only it signs off (bin/owner-card signoff). */
@@ -184,14 +184,14 @@ function fromBlock(b, out, o, roles) {
   out.json = b.data
   if (m.intent && m.intent in INTENTS) Object.assign(out, { found: true, intent: m.intent, to: m.to, re: m.re, keys: m.keys, expect: m.expect, by: m.by })
   errors.push(...validate('message', b.data))
-  if (b.rest.trim()) errors.push('nothing goes after the block: put more in its parts')
+  if (b.rest.trim()) errors.push('nothing goes after the block: put more in its misc')
   const intent = out.intent, reviewer = o.reviewer || REVIEWER
   if (intent === 'VERDICT' && o.author !== undefined && String(o.author).split('/')[0] !== reviewer)
     errors.push(`only ${reviewer} writes a VERDICT (as only ${reviewer} signs off); ${o.author || 'nobody'} writes an ANSWER, a NOTE or a HANDOFF`)
   if (roles && out.to && ['ASK', 'HANDOFF', 'VERDICT'].includes(intent) && !roles.includes(out.to.split('/')[0]))
     errors.push(`to: ${out.to} is not a role (${roles.join(', ')}); ask a person with an owner card, never in a message`)
   if (roles && out.expect && !roles.includes(out.expect.role)) errors.push(`expect.role: ${clip(out.expect.role)} is not a role (${roles.join(', ')}); ask a person with an owner card, never in a message`)
-  out.writing = writingCheck(partsText(b.data.parts), o.writing && { roles: roles || [], ...o.writing }, errors)
+  out.writing = writingCheck(miscText(b.data.misc), o.writing && { roles: roles || [], ...o.writing }, errors)
   out.ok = errors.length === 0
   return out
 }

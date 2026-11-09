@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { validator } from '../template/bin/lib/schema.mjs'
 import { SCHEMAS } from '../template/bin/lib/schemas.mjs'
-import { formatBlock, messageKeys, readBlock, validate, cardKeys, taskKeys, partsText, MAX_BLOCK } from '../template/bin/lib/structured.mjs'
+import { formatBlock, messageKeys, readBlock, validate, cardKeys, taskKeys, miscText, MAX_BLOCK } from '../template/bin/lib/structured.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 let pass = 0, fail = 0
@@ -81,7 +81,7 @@ const good = {
   VERDICT: { intent: 'VERDICT', to: 'platform', re: 2, expect: { role: 'platform', do: 'fix' }, ...W, result: 'blocked', head: 'mm@abcdef1', mustChange: [{ path: 'src/a.ts', line: 3, rule: 'no-secret' }] },
   ANSWER: { intent: 'ANSWER', to: 'platform', re: 1, expect: 'none', answer: 'keep', verify: { check: 'cat plans/x.md', expect: 'keep' } },
   DONE: { intent: 'DONE', to: 'ops', expect: 'none', result: 'done', verify: { check: 'bd show sy-1', expect: 'closed' }, followUps: ['sy-3'], artifacts: ['artifacts/sy-1/log.txt'] },
-  NOTE: { intent: 'NOTE', to: 'ops', parts: [{ type: 'text', text: 'I claim it.' }, { type: 'markdown', markdown: '**x**' }, { type: 'mermaid', mermaid: 'graph LR; a-->b' },
+  NOTE: { intent: 'NOTE', to: 'ops', misc: [{ type: 'text', text: 'I claim it.' }, { type: 'markdown', markdown: '**x**' }, { type: 'mermaid', mermaid: 'graph LR; a-->b' },
     { type: 'html', html: '<p>x</p>' }, { type: 'html', artifact: 'artifacts/sy-1/a.html' }, { type: 'svg', svg: '<svg viewBox="0 0 1 1"></svg>' }, { type: 'image', artifact: 'artifacts/sy-1/a.png', alt: 'the page' },
     { type: 'table', title: 'Tests', columns: ['file', 'n'], rows: [['a', 1], ['b', null]] }, { type: 'log', log: 'line 1\nline 2' }, { type: 'log', artifact: 'artifacts/sy-1/run.log' }] },
 }
@@ -120,30 +120,30 @@ badMsg('an artifact path from /', { ...good.DONE, artifacts: ['/etc/passwd'] }, 
 badMsg('an artifact path with ..', { ...good.DONE, artifacts: ['docs/../../x'] }, 'artifacts[0]')
 badMsg('a ref with a space', { ...good.ASK, expect: { ...E, on: 'the board' } }, 'expect.on')
 
-step('the parts: each type\'s own keys')
-const badPart = (d, p, s) => { const e = validate('message', { intent: 'NOTE', to: 'ops', parts: [p] }); ok(`${d}: "${s}"`, e.some((y) => y.includes(s)), e.join('; ')) }
-badPart('an empty parts list', undefined, 'parts[0]')
-ok('parts: [] is refused', validate('message', { intent: 'NOTE', to: 'ops', parts: [] }).some((e) => e.includes('parts: has 0 item(s) (at least 1)')))
-badPart('an unknown type', { type: 'video' }, 'parts[0].type: "video" is not one of text, markdown, mermaid, html, svg, image, table, log')
-badPart('text with a markdown key', { type: 'text', text: 'a', markdown: 'b' }, 'parts[0].markdown: not allowed (with type text)')
-badPart('text too long', { type: 'text', text: 'a'.repeat(601) }, 'parts[0].text: is too long (601 characters; at most 600)')
-badPart('html with both artifact and html', { type: 'html', html: '<p>', artifact: 'a.html' }, 'parts[0]: matches 2 of the forms')
-badPart('html artifact that is no .html', { type: 'html', artifact: 'a.png' }, 'parts[0].artifact: "a.png" does not match \\.html?$')
-badPart('inline html over its cap', { type: 'html', html: 'x'.repeat(16001) }, 'parts[0].html: is too long')
-badPart('svg that is no <svg>', { type: 'svg', svg: '<script>1</script>' }, 'parts[0].svg')
-badPart('an image with no alt', { type: 'image', artifact: 'a.png' }, 'parts[0].alt: is missing (with type image)')
-badPart('a table with no columns', { type: 'table', rows: [] }, 'parts[0].columns: is missing (with type table)')
-badPart('a table cell that is an object', { type: 'table', columns: ['a'], rows: [[{}]] }, 'parts[0].rows[0][0]')
-badPart('a table of 51 rows', { type: 'table', columns: ['a'], rows: Array.from({ length: 51 }, () => ['x']) }, 'parts[0].rows: has 51 items (at most 50)')
-badPart('a table row wider than its columns', { type: 'table', columns: ['a'], rows: [['x', 'y']] }, 'parts[0].rows[0]: has 2 cells (the columns: 1)')
-badPart('a log over its cap', { type: 'log', log: 'x'.repeat(8001) }, 'parts[0].log: is too long')
-badPart('a title over two lines', { type: 'text', text: 'a', title: 'a\nb' }, 'parts[0].title')
-ok('17 parts: too many', validate('message', { intent: 'NOTE', to: 'ops', parts: Array.from({ length: 17 }, () => ({ type: 'text', text: 'a' })) }).some((e) => e.includes('parts: has 17 items (at most 16)')))
-ok('partsText: the text parts only, a paragraph each', partsText(good.NOTE.parts.concat([{ type: 'text', text: ' Two. ' }])) === 'I claim it.\n\nTwo.')
+step('the misc: each type\'s own keys')
+const badPart = (d, p, s) => { const e = validate('message', { intent: 'NOTE', to: 'ops', misc: [p] }); ok(`${d}: "${s}"`, e.some((y) => y.includes(s)), e.join('; ')) }
+badPart('an empty misc list', undefined, 'misc[0]')
+ok('misc: [] is refused', validate('message', { intent: 'NOTE', to: 'ops', misc: [] }).some((e) => e.includes('misc: has 0 item(s) (at least 1)')))
+badPart('an unknown type', { type: 'video' }, 'misc[0].type: "video" is not one of text, markdown, mermaid, html, svg, image, table, log')
+badPart('text with a markdown key', { type: 'text', text: 'a', markdown: 'b' }, 'misc[0].markdown: not allowed (with type text)')
+badPart('text too long', { type: 'text', text: 'a'.repeat(601) }, 'misc[0].text: is too long (601 characters; at most 600)')
+badPart('html with both artifact and html', { type: 'html', html: '<p>', artifact: 'a.html' }, 'misc[0]: matches 2 of the forms')
+badPart('html artifact that is no .html', { type: 'html', artifact: 'a.png' }, 'misc[0].artifact: "a.png" does not match \\.html?$')
+badPart('inline html over its cap', { type: 'html', html: 'x'.repeat(16001) }, 'misc[0].html: is too long')
+badPart('svg that is no <svg>', { type: 'svg', svg: '<script>1</script>' }, 'misc[0].svg')
+badPart('an image with no alt', { type: 'image', artifact: 'a.png' }, 'misc[0].alt: is missing (with type image)')
+badPart('a table with no columns', { type: 'table', rows: [] }, 'misc[0].columns: is missing (with type table)')
+badPart('a table cell that is an object', { type: 'table', columns: ['a'], rows: [[{}]] }, 'misc[0].rows[0][0]')
+badPart('a table of 51 rows', { type: 'table', columns: ['a'], rows: Array.from({ length: 51 }, () => ['x']) }, 'misc[0].rows: has 51 items (at most 50)')
+badPart('a table row wider than its columns', { type: 'table', columns: ['a'], rows: [['x', 'y']] }, 'misc[0].rows[0]: has 2 cells (the columns: 1)')
+badPart('a log over its cap', { type: 'log', log: 'x'.repeat(8001) }, 'misc[0].log: is too long')
+badPart('a title over two lines', { type: 'text', text: 'a', title: 'a\nb' }, 'misc[0].title')
+ok('17 parts: too many', validate('message', { intent: 'NOTE', to: 'ops', misc: Array.from({ length: 17 }, () => ({ type: 'text', text: 'a' })) }).some((e) => e.includes('misc: has 17 items (at most 16)')))
+ok('miscText: the text parts only, a paragraph each', miscText(good.NOTE.misc.concat([{ type: 'text', text: ' Two. ' }])) === 'I claim it.\n\nTwo.')
 
 step('the Task and the card')
 const task = { act: 'build', do: 'build', on: 'sy-1', done: { is: 'closed' }, verify: { check: 'bash test/x.sh', expect: '0 failed' }, head: 'mm@abcdef1',
-  rollback: { run: 'git revert HEAD' }, safeguard: { check: 'ssh -o BatchMode=yes host true', expect: 'exit 0' }, parts: [{ type: 'text', text: 'Why.' }] }
+  rollback: { run: 'git revert HEAD' }, safeguard: { check: 'ssh -o BatchMode=yes host true', expect: 'exit 0' }, misc: [{ type: 'text', text: 'Why.' }] }
 ok('a Task: valid', validate('task', task).length === 0, validate('task', task).join('; '))
 ok('a Task with no act: "act: is missing"', validate('task', without(task, 'act')).includes('act: is missing'))
 ok('a Task with words for do', validate('task', { ...task, do: 'Add the schemas' }).some((e) => e.startsWith('do: "Add the schemas" is not one of')))
@@ -157,7 +157,7 @@ ok('a card: risk "very"', validate('card', { ...card, risk: { level: 'very' } })
 ok('a card: what as words', validate('card', { ...card, what: 'Approve the port' }).some((e) => e.startsWith('what: is a string, not object')))
 ok('a card: an item URL with no ?item=', validate('card', { ...card, item: 'https://board.example/' }).some((e) => e.startsWith('item:')))
 ok('cardKeys: What, Why, You, If yes, If no, Risk', (() => { const k = cardKeys(card); return k.What === 'apply migrations/port.sh' && k.Why === 'access' && k.You === 'Tap Approve' && k['If yes'] === 'ops: apply migrations/port.sh by today' && k['If no'] === 'nothing' && k.Risk === 'medium, lockout' })())
-ok('cardKeys: You reply -> "Reply: <the first text part>"', cardKeys({ ...card, you: { kind: 'reply' }, parts: [{ type: 'mermaid', mermaid: 'x' }, { type: 'text', text: 'Which port?' }] }).You === 'Reply: Which port?')
+ok('cardKeys: You reply -> "Reply: <the first text part>"', cardKeys({ ...card, you: { kind: 'reply' }, misc: [{ type: 'mermaid', mermaid: 'x' }, { type: 'text', text: 'Which port?' }] }).You === 'Reply: Which port?')
 ok('cardKeys: You check -> "Check: <at>"', cardKeys({ ...card, you: { kind: 'check', at: 'https://x.example/a' } }).You === 'Check: https://x.example/a')
 
 step('messageKeys: the same keys as the text form')
@@ -170,18 +170,18 @@ ok('VERDICT: Result "signed off" (the text form), Must change "<path>:<line> (<r
 ok('a value of the wrong type never throws', (() => { try { messageKeys({ expect: 3, done: 'x', tests: 4, by: 5, mustChange: 'x' }); cardKeys({ you: 3, risk: 'x' }); taskKeys({ rollback: 1 }); messageKeys(null); return true } catch { return false } })())
 
 step('the block')
-const blk = formatBlock('message', { intent: 'NOTE', to: 'ops', parts: [{ type: 'markdown', markdown: 'a ```js\nfence``` and `code`' }] })
+const blk = formatBlock('message', { intent: 'NOTE', to: 'ops', misc: [{ type: 'markdown', markdown: 'a ```js\nfence``` and `code`' }] })
 ok('formatBlock: ```mm-message v1, the JSON, ```', blk.startsWith('```mm-message v1\n{') && blk.endsWith('\n}\n```'))
 ok('...a ` in a part is written \\u0060: the fence holds', !blk.slice(3, -3).includes('`'))
 const rb = readBlock(`\n\n${blk}\n\nafter`)
-ok('readBlock: blank lines before it are ok; kind, v, the data, the rest', rb.kind === 'message' && rb.v === 1 && rb.data.parts[0].markdown === 'a ```js\nfence``` and `code`' && rb.rest === 'after')
+ok('readBlock: blank lines before it are ok; kind, v, the data, the rest', rb.kind === 'message' && rb.v === 1 && rb.data.misc[0].markdown === 'a ```js\nfence``` and `code`' && rb.rest === 'after')
 ok('readBlock: no block -> null', readBlock('NOTE → ops\nx') === null && readBlock('') === null)
 ok('readBlock: an unknown kind', readBlock('```mm-thing v1\n{}\n```').errors[0].startsWith('mm-thing is no kind of block'))
 ok('readBlock: v2', readBlock('```mm-task v2\n{}\n```').errors[0] === 'mm-task v2: this board reads v1')
 ok('readBlock: not JSON', readBlock('```mm-task v1\n{x}\n```').errors[0].startsWith('the block is not JSON'))
 ok('readBlock: an array', readBlock('```mm-task v1\n[1]\n```').errors[0] === 'the block is not one JSON object')
 ok('readBlock: no closing fence', readBlock('```mm-task v1\n{}').errors[0].startsWith('the block has no end'))
-ok(`readBlock: over ${MAX_BLOCK} characters`, readBlock(formatBlock('message', { intent: 'NOTE', to: 'ops', parts: Array.from({ length: 4 }, () => ({ type: 'html', html: 'x'.repeat(7000) })) })).errors.some((e) => e.startsWith('the block is too long')))
+ok(`readBlock: over ${MAX_BLOCK} characters`, readBlock(formatBlock('message', { intent: 'NOTE', to: 'ops', misc: Array.from({ length: 4 }, () => ({ type: 'html', html: 'x'.repeat(7000) })) })).errors.some((e) => e.startsWith('the block is too long')))
 ok('readBlock: \\r\\n line ends read as \\n', readBlock(blk.replace(/\n/g, '\r\n')).data?.intent === 'NOTE')
 
 step('the board\'s copies')

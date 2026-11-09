@@ -66,7 +66,7 @@ const iso = (minAgo) => new Date(Date.now() - minAgo * 60e3).toISOString()
 const J = (kind, d) => '```mm-' + kind + ' v1\n' + JSON.stringify(d, null, 2).replace(/`/g, '\\u0060') + '\n```'
 const W = { done: { is: 'signed-off' }, verify: { check: 'bd show ms-2 --json', expect: 'labels has signed-off' }, by: 'next-wake', else: { do: 'escalate', to: 'ops' } }
 const ASK = J('message', { intent: 'ASK', to: 'review', expect: { role: 'review', do: 'review', on: 'mm@56ebb96' }, ...W, need: 'review', options: ['keep', 'drop'],
-  parts: [
+  misc: [
     { type: 'text', text: 'Read the plan first. It has one diagram and one table.' },
     { type: 'markdown', markdown: 'The **plan**: `plans/x.md`.' },
     { type: 'mermaid', title: 'Flow', mermaid: 'graph LR; a-->b' },
@@ -84,8 +84,8 @@ const comments = [
   { id: 'c3', author: 'platform', text: HANDOFF, created_at: iso(100) }, // #3 waits on review, late
   { id: 'c4', author: 'alex', text: 'A person writes free text, as ever.', created_at: iso(50) }, // #4
 ]
-const CARD = J('card', { what: { do: 'decide', on: 'ms-2' }, why: 'request', you: { kind: 'reply' }, parts: [{ type: 'text', text: 'Keep the old form for one more week?' }, { type: 'markdown', markdown: 'See **the plan**.' }] })
-const TASK = J('task', { act: 'build', do: 'build', on: 'ms-2', done: { is: 'closed' }, verify: { check: 'node test/schema.mjs', expect: '0 failed' }, parts: [{ type: 'text', text: 'Three schemas and a validator.' }] })
+const CARD = J('card', { what: { do: 'decide', on: 'ms-2' }, why: 'request', you: { kind: 'reply' }, misc: [{ type: 'text', text: 'Keep the old form for one more week?' }, { type: 'markdown', markdown: 'See **the plan**.' }] })
+const TASK = J('task', { act: 'build', do: 'build', on: 'ms-2', done: { is: 'closed' }, verify: { check: 'node test/schema.mjs', expect: '0 failed' }, misc: [{ type: 'text', text: 'Three schemas and a validator.' }] })
 const ITEMS = [{ id: 'ms-2', title: 'Structured content', status: 'in_progress', priority: 1, issue_type: 'task', assignee: 'platform', labels: ['needs-you'], created_at: iso(300), updated_at: iso(10),
   description: `${CARD}\n\n${TASK}\n\nThe rest of the description.`, comments }]
 const bdSrv = http.createServer((req, res) => {
@@ -142,10 +142,10 @@ try {
     ok('three messages as tags: ASK (a block), ANSWER (text), HANDOFF (a block)', tags.join() === 'ASK,ANSWER,HANDOFF', `${tags.join()} ${errs.join(' | ')}`)
     const ask = page.locator('[data-message="ASK"]')
     const dts = await ask.locator('dl dt').allTextContents()
-    ok('the ASK block reads as today\'s message: its keys, the expectation first', dts.slice(0, 4).join() === 'Expect,Done when,Verify,By' && dts.includes('Why') && dts.includes('Options'), dts.join())
-    ok('...Expect "review: review mm@56ebb96", By "next wake · Else: escalate ops"', /review: review mm@56ebb96/.test(await ask.locator('dl').textContent()) && /next wake · Else: escalate ops/.test(await ask.locator('dl').textContent()))
+    ok('the ASK block reads as today\'s message: its keys in the thread order (Expect, By, then Done when, Verify; sy-uykv)', dts.slice(0, 4).join() === 'Expect,By,Done when,Verify' && dts.includes('Why') && dts.includes('Options'), dts.join())
+    ok('...Expect "review: review mm@56ebb96", By "next wake · Else: escalate ops"', /review: review mm@56ebb96/.test((await ask.locator('dl').allTextContents()).join(' ')) && /next wake · Else: escalate ops/.test((await ask.locator('dl').allTextContents()).join(' ')))
     const types = await ask.locator('[data-part]').evaluateAll((es) => es.map((e) => e.getAttribute('data-part')))
-    ok('its parts, in order, each by its type', types.join() === 'text,markdown,mermaid,table,html,svg,log', types.join())
+    ok('its misc, in order, each part by its type', types.join() === 'text,markdown,mermaid,table,html,svg,log', types.join())
     ok('...text as text', (await ask.locator('[data-part="text"]').textContent()) === 'Read the plan first. It has one diagram and one table.')
     ok('...markdown rendered (bold)', (await ask.locator('[data-part="markdown"] strong').textContent()) === 'plan')
     ok('...a table: its columns and rows', (await ask.locator('[data-part="table"] th').allTextContents()).join() === 'file,passed,failed' && (await ask.locator('[data-part="table"] tbody tr').count()) === 2)

@@ -29,7 +29,7 @@
     "followUps": { "$comment": "DONE: the follow-up items", "type": "array", "maxItems": 12, "items": { "$ref": "urn:mm:schema:common:v1#/$defs/id" } },
     "artifacts": { "type": "array", "maxItems": 12, "items": { "$ref": "urn:mm:schema:common:v1#/$defs/path" } },
     "answer": { "$comment": "ANSWER: yes, no, or the key of one of the ASK's options", "$ref": "urn:mm:schema:common:v1#/$defs/slug" },
-    "parts": { "$ref": "urn:mm:schema:common:v1#/$defs/parts" }
+    "misc": { "$ref": "urn:mm:schema:common:v1#/$defs/misc" }
   },
   "allOf": [
     { "if": { "required": ["intent"], "properties": { "intent": { "const": "ASK" } } },
@@ -48,7 +48,7 @@
       "then": { "required": ["expect", "result", "verify"], "properties": { "expect": { "const": "none" }, "result": { "enum": ["done", "partial", "dropped"] },
         "need": false, "options": false, "ready": false, "surfaces": false, "tests": false, "open": false, "mustChange": false, "answer": false } } },
     { "if": { "required": ["intent"], "properties": { "intent": { "const": "NOTE" } } },
-      "then": { "required": ["parts"], "properties": { "expect": false, "done": false, "verify": false, "by": false, "else": false,
+      "then": { "required": ["misc"], "properties": { "expect": false, "done": false, "verify": false, "by": false, "else": false,
         "need": false, "options": false, "ready": false, "surfaces": false, "tests": false, "open": false, "result": false, "mustChange": false, "followUps": false, "artifacts": false, "answer": false } } },
     { "$comment": "An Expect that names a role needs Done when, Verify, By and Else.",
       "if": { "required": ["expect"], "properties": { "expect": { "type": "object" } } },

@@ -38,7 +38,7 @@ function writing() {
 
 // A flag: [name, path in the JSON, kind]. kind: s (a string), i (an integer), l (a list: the flag again adds one),
 // c (a list, comma separated), t (a switch: sets the path to a value), m (a Must change: path[:line][:rule]).
-const PARTS = [['--text', 'parts', 'part:text'], ['--markdown', 'parts', 'part:markdown'], ['--mermaid', 'parts', 'part:mermaid'], ['--part', 'parts', 'part:json']]
+const PARTS = [['--text', 'misc', 'part:text'], ['--markdown', 'misc', 'part:markdown'], ['--mermaid', 'misc', 'part:mermaid'], ['--part', 'misc', 'part:json']]
 const DONE = [['--done', 'done.is', 's'], ['--done-item', 'done.item', 's'], ['--done-check', 'done.check', 's'], ['--done-expect', 'done.expect', 's'],
   ['--verify-check', 'verify.check', 's'], ['--verify-expect', 'verify.expect', 's']]
 const FLAGS = {
@@ -90,7 +90,8 @@ bd task set <item> [flags] [--print]
     [--link <url|path>] [--item <the item's URL>]`,
 }
 const COMMON_HELP = `
-  parts (the free field, in order): --text <words> (the writing check reads it), --markdown <md>, --mermaid <source>,
+  misc (the free field, the last resort; its parts in order): --text <words> (the writing check reads it),
+    --markdown <md>, --mermaid <source>,
     --part '<json>' (any part: {"type":"table","columns":[...],"rows":[[...]]}, {"type":"image","artifact":"<path>","alt":"..."},
     {"type":"html","artifact":"<path>"}, {"type":"log","artifact":"<path>"}, ...)
   --from <file.json>  the JSON to start from (the flags go on top)      --print  print the block, post nothing
@@ -143,7 +144,7 @@ function read(kind, argv) {
       let part
       if (type === 'json') { try { part = JSON.parse(v) } catch { out.errors.push(`--part: not JSON (${String(v).slice(0, 40)})`); continue } }
       else part = { type, [type]: v }
-      ;(d.parts = Array.isArray(d.parts) ? d.parts : []).push(part)
+      ;(d.misc = Array.isArray(d.misc) ? d.misc : []).push(part)
     } else put(d, p, v)
   }
   return out
@@ -254,6 +255,6 @@ if (kind === 'message') {
 /** The keys in the schema's order (stable blocks: the same call gives the same text). */
 function order(d) {
   const KEYS = ['intent', 'to', 're', 'head', 'act', 'what', 'why', 'you', 'do', 'on', 'expect', 'done', 'verify', 'by', 'else', 'need', 'options', 'ready', 'surfaces',
-    'tests', 'open', 'result', 'mustChange', 'answer', 'followUps', 'artifacts', 'ifYes', 'ifNo', 'risk', 'rollback', 'safeguard', 'link', 'item', 'parts']
+    'tests', 'open', 'result', 'mustChange', 'answer', 'followUps', 'artifacts', 'ifYes', 'ifNo', 'risk', 'rollback', 'safeguard', 'link', 'item', 'misc']
   return Object.fromEntries([...KEYS.filter((k) => k in d), ...Object.keys(d).filter((k) => !KEYS.includes(k))].map((k) => [k, d[k]]))
 }

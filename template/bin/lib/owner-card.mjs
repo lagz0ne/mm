@@ -29,7 +29,7 @@
 // Pure; imports only writing.mjs and structured.mjs: bin/owner-card, bin/bd (through it), the Supervisor, the board's server (waiting.mjs) and, as an
 // identical copy, the board's browser code (site/src/lib/owner-card.mjs; test/owner-card.mjs keeps them equal).
 import { writingCheck } from './writing.mjs'
-import { cardKeys, firstText, partsText, readBlock, validate } from './structured.mjs'
+import { cardKeys, firstText, miscText, readBlock, validate } from './structured.mjs'
 
 export const FORMAT = 'the description starts with "## Owner", then one line per key: "- **What:** ...", "- **Why:** ...", "- **You:** Tap Approve | Reply: <question> | Check: <what, where> | Nothing", with t2 and You "Tap Approve" (a go ask) also "- **If yes:** ...", "- **If no:** ...", "- **Risk:** low|medium|high, ...", "- **Head:** <repo>@<sha>"; optional "- **Link:** ...", "- **Item:** <URL ending in ?item=<id>>"; a blank line ends it (the leads\' brief, "Asking the owner: the owner card")'
 // key -> its limit in characters; the order is the card's
@@ -138,13 +138,13 @@ function cardBlock(b, labels, id, o) {
   if (errors.length || !b.data) return out
   errors.push(...validate('card', b.data))
   const card = (out.card = cardKeys(b.data))
-  if (b.data.you?.kind === 'reply' && !firstText(b.data.parts)) errors.push('you.kind reply: the question is the first text part, and there is none')
+  if (b.data.you?.kind === 'reply' && !firstText(b.data.misc)) errors.push('you.kind reply: the question is the first text part, and there is none')
   const go = Array.isArray(labels) && labels.includes('t2') && !isNonGoAsk(card)
   const NAME = { 'If yes': 'ifYes', 'If no': 'ifNo', Risk: 'risk', Head: 'head' }
   if (go) for (const r of REQUIRED_T2) if (!(r in card)) errors.push(`${NAME[r]}: is missing (required with t2 on a go ask: you.kind approve)`)
   const u = card.Item ? ITEM_URL.exec(card.Item) : null
   if (u && id && u[1] !== id) errors.push(`item: points to ${u[1]}, not to this item (${id})`)
-  out.writing = writingCheck(partsText(b.data.parts), o.writing, errors)
+  out.writing = writingCheck(miscText(b.data.misc), o.writing, errors)
   out.ok = errors.length === 0
   return out
 }
