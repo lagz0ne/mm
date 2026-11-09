@@ -70,6 +70,7 @@ suite test/sysworkers.sh          hermetic
 suite test/template-base.sh       hermetic
 suite test/trace-refused.sh       hermetic
 suite test/update-lock.sh         hermetic
+suite test/worker-cleanup.sh      hermetic
 suite test/vault.sh               hermetic
 suite test/writing-rule.sh        hermetic
 
@@ -175,7 +176,7 @@ set cli test/brain-deny.sh test/denies.sh test/engine-drift.sh test/front.sh tes
 set cli test/mm-approve.sh test/mm-docker.sh test/mm-home-modes.sh test/mm-paseo.sh test/names.sh test/needs-fill.sh
 set cli test/npm-lock.sh test/obs-home.sh test/outside.sh test/paseo-token.sh test/pc-logs.sh test/pc-skipped.sh
 set cli test/person-run.sh test/portless-claim.sh test/restore.sh test/root-leftover.sh test/routes.sh test/sockets.sh
-set cli test/span-answers.sh test/sync.sh test/sysworkers.sh test/template-base.sh test/update-lock.sh test/vault.sh
+set cli test/span-answers.sh test/sync.sh test/sysworkers.sh test/template-base.sh test/update-lock.sh test/vault.sh test/worker-cleanup.sh
 set cli test/writing-rule.sh test/board-pull.mjs test/flow.mjs test/board-phone.mjs test/waiting-phone.mjs
 set cli test/wake-box-person-runs.mjs test/wake-person-runs.mjs
 
@@ -262,7 +263,7 @@ rule template/bin/lib/run-as.mjs  test/wake-person-runs.mjs test/wake-box-person
 rule template/bin/lib/claude.mjs  test/memory-links.sh test/lead.sh test/person-run.sh test/box-person-runs.sh test/assist.sh test/config-review.mjs
 rule template/bin/lib/lead-workspace.mjs test/lead-workspace.sh test/lead.sh test/person-run.sh test/box-person-runs.sh
 rule template/bin/lib/places.mjs  test/wake-workers.mjs test/supervisor-workers.mjs test/sysworkers.sh
-rule template/bin/lib/workers.mjs test/wake-workers.mjs test/supervisor-workers.mjs test/sysworkers.sh test/lead.sh
+rule template/bin/lib/workers.mjs test/wake-workers.mjs test/supervisor-workers.mjs test/sysworkers.sh test/lead.sh test/worker-cleanup.sh
 rule template/bin/lib/allow-only.mjs test/allow-only.mjs test/sysworkers.sh
 rule template/bin/lib/assist.mjs  test/assist.sh test/sentinel-assist.mjs
 rule template/bin/lib/guard-rules.mjs test/guard.sh test/sysworkers.sh
@@ -286,7 +287,7 @@ rule template/bin/init            test/init-retry.sh test/bd-autostart.sh test/b
 rule template/bin/land            test/trace-refused.sh test/box.sh
 rule template/ops/land-check      test/trace-refused.sh
 rule template/ops/githooks/**     test/artifact.sh test/sync.sh test/template-base.sh test/restore-drill.sh
-rule template/bin/lead            test/lead.sh test/lead-workspace.sh test/memory-links.sh test/paseo-refuse.mjs test/person-run.sh test/box-person-runs.sh test/wake-*.mjs
+rule template/bin/lead            test/lead.sh test/worker-cleanup.shtest/lead-workspace.sh test/memory-links.sh test/paseo-refuse.mjs test/person-run.sh test/box-person-runs.sh test/wake-*.mjs
 rule template/bin/svc             test/upstream.mjs test/sockets.sh
 rule template/bin/trace           test/trace-refused.sh test/bd-actor.sh test/owner-card-bd.sh test/span-answers.sh test/bd-home.sh
 rule template/bin/wake            test/wake-*.mjs test/restore-drill.sh
@@ -315,10 +316,10 @@ rule template/profiles/system/bin/project-item test/project-item.mjs test/machin
 rule template/profiles/system/bin/sentinel test/sentinel-assist.mjs test/sentinel.sh
 rule template/profiles/system/bin/supervisor test/supervisor*.mjs
 rule template/profiles/system/bin/upstream test/upstream.mjs
-rule template/profiles/system/bin/wt test/sysworkers.sh test/memory-links.sh test/lead.sh
+rule template/profiles/system/bin/wt test/sysworkers.sh test/memory-links.sh test/lead.sh test/worker-cleanup.sh
 rule template/profiles/system/assistants/** test/assist.sh test/sentinel-assist.mjs
 rule template/profiles/system/leads/roles.json test/supervisor*.mjs test/upstream.mjs test/sysworkers.sh
-rule template/profiles/system/**  test/sysworkers.sh test/artifact.sh test/machine-panel.sh test/sentinel.sh
+rule template/profiles/system/**  test/sysworkers.sh test/worker-cleanup.sh test/artifact.sh test/machine-panel.sh test/sentinel.sh
 
 # --- rules: the tests themselves ----------------------------------------------------------------------------------
 
