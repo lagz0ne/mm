@@ -228,6 +228,8 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
 
             <Artifacts id={i.id} tick={tick} />
 
+            <Inbox id={i.id} tick={tick} closed={i.status === 'closed'} onChanged={onChanged} />
+
             {content.length > 0 && (
               <Section label={`Content · ${content.length}`}>
                 <div className="grid grid-cols-[minmax(0,1fr)] gap-3">
@@ -358,6 +360,83 @@ function Artifacts({ id, tick }: { id: string; tick: number }) {
         </ul>
       )}
       <Viewer path={open} onClose={() => setOpen(null)} />
+    </Section>
+  )
+}
+
+interface Upload { name: string; path: string; by: string | null; at: string | null; files: { path: string; size: number }[]; total: number }
+interface InboxState { uploads: Upload[]; can: boolean; me: string | null; owner: boolean; limits: { bytes: number } }
+
+/** The item's inbox (sy-seqz): what people uploaded for the leads (inbox/<item>/<upload>/ in the project's folder).
+ *  A person signed in on the public side (not a viewer) uploads a file or a zip; the uploader or the owner removes it. */
+function Inbox({ id, tick, closed, onChanged }: { id: string; tick: number; closed: boolean; onChanged: () => void }) {
+  const [st, setSt] = useState<InboxState | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [again, setAgain] = useState(0)
+  const pick = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    let gone = false
+    fetch(`/api/inbox/${id}`).then((r) => r.json()).then((d) => !gone && setSt(Array.isArray(d.uploads) ? d : null)).catch(() => !gone && setSt(null))
+    return () => { gone = true }
+  }, [id, tick, again])
+  if (!st || (!st.uploads.length && (!st.can || closed))) return null
+  async function send(f: File) {
+    if (f.size > st!.limits.bytes) { toast.error(`${f.name}: ${bytes(f.size)}, more than the ${bytes(st!.limits.bytes)} an upload may be`); return }
+    setBusy(true)
+    try {
+      const r = await fetch(`/api/inbox/${id}?name=${encodeURIComponent(f.name)}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: f })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(d.title || `${r.status}`)
+      toast.success(d.title); setAgain((n) => n + 1); onChanged()
+    } catch (e) { toast.error(`Not uploaded: ${(e as Error).message}`) } finally { setBusy(false); if (pick.current) pick.current.value = '' }
+  }
+  async function remove(u: Upload) {
+    if (!window.confirm(`Remove ${u.path} (${u.files.length} files)?`)) return
+    setBusy(true)
+    try {
+      const r = await fetch(`/api/inbox/${id}/${encodeURIComponent(u.name)}`, { method: 'DELETE' })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(d.title || `${r.status}`)
+      toast.success(d.title); setAgain((n) => n + 1); onChanged()
+    } catch (e) { toast.error((e as Error).message) } finally { setBusy(false) }
+  }
+  return (
+    <Section label={`Inbox · ${st.uploads.length}`}>
+      {st.uploads.length > 0 && (
+        <ul className="grid gap-2" data-inbox-list>
+          {st.uploads.map((u) => (
+            <li key={u.name} className="min-w-0 border border-foreground px-2.5 py-2 text-xs" data-upload={u.name}>
+              <div className="flex min-w-0 items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-mono [overflow-wrap:anywhere]">{u.path}</div>
+                  <div className="text-[11px] text-muted-foreground">{u.files.length} file{u.files.length === 1 ? '' : 's'} · {bytes(u.total)}{u.by ? ` · ${u.by}` : ''}{u.at ? ` · ${ago(u.at)}` : ''}</div>
+                </div>
+                {st.can && (st.owner || u.by === st.me) && (
+                  <Button size="xs" variant="ghost" className="shrink-0 max-md:min-h-10" disabled={busy} onClick={() => remove(u)}>Remove</Button>
+                )}
+              </div>
+              {u.files.length > 0 && (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-[11px] text-muted-foreground max-md:min-h-8">Files</summary>
+                  <ul className="mt-1 grid gap-0.5 font-mono text-[11px]">
+                    {u.files.slice(0, 100).map((f) => <li key={f.path} className="flex min-w-0 justify-between gap-2"><span className="min-w-0 [overflow-wrap:anywhere]">{f.path}</span><span className="shrink-0 text-muted-foreground">{bytes(f.size)}</span></li>)}
+                    {u.files.length > 100 && <li className="text-muted-foreground">and {u.files.length - 100} more</li>}
+                  </ul>
+                </details>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {st.can && !closed && (
+        <div className={cn('flex flex-wrap items-center gap-2', st.uploads.length > 0 && 'mt-2')}>
+          <input ref={pick} type="file" className="sr-only" data-inbox-file aria-label="Upload a file" onChange={(e) => { const f = e.target.files?.[0]; if (f) send(f) }} />
+          <Button size="sm" variant="outline" className="max-md:min-h-10" disabled={busy} onClick={() => pick.current?.click()} data-inbox-upload>
+            {busy ? 'Uploading…' : 'Upload a file'}
+          </Button>
+          <span className="text-[11px] text-muted-foreground">A file or a zip, up to {bytes(st.limits.bytes)}. The leads read it in the project's inbox.</span>
+        </div>
+      )}
     </Section>
   )
 }

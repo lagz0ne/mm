@@ -136,6 +136,7 @@ suite test/board-thread.mjs       hermetic needs=site
 suite test/board-structured.mjs   hermetic needs=site
 suite test/board-for-you.mjs      hermetic needs=site
 suite test/board-ships.mjs        hermetic needs=site
+suite test/board-inbox.mjs        hermetic needs=site
 suite test/wake-person-to.mjs     hermetic
 suite test/schema.mjs             hermetic
 suite test/placements.mjs         hermetic
@@ -306,7 +307,7 @@ rule template/bin/lib/allow-only.mjs test/allow-only.mjs test/sysworkers.sh
 rule template/bin/lib/assist.mjs  test/assist.sh test/sentinel-assist.mjs
 rule template/bin/lib/guard-rules.mjs test/guard.sh test/sysworkers.sh
 rule template/bin/lib/ledger.mjs  test/mm-approve.sh test/guard.sh test/board-approve.sh test/auth.sh test/flow.mjs
-rule template/bin/lib/secret-scan.mjs test/artifact.sh test/board-artifacts.mjs test/guard.sh
+rule template/bin/lib/secret-scan.mjs test/artifact.sh test/board-artifacts.mjs test/guard.sh test/board-inbox.mjs
 rule template/bin/lib/doop-init.mjs test/box-doop.sh test/doop-container.sh test/doop-gateway.sh test/doop.sh
 rule template/bin/lib/flow.mjs    test/flow.mjs test/board-pull.mjs
 
@@ -369,7 +370,7 @@ rule template/site/src/lib/api.ts       test/board-message.mjs test/board-pull.m
 rule template/site/src/lib/persona.tsx  test/board-presence.mjs
 rule template/site/src/App.tsx          test/board-for-you.mjs test/board-pull.mjs test/board-owner-card.mjs test/waiting-phone.mjs
 rule template/site/src/Designs.tsx      test/board-designs.mjs test/board-phone-space.mjs
-rule template/site/src/Detail.tsx       test/board-owner-card.mjs test/board-message.mjs test/board-artifacts.mjs
+rule template/site/src/Detail.tsx       test/board-owner-card.mjs test/board-message.mjs test/board-artifacts.mjs test/board-inbox.mjs
 rule template/site/src/Diff.tsx         test/board-artifacts.mjs
 rule template/site/src/Flow.tsx         test/board-structured.mjs test/board-pull.mjs
 rule template/site/src/ForYou.tsx       test/board-for-you.mjs
@@ -397,6 +398,7 @@ rule template/site/lead-state.mjs       test/lead-state.mjs test/board-for-you.m
 rule template/site/pull-state.mjs       test/board-pull.mjs
 rule template/site/flow-rows.mjs        test/board-pull.mjs test/flow.mjs
 rule template/site/config-api.mjs       test/config-review.mjs test/lead-state.mjs
+rule template/site/inbox.mjs            test/board-inbox.mjs
 rule template/site/designs.mjs          test/board-designs.mjs test/doop-designs.sh
 rule template/site/compress.mjs         test/front.sh @site-smoke
 rule template/site/annotate.js          test/board-designs.mjs test/doop-designs.sh
@@ -420,7 +422,7 @@ rule template/glossary.yaml       test/glossary.mjs test/writing.mjs test/writin
 rule template/services.yaml       test/bd-autostart.sh test/pc-skipped.sh test/engine-drift.sh test/template-base.sh test/sockets.sh test/clean-box.sh test/lifecycle.sh test/deploy.sh
 rule template/tools.json          test/bd-autostart.sh test/bd-home.sh test/init-retry.sh test/clean-box.sh test/restore-drill.sh test/box.sh
 rule template/secrets.json        test/needs-fill.sh test/vault.sh test/sync.sh test/restore.sh test/api.sh test/board-artifacts.mjs
-rule template/.gitignore          test/artifact.sh test/board-artifacts.mjs test/restore.sh test/sync.sh test/supervisor.mjs test/template-base.sh
+rule template/.gitignore          test/artifact.sh test/board-artifacts.mjs test/board-inbox.mjs test/restore.sh test/sync.sh test/supervisor.mjs test/template-base.sh
 rule template/leads/roles.json    test/wake-start.mjs test/wake-hops.mjs test/supervisor.mjs test/flow.mjs test/message.mjs test/lead.sh test/bd-actor.sh test/auth.sh test/board-approve.sh test/person-run.sh test/raci.mjs
 rule template/leads/raci.json     test/raci.mjs test/supervisor-raci.mjs test/wake-hops.mjs test/lead.sh
 rule template/leads/design/**     test/doop.sh
