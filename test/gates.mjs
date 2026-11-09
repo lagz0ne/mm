@@ -20,6 +20,10 @@ const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const GATES = path.join(SRC, 'test', 'gates')
 const NODE_DIR = path.dirname(spawnSync('sh', ['-c', 'command -v node'], { encoding: 'utf8' }).stdout.trim())
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'gates-test-'))
+// review sy-gb26 #3: every test/gates this suite starts gets a PATH with no board on it (node, flock, git, sh only)
+// and its own MM_GATES_DIR, so no run of it posts a result file (artifact) or a run mark to a real board.
+const CLEAN_PATH = [NODE_DIR, '/usr/local/bin', '/usr/bin', '/bin'].join(':')
+const GATES_DIR = path.join(T, 'gates-dir')
 let pass = 0, fail = 0
 const ok = (d, c, more = '') => { c ? pass++ : fail++; console.log(`  ${c ? '\x1b[32mok\x1b[0m  ' : '\x1b[31mFAIL\x1b[0m'} ${d}${c || !more ? '' : `\n        ${String(more).slice(0, 1500)}`}`) }
 const step = (s) => console.log(`\n\x1b[1m== ${s}\x1b[0m`)
@@ -104,6 +108,7 @@ ok('lifecycle.sh takes the base\'s template and the mm (MM_BIN_DIR)', (() => { c
 ok('lifecycle.sh honours MM_BIN_DIR', /MM_BIN_DIR/.test(fs.readFileSync(path.join(SRC, 'test', 'lifecycle.sh'), 'utf8')))
 
 step('test/gates on a fixture repo')
+ok('the PATH of every test/gates run here has no artifact on it (review sy-gb26 #3)', sh('sh', ['-c', 'command -v artifact'], { env: { PATH: CLEAN_PATH } }).status !== 0)
 const R = path.join(T, 'repo')
 fs.mkdirSync(path.join(R, 'test'), { recursive: true })
 const g = (...a) => sh('git', ['-C', R, ...a], { env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.org', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.org' } })
@@ -143,7 +148,7 @@ g('init', '-q', '-b', 'main'); g('add', '-A'); g('commit', '-qm', 'base')
 W('lib/a.txt', '2\n'); W('docs/a.md', '2\n'); W('other/new.txt', 'x\n')
 g('add', '-A'); g('commit', '-qm', 'change lib, docs, a new folder')
 // never the machine's heavy lock: this test's own
-const run = (args, opts = {}) => sh(GATES, args, { cwd: R, env: { ...process.env, MM_GATES_LOCK: path.join(T, 'fixture.lock'), PATH: opts.path || process.env.PATH }, ...opts })
+const run = (args, opts = {}) => sh(GATES, args, { cwd: R, env: { ...process.env, MM_GATES_LOCK: path.join(T, 'fixture.lock'), MM_GATES_DIR: GATES_DIR, PATH: opts.path || CLEAN_PATH }, ...opts })
 
 let r = run(['main~1..main', '--list'])
 ok('--list: exit 0', r.status === 0, r.stderr)
@@ -187,7 +192,7 @@ const short = g('rev-parse', '--short=7', 'HEAD').stdout.trim()
 const STUBS = path.join(T, 'stubs'); fs.mkdirSync(STUBS)
 fs.writeFileSync(path.join(STUBS, 'artifact'), `#!/bin/sh\necho "$@" >"${T}/artifact.args"\necho "artifacts/$1/$(basename "$2")"\n`, { mode: 0o755 })
 const fakeMm = path.join(T, 'fake-mm'); fs.writeFileSync(fakeMm, '#!/bin/sh\necho fake\n', { mode: 0o755 })
-r = run(['main~2..main', '--bin', fakeMm, '--item', 'ab-1'], { path: `${STUBS}:${process.env.PATH}` })
+r = run(['main~2..main', '--bin', fakeMm, '--item', 'ab-1'], { path: `${STUBS}:${CLEAN_PATH}` })
 ok('a failing suite: exit 1', r.status === 1, r.stdout + r.stderr)
 const def = path.join(R, `gates-${short}.txt`)
 const res2 = fs.existsSync(def) ? fs.readFileSync(def, 'utf8') : ''
@@ -195,7 +200,7 @@ ok(`the default result file: gates-<short head>.txt (${path.basename(def)})`, re
 ok('result: the failed suite with its exit code and counts', /^test\/f\.sh\s+hermetic\s+failed \(exit 1\)\s+2 ok, 1 FAIL/m.test(res2) && /^result: failed: 1 passed, 1 failed, 0 skipped, of 2/m.test(res2), res2)
 ok('{mm} is the --bin binary', fs.readFileSync(MARK, 'utf8').includes(`m.sh ${fakeMm} x`) && /^mm: --bin /m.test(res2), fs.readFileSync(MARK, 'utf8'))
 ok('--item: artifact <id> <result file>', fs.existsSync(`${T}/artifact.args`) && fs.readFileSync(`${T}/artifact.args`, 'utf8').trim() === `ab-1 ${def}` && /artifact: on ab-1/.test(r.stdout), r.stdout)
-r = run(['main~1..main', '--item', 'ab-1', '--out', path.join(T, 'out', 'r3.txt')], { path: [NODE_DIR, '/usr/bin', '/bin'].join(':') })
+r = run(['main~1..main', '--item', 'ab-1', '--out', path.join(T, 'out', 'r3.txt')], { path: CLEAN_PATH })
 ok('--item without artifact on PATH: says so (the run still counts)', r.status === 1 && /artifact: not on PATH/.test(r.stdout), r.stdout + r.stderr)
 r = run(['main~3..main', '--list', '--no-live'])
 ok('--list --no-live marks the live suites skipped', r.status === 0 && /test\/l\.sh .*\[skipped: --no-live\]/.test(r.stdout), r.stdout + r.stderr)
@@ -246,7 +251,8 @@ ok('the wait line', waitLine({ label: 'sy-x', pid: 42, since: '2026-01-02T03:04:
   W2('lib/a', '2\n'); g2('add', '-A'); g2('commit', '-qm', 'lib') // main~2..main~1: every suite
   W2('light/a', '2\n'); W2('heavy1/a', '2\n'); g2('add', '-A'); g2('commit', '-qm', 'light and heavy') // main~1..main: h1 h2 d1
   const runA = (args, env) => new Promise((done) => {
-    const c = spawn(GATES, args, { cwd: R2, env: { ...process.env, ...env } })
+    // review sy-gb26 #3: these runs pass --item; with the real PATH they posted their result files to a real board
+    const c = spawn(GATES, args, { cwd: R2, env: { ...process.env, MM_GATES_DIR: GATES_DIR, ...env, PATH: CLEAN_PATH } })
     let out = ''; c.stdout.on('data', (d) => (out += d)); c.stderr.on('data', (d) => (out += d))
     c.on('close', (code) => done({ code, out }))
   })
@@ -269,6 +275,7 @@ ok('the wait line', waitLine({ label: 'sy-x', pid: 42, since: '2026-01-02T03:04:
     ])
     const sp = readSpans(), heavy = Object.values(sp).filter((x) => isHeavy(x.n)).sort((x, y) => x.start - y.start)
     ok(`${mode}: two runs at once both pass`, a.code === 0 && b.code === 0, a.out + b.out)
+    ok(`${mode}: ...and neither reached a board (artifact not on their PATH)`, /artifact: not on PATH; the result file is not on run-a/.test(a.out) && /artifact: not on PATH; the result file is not on run-b/.test(b.out), a.out + b.out)
     ok(`${mode}: their six heavy suites never side by side`, heavy.length === 6 && heavy.every((x) => x.end) && !pairsOverlap(heavy), JSON.stringify(heavy))
     const tags = heavy.map((x) => x.n.split('@')[1]).join('')
     ok(`${mode}: they take turns suite by suite (not one run's heavy suites, then the other's)`, !/^(a{3}b{3}|b{3}a{3})$/.test(tags), tags)
