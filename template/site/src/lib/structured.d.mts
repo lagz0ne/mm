@@ -14,8 +14,8 @@ export declare function looksStructured(text: string | undefined | null): boolea
 export declare function readBlock(text: string | undefined | null): Block | null
 export declare function formatBlock(kind: string, data: unknown): string
 export declare function validate(kind: 'message' | 'task' | 'card', data: unknown): string[]
-export declare function partsText(parts: unknown): string
-export declare function firstText(parts: unknown): string
+export declare function miscText(misc: unknown): string
+export declare function firstText(misc: unknown): string
 export declare function byText(b: unknown): string
 export declare function verifyText(x: unknown): string
 export declare function stepText(x: unknown): string

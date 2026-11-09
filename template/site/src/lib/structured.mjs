@@ -4,7 +4,7 @@
 //   ```mm-message v1        ```mm-task v1        ```mm-card v1
 //   { ...JSON... }          { ...JSON... }       { ...JSON... }
 //   ```                     ```                  ```
-// Every field is typed (enums, patterns, objects, arrays, ids, numbers); the one free field is `parts`, an array of typed
+// Every field is typed (enums, patterns, objects, arrays, ids, numbers); the one free field is `misc`, an array of typed
 // parts (text, markdown, mermaid, html, svg, image, table, log). The writing check runs on the text parts.
 // The parsers of today (message.mjs, task.mjs, owner-card.mjs) read either form: a block maps to the same keys as the
 // key/value text (messageKeys, taskKeys, cardKeys), so the gates, the Supervisor, wake, the bridge and the board read
@@ -62,16 +62,16 @@ export const formatBlock = (kind, data) => `\`\`\`mm-${kind} v${VERSION}\n${JSON
 export function validate(kind, data) {
   if (!SCHEMA_ID[kind]) return [`no schema for ${kind}`]
   const errors = V.validate(SCHEMA_ID[kind], data)
-  const parts = Array.isArray(data?.parts) ? data.parts : []
+  const parts = Array.isArray(data?.misc) ? data.misc : []
   parts.forEach((p, k) => {
     if (p?.type === 'table' && Array.isArray(p.columns) && Array.isArray(p.rows))
-      p.rows.forEach((r, j) => { if (Array.isArray(r) && r.length !== p.columns.length) errors.push(`parts[${k}].rows[${j}]: has ${r.length} cells (the columns: ${p.columns.length})`) })
+      p.rows.forEach((r, j) => { if (Array.isArray(r) && r.length !== p.columns.length) errors.push(`misc[${k}].rows[${j}]: has ${r.length} cells (the columns: ${p.columns.length})`) })
   })
   return errors
 }
 
 /** The text parts, for the writing check: one paragraph each (the other parts are not words). */
-export const partsText = (parts) => (Array.isArray(parts) ? parts : []).filter((p) => p?.type === 'text' && typeof p.text === 'string').map((p) => p.text.trim()).join('\n\n')
+export const miscText = (parts) => (Array.isArray(parts) ? parts : []).filter((p) => p?.type === 'text' && typeof p.text === 'string').map((p) => p.text.trim()).join('\n\n')
 /** The first text part on one line (the question of a card's Reply), or ''. */
 export const firstText = (parts) => one((Array.isArray(parts) ? parts : []).find((p) => p?.type === 'text' && typeof p.text === 'string')?.text)
 
@@ -142,7 +142,7 @@ export function cardKeys(d) {
   if (x.why !== undefined) k.Why = str(x.why)
   if (x.you !== undefined) {
     const kind = x.you && typeof x.you === 'object' ? x.you.kind : x.you
-    k.You = YOU[kind] || (kind === 'reply' ? `Reply: ${clip(firstText(x.parts) || 'see the card', 150)}` : kind === 'check' ? `Check: ${str(x.you.at) || 'see the card'}` : str(kind))
+    k.You = YOU[kind] || (kind === 'reply' ? `Reply: ${clip(firstText(x.misc) || 'see the card', 150)}` : kind === 'check' ? `Check: ${str(x.you.at) || 'see the card'}` : str(kind))
   }
   if (x.ifYes !== undefined) k['If yes'] = stepText(x.ifYes)
   if (x.ifNo !== undefined) k['If no'] = stepText(x.ifNo)

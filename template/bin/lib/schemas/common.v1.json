@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:mm:schema:common:v1",
   "title": "mm structured content: the shared types (v1)",
-  "$comment": "Every field is typed. The one free field is parts: an array of typed parts. The run-time checks the schema cannot say (a role of leads/roles.json, an activity of leads/raci.json, a table's row width, the writing check on text parts) are in bin/lib/structured.mjs.",
+  "$comment": "Every field is typed. The one free field is misc: an array of typed parts. The run-time checks the schema cannot say (a role of leads/roles.json, an activity of leads/raci.json, a table's row width, the writing check on text parts) are in bin/lib/structured.mjs.",
   "$defs": {
     "id": { "description": "an item id (sy-abc1)", "type": "string", "pattern": "^[a-z]+-[a-z0-9]+(\\.[0-9]+)*$", "maxLength": 40 },
     "role": { "description": "a role id (ops)", "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,30}$" },
@@ -111,6 +111,6 @@
       ],
       "additionalProperties": false
     },
-    "parts": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/part" } }
+    "misc": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/part" } }
   }
 }

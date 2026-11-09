@@ -46,7 +46,7 @@ call "${ASK[@]}" --text 'Read the three schemas first.' --mermaid 'graph LR; a--
 check "ASK: exit 0, bd ran" posted
 check "...as bd comments add <item> -f <file> --actor platform" ran '^comments add sy-1 -f .*/body\.md --actor platform$'
 check "...the body is one mm-message v1 block" grep -qx '```mm-message v1' "$T/body"
-check "...its JSON: intent, to, expect, by, else, parts in order" json 'd.intent==="ASK"&&d.to==="review"&&d.expect.role==="review"&&d.expect.do==="review"&&d.expect.on==="mm@abcdef1"&&d.by==="today"&&d.else.do==="escalate"&&d.parts.length===2&&d.parts[1].type==="mermaid"'
+check "...its JSON: intent, to, expect, by, else, misc in order" json 'd.intent==="ASK"&&d.to==="review"&&d.expect.role==="review"&&d.expect.do==="review"&&d.expect.on==="mm@abcdef1"&&d.by==="today"&&d.else.do==="escalate"&&d.misc.length===2&&d.misc[1].type==="mermaid"'
 check "...message check - reads it as a valid ASK" sh -c "'$T/bin/message' check - <'$T/body' | grep -qF 'message ok (ASK → review)'"
 check "...the temp file is gone" sh -c "! ls '${TMPDIR:-/tmp}'/bd-structured-* >/dev/null 2>&1 || ! grep -l 'Read the three schemas first' '${TMPDIR:-/tmp}'/bd-structured-*/body.md"
 call msg HANDOFF sy-1 --to review --expect-role review --expect sign-off --expect-on mm@abcdef1 --head mm@abcdef1 --done signed-off \
@@ -84,13 +84,13 @@ call "${B[@]}" --expect-on 'not a ref';     check "--expect-on with a space" ref
 call "${B[@]}" --re x;                      check "--re x: a whole number" refused '--re "x": a whole number'
 call "${B[@]}" --bogus 1;                   check "an unknown flag" refused '--bogus is not a flag of bd msg'
 call "${B[@]}" --ready mm@abcdef1;          check "ready on an ASK: not allowed" refused 'ready: not allowed (with intent ASK)'
-call "${B[@]}" --part '{"type":"text"}';    check "a text part with no text" refused 'parts[0].text: is missing (with type text)'
-call "${B[@]}" --part '{"type":"html"}';    check "an html part with neither artifact nor html" refused 'parts[0]: needs one of artifact, html'
-call "${B[@]}" --part '{"type":"html","artifact":"../x.html"}'; check "an artifact path with .." refused 'parts[0].artifact'
-call "${B[@]}" --part '{"type":"table","columns":["a","b"],"rows":[["x"]]}'; check "a table row shorter than its columns" refused 'parts[0].rows[0]: has 1 cells (the columns: 2)'
-call "${B[@]}" --part '{"type":"video"}';   check "an unknown part type" refused 'parts[0].type: "video" is not one of text, markdown'
+call "${B[@]}" --part '{"type":"text"}';    check "a text part with no text" refused 'misc[0].text: is missing (with type text)'
+call "${B[@]}" --part '{"type":"html"}';    check "an html part with neither artifact nor html" refused 'misc[0]: needs one of artifact, html'
+call "${B[@]}" --part '{"type":"html","artifact":"../x.html"}'; check "an artifact path with .." refused 'misc[0].artifact'
+call "${B[@]}" --part '{"type":"table","columns":["a","b"],"rows":[["x"]]}'; check "a table row shorter than its columns" refused 'misc[0].rows[0]: has 1 cells (the columns: 2)'
+call "${B[@]}" --part '{"type":"video"}';   check "an unknown part type" refused 'misc[0].type: "video" is not one of text, markdown'
 call "${B[@]}" --part 'nope';               check "--part not JSON" refused '--part: not JSON'
-call "${B[@]}" --text "$(head -c 700 /dev/zero | tr '\0' a)"; check "a text part over 600 characters" refused 'parts[0].text: is too long (700 characters; at most 600)'
+call "${B[@]}" --text "$(head -c 700 /dev/zero | tr '\0' a)"; check "a text part over 600 characters" refused 'misc[0].text: is too long (700 characters; at most 600)'
 call msg ASK sy-1 --to review --expect-role review --expect review --need review --actor platform
 check "an Expect with a role and no Done, Verify, By, Else" refused 'done: is missing (with expect an object)'
 check "...all four named" sh -c "grep -c 'is missing (with expect an object)' '$T/err' | grep -qx 4"
@@ -104,14 +104,14 @@ call msg ANSWER sy-1 --to platform --answer yes --expect-none --verify-check a -
 check "an ANSWER with no --re" refused 're: is missing (with intent ANSWER)'
 call msg DONE sy-1 --to ops --result done --expect-role ops --expect check --verify-check a --verify-expect b --actor ops
 check "a DONE that expects a role" refused 'expect: is'
-call msg NOTE sy-1 --to ops --actor ops;    check "a NOTE with no part" refused 'parts: is missing (with intent NOTE)'
+call msg NOTE sy-1 --to ops --actor ops;    check "a NOTE with no part" refused 'misc: is missing (with intent NOTE)'
 call msg NOTE sy-1 --to ops --text hi --by today --actor ops; check "a NOTE with a By" refused 'by: not allowed (with intent NOTE)'
 call msg SHOUT sy-1 --to ops --text hi --actor ops; check "an unknown intent" refused 'intent: "SHOUT" is not one of ASK, HANDOFF'
 call msg ASK --to ops --actor ops;          check "no item" refused 'bd msg <INTENT> <item>: both are needed'
 call msg NOTE sy-1 extra --to ops --text hi --actor ops; check "a stray word" refused 'more words than <INTENT> <item>'
 call msg NOTE sy-1 --to ops --text hi
 check "no actor: bd's own refusal (a write needs an actor)" sh -c "[ \"\$(cat '$T/code')\" = 1 ] && [ ! -s '$T/ran' ] && grep -qF 'needs an actor' '$T/err'"
-F="$T/from.json"; printf '{"intent":"NOTE","to":"ops","parts":[{"type":"text","text":"From a file."}]}\n' >"$F"
+F="$T/from.json"; printf '{"intent":"NOTE","to":"ops","misc":[{"type":"text","text":"From a file."}]}\n' >"$F"
 call msg NOTE sy-1 --from "$F" --actor ops
 check "--from <file.json>: posted" posted
 check "...its parts kept" body_has 'From a file.'
@@ -119,8 +119,8 @@ check "...its parts kept" body_has 'From a file.'
 echo "== the gate reads both forms (step 1): a block written by hand is checked by the schema; the old text still passes"
 printf '```mm-message v1\n{"intent":"NOTE","to":"ops"}\n```\n' >"$T/hand.md"
 call comments add sy-1 -f "$T/hand.md" --actor ops
-check "a hand-written invalid block: refused by the message gate" refused 'parts: is missing (with intent NOTE)'
-printf '```mm-message v1\n{"intent":"NOTE","to":"ops","parts":[{"type":"text","text":"ok"}]}\n```\nand more words\n' >"$T/hand.md"
+check "a hand-written invalid block: refused by the message gate" refused 'misc: is missing (with intent NOTE)'
+printf '```mm-message v1\n{"intent":"NOTE","to":"ops","misc":[{"type":"text","text":"ok"}]}\n```\nand more words\n' >"$T/hand.md"
 call comments add sy-1 -f "$T/hand.md" --actor ops
 check "text after the block: refused" refused 'nothing goes after the block'
 printf '```mm-message v1\n{"intent":"NOTE",}\n```\n' >"$T/hand.md"

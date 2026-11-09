@@ -52,11 +52,11 @@ export function PartView({ part, onRef }: { part: Part; onRef?: (n: number) => v
   )
 }
 
-/** The parts of a block, in order. */
-export function Parts({ parts, onRef, className }: { parts: unknown; onRef?: (n: number) => void; className?: string }) {
-  const ps = Array.isArray(parts) ? (parts as Part[]).filter((p) => p && typeof p === 'object') : []
+/** The free field of a block (misc): its parts, in order. */
+export function Misc({ misc, onRef, className }: { misc: unknown; onRef?: (n: number) => void; className?: string }) {
+  const ps = Array.isArray(misc) ? (misc as Part[]).filter((p) => p && typeof p === 'object') : []
   if (!ps.length) return null
-  return <div className={cn('grid min-w-0 gap-2 text-[13px]', className)} data-parts={ps.length}>{ps.map((p, k) => <PartView key={k} part={p} onRef={onRef} />)}</div>
+  return <div className={cn('grid min-w-0 gap-2 text-[13px]', className)} data-misc={ps.length}>{ps.map((p, k) => <PartView key={k} part={p} onRef={onRef} />)}</div>
 }
 
 /** "Original": the block as it was written. */
@@ -91,7 +91,7 @@ export function StructuredBlock({ kind, code, onRef }: { kind: string; code: str
           </div>
         ))}
       </dl>
-      <Parts parts={b.data.parts} onRef={onRef} />
+      <Misc misc={b.data.misc} onRef={onRef} />
       {errors.length > 0 && <p data-structured-invalid className="text-[11px] text-swiss [overflow-wrap:anywhere]">invalid: {errors.slice(0, 3).join('; ')}{errors.length > 3 ? ` (+${errors.length - 3})` : ''}</p>}
       <Original raw={raw} />
     </section>

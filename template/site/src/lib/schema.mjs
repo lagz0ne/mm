@@ -6,7 +6,7 @@
 // boolean schemas true and false. Any other keyword is an error of the schema (SUPPORTED; test/schema.mjs checks that
 // the schemas use only these), never silently ignored.
 // The errors are short and say where: "<path>: <what is wrong>", the path dotted from the root ("expect.do",
-// "parts[2].text"; the root is "(top)"). A then-branch's errors say its condition: "ready: not allowed (with intent ASK)".
+// "misc[2].text"; the root is "(top)"). A then-branch's errors say its condition: "ready: not allowed (with intent ASK)".
 // Pure, no imports; an identical copy is the board's browser code (site/src/lib/schema.mjs; test/schema.mjs keeps them equal).
 
 export const SUPPORTED = new Set(['$id', '$ref', '$defs', '$schema', '$comment', 'title', 'description', 'type', 'enum', 'const',

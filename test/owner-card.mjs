@@ -191,7 +191,7 @@ step('the structured form (sy-rfup, step 1): one ```mm-card v1 block at the top'
 {
   const J = (d, rest = '\n\nThe rest.') => '```mm-card v1\n' + JSON.stringify(d, null, 2) + '\n```' + rest
   const go = { what: { do: 'apply', on: 'migrations/port.sh' }, why: 'access', you: { kind: 'approve' }, ifYes: { role: 'ops', do: 'apply', on: 'migrations/port.sh' },
-    ifNo: { do: 'nothing' }, risk: { level: 'high', of: ['lockout'] }, head: 'brain@abcdef1', parts: [{ type: 'text', text: 'The port opens.' }] }
+    ifNo: { do: 'nothing' }, risk: { level: 'high', of: ['lockout'] }, head: 'brain@abcdef1', misc: [{ type: 'text', text: 'The port opens.' }] }
   const r = parseCard(J(go), ['t2'])
   ok('a t2 go ask: ok, the keys of the text form', r.ok && r.found && r.card.What === 'apply migrations/port.sh' && r.card.You === 'Tap Approve' && r.card.Risk === 'high, lockout' && r.card.Head === 'brain@abcdef1', r.errors.join('; '))
   ok('...rest: the description after the block; json: the data', r.rest === 'The rest.' && r.json?.why === 'access')
@@ -201,16 +201,16 @@ step('the structured form (sy-rfup, step 1): one ```mm-card v1 block at the top'
   ok('t2 go ask with none of ifYes, ifNo, risk, head: each is missing', !t.ok && ['ifYes', 'ifNo', 'risk', 'head'].every((k) => t.errors.some((e) => e.startsWith(`${k}: is missing (required with t2`))), t.errors.join('; '))
   ok('...the same card with no t2: ok', parseCard(J(short), []).ok)
   ok('...a non-go ask (reply) on t2 needs none of them', parseCard(J({ ...short, you: { kind: 'reply' } }), ['t2']).ok)
-  const rp = parseCard(J({ ...short, you: { kind: 'reply' }, parts: [{ type: 'text', text: 'Which port: 25 or 587?' }] }))
+  const rp = parseCard(J({ ...short, you: { kind: 'reply' }, misc: [{ type: 'text', text: 'Which port: 25 or 587?' }] }))
   ok('you reply: You is "Reply: <the first text part>"; youKind reads it; isNonGoAsk', rp.card.You === 'Reply: Which port: 25 or 587?' && youKind(rp.card.You) === 'reply' && isNonGoAsk(rp.card))
-  const nq = parseCard(J({ ...short, you: { kind: 'reply' }, parts: [{ type: 'markdown', markdown: 'x' }] }))
+  const nq = parseCard(J({ ...short, you: { kind: 'reply' }, misc: [{ type: 'markdown', markdown: 'x' }] }))
   ok('you reply with no text part: refused', !nq.ok && nq.errors.some((e) => /the question is the first text part/.test(e)))
   ok('you check: "Check: <at>"', parseCard(J({ ...short, you: { kind: 'check', at: 'https://x.example/page' } })).card.You === 'Check: https://x.example/page')
   ok('item: a URL of another item is refused', parseCard(J({ ...short, item: 'https://b.example/?item=sy-2' }), [], 'sy-1').errors.some((e) => e === 'item: points to sy-2, not to this item (sy-1)'))
   ok('a schema error: the path and the reason', parseCard(J({ ...short, why: 'because' })).errors.some((e) => e.startsWith('why: "because" is not one of')))
   ok('an mm-task block at the top: no card (found false)', !parseCard('```mm-task v1\n{}\n```').found)
   const words = new Map(['the', 'port', 'opens'].map((x) => [x, { pos: '', base: '' }]))
-  const w = parseCard(J({ ...short, parts: [{ type: 'text', text: 'The zorblax opens.' }] }), [], '', { writing: { words, terms: [], refuseFrom: '2020-01-01' } })
+  const w = parseCard(J({ ...short, misc: [{ type: 'text', text: 'The zorblax opens.' }] }), [], '', { writing: { words, terms: [], refuseFrom: '2020-01-01' } })
   ok('the writing check runs on the text parts', !w.ok && w.writing.length === 1 && w.errors.some((e) => /zorblax/.test(e)), JSON.stringify(w.errors))
 }
 
