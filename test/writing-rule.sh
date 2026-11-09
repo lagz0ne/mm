@@ -73,6 +73,18 @@ cp "$PROJ/leads/CLAUDE.md" "$T/l.bak"; grep -vF "$M" "$T/l.bak" >"$PROJ/leads/CL
 check "a leads' brief without the message section (sy-0gsw): refused, and named" sh -c "! (cd '$PROJ' && node bin/config-check) >'$T/o' 2>&1; grep -q 'leads/CLAUDE.md: lost its \"$M\"' '$T/o'"
 cp "$T/l.bak" "$PROJ/leads/CLAUDE.md"
 check "...back: passes again" sh -c "cd '$PROJ' && node bin/config-check"
+# The NEVER table (sy-dut0): in both leads' briefs, held by config-check
+echo "== the briefs carry the NEVER table (sy-dut0)"
+check "project board: one NEVER section, pkill and saved agent id rows" sh -c "[ \"\$(grep -c '^## NEVER\$' '$PROJ/leads/CLAUDE.md')\" = 1 ] && grep -qF '| NEVER | How it failed | The safe way |' '$PROJ/leads/CLAUDE.md' && grep -qF 'pkill -f' '$PROJ/leads/CLAUDE.md' && grep -qF 'send to a saved agent id' '$PROJ/leads/CLAUDE.md'"
+check "system board: the six rows" sh -c "f='$SYS/leads/CLAUDE.md'; [ \"\$(grep -c '^## NEVER\$' \"\$f\")\" = 1 ] && grep -qF 'pkill -f' \"\$f\" && grep -qF 'saved agent id' \"\$f\" && grep -qF 'MM_TEMPLATE_DIR' \"\$f\" && grep -qF 'before the go' \"\$f\" && grep -qF 'umask 0077' \"\$f\" && grep -qF 'the owner tapped too early' \"\$f\""
+cp "$PROJ/leads/CLAUDE.md" "$T/l.bak"; grep -v '^## NEVER$' "$T/l.bak" >"$PROJ/leads/CLAUDE.md"
+check "a leads' brief without it: refused, and named" sh -c "! (cd '$PROJ' && node bin/config-check) >'$T/o' 2>&1; grep -q 'leads/CLAUDE.md: lost its \"## NEVER\"' '$T/o'"
+cp "$T/l.bak" "$PROJ/leads/CLAUDE.md"
+cp "$SYS/leads/CLAUDE.md" "$T/s.bak"; grep -v '^## NEVER$' "$T/s.bak" >"$SYS/leads/CLAUDE.md"
+check "the system board's, without it: refused" sh -c "! (cd '$SYS' && node bin/config-check) >'$T/o' 2>&1; grep -q 'leads/CLAUDE.md: lost its \"## NEVER\"' '$T/o'"
+cp "$T/s.bak" "$SYS/leads/CLAUDE.md"
+check "...both back: both boards pass again" sh -c "(cd '$PROJ' && node bin/config-check) && (cd '$SYS' && node bin/config-check)"
+
 
 # Asking the owner (sy-z5lz, the owner): the owner card rule in the leads' shared brief (both profiles)
 C='## Asking the owner: the owner card'

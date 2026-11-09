@@ -7,11 +7,12 @@
 //   Verify: <the exact check> → <the expected output>
 //   By: <next wake | today | hh:mm UTC | YYYY-MM-DD [hh:mm UTC]> · Else: <what happens when it is not done>
 //   <the intent's own keys, one line each; a line that starts with "1." or "-" goes on the key above it>
-// The intents and their keys (INTENTS): ASK (Why; Options), HANDOFF (Ready; Tests, Open), VERDICT (Result: signed off
+// The intents and their keys (INTENTS): ASK (Why; Options), HANDOFF (Ready, Surfaces; Tests, Open), VERDICT (Result: signed off
 // | blocked; Must change, Notes), ANSWER (Answer; re required), DONE (Result; Follow-ups, Artifacts; Expect: none),
 // NOTE (free text, no Expect block). An Expect that names a role needs Done when, Verify and By; Expect: none needs
 // Verify (the evidence) on an ANSWER and a DONE. The whole message is at most MAX characters: tables, logs and test
-// output go in an artifact, linked.
+// output go in an artifact, linked. A HANDOFF's Surfaces lists every place outside the repo the change reaches (or
+// "none"), so the receiver knows what to restart, rebuild or check.
 // The words follow the writing rules (sy-ko6r, writing.mjs): with o.writing, the lines after the header are checked;
 // the problems are out.writing (warnings), and from the glossary's refuse_from on also errors.
 // Pure; imports only its neighbours owner-card.mjs (the Head format) and writing.mjs. Used by bin/message (bin/bd's gate), the
@@ -28,7 +29,7 @@ const COMMON = ['Head', 'Expect', 'Done when', 'Verify', 'By']
 /** intent -> { req: its own required keys, opt: its own optional keys, expect: 'role' | 'none' | 'any' | 'no' } */
 export const INTENTS = {
   ASK: { says: 'I need something from you', req: ['Why'], opt: ['Options'], expect: 'role' },
-  HANDOFF: { says: 'the work is yours now', req: ['Ready'], opt: ['Tests', 'Open'], expect: 'role' },
+  HANDOFF: { says: 'the work is yours now', req: ['Ready', 'Surfaces'], opt: ['Tests', 'Open'], expect: 'role' },
   VERDICT: { says: "review's result", req: ['Result', 'Head'], opt: ['Must change', 'Notes'], expect: 'role' },
   ANSWER: { says: 'a reply to an ASK', req: ['Answer'], opt: [], expect: 'any' },
   DONE: { says: 'the unit is finished', req: ['Result'], opt: ['Follow-ups', 'Artifacts'], expect: 'none' },
@@ -36,7 +37,7 @@ export const INTENTS = {
 }
 /** The intents that wait for an answer (re #n): the Supervisor flags them after their By. */
 export const WAITING = ['ASK', 'HANDOFF']
-export const FORMAT = 'the first line is "<INTENT> → <role>" (+ " · re #<n>" when it answers), INTENT one of ASK, HANDOFF, VERDICT, ANSWER, DONE, NOTE; then one "Key: value" line each: "Head: <repo>@<sha>" (code in play), "Expect: <role>: <one instruction>" or "Expect: none", "Done when: <visible result>", "Verify: <check> → <expected output>", "By: next wake|today|hh:mm UTC · Else: <what then>", and the intent\'s own keys (ASK: Why; HANDOFF: Ready, Tests, Open; VERDICT: Result signed off|blocked, Head; ANSWER: Answer, re #n; DONE: Result, Expect: none); a NOTE is the header and free text; at most ' + MAX + ' characters, the rest in an artifact (the leads\' brief, "Messages between roles")'
+export const FORMAT = 'the first line is "<INTENT> → <role>" (+ " · re #<n>" when it answers), INTENT one of ASK, HANDOFF, VERDICT, ANSWER, DONE, NOTE; then one "Key: value" line each: "Head: <repo>@<sha>" (code in play), "Expect: <role>: <one instruction>" or "Expect: none", "Done when: <visible result>", "Verify: <check> → <expected output>", "By: next wake|today|hh:mm UTC · Else: <what then>", and the intent\'s own keys (ASK: Why; HANDOFF: Ready, Surfaces <where the change runs> or none, Tests, Open; VERDICT: Result signed off|blocked, Head; ANSWER: Answer, re #n; DONE: Result, Expect: none); a NOTE is the header and free text; at most ' + MAX + ' characters, the rest in an artifact (the leads\' brief, "Messages between roles")'
 
 const HEADER = /^(ASK|HANDOFF|VERDICT|ANSWER|DONE|NOTE)[ \t]*(?:→|->)[ \t]*([a-z][a-z0-9_-]*(?:\/[a-z0-9_-]+)?)(?:[ \t]*·[ \t]*re[ \t]+#([0-9]+))?[ \t]*$/
 const LOOSE_HEADER = /^\**`?(ASK|HANDOFF|VERDICT|ANSWER|DONE|NOTE)\b/

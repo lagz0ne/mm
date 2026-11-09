@@ -43,6 +43,7 @@ Done when: the item has signed-off and signed-head:mm@56ebb96, or a VERDICT bloc
 Verify: bd show sy-wxzx → labels include signed-head:mm@56ebb96
 By: next wake · Else: ops waits; nothing rolls out
 Ready: the artifact command, the secret scan, the files route, the leads' permission
+Surfaces: the boards (template), the gateway (restart its service)
 Tests: artifacts/sy-wxzx/gates-56ebb96.txt → 11 suites, 0 failed
 Open: pictures are not scanned for secrets.`,
   ask: `ASK → ops
@@ -102,6 +103,11 @@ bad('Expect not "<role>: …"', EX.ask.replace(/Expect: .*/, 'Expect: please fin
 bad('Expect over 20 words', EX.ask.replace(/Expect: ops: .*/, `Expect: ops: ${'word '.repeat(21).trim()}`), /at most 20/)
 bad('VERDICT without Head', EX.verdictSigned.replace(/\nHead: .*/, ''), /Head is missing/)
 bad('VERDICT with another Result', EX.verdictSigned.replace('Result: signed off', 'Result: fine'), /signed off" or "blocked/)
+bad('HANDOFF without Surfaces', EX.handoff.replace(/\nSurfaces: .*/, ''), /Surfaces is missing \(required on a HANDOFF\)/)
+bad('HANDOFF with an empty Surfaces', EX.handoff.replace(/Surfaces: .*/, 'Surfaces:'), /Surfaces is empty/)
+good('HANDOFF with Surfaces: none', EX.handoff.replace(/Surfaces: .*/, 'Surfaces: none'))
+ok('HANDOFF: Surfaces read as a key', parseMessage(EX.handoff).keys.Surfaces === 'the boards (template), the gateway (restart its service)')
+bad('Surfaces on an ASK', EX.ask + '\nSurfaces: none', /has no key "Surfaces"/)
 bad('bad Head', EX.handoff.replace('mm@56ebb96', 'mm@main'), /Head is not/)
 bad('ANSWER with no re', EX.answer.replace(' · re #1', ''), /says what it answers/)
 bad('ANSWER without Verify', EX.answer.replace(/\nVerify: .*/, ''), /Verify is missing/)

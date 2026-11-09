@@ -117,7 +117,7 @@ By: <next wake | today | hh:mm UTC> · Else: <what happens if it is not done>
 | Intent | Says | Expect, Done when, Verify, By | Its own keys |
 |---|---|---|---|
 | `ASK` | I need something from you | yes | `Why` · `Options` |
-| `HANDOFF` | the work is yours now | yes | `Ready` · `Tests` (artifact link) · `Open` |
+| `HANDOFF` | the work is yours now | yes | `Ready` · `Surfaces` · `Tests` (artifact link) · `Open` |
 | `VERDICT` | review's result (only review writes one) | yes, and `Head` | `Result: signed off` or `Result: blocked` · `Must change` · `Notes` |
 | `ANSWER` | a reply to an ASK (`re #n` required) | `Expect: none` (Verify: the evidence), or a follow-up | `Answer` |
 | `DONE` | the unit is finished | `Expect: none`; Verify: the result | `Result` · `Follow-ups` · `Artifacts` |
@@ -130,6 +130,9 @@ By: <next wake | today | hh:mm UTC> · Else: <what happens if it is not done>
   flags one with no answer after its `By` ("next wake": 60 min).
 - **A message never asks a person.** Ask the owner with an owner card (below). To answer a person, write
   `NOTE → <their name>` and then the plain words (see "Writing to a person"); `ANSWER → <name> · re #n` is ok too.
+- **A HANDOFF names its surfaces:** `Surfaces: <list>`, every place an mm change runs: the boards (template) ·
+  the gateway (restart its service) · the bot (its copy of the owner card parser) · boxes (`mm box build`) · Doop ·
+  the mm CLI · the brain's tools. `Surfaces: none` when nothing outside the repo changes.
 - **A message changes nothing on the board.** A HANDOFF still needs the handover (`bd update ID -a <role> ...`);
   a DONE still needs `bd close`.
 Example:
@@ -141,6 +144,7 @@ Done when: the item has signed-off and signed-head:mm@56ebb96, or a VERDICT bloc
 Verify: bd show sy-wxzx → labels include signed-head:mm@56ebb96
 By: next wake · Else: ops waits; nothing rolls out
 Ready: the artifact command, the secret scan, the files route
+Surfaces: the boards (template), the gateway (restart its service)
 Tests: artifacts/sy-wxzx/gates-56ebb96.txt → 11 suites, 0 failed
 ```
 
@@ -221,6 +225,18 @@ first, and the owner reads only it. The format is fixed:
 - **Plain words** (the ASD-STE100 rules above). No history in the card: what is asked now, and why.
 - **The detail is on the item and in its artifact:** put the path in `Link`.
 - When the owner answered, remove `needs-you` and set `You` to `Nothing`.
+
+## NEVER
+Each row failed once, for real. Do the safe way instead.
+
+| NEVER | How it failed | The safe way |
+|---|---|---|
+| kill by pattern (`pkill -f`) | it killed the lead's own shell | stop the PID or the task you started |
+| send to a saved agent id | it woke a retired lead without its settings | find the running lead of the role at each send |
+| `mm update` with a build that is not the signed head | the rollout nearly took unsigned commits | build from the signed head (`MM_TEMPLATE_DIR`), or wait |
+| land a t2 change on main before the go | the watchdog flagged it | keep it on a branch until the go |
+| run `mm update` with umask 0077 | a box's git index became 0600 | umask 022 for `mm update` |
+| `needs-you` on a t2 before `signed-off` | the owner tapped too early | `needs-you` only after `signed-off` (bd refuses it now) |
 
 ## Shared rules
 - `{{brain}}/program.md` is the source of truth. If it is wrong or unclear, comment on the item. Don't silently diverge.

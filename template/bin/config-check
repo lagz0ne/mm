@@ -396,12 +396,15 @@ for (const f of WF) {
 const WRITE_RULE = '## Writing to a person (ASD-STE100)', ARTIFACT_RULE = '## The work in artifacts'
 const MESSAGE_RULE = '## Messages between roles: one intent, one expectation'
 const GLOSSARY_RULE = '## Glossary'
+// and (sy-dut0) the leads' brief keeps its NEVER table: the ways that failed for real, each with its safe way.
+const NEVER_RULE = /^## NEVER$/m
 for (const f of [path.join(P, 'leads', 'CLAUDE.md'), path.join(ASSIST_ROOT, 'CLAUDE.md')]) {
   if (!fs.existsSync(f)) continue
   const brief = fs.readFileSync(f, 'utf8')
   if (!brief.includes(WRITE_RULE)) bad(`${path.relative(P, f)}: lost its "${WRITE_RULE}" section (how every lead and assistant writes to a person)`)
   if (!brief.includes(ARTIFACT_RULE)) bad(`${path.relative(P, f)}: lost its "${ARTIFACT_RULE}" section (the substance in linked files)`)
   if (f.startsWith(path.join(P, 'leads')) && !brief.includes(MESSAGE_RULE)) bad(`${path.relative(P, f)}: lost its "${MESSAGE_RULE}" section (bin/bd refuses a lead's comment that is not a message)`)
+  if (f.startsWith(path.join(P, 'leads')) && !NEVER_RULE.test(brief)) bad(`${path.relative(P, f)}: lost its "## NEVER" section (the ways that failed for real, each with its safe way)`)
 }
 // Asking the owner (sy-z5lz, the owner): the leads' shared brief carries the owner card rule (bd refuses needs-you
 // without a valid card; the brief says how to write one).

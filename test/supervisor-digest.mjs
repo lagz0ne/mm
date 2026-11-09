@@ -178,7 +178,7 @@ try {
   ok('a link appears: sy-30\'s line drops off, the same item, no comment', W2?.id === W.id && !/sy-30/.test(W2.description) && /sy-35/.test(W2.description) && W2.comments.length === 0)
 
   console.log('== no answer after By (sy-0gsw): an ASK or HANDOFF with no re #n after its By is a line for the role it expects')
-  const HANDOFF = 'HANDOFF → review\nHead: mm@1234567\nExpect: review: sign off or block this head.\nDone when: the item has signed-off.\nVerify: bd show sy-40 → labels include signed-off\nBy: next wake · Else: ops waits\nReady: the gate'
+  const HANDOFF = 'HANDOFF → review\nHead: mm@1234567\nExpect: review: sign off or block this head.\nDone when: the item has signed-off.\nVerify: bd show sy-40 → labels include signed-off\nBy: next wake · Else: ops waits\nReady: the gate\nSurfaces: none'
   const ASK = 'ASK → ops\nExpect: ops: name the cause of the 504.\nDone when: the cause is named.\nVerify: curl -I <url> → 302\nBy: next wake · Else: the test stays blocked\nWhy: the gate fails.'
   item('sy-40', { assignee: 'platform' }, 'platform'); comment('sy-40', 'platform', HANDOFF)
   item('sy-41', { assignee: 'platform' }, 'platform'); comment('sy-41', 'platform', ASK)
