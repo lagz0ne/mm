@@ -74,7 +74,7 @@ const TYPES = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/htm
 const srv = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x'), p = u.pathname
   if (p === '/api/meta') return json(res, meta)
-  if (p === '/api/whoami') return json(res, { actor: 'alex', source: 'gateway', role: 'owner', approval: 'telegram' })
+  if (p === '/api/whoami') return json(res, { actor: 'ops', source: 'local', role: 'owner', approval: 'telegram' }) // the leads' header (a person's bar has presence in its menu, sy-c7mh)
   if (p === '/api/links') return json(res, { links: [] })
   if (p === '/api/presence') return json(res, { agents: agentsFor(busy) })
   if (p === '/api/v0/beads/events:watch') { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(':\n\n'); return }
