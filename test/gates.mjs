@@ -11,14 +11,14 @@
 // before its first suite and says who holds it; a holder that is gone (dead or its pid reused) frees it; a run with
 // nothing to start takes no lock; the --jobs default under load; (5) the rerun (sy-sbjh.4): a suite that fails once
 // then passes alone is flaky and the run passes, one that fails twice is failed, --no-rerun; the history file and its
-// bound. Every test/gates it starts has a clean PATH and its own history file (MM_GATES_HISTORY).
+// bound; (6) --all <ref> (sy-sbjh.5): every suite of the map, live too, one run, its result file. Every test/gates it starts has a clean PATH and its own history file (MM_GATES_HISTORY).
 //   node test/gates.mjs          exit 0 = every check passed
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { CONFLICT_FILE, GROUPS, HISTORY_MAX, appendHistory, defaultJobs, fetchTool, gatesDir, globMatch, markRun, oldTemplateRef, parseMap, procStart, mapChanges, resolve, select, selectMapChange, waitLine } from './lib/gates.mjs'
+import { CONFLICT_FILE, GROUPS, HISTORY_MAX, appendHistory, defaultJobs, fetchTool, gatesDir, globMatch, markRun, oldTemplateRef, parseMap, procStart, mapChanges, resolve, select, selectAll, selectMapChange, waitLine } from './lib/gates.mjs'
 import { gatesVerdict } from '../template/bin/lib/gates-file.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
@@ -151,6 +151,14 @@ const heavy = ['test/lifecycle.sh', 'test/clean-box.sh', 'test/restore-drill.sh'
 const heavyFrom = tracked.filter((f) => pick(f).some((p) => heavy.includes(p)))
 const heavyOk = (f) => /^(src\/(box|lifecycle|install|onboard|manifest|pack|restore|sync|template|updlock)\.ts|box\/|bin\/mm|manifest\.yaml|package\.json|bun\.lock|deps\/|scripts\/pack-template\.ts|template\/(services\.yaml|tools\.json|bin\/(backup|init)|ops\/githooks\/|setup\/|site\/package(-lock)?\.json)|test\/(lib\/|lifecycle\.sh|clean-box\.sh|restore-drill\.sh))/.test(f)
 ok('lifecycle, clean-box, restore-drill: only for paths that change the upgrade, the install or a box', heavyFrom.every(heavyOk) && heavyFrom.length < 40, heavyFrom.filter((f) => !heavyOk(f)))
+// sy-sbjh.5: the Docker suites of the upgrade, the box, the gateway and Doop come only from their own paths (the rest:
+// the nightly run of main, test/gates --all)
+const boxy = /^test\/(clean-box|restore-drill|auth-e2e|box-gateway|doop-[a-z]+)\.sh$/
+const boxyOk = (f) => heavyOk(f) || /^(src\/auth\.ts|template\/bin\/(doop-run|lib\/doop-init\.mjs)|template\/site\/(designs\.mjs|annotate\.js)|test\/(auth-e2e|box-gateway|doop-[a-z]+)\.sh)$/.test(f)
+const boxyFrom = tracked.filter((f) => pick(f).some((p) => boxy.test(p)))
+ok('clean-box, restore-drill, auth-e2e, box-gateway, doop-*: only from box/, src/box.ts, src/auth.ts, the Doop files, the install, upgrade or restore path', boxyFrom.every(boxyOk), boxyFrom.filter((f) => !boxyOk(f)))
+ok('template/leads/roles.json, template/setup/**, template/ops/githooks/**: no Docker suite', ['template/leads/roles.json', 'template/setup/CLAUDE.md', 'template/ops/githooks/pre-commit'].every((f) => !pick(f).some((p) => real.suites.find((x) => x.path === p)?.group === 'docker')), ['template/leads/roles.json', 'template/setup/CLAUDE.md', 'template/ops/githooks/pre-commit'].map((f) => `${f}: ${pick(f)}`))
+ok('selectAll: every suite of the map, in run order (live last)', selectAll(real).suites.length === real.suites.length && selectAll(real).suites.at(-1).group === 'live' && selectAll(real).suites.every((x, i, a) => !i || GROUPS.indexOf(a[i - 1].group) <= GROUPS.indexOf(x.group)))
 ok('src/pc.ts, template/bin/lead: no lifecycle, clean-box or restore-drill', !['src/pc.ts', 'template/bin/lead'].some((f) => pick(f).some((p) => heavy.includes(p))))
 const sizes = tracked.map((f) => pick(f).length)
 const small = sizes.filter((n) => n <= 15).length
@@ -280,6 +288,23 @@ W('test/gates.map', fs.readFileSync(path.join(R, 'test/gates.map'), 'utf8').repl
 g('add', 'test/gates.map'); g('commit', '-qm', 'one rule gains a suite')
 r = run(['main~1..main', '--list'])
 ok("a range that changes only one rule of the map: only that rule's new suite (test/m.sh)", r.status === 0 && /test\/m\.sh\s+<- rule bad\/\*\* \(changed\) \(test\/gates\.map\)/.test(r.stdout) && (r.stdout.match(/^\s+(hermetic|ports|docker|live)\s+test\//gm) || []).length === 1, r.stdout + r.stderr)
+
+step('--all <ref>: every suite of the map, one run (sy-sbjh.5)')
+fs.rmSync(MARK, { force: true })
+r = run(['--all', 'main', '--list'])
+const allListed = (r.stdout.match(/^\s+(hermetic|ports|docker|live)\s+test\//gm) || []).length
+ok('--all main --list: every suite of the map (7), live too, each "<- --all"', r.status === 0 && allListed === 7 && /live\s+test\/l\.sh\s+<- --all/.test(r.stdout) && /every suite of the map/.test(r.stdout), r.stdout + r.stderr)
+const ALL = path.join(T, 'out', 'all.txt')
+r = run(['--all', 'main', '--out', ALL, '--no-rerun', '--bin', fakeMm])
+const resAll = fs.existsSync(ALL) ? fs.readFileSync(ALL, 'utf8') : ''
+const ranAll = fs.existsSync(MARK) ? fs.readFileSync(MARK, 'utf8').trim().split('\n').map((l) => l.split(' ')[0]).sort() : []
+ok('--all main: each suite ran once, live too', ranAll.join(' ') === 'd1.sh d2.sh f.sh h1.sh h2.sh l.sh m.sh', ranAll)
+ok('--all main: its result file names --all and every suite; f.sh fails it (exit 1)', r.status === 1 && /^range: --all main \([0-9a-f]{7}: every suite of the map\)$/m.test(resAll) && /^result: failed: 6 passed, 1 failed, 0 skipped, of 7/m.test(resAll) && /^test\/l\.sh\s+live\s+passed/m.test(resAll), resAll + r.stderr)
+const histAll = fs.readFileSync(HISTORY, 'utf8').trim().split('\n').slice(-7).map((l) => JSON.parse(l))
+ok('--all main: one run (its 7 history lines, written once inside the run lock, share one date)', histAll.length === 7 && new Set(histAll.map((e) => e.date)).size === 1 && histAll.some((e) => e.suite === 'test/l.sh'), histAll)
+ok('--all main: its worktree removed after', g('worktree', 'list').stdout.trim().split('\n').length === 1, g('worktree', 'list').stdout)
+r = run(['--all', 'main~1..main', '--list']); ok('--all with a range: exit 2, says one ref', r.status === 2 && /--all takes one ref/.test(r.stderr), r.stderr)
+r = run(['--all', '--list']); ok('--all with no ref: exit 2', r.status === 2 && /--all takes one ref/.test(r.stderr), r.stderr)
 
 step('markRun: the mark wake reads (sy-brny)')
 {

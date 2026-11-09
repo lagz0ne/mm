@@ -1,5 +1,6 @@
 #!/bin/sh
-# test/gates <base>..<head> [--list] [--out <file>] [--item <id>] [--no-live] [--bin <mm>] [--jobs <n>] [--keep] [--no-rerun]
+# test/gates <base>..<head> | --all <ref>  [--list] [--out <file>] [--item <id>] [--no-live] [--bin <mm>] [--jobs <n>] [--keep] [--no-rerun]
 # The changed files of the range decide the suites (test/gates.map); they run on the head's content in a throwaway
-# worktree, and one result file names each suite's outcome and its whole log. See test/lib/gates.mjs.
+# worktree, and one result file names each suite's outcome and its whole log. --all <ref>: every suite of the map, live
+# too (the nightly run of main). See test/lib/gates.mjs.
 exec node "$(dirname "$0")/lib/gates.mjs" "$@"

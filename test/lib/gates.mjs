@@ -15,6 +15,8 @@
 //     --keep         keep the throwaway worktree and the built mm (their folder is printed)
 //     --map <file>   another map (default: the head's test/gates.map, else this checkout's)
 //     --no-rerun     a suite that fails is not run again alone (see the rerun, below)
+//   test/gates --all <ref> [options]   every suite of <ref>'s map, live too (sy-sbjh.5: the nightly run of main), as one
+//                  run under the run lock; the same result file (its range line says --all)
 // The range: <base>..<head> or <base>...<head>; the files are what <head> changed since its merge base with <base>.
 // The run: a throwaway `git worktree` of <head> under $TMPDIR (a shared clone where the repo can't take a worktree),
 // removed after; never the caller's checkout. An mm, when a suite needs one, is built from that worktree into the
@@ -232,6 +234,11 @@ export function selectMapChange(head, base, files, mapFile = 'test/gates.map') {
   return { files: h.files, suites }
 }
 
+// selectAll(map): every suite of the map, in run order (test/gates --all)
+export const selectAll = (map) => ({ files: [], suites: [...map.suites]
+  .sort((a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group) || a.line - b.line)
+  .map((s) => ({ ...s, why: [{ file: '', rule: '(--all)' }] })) })
+
 // unmapped(sel) -> the changed files no rule names (they ran the fallback's default set)
 export const unmapped = (sel) => sel.files.filter((f) => f.rules.includes('(fallback)')).map((f) => f.file)
 
@@ -241,7 +248,7 @@ export function why(s) {
   for (const { file, rule } of s.why) { if (!by.has(rule)) by.set(rule, new Set()); by.get(rule).add(file) }
   return [...by].map(([rule, fs_]) => {
     const f = [...fs_]
-    return rule === '(the suite itself)' ? 'itself' : `${rule} (${f[0]}${f.length > 1 ? ` +${f.length - 1}` : ''})`
+    return rule === '(the suite itself)' ? 'itself' : rule === '(--all)' ? '--all' : `${rule} (${f[0]}${f.length > 1 ? ` +${f.length - 1}` : ''})`
   }).join(', ')
 }
 
@@ -450,6 +457,7 @@ function parseArgs(argv) {
     else if (a === '--no-live') o.noLive = true
     else if (a === '--keep') o.keep = true
     else if (a === '--no-rerun') o.rerun = false
+    else if (a === '--all') o.all = true
     else if (a === '--out') o.out = val()
     else if (a === '--item') o.item = val()
     else if (a === '--bin') o.bin = val()
@@ -466,7 +474,7 @@ function parseArgs(argv) {
   return o
 }
 
-const usage = 'usage: test/gates <base>..<head> [--list] [--out <file>] [--item <id>] [--no-live] [--bin <mm>] [--jobs <n>] [--keep] [--no-rerun]'
+const usage = 'usage: test/gates <base>..<head> | --all <ref> [--list] [--out <file>] [--item <id>] [--no-live] [--bin <mm>] [--jobs <n>] [--keep] [--no-rerun]'
 
 // A run with --item marks itself on the board while it runs (sy-brny): <board>/.run/gates/<item>.<pid>.pid, holding
 // {pid, item, start} (start: field 22 of /proc/self/stat, where there is one), removed when the run ends. bin/wake reads
@@ -506,8 +514,9 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
   let o
   try { o = parseArgs(argv) } catch (e) { warn(e.message); warn(usage); return 2 }
   if (o.help) { say(usage); return 0 }
-  const range = parseRange(o.range)
-  if (!range) { warn(usage); return 2 }
+  // --all <ref>: one ref, no range; every suite of its map
+  const range = o.all ? (o.range && !parseRange(o.range) ? { base: o.range, head: o.range } : null) : parseRange(o.range)
+  if (!range) { warn(o.all ? `--all takes one ref, not a range (${o.range || 'none given'})` : usage); return 2 }
   const repo = git(cwd, ['rev-parse', '--show-toplevel'], { ok: true })?.trim()
   if (!repo) { warn(`not in a git repo: ${cwd}`); return 2 }
   let base, head
@@ -542,7 +551,7 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
       mapFrom += `; this range changes the map: plus its changed rules' suites, and what the base's (${mergeBase.slice(0, 7)}) chose that it drops`
     }
   }
-  const sel = baseMap ? selectMapChange(map, baseMap, files) : select(map, files)
+  const sel = o.all ? selectAll(map) : baseMap ? selectMapChange(map, baseMap, files) : select(map, files)
   const skipLive = (s) => o.noLive && s.group === 'live'
   const noRule = unmapped(sel)
   if (noRule.length) {
@@ -552,9 +561,10 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
   }
 
   if (o.list) {
-    say(`gates ${o.range}: ${files.length} file(s) changed since ${mergeBase.slice(0, 7)}, ${sel.suites.length} suite(s); map: ${mapFrom}`)
-    say('')
-    say('files -> rules:')
+    if (o.all) say(`gates --all ${o.range}: every suite of the map, ${sel.suites.length} on ${short}; map: ${mapFrom}`)
+    else say(`gates ${o.range}: ${files.length} file(s) changed since ${mergeBase.slice(0, 7)}, ${sel.suites.length} suite(s); map: ${mapFrom}`)
+    if (!o.all) say('')
+    if (!o.all) say('files -> rules:')
     const w = Math.min(60, Math.max(10, ...sel.files.map((f) => f.file.length)))
     for (const f of sel.files) {
       const none = f.rules.length && f.rules.every((g) => map.rules.find((r) => r.glob === g)?.targets.every((t) => t === '-'))
@@ -589,7 +599,7 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
   let mmNote = 'not needed'
   let viaWorktree = false
   const t0 = new Date()
-  say(`gates ${o.range}: ${sel.suites.length} suite(s) on ${short}; logs in ${logDir}`)
+  say(`gates ${o.all ? '--all ' : ''}${o.range}: ${sel.suites.length} suite(s) on ${short}; logs in ${logDir}`)
   for (const s of sel.suites.filter(skipLive)) results.push({ suite: s.path, group: s.group, status: 'skipped', note: '--no-live', secs: 0, log: '-' })
 
   try {
@@ -678,7 +688,7 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
     // the run lock: one gates run's suites at a time on the machine, from its first suite to its last (see the top);
     // a run with no suite to start (each not prepared or not in the head) takes none
     const starts = toRun.some((s) => !failedPrep.has(s.path) && fs.existsSync(path.join(wt, s.path)))
-    const release = starts ? await runLock({ label: o.item || o.range, say }).acquire() : null
+    const release = starts ? await runLock({ label: o.item || (o.all ? `--all ${o.range}` : o.range), say }).acquire() : null
     try {
       await Promise.all([pool(lane('hermetic'), o.jobs, runOne), pool(lane('ports'), 1, runOne), pool(lane('docker'), 1, runOne)])
       await pool(lane('live'), 1, runOne)
@@ -726,7 +736,7 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
   const sw = Math.max(10, ...results.map((r) => r.suite.length))
   const lines = [
     `head: ${head} ${subject}`,
-    `range: ${o.range} (${base.slice(0, 7)}..${short}, merge base ${mergeBase.slice(0, 7)}, ${files.length} file(s) changed)`,
+    o.all ? `range: --all ${o.range} (${short}: every suite of the map)` : `range: ${o.range} (${base.slice(0, 7)}..${short}, merge base ${mergeBase.slice(0, 7)}, ${files.length} file(s) changed)`,
     `date: ${t0.toISOString()}`,
     `map: ${mapFrom}`,
     `mm: ${mmNote}`,
