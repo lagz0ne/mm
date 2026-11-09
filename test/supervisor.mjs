@@ -509,8 +509,7 @@ item('sy-50', { title: 't2, approved, then its head moved', priority: 2, assigne
 go('sy-50', ['t2', 'approved'], 'bridge')
 update('sy-50', { description: GCARD('mm@9f8e7d6'), labels: [...items.get('sy-50').labels.filter((l) => !l.startsWith('signed-head:')), 'signed-head:mm@9f8e7d6'] }, 'review')
 migration('1800000030-fw', 'open a port (sy-50)', true)
-// sy-51: an approved from before the head was recorded (no approved-head:), by the bridge, on the signed head: it counts
-// as before (review #3), so no finding
+// sy-51: an approved from before the head was recorded (no approved-head:), by the bridge: a new tap is needed
 item('sy-51', { title: 't2, approved with no approved-head', priority: 2, assignee: 'ops', labels: ['t2', 'signed-off', `signed-head:${GH}`], description: GCARD() }, 'review')
 update('sy-51', { labels: ['t2', 'signed-off', `signed-head:${GH}`, 'approved'] }, 'bridge')
 migration('1800000031-fw', 'open a port (sy-51)', true)
@@ -519,11 +518,16 @@ item('sy-52', { title: 't2, approved-head by a lead', priority: 2, assignee: 'op
 update('sy-52', { labels: ['t2', 'signed-off', `signed-head:${GH}`, 'approved'] }, 'bridge')
 update('sy-52', { labels: ['t2', 'signed-off', `signed-head:${GH}`, 'approved', `approved-head:${GH}`] }, 'platform')
 migration('1800000032-fw', 'open a port (sy-52)', true)
+// sy-53: closed, with an old approved and no approved-head (from before heads were recorded): no finding (review #5)
+item('sy-53', { title: 't2, closed, old approved', priority: 2, assignee: 'ops', labels: ['t2', 'signed-off', `signed-head:${GH}`], description: GCARD() }, 'review')
+update('sy-53', { labels: ['t2', 'signed-off', `signed-head:${GH}`, 'approved'] }, 'bridge')
+migration('1800000033-fw', 'open a port (sy-53)', true)
+update('sy-53', { status: 'closed' }, 'ops')
 ok('exit 0', (await supervise()) === 0)
-ok('open: sy-50 (head moved), sy-52 (approved-head by a lead); not sy-51 (an old approved, no approved-head: counts as before)', openKeys() === `${DIRTY} ${T2('sy-50')} ${T2('sy-52')}`)
+ok('open: sy-50 (head moved), sy-51 (no approved-head), sy-52 (approved-head by a lead); not sy-53 (closed, old approved)', openKeys() === `${DIRTY} ${T2('sy-50')} ${T2('sy-51')} ${T2('sy-52')}`)
 ok('sy-50 says for which head the go was and that a new one is needed',
   /approved for mm@0a1b2c3; the Head is now mm@9f8e7d6: a new go is needed/.test(openOf(T2('sy-50'))?.description || ''))
-ok('sy-51 has no finding (old approved, its Head signed)', !openOf(T2('sy-51')))
+ok('sy-51 says its approved names no head', /approved names no head/.test(openOf(T2('sy-51'))?.description || ''))
 ok('sy-52 names who wrote its approved-head', /approved-head:mm@0a1b2c3 was added by platform, who is not an approver/.test(openOf(T2('sy-52'))?.description || ''))
 // the owner's new go for each head now: cleared
 update('sy-50', { labels: ['t2', 'approved', 'signed-head:mm@9f8e7d6', 'approved-head:mm@9f8e7d6'] }, 'bridge')
