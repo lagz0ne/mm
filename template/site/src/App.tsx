@@ -39,10 +39,34 @@ export default function App() {
   const [role, setRole] = useState('all')
   const [q, setQ] = useState('')
   // ?item=<id> opens that item (the gateway's "Waiting for you" list links here, sy-vdi8); only an id of the board's pattern
-  const [openId, setOpenId] = useState<string | null>(() => {
+  const itemOfUrl = () => {
     const id = new URLSearchParams(window.location.search).get('item') || ''
     return /^[a-z]+-[a-z0-9]+(\.[0-9]+)*$/.test(id) ? id : null
-  })
+  }
+  const [openId, setOpenRaw] = useState<string | null>(itemOfUrl)
+  // the open item is in the address (sy-uxo3, the owner: "the link should be on the url"): opening one from the board adds
+  // a history entry (?item=<id>; Back closes it, Forward opens it again); opening another from inside an item replaces
+  // that entry; closing goes back when we added it, else drops ?item= in place (a link opened the board on an item)
+  const urlFor = (id: string | null) => {
+    const s = new URLSearchParams(window.location.search)
+    if (id) s.set('item', id); else s.delete('item')
+    const qs = s.toString()
+    return window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash
+  }
+  const setOpenId = (id: string | null) => {
+    const cur = itemOfUrl()
+    if (id === cur) { setOpenRaw(id); return }
+    if (id && cur) window.history.replaceState({ mmItem: true }, '', urlFor(id))
+    else if (id) window.history.pushState({ mmItem: true }, '', urlFor(id))
+    else if (window.history.state?.mmItem) { window.history.back(); return } // popstate sets it
+    else window.history.replaceState(null, '', urlFor(null))
+    setOpenRaw(id)
+  }
+  useEffect(() => {
+    const onPop = () => setOpenRaw(itemOfUrl())
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
   const [creating, setCreating] = useState(false)
   const [meta, setMeta] = useState<Meta>(EMPTY_META)
   const presence = usePresenceFeed()
@@ -321,7 +345,7 @@ export default function App() {
       </div>
       </>)}
 
-      {openId && <Suspense fallback={null}><Detail id={openId} tick={tick} byId={byId} creator={meta.creators[openId]} onClose={() => { setOpenId(null); if (window.location.search) window.history.replaceState(null, '', window.location.pathname + window.location.hash) }} onOpen={setOpenId} onChanged={load} /></Suspense>}
+      {openId && <Suspense fallback={null}><Detail id={openId} tick={tick} byId={byId} creator={meta.creators[openId]} onClose={() => setOpenId(null)} onOpen={setOpenId} onChanged={load} /></Suspense>}
       <NewItem open={creating} onOpenChange={setCreating} epics={epics} defaultRole={role === 'all' ? '' : role}
         onCreated={(i) => { load(); toast.success(`Created ${i.id}`) }} />
       <Identify open={identifying} current={idSource === 'self' ? actor : ''} onOpenChange={setIdentifying}

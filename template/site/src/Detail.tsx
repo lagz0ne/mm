@@ -15,7 +15,7 @@ import { ThreadPresence } from '@/Presence'
 import { Designs } from '@/Designs'
 import { usePhone } from '@/lib/phone'
 import { headRefusal, isNonGoAsk, parseCard, youKind } from '@/lib/owner-card.mjs'
-import { CopyLink, OwnerCard, itemUrl } from '@/OwnerCard'
+import { OwnerCard } from '@/OwnerCard'
 import { CommentBody, WaitsOn } from '@/Message'
 
 const STATUSES = ['open', 'in_progress', 'blocked', 'deferred'] as const
@@ -165,7 +165,6 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
               {closed ? (
                 <>
                   <Button size="sm" variant="outline" disabled={busy} onClick={() => run(() => api.reopen(i.id))}>Reopen</Button>
-                  <CopyLink url={itemUrl(i.id)} className="ml-auto" />
                 </>
               ) : (
                 <>
@@ -178,8 +177,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                     onClick={() => run(async () => { setSent(null); const d = await api.approve(i.id); setSent('Approved on the board.'); toast.success(d.title) })}>Approve: this is your go</Button>}
                   {approvable && <Button size="sm" variant="outline" disabled={busy} title="Not now: a comment on the item, and it no longer waits for you"
                     onClick={() => run(async () => { const d = await api.notNow(i.id); toast.success(d.title) })}>Not now</Button>}
-                  <CopyLink url={itemUrl(i.id)} className="ml-auto" />
-                  <Button size="sm" variant="outline" disabled={busy} onClick={() => run(() => api.close(i.id, 'Closed from board'))}>Close</Button>
+                  <Button size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => run(() => api.close(i.id, 'Closed from board'))}>Close</Button>
                 </>
               )}
             </div>
