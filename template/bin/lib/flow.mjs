@@ -4,7 +4,8 @@
 // Only the journal counts (sy-d98 rules). An item's state is the `issue` snapshot of its last event; a label counts
 // only through the event that added it, with that event's actor; signals are bd state changes (sy-qudz #11), never
 // comment lines: a handoff is a reassign, DONE a close, BLOCKED status blocked, DEPENDENCY a dep add, REOPEN a reopen.
-// The one comment text read is review's own verdict "not signed off" (the reviewer, not the measured role). No series
+// The one comment text read is review's own verdict "not signed off" (in words, a text VERDICT, or an mm-message v1
+// VERDICT block; the reviewer, not the measured role). No series
 // carries a person: `role` is always a lead role (roles.json), and an item assigned to a person gives no sample.
 //
 // The metrics (each sample is per item, stamped with the time of the event that ends it, so a rebuild from the same
@@ -36,11 +37,21 @@
 // An item first seen mid-life (its creation was pruned from the journal) has no start times: its open segments, rails,
 // round and review verdict give nothing until it closes (rounds) or reopens (verdicts).
 import { createHash } from 'node:crypto'
+import { messageKeys, readBlock } from './structured.mjs'
 
 export const RAILS = ['needs-you', 'sign-off', 'approval']
 export const SYSTEM = new Set(['wake', 'watchdog', 'ui', 'smoke', 'beads', 'mm-upstream', 'brain']) // brain: ops' actor before 2026-11-05 (sy-u43j)
 // a verdict that does not sign off: the words, or a VERDICT message's "Result: blocked" (sy-0gsw)
 const NOT_SIGNED = /\bnot signed[ -]off\b|^Result:[ \t]*blocked\b/im
+/** A comment that is a verdict not signing off: the words or a text VERDICT's Result (NOT_SIGNED), or a mm-message v1
+ * block whose result reads the same (sy-wx71: messageKeys gives it the key a text VERDICT has). The block's schema is
+ * not checked here: the gate checked it when it was written. */
+export function notSignedOff(text) {
+  const s = String(text ?? '')
+  if (NOT_SIGNED.test(s)) return true
+  const b = readBlock(s)
+  return b?.kind === 'message' && !!b.data && messageKeys(b.data).keys.Result === 'blocked'
+}
 const h = (s, n) => createHash('sha256').update(s).digest('hex').slice(0, n)
 export const traceIdOf = (project, id) => h(`${project}/${id}`, 32)
 const rootIdOf = (project, id) => h(`${project}/${id}/root`, 16)
@@ -146,7 +157,7 @@ export function createFlow(saved, opts) {
       it.ho = null
     }
     // review's first verdict of a round: a "not signed off" comment by review
-    if (e.op === 'comment' && actorRole === REVIEWER && NOT_SIGNED.test(String(e.comment?.text || '')) && it.verdict === null) {
+    if (e.op === 'comment' && actorRole === REVIEWER && notSignedOff(e.comment?.text) && it.verdict === null) {
       it.verdict = 0
       if (it.from) sample('mm_flow_review_first_pass', { role: it.from, item: id }, 0, t)
     }

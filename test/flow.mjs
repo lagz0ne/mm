@@ -332,6 +332,26 @@ else {
   delete ENV.MM_APPROVE_CONF
 }
 
+step('a structured VERDICT block (sy-wx71): its result counts as a text VERDICT\'s Result does')
+{
+  const { createFlow, notSignedOff } = await import(path.join(SRC, 'template/bin/lib/flow.mjs'))
+  const block = (result) => '```mm-message v1\n' + JSON.stringify({ intent: 'VERDICT', to: 'platform', head: 'mm@1234567', result,
+    expect: { role: 'platform', do: 'test' }, mustChange: [{ path: 'test/x.mjs' }] }) + '\n```'
+  ok('notSignedOff: a block VERDICT blocked; a text VERDICT blocked; the words', notSignedOff(block('blocked')) && notSignedOff(`\n\n${block('blocked')}\nmore`)
+    && notSignedOff('VERDICT → platform\nHead: mm@1234567\nResult: blocked') && notSignedOff('not signed off: the test is missing'))
+  ok('...not: a block VERDICT signed-off, a block NOTE, a broken block, plain words', !notSignedOff(block('signed-off'))
+    && !notSignedOff('```mm-message v1\n' + JSON.stringify({ intent: 'NOTE', to: 'platform', misc: [{ type: 'text', text: 'blocked' }] }) + '\n```')
+    && !notSignedOff('```mm-message v1\n{ not json\n```') && !notSignedOff('```mm-task v1\n{"result":"blocked"}\n```') && !notSignedOff('Looks fine.'))
+  const fold = (text) => {
+    const evs = events.map((e) => (e.op === 'comment' && e.issue_id === 'sy-a' && /^VERDICT/.test(e.comment.text) ? { ...e, comment: { ...e.comment, text } } : e))
+    return createFlow(null, { project: PROJECT, roles: ['ops', 'review', 'platform'] }).fold(evs).samples
+      .filter((s) => s.name === 'mm_flow_review_first_pass').map((s) => `${s.labels.item}=${s.value}`).sort().join(' ')
+  }
+  const text = fold(events.find((e) => e.op === 'comment' && e.issue_id === 'sy-a' && /^VERDICT/.test(e.comment.text)).comment.text)
+  ok('the journal with sy-a\'s VERDICT as a block (blocked): the same first-pass samples as the text one (sy-a 0)', fold(block('blocked')) === text && /sy-a=0/.test(text), `${fold(block('blocked'))} vs ${text}`)
+  ok('...as a block signed-off: no "not signed off" (sy-a 1, from review\'s label)', /sy-a=1/.test(fold(block('signed-off'))), fold(block('signed-off')))
+}
+
 if (process.env.FLOW_SHOW) console.log((await mm('obs', 'flow')).out + (await mm('obs', 'item', 'sy-d')).out) // to look at the tables
 srv.close()
 fs.rmSync(T, { recursive: true, force: true })
