@@ -10,8 +10,11 @@ export const ROLE_LABEL: Record<string, string> = { '': 'Unassigned' }
 export let ROLE_DEFS: RoleDef[] = []
 // Whom a message may address (message.mjs messageRoles): the roles, and setup when the board has it (/api/meta `setup`).
 export const MESSAGE_ROLES: string[] = []
-export function setRoleDefs(defs: RoleDef[] | undefined, hasSetup = false) {
+// The board's Lead (roles.json `lead`, /api/meta `lead`): a person's comment goes to it unless they pick a role (sy-uykv).
+export let BOARD_LEAD: string | null = null
+export function setRoleDefs(defs: RoleDef[] | undefined, hasSetup = false, lead: string | null = null) {
   if (!defs?.length) return
+  BOARD_LEAD = lead && defs.some((d) => d.id === lead) ? lead : null
   MESSAGE_ROLES.splice(0, MESSAGE_ROLES.length, ...messageRoles(defs.map((d) => d.id), hasSetup))
   ROLE_DEFS = defs
   ROLES.splice(0, ROLES.length, ...defs.map((d) => d.id))

@@ -1,4 +1,4 @@
-import { useContext, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { api, type Issue } from '@/lib/api'
 import { PRIORITIES, ROLES, ROLE_LABEL, ago } from '@/lib/board'
@@ -10,13 +10,13 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/
 import { AnnotateContext, Embed, Markdown, Viewer, fileUrl } from '@/Markdown'
 import { ArrowSquareOutIcon, ArrowsInIcon, ArrowsOutIcon, FileTextIcon } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
-import { Avatar, PersonaContext, personaOf } from '@/lib/persona'
 import { ThreadPresence } from '@/Presence'
 import { Designs } from '@/Designs'
 import { usePhone } from '@/lib/phone'
 import { headRefusal, isNonGoAsk, parseCard, youKind } from '@/lib/owner-card.mjs'
 import { OwnerCard } from '@/OwnerCard'
-import { CommentBody, WaitsOn } from '@/Message'
+import { WaitsOn } from '@/Message'
+import { CommentBox, ThreadList } from '@/Thread'
 
 const STATUSES = ['open', 'in_progress', 'blocked', 'deferred'] as const
 const NONE = '_none'
@@ -30,10 +30,10 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   const [title, setTitle] = useState('')
   const [desc, setDesc] = useState('')
   const [comment, setComment] = useState('')
+  const [to, setTo] = useState('') // whom the comment goes to (sy-uykv): '' the Lead, else a role
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState(false)
   const [flash, setFlash] = useState<number | null>(null)
-  const personas = useContext(PersonaContext)
   // "#5" in any comment jumps to comment 5 of this item.
   const jump = (n: number) => {
     document.getElementById(`c-${id}-${n}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
@@ -61,7 +61,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
       const same = prev?.id === i.id
       if (!same || draft.current.title === prev.title) setTitle(i.title)
       if (!same || draft.current.desc === (prev.description || '')) setDesc(i.description || '')
-      if (!same) { setComment(''); setEditing(false) }
+      if (!same) { setComment(''); setTo(''); setEditing(false) }
       loaded.current = i
       setIssue(i)
     }).catch((e) => toast.error(`${id}: ${(e as Error).message}`))
@@ -251,51 +251,10 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
 
             <Section label={`Thread · ${i.comments?.length || 0}`}>
               <WaitsOn comments={i.comments || []} onRef={jump} />
-              <ol className="grid gap-3">
-                {groupComments(i.comments || []).map((g) => {
-                  const kind = authorKind(g.author)
-                  const per = kind === 'lead' ? personaOf(personas, g.author) : null
-                  const first = g.items[0].n, last = g.items[g.items.length - 1].n
-                  return (
-                    <li key={g.items[0].c.id} className={cn('grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2',
-                      kind === 'human' && 'ml-8 border-l-4 border-foreground bg-muted px-3 py-2 md:ml-16',
-                      kind === 'lead' && 'mr-4 border-l-2 pl-3 md:mr-16',
-                      kind === 'system' && 'mx-4 border-l border-dashed border-muted-foreground pl-3 text-muted-foreground md:mx-16')}
-                      style={per ? { borderLeftColor: per.color } : undefined}>
-                      <span className="flex min-w-0 flex-wrap items-center gap-x-2 text-xs">
-                        {kind === 'lead'
-                          ? <><Avatar actor={g.author} size="sm" /><b className="text-[12px]" style={{ color: per?.color }}>{per?.worker ? per.label : per?.name}</b>
-                              <span className="text-[11px] tracking-[0.08em] text-muted-foreground uppercase">{leadLabel(g.author)}</span></>
-                          : kind === 'human' ? <b>{g.author}</b> : <span className="text-[11px] italic">{g.author}</span>}
-                        <span className="font-mono text-[11px] text-muted-foreground">{first === last ? `#${first}` : `#${first}–${last}`}</span>
-                      </span>
-                      <span className="text-[11px] text-muted-foreground" title={g.items[0].c.created_at}>{ago(g.items[0].c.created_at)} ago</span>
-                      <div className="col-span-2 mt-0.5 grid gap-1.5">
-                        {g.items.map(({ c, n }) => (
-                          <div key={c.id} id={`c-${i.id}-${n}`} className={cn('grid grid-cols-[2rem_minmax(0,1fr)] scroll-mt-4', flash === n && 'bg-swiss/10')}>
-                            <a href={`#c-${n}`} onClick={(e) => { e.preventDefault(); navigator.clipboard?.writeText(`#${n}`); toast.success(`Copied #${n}: use it to refer to this comment`) }}
-                              title="Copy reference" className="pt-0.5 font-mono text-[11px] text-muted-foreground hover:text-swiss">#{n}</a>
-                            {kind === 'lead'
-                              ? <CommentBody text={c.text} author={c.author} onRef={jump} />
-                              : <Markdown className={cn(kind === 'system' && 'text-xs')} onRef={jump}>{c.text}</Markdown>}
-                          </div>
-                        ))}
-                      </div>
-                    </li>
-                  )
-                })}
-              </ol>
+              <ThreadList itemId={i.id} comments={i.comments || []} flash={flash} onRef={jump} />
               <ThreadPresence item={i.id} />
-              <form className="mt-3 grid gap-2" onSubmit={(e) => {
-                e.preventDefault()
-                const text = comment.trim()
-                if (text) run(async () => { await api.comment(i.id, text); setComment('') })
-              }}>
-                <Textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3}
-                  placeholder="Write to the lead. Refer to earlier comments as #3. Markdown; paths like docs/design/x.html embed. Ctrl+Enter sends." className="text-[13px]"
-                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) e.currentTarget.form?.requestSubmit() }} />
-                <Button size="sm" type="submit" disabled={busy || !comment.trim()} className="justify-self-end max-md:px-6">Send</Button>
-              </form>
+              <CommentBox assignee={i.assignee} value={comment} onChange={setComment} to={to} onTo={setTo} busy={busy}
+                onSend={(text) => run(async () => { await api.comment(i.id, text); setComment(''); setTo('') })} />
             </Section>
           </AnnotateContext.Provider>
         )}
@@ -343,31 +302,6 @@ function Links({ label, items, onOpen }: { label: string; items: { id: string; t
       </dd>
     </>
   )
-}
-
-/** Who wrote a comment: a lead (or one of its workers, `<role>/...`), the system (wake, smoke), or a human. */
-function authorKind(author: string): 'lead' | 'system' | 'human' {
-  const role = author.split('/')[0]
-  if ((ROLES as readonly string[]).includes(role)) return 'lead'
-  if (['wake', 'watchdog', 'smoke', 'ui', 'beads', ''].includes(author)) return 'system'
-  return 'human'
-}
-function leadLabel(author: string) {
-  const [role, sub] = author.split('/')
-  return `${ROLE_LABEL[role] || role} lead${sub ? ` · ${sub}` : ''}`
-}
-
-/** Consecutive comments from the same author within a few minutes form one group; each keeps its #number. */
-const GROUP_GAP_MS = 5 * 60 * 1000
-function groupComments(list: { id: string; author: string; text: string; created_at: string }[]) {
-  const groups: { author: string; items: { c: (typeof list)[number]; n: number }[] }[] = []
-  list.forEach((c, k) => {
-    const g = groups[groups.length - 1]
-    const prev = g?.items[g.items.length - 1]?.c
-    if (g && g.author === c.author && new Date(c.created_at).getTime() - new Date(prev!.created_at).getTime() < GROUP_GAP_MS) g.items.push({ c, n: k + 1 })
-    else groups.push({ author: c.author, items: [{ c, n: k + 1 }] })
-  })
-  return groups
 }
 
 interface ArtifactFile { name: string; path: string; type: string; size: number; mtime: string }
