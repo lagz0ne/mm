@@ -16,6 +16,7 @@ import { exportQuery, flowRows, parseExport, PAIRS } from './flow-rows.mjs'
 import { waitingFor } from './waiting.mjs'
 import { toReview } from './review.mjs'
 import { designsApi } from './designs.mjs'
+import { filesApi } from './files.mjs'
 import { APPROVED_HEAD, goLabels, headRefusal, isApproved, isNonGoAsk, parseCard, SIGNED_HEAD } from '../bin/lib/owner-card.mjs'
 import { readGlossary } from '../bin/lib/glossary.mjs'
 import { SETUP_BRIEF } from '../bin/lib/message.mjs'
@@ -1069,6 +1070,10 @@ const getItem = (id) => fetch(new URL(`/v0/beads/issues/${encodeURIComponent(id)
 const designs = designsApi({ ROOT, send, getItem, allItems, svcUrl, svcPublic,
   me: (req) => (req.gateway ? req.gateway.u : cookieUser(req) || '') })
 
+// Files (sy-oprc; site/files.mjs): the board's document folders, read-only. GET only: every role on the public side
+// may read them, as the artifacts.
+const files = filesApi({ ROOT, send })
+
 let cfg
 startMetrics()
 http.createServer((req, res) => withSpan(httpSpan(req, res, req.method === 'GET' ? { minMs: 300 } : {}), () => handle(req, res)).catch((e) => {
@@ -1116,6 +1121,7 @@ async function handle(req, res) {
   if (url.pathname === '/api/mermaid' && req.method === 'POST') return sendMermaid(req, res, url).catch((e) => send(res, 500, { error: e.message }))
   if (url.pathname === '/api/presence' && req.method === 'GET') return sendPresence(res)
   if (url.pathname.startsWith('/api/designs/') && await designs(req, res, url)) return
+  if ((url.pathname === '/api/files' || url.pathname.startsWith('/api/files/')) && files(req, res, url)) return
   const wm = /^\/api\/workers\/([\w.-]+)$/.exec(url.pathname)
   if (wm && req.method === 'GET') return sendWorkers(res, wm[1]).catch((e) => send(res, 500, { title: e.message }))
   const cm = /^\/api\/content\/([\w.-]+)$/.exec(url.pathname)

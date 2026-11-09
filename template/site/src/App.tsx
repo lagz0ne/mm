@@ -25,9 +25,12 @@ const Detail = lazy(() => loadDetail().then((m) => ({ default: m.Detail })))
 const Leads = lazy(() => loadLeads().then((m) => ({ default: m.Leads })))
 const Machine = lazy(() => import('@/Machine').then((m) => ({ default: m.Machine })))
 const Glossary = lazy(() => import('@/Glossary').then((m) => ({ default: m.Glossary })))
-const viewOf = (h: string) => (h === '#leads' ? 'leads' : h === '#machine' ? 'machine' : h === '#glossary' ? 'glossary' : 'board') as 'board' | 'leads' | 'machine' | 'glossary'
+const Files = lazy(() => import('@/Files').then((m) => ({ default: m.Files })))
+// #files, or #files/<path> for a folder or a file in it (sy-oprc)
+const isFiles = (h: string) => h === '#files' || h.startsWith('#files/')
+const viewOf = (h: string) => (h === '#leads' ? 'leads' : h === '#machine' ? 'machine' : h === '#glossary' ? 'glossary' : isFiles(h) ? 'files' : 'board') as 'board' | 'leads' | 'machine' | 'glossary' | 'files'
 // a person signed in through the gateway starts on For you (sy-c7mh); the board is behind #board
-const humanViewOf = (h: string): HumanView => (h === '#board' ? 'board' : h === '#leads' ? 'leads' : h === '#machine' ? 'machine' : h === '#glossary' ? 'glossary' : 'foryou')
+const humanViewOf = (h: string): HumanView => (h === '#board' ? 'board' : h === '#leads' ? 'leads' : h === '#machine' ? 'machine' : h === '#glossary' ? 'glossary' : isFiles(h) ? 'files' : 'foryou')
 if (typeof window !== 'undefined') window.addEventListener('load', () => setTimeout(() => { loadDetail(); loadLeads() }, 1500))
 const EMPTY_META: Meta = { project: '', leads: {}, creators: {}, last: {} }
 const SLOW_MIN = 15 // a ready item nobody picked up for this long turns red
@@ -278,7 +281,7 @@ export default function App() {
           {meta.project || '…'}
         </h1>
         <nav className="flex shrink-0 flex-wrap gap-x-4 text-[13px] font-semibold">
-          {(['board', 'leads', ...(meta.panels?.includes('machine') ? ['machine' as const] : []), 'glossary'] as const).map((v) => (
+          {(['board', 'leads', ...(meta.panels?.includes('machine') ? ['machine' as const] : []), 'files', 'glossary'] as const).map((v) => (
             <a key={v} href={v === 'board' ? '#' : `#${v}`}
               className={cn('border-b-2 pb-0.5 capitalize', view === v ? 'border-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>{v}</a>
           ))}
@@ -319,7 +322,7 @@ export default function App() {
           <ForYou key={`${meta.project || 'board'}:${actor}`} waiting={waiting} owner={me.role === 'owner'} approval={me.approval} storeKey={`${meta.project || 'board'}:${actor}`} tick={tick}
             onOpen={setOpenId} onChanged={load} />
         </main>
-      ) : view === 'glossary' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Glossary /></Suspense> : view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
+      ) : view === 'files' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Files hash={hash} /></Suspense> : view === 'glossary' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Glossary /></Suspense> : view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
       {/* The toolbar from md up; on a phone the bar's menu holds the same controls (sy-hrsm). */}
       {/* the human's board (sy-c7mh): no toolbar (the menu holds it); a filter in force says so, with Clear; on a phone
           the column tabs sit on top of the list */}

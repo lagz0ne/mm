@@ -79,6 +79,7 @@ suite test/allow-only.mjs         hermetic
 suite test/ba-spike.ts            hermetic
 suite test/board-artifacts.mjs    hermetic needs=site
 suite test/board-designs.mjs      hermetic
+suite test/board-files.mjs        hermetic needs=site
 suite test/board-message.mjs      hermetic needs=site
 suite test/board-owner-card.mjs   hermetic needs=site
 suite test/board-phone.mjs        hermetic needs=site
@@ -186,7 +187,7 @@ set render test/engine-drift.sh test/template-base.sh test/update-lock.sh test/a
 # the built site in a browser (Playwright)
 set browser test/board-artifacts.mjs test/board-message.mjs test/board-owner-card.mjs test/board-phone.mjs
 set browser test/board-phone-space.mjs test/board-space.mjs
-set browser test/board-ships.mjs
+set browser test/board-ships.mjs test/board-files.mjs
 
 # the board's site and its server
 set site test/board-*.mjs test/lead-state.mjs test/config-review.mjs test/project-item.mjs test/waiting-phone.mjs

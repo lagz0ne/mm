@@ -15,7 +15,7 @@ import { showNeedsYou } from '@/ForYou'
 import { PresenceBar } from '@/Presence'
 import { cn } from '@/lib/utils'
 
-export type HumanView = 'foryou' | 'board' | 'leads' | 'machine' | 'glossary'
+export type HumanView = 'foryou' | 'board' | 'leads' | 'machine' | 'glossary' | 'files'
 
 export function HumanBar({ project, view, needs, panels, links, role, onRole, q, onQ, search, epics, issues, onOpenItem,
   live, actor, home, onNew, nowCount, onNow }: {
@@ -112,6 +112,7 @@ export function HumanBar({ project, view, needs, panels, links, role, onRole, q,
             <h2 className={sectionHead}>Go to</h2>
             <a href="#leads" onClick={() => setOpen(false)} aria-current={view === 'leads' ? 'page' : undefined} className={cn(entry, view === 'leads' && 'font-bold')}>Leads</a>
             {panels.includes('machine') && <a href="#machine" onClick={() => setOpen(false)} aria-current={view === 'machine' ? 'page' : undefined} className={cn(entry, view === 'machine' && 'font-bold')}>Machine</a>}
+            <a href="#files" onClick={() => setOpen(false)} aria-current={view === 'files' ? 'page' : undefined} className={cn(entry, view === 'files' && 'font-bold')}>Files</a>
             <a href="#glossary" onClick={() => setOpen(false)} aria-current={view === 'glossary' ? 'page' : undefined} className={cn(entry, view === 'glossary' && 'font-bold')}>Glossary</a>
             {links.map((l) => (
               <a key={l.name} href={l.url} target="_blank" rel="noreferrer" className={cn(entry, 'text-swiss')}>
