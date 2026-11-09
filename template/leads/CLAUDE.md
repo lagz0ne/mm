@@ -171,7 +171,8 @@ shows it (Glossary, in the menu).
 - `glossary.local.yaml` is this board's own: it adds terms. It never changes a term of `glossary.yaml`; config-check
   refuses a clash.
 - To add a term (or an approved word): make an item with the label `glossary` and an owner card. Its What is "add the
-  term X, meaning Y". Review checks that the term has one meaning and no clash. Then setup adds it.
+  term X, meaning Y". Review checks that the term has one meaning and no clash. Then setup adds it
+  to `glossary.local.yaml`. A term or word for every board goes to mm's template: ask the machine's board.
 - No agent adds a term by itself. A word that the check refuses is not a reason to add a term: use an approved word.
 
 ## Asking the owner: the owner card
