@@ -670,6 +670,42 @@ step('run 9o (+520..535 min): a needs-you item with no valid owner card: a findi
   ok('the card fixed, needs-you removed: both cleared and closed', !openOf('card:sy-40') && !openOf('card:sy-42') && byKey('card:sy-40')[0].status === 'closed' && /Cleared/.test(byKey('card:sy-42')[0].comments.at(-1).text))
 }
 
+step('run 9p (+540..555 min): the gates\' history: a flaky and a slow suite, one P1 each to platform, not duplicated (sy-sbjh.4)')
+{
+  const HIST = path.join(HOME, '.cache', 'mm-gates', 'history.jsonl'), DAY = 24 * 60 * MIN
+  const h = (suite, group, status, secs, t) => JSON.stringify({ suite, head: 'abcdef0123456789', group, status, secs, date: iso(t) })
+  const lines = (t) => [
+    h('test/a.mjs', 'hermetic', 'flaky', 20, t - 3 * DAY), h('test/a.mjs', 'hermetic', 'passed', 20, t - 2 * DAY), h('test/a.mjs', 'hermetic', 'flaky', 21, t - DAY), // flaky twice in 7 days
+    h('test/b.sh', 'ports', 'passed', 400, t - 3 * DAY), h('test/b.sh', 'ports', 'failed', 350, t - 2 * DAY), h('test/b.sh', 'ports', 'passed', 512.4, t - DAY), // slow 3 runs in a row
+    h('test/c.sh', 'docker', 'passed', 900, t - 3 * DAY), h('test/c.sh', 'docker', 'passed', 900, t - 2 * DAY), h('test/c.sh', 'docker', 'passed', 900, t - DAY), // docker: slow by design
+    h('test/d.mjs', 'hermetic', 'flaky', 5, t - 9 * DAY), h('test/d.mjs', 'hermetic', 'flaky', 5, t - DAY), // once in 7 days
+    h('test/e.sh', 'hermetic', 'passed', 400, t - 3 * DAY), h('test/e.sh', 'hermetic', 'passed', 400, t - 2 * DAY), h('test/e.sh', 'hermetic', 'passed', 60, t - DAY), // fast again
+    h('test/f.sh', 'hermetic', 'passed', 400, t - 2 * DAY), h('test/f.sh', 'hermetic', 'skipped', 0, t - DAY), h('test/f.sh', 'hermetic', 'passed', 400, t - DAY), // two runs only
+    'not json', JSON.stringify({ suite: 'bad name`**', status: 'flaky', date: iso(t) }), JSON.stringify({ suite: 'bad name`**', status: 'flaky', date: iso(t) }),
+  ]
+  fs.mkdirSync(path.dirname(HIST), { recursive: true })
+  clock = T0 + 540 * MIN
+  fs.writeFileSync(HIST, lines(clock).join('\n') + '\n')
+  ok('exit 0', (await supervise()) === 0)
+  const A = openOf('suite:test/a.mjs'), B = openOf('suite:test/b.sh')
+  ok('a flaky suite (twice in 7 days): "Flaky suite: test/a.mjs", P1, to platform', A && A.title === 'Flaky suite: test/a.mjs' && A.priority === 1 && A.assignee === 'platform' && /flaky 2 times in 7 days/.test(A.description))
+  ok('a slow suite (its last 3 runs over 300 s, ports): "Slow suite: test/b.sh (512 s)", P1, to platform', B && B.title === 'Slow suite: test/b.sh (512 s)' && B.priority === 1 && B.assignee === 'platform' && /last 3 runs over 300 s/.test(B.description))
+  ok('only those two: not docker, not once in 7 days, not fast again, not two runs, not a bad line', openKeys().split(' ').filter((k) => k.startsWith('suite:')).join(' ') === 'suite:test/a.mjs suite:test/b.sh', openKeys())
+  ok('...and no supervisor:suites (the bad lines are skipped)', !openOf('supervisor:suites'))
+  clock = T0 + 545 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('the next pass, the same history: not duplicated, no comment', byKey('suite:test/a.mjs').length === 1 && byKey('suite:test/b.sh').length === 1 && openOf('suite:test/a.mjs').comments.length === 0 && openOf('suite:test/b.sh').comments.length === 0)
+  fs.appendFileSync(HIST, h('test/a.mjs', 'hermetic', 'flaky', 22, clock - MIN) + '\n')
+  clock = T0 + 550 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('flaky once more: the same item, one comment (3 times)', byKey('suite:test/a.mjs').length === 1 && openOf('suite:test/a.mjs')?.comments.length === 1 && /flaky 3 times/.test(openOf('suite:test/a.mjs').comments[0].text))
+  fs.writeFileSync(HIST, [h('test/a.mjs', 'hermetic', 'passed', 20, clock - MIN), h('test/b.sh', 'ports', 'passed', 30, clock - MIN)].join('\n') + '\n')
+  clock = T0 + 555 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('the history shows neither any more (a passed, b fast): both cleared and closed', !openOf('suite:test/a.mjs') && !openOf('suite:test/b.sh') && byKey('suite:test/b.sh')[0].status === 'closed')
+  fs.rmSync(HIST)
+}
+
 step('run 10: the board is down: exit non-zero, nothing written')
 fs.writeFileSync(path.join(T, 'bd.fail'), '')
 const n = sup().length
