@@ -12,8 +12,11 @@ const NAME = path.basename(P) // folder (for paths); the project id comes from p
 const STATE = process.env.HEALTH_STATE || path.join(P, '.health.json')
 // a box keeps its state under .run (mm cron sets HEALTH_STATE: the box can't write the top level). A project that moved
 // in or out of a box keeps its open incidents (sy-6n9w): a run starts from the newer of the two files (a regular file,
-// never a link), so the incidents the other side opened are checked and closed here
-const STATES = [...new Set([STATE, path.join(P, '.health.json'), path.join(P, '.run', 'health.json')])]
+// never a link), so the incidents the other side opened are checked and closed here. That rule holds only between the
+// project's own two files: an explicit HEALTH_STATE elsewhere is the only state (no merge: the project's cron job writes
+// .health.json meanwhile, and its state is not this run's)
+const OWN = [path.join(P, '.health.json'), path.join(P, '.run', 'health.json')]
+const STATES = OWN.includes(path.resolve(STATE)) ? [...new Set([path.resolve(STATE), ...OWN])] : [STATE]
 // the board's ids (a prefix, a dash, a hash, then .N children): '..', a slash or a path never reaches a URL
 const ISSUE = /^[a-z][a-z0-9]*-[a-z0-9]+(\.\d+)*$/
 function loadState() {

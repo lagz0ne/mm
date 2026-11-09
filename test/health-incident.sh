@@ -130,5 +130,17 @@ is "the genuine case: the box opened its incident ($id)" [ "$id" != none ]
 touch "$T/up"; : >"$T/calls"; box
 is "...health reads it, then comments and closes it" bash -c "grep -q '^GET /v0/beads/issues/$id ' '$T/calls' && grep -q '^POST /v0/beads/issues/$id/comments .*Recovered' '$T/calls' && grep -q '^POST /v0/beads/issues/$id:close ' '$T/calls'"
 
+echo "== 6. an explicit HEALTH_STATE outside the project is the only state (no merge)"
+X="$T/own-state.json"; rm -f "$X" "$P/.run/health.json"
+alone() { health env HEALTH_STATE="$X"; }
+rm -f "$T/up"; alone; alone; alone; id=$(incident "$X")
+is "...three failed runs open an incident in that file ($id)" [ "$id" != none ]
+# meanwhile the project's own job writes a newer .health.json without it
+printf '{"web":{"fails":0,"incident":null}}' >"$P/.health.json"; touch -d '+10 min' "$P/.health.json"
+touch "$T/up"; : >"$T/calls"; alone
+is "...a newer .health.json does not win: the run closes its own incident" closed "$id"
+is "...and its file forgets it" [ "$(incident "$X")" = none ]
+is "...the project's .health.json is left alone" [ "$(incident "$P/.health.json")" = none ] && is "...and no .run/health.json written" [ ! -e "$P/.run/health.json" ]
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" = 0 ] || { echo "--- health's output"; tail -30 "$T/out"; exit 1; }
