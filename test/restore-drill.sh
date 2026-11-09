@@ -59,7 +59,9 @@ say "synced $(cat ~/a.count) item record(s) at $(cut -c1-12 ~/a.head)"
 cat >~/fake-docker <<'FD'
 #!/bin/bash
 # docker stand-in: `exec` runs the job here (the box's staging folder is the host's); `run --rm` (giveBack's regroup,
-# only when a file there is not the owner's) does nothing; anything else fails (so mm box on records the host's side, then can't start a box)
+# only when a file there is not the owner's) does nothing; `inspect` says the box runs once the drill has it run
+# ($HOME/.box-up: sync's backup waits for a running box, sy-9r57); anything else fails (so mm box on records the
+# host's side, then can't start a box)
 case "$1" in
   exec) shift; env=(); cwd=.
     while [ $# -gt 0 ]; do case "$1" in -w) cwd=$2; shift 2 ;; -e) case "$2" in MM_PROJECT=*|BACKUP_DIR=*) env+=("$2") ;; esac; shift 2 ;; -i|-it) shift ;; *) break ;; esac; done
@@ -67,6 +69,7 @@ case "$1" in
     args=(); for x in "$@"; do args+=("${x//\/run\/mm\/backup/$stage}"); done
     cd "$cwd" && exec env "${env[@]//\/run\/mm\/backup/$stage}" "${args[@]}" ;;
   run) for x in "$@"; do [ "$x" = --rm ] && exit 0; done; exit 1 ;;
+  inspect) case "$*" in *State.Running*) if [ -e "$HOME/.box-up" ]; then echo true; else echo false; fi ;; *) exit 1 ;; esac ;;
   *) exit 1 ;;
 esac
 FD
@@ -83,6 +86,9 @@ mkdir -p ~/.mm/pc/boxes; printf '# from %s/services.yaml\n' "$R" >~/.mm/pc/boxes
 process-compose -U -u ~/.mm/pc.sock project update -f ~/.mm/pc/base.yaml -f /tmp/shop-pc.yaml >/dev/null 2>&1
 process-compose -U -u ~/.mm/pc.sock namespace start acme-shop >/dev/null 2>&1
 for _ in $(seq 1 60); do (cd $R/control && ../bin/bd list >/dev/null 2>&1) && break; sleep 2; done
+# ...and mm sees a running box: its container (the stand-in's inspect) and its process manager's socket where mm looks
+# for it (a hard link to the one that runs its services here), so the backup's wait finds its Dolt (sy-9r57)
+touch "$HOME/.box-up"; mkdir -p "$HOME/.mm/box/acme-shop/sock"; ln -f "$HOME/.mm/pc.sock" "$HOME/.mm/box/acme-shop/sock/pc.sock"
 sha256sum <$R/services.yaml | cut -d' ' -f1 >~/host-services.sha
 (cd $R && sha256sum ops/githooks/pre-commit setup/.claude/settings.tmpl.json setup/CLAUDE.md) >~/host-kernel.sha
 # the box's commit: other content for its read-only files, with plumbing (the files on disk stay the host's): its
