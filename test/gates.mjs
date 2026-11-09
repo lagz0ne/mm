@@ -10,7 +10,8 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { GROUPS, globMatch, parseMap, resolve, select } from './lib/gates.mjs'
+import crypto from 'node:crypto'
+import { GROUPS, fetchTool, globMatch, parseMap, resolve, select, selectBoth } from './lib/gates.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const GATES = path.join(SRC, 'test', 'gates')
@@ -57,6 +58,18 @@ s = select(fx, ['new/thing.txt'])
 ok('a file no rule names: the fallback (%hermetic %ports)', s.suites.map((x) => x.path).join(' ') === 't/h1.sh t/h2.mjs t/p.sh' && s.files[0].rules.join() === '(fallback)')
 s = select(fx, ['t/d1.sh'])
 ok('a changed suite runs itself, without a rule', s.suites.map((x) => x.path).join(' ') === 't/d1.sh' && s.files[0].rules.join() === '(the suite itself)')
+// review #3, 1: a range that changes the map also uses the base's map (it cannot drop its own gates)
+const fxHead = parseMap(`
+suite t/h1.sh hermetic
+suite t/d1.sh docker
+rule lib/** t/h1.sh
+rule test/gates.map -
+fallback %hermetic
+`)
+s = selectBoth(fxHead, fx, ['lib/x.mjs'])
+ok('map changed: the base map\'s suites run too (lib/x.mjs: the head chose t/h1.sh only)', s.suites.map((x) => x.path).join(' ') === 't/h1.sh t/h2.mjs t/d1.sh t/d2.sh', s.suites.map((x) => x.path))
+ok('...a suite only the base declares (dropped by the range) still runs, and its why names the base\'s map', s.suites.find((x) => x.path === 't/d2.sh')?.why.every((w) => /the base's map/.test(w.rule)))
+ok('...a suite both declare runs as the head declares it', s.suites.find((x) => x.path === 't/d1.sh')?.args.length === 0)
 const bad = parseMap('suite t/a.sh nightly\nsuite t/a.sh hermetic needs=gpu -- {foo}\nrule x/** t/nope.sh @none\nset loop @loop\nrule y @loop\nwhat now\n')
 const has = (re) => bad.errors.some((e) => re.test(e))
 ok('map errors: unknown group, twice, unknown need, unknown placeholder', has(/unknown group "nightly"/) && has(/declared twice/) && has(/unknown need "gpu"/) && has(/unknown placeholder \{foo\}/), bad.errors)
@@ -182,6 +195,33 @@ r = run(['main~1..main', '--item', 'ab-1', '--out', path.join(T, 'out', 'r3.txt'
 ok('--item without artifact on PATH: says so (the run still counts)', r.status === 1 && /artifact: not on PATH/.test(r.stdout), r.stdout + r.stderr)
 r = run(['main~3..main', '--list', '--no-live'])
 ok('--list --no-live marks the live suites skipped', r.status === 0 && /test\/l\.sh .*\[skipped: --no-live\]/.test(r.stdout), r.stdout + r.stderr)
+// review #3, 1, end to end: a range that drops lib/**'s suites from the map and changes lib/ still lists them
+const mapNow = fs.readFileSync(path.join(R, 'test/gates.map'), 'utf8')
+W('test/gates.map', mapNow.replace('rule lib/** test/h1.sh test/h2.sh test/d1.sh test/d2.sh test/l.sh', 'rule lib/** test/h1.sh'))
+W('lib/a.txt', '3\n'); g('add', 'lib/a.txt', 'test/gates.map'); g('commit', '-qm', 'drop gates from the map')
+r = run(['main~1..main', '--list'])
+ok("a range that changes the map: the base's map chooses too (the dropped suites still listed)", r.status === 0 && /test\/d1\.sh\s+<- lib\/\*\* \(the base's map\) \(lib\/a\.txt\)/.test(r.stdout) && /test\/l\.sh/.test(r.stdout) && /the base's: this range changes the map/.test(r.stdout), r.stdout + r.stderr)
+
+step('fetchTool: the pinned checksums (review #3, 2)')
+{
+  const FT = path.join(T, 'ft'), rel = path.join(FT, 'rel'), wt0 = path.join(FT, 'wt')
+  fs.mkdirSync(rel, { recursive: true }); fs.mkdirSync(path.join(wt0, 'template'), { recursive: true })
+  fs.writeFileSync(path.join(rel, 'bd'), '#!/bin/sh\necho bd\n')
+  sh('tar', ['-czf', path.join(FT, 'bd.tgz'), '-C', rel, 'bd'])
+  const sum = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex')
+  const plat = `${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch === 'arm64' ? 'arm64' : 'x64'}`
+  const pin = (p) => fs.writeFileSync(path.join(wt0, 'template', 'tools.json'), JSON.stringify({ bd: { [plat]: { url: `file://${FT}/bd.tgz`, extract: 'bd', ...p } } }))
+  const stepF = async (name, cmd, args, cwd) => { const x = sh(cmd, args, { cwd }); if (x.status !== 0) throw new Error(`${name} failed`) }
+  const tryF = async (n) => { try { return { bin: await fetchTool(wt0, 'bd', path.join(FT, `t${n}`), () => {}, stepF) } } catch (e) { return { err: e.message } } }
+  pin({}); let x = await tryF(1)
+  ok('no sha256 pinned: fails, says why', /pins no sha256/.test(x.err || ''), JSON.stringify(x))
+  pin({ sha256: '0'.repeat(64) }); x = await tryF(2)
+  ok("a download that is not the pinned one: fails", /download's checksum/.test(x.err || ''), JSON.stringify(x))
+  pin({ sha256: sum(path.join(FT, 'bd.tgz')), installed_sha256: '0'.repeat(64) }); x = await tryF(3)
+  ok('an extracted binary that differs from installed_sha256: fails (no longer only a note)', /installed_sha256/.test(x.err || ''), JSON.stringify(x))
+  pin({ sha256: sum(path.join(FT, 'bd.tgz')), installed_sha256: sum(path.join(rel, 'bd')) }); x = await tryF(4)
+  ok('both pins right: the binary', !!x.bin && fs.existsSync(x.bin), JSON.stringify(x))
+}
 
 step('usage and map errors')
 r = run([]); ok('no range: exit 2 with the usage', r.status === 2 && /usage: test\/gates/.test(r.stderr))
