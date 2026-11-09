@@ -1,0 +1,23 @@
+#!/bin/sh
+# app-run — the app slot's command (services.yaml: app), run in the release's folder; and where the app's settings are.
+#   app-run               run the release's start command (exec: the app is the process), with DATA_DIR made first
+#   app-run conf <key> [dir]  print a setting of the release in dir (default: .); nothing when it has none
+# The settings are the release's own (its package.json, "mm": {"app": {...}}), so a rollback brings back the ones that
+# release ran with:
+#   command   how the app starts (default: node server.js), e.g. "bun .output/server/index.mjs"
+#   health    the path deploy checks after a restart (default: /; DEPLOY_HEALTH_PATH wins), e.g. "/api/health"
+# HOST and PORT come from the process manager, as for any service. DATA_DIR (services.yaml: <project>/data/app) is the
+# app's data outside release/: it survives deploys and rollbacks, and bin/backup copies it daily.
+set -eu
+conf() { [ -f "${2:-.}/package.json" ] || return 0
+  node -e 'let a; try { a = JSON.parse(require("fs").readFileSync(process.argv[2], "utf8"))?.mm?.app } catch { process.exit(0) }
+    const v = a?.[process.argv[1]]; if (typeof v === "string" && v.trim()) console.log(v.trim())' "$1" "${2:-.}/package.json"; }
+case "${1:-}" in
+  conf) [ $# -ge 2 ] || { echo "usage: app-run conf <key> [dir]" >&2; exit 2; }; conf "$2" "${3:-.}"; exit 0 ;;
+  "") ;;
+  *) echo "usage: app-run | app-run conf <key> [dir]" >&2; exit 2 ;;
+esac
+# (a DATA_DIR it can't make is said, not fatal: an app that keeps no data there still starts)
+[ -z "${DATA_DIR:-}" ] || [ -d "$DATA_DIR" ] || { mkdir -p "$DATA_DIR" && chmod 700 "$DATA_DIR"; } || echo "app-run: warn: could not make DATA_DIR $DATA_DIR" >&2
+cmd=$(conf command .)
+exec sh -c "exec ${cmd:-node server.js}"
