@@ -17,7 +17,7 @@ check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then printf '  \033[32mok\
 
 mkdir -p "$T/bin/lib" "$T/tools" "$T/control" "$T/items"
 cp "$SRC/template/bin/bd" "$SRC/template/bin/owner-card" "$SRC/template/bin/message" "$SRC/template/bin/task" "$T/bin/"
-cp "$SRC/template/bin/lib/owner-card.mjs" "$SRC/template/bin/lib/message.mjs" "$SRC/template/bin/lib/writing.mjs" "$SRC/template/bin/lib/glossary.mjs" "$SRC/template/bin/lib/task.mjs" "$SRC/template/bin/lib/raci.mjs" "$SRC/template/bin/lib/structured.mjs" "$SRC/template/bin/lib/schema.mjs" "$SRC/template/bin/lib/schemas.mjs" "$T/bin/lib/"
+cp "$SRC/template/bin/lib/owner-card.mjs" "$SRC/template/bin/lib/gates-file.mjs" "$SRC/template/bin/lib/message.mjs" "$SRC/template/bin/lib/writing.mjs" "$SRC/template/bin/lib/glossary.mjs" "$SRC/template/bin/lib/task.mjs" "$SRC/template/bin/lib/raci.mjs" "$SRC/template/bin/lib/structured.mjs" "$SRC/template/bin/lib/schema.mjs" "$SRC/template/bin/lib/schemas.mjs" "$T/bin/lib/"
 cp -R "$SRC/template/bin/lib/schemas" "$T/bin/lib/"
 printf '#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n' >"$T/bin/trace"
 # the stand-in bd: `show <id> --json` from items/<id>.json (shows are logged apart), everything else recorded in ran
@@ -84,6 +84,20 @@ printf 'no card here\n' >"$T/nocard.md"
 printf '%s\n' "$T2CARD" >"$T/t2card.md"
 
 call() { : >"$T/ran"; : >"$T/shows"; (cd "$T/control" && "$T/bin/bd" "$@") >/dev/null 2>"$T/err"; echo $? >"$T/code"; }
+# a test/gates result file (sy-n4f5) on item $1 for head $2, named $4 (default gates-<first 7>.txt); $3: the result
+# (passed | failed | live): failed names test/b.sh, live skips test/c.sh (--no-live)
+gates() {
+  local id=$1 sha=$2 how=${3:-passed} name=${4:-gates-${2:0:7}.txt} r='passed: 2 passed, 0 failed, 0 skipped, of 2' b=passed c=''
+  [ "$how" = failed ] && r='failed: 1 passed, 1 failed, 0 skipped, of 2' b='failed (exit 1)'
+  [ "$how" = live ] && r='passed (live skipped: --no-live): 2 passed, 0 failed, 1 skipped, of 3' c='test/c.sh   live      skipped (--no-live)   -   0s  logs/c.log'
+  mkdir -p "$T/artifacts/$id"
+  { printf 'head: %s a subject\nrange: main..%s\ndate: 2026-01-01T00:00:00.000Z\nmap: test/gates.map\nmm: none\nresult: %s\n\n' "$sha" "${sha:0:7}" "$r"
+    printf 'test/a.sh   hermetic  passed                3 ok, 0 FAIL   2s  logs/a.log\n'
+    printf 'test/b.sh   hermetic  %-20s  3 ok, 1 FAIL   2s  logs/b.log\n' "$b"
+    [ -z "$c" ] || printf '%s\n' "$c"; } >"$T/artifacts/$id/$name"
+}
+FULL=0a1b2c3d4e5f60718293a4b5c6d7e8f901234567 # the head mm@0a1b2c3 of the cards above
+for i in sy-nyfull sy-hnone sy-plain sy-new1 sy-new2; do gates $i $FULL; done
 # as an actor other than ops (the default here): only review adds signed-off and signed-head:* (sy-9bss)
 as() { local who=$1; shift; (export BEADS_ACTOR="$who"; call "$@"); }
 refused() { [ "$(cat "$T/code")" = 1 ] && [ ! -s "$T/ran" ] && grep -q '^bd: refused: needs-you only with a valid owner card' "$T/err" && grep -q 'The format: the description starts with "## Owner"' "$T/err"; }
@@ -144,7 +158,7 @@ call label add sy-t2full needs-you;                     check "t2, a full card, 
 check "...the reason: plan, sign-off, then needs-you" says "plan -> review's sign-off -> needs-you"
 call update sy-t2full --add-label needs-you;            check "...update --add-label needs-you too" refused
 call create "a title" -d "$T2CARD" -l t2,needs-you;     check "create t2,needs-you with a full card, no signed-off" refused
-as review create "a title" -d "$T2CARD" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create t2,signed-off,signed-head,needs-you with a full card" passed
+as review create "a title" --id sy-new1 -d "$T2CARD" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create t2,signed-off,signed-head,needs-you with a full card" passed
 call label add sy-nyfull t2;                            check "adding t2 to an item with needs-you, no signed-off: refused" refused
 call update sy-nyfull --add-label t2;                   check "...update --add-label t2 too" refused
 call update sy-nyfull --add-label=t2;                   check "...--add-label=t2 too" refused
@@ -180,7 +194,7 @@ check "...the reason" says "review's sign-off names no head (card: mm@0a1b2c3)"
 call update sy-hmatch -d "$(printf '%s' "$HCARD" | sed 's/0a1b2c3/9f8e7d6/')" --add-label needs-you; check "a new head in the call's own description: refused" refused
 call label add sy-hmatch needs-you;                     check "the signed head is the card's head: passed" passed
 as review update sy-hnone --add-label signed-head:mm@0a1b2c3,needs-you; check "signed-head added in the same call: passed" passed
-as review create "a title" -d "$HCARD" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create with the matching signed-head: passed" passed
+as review create "a title" --id sy-new2 -d "$HCARD" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create with the matching signed-head: passed" passed
 
 echo "== a t2 go ask waits on the owner only with a Rollback and a Safeguard in its Task (sy-w5az)"
 SIGNED_T2='["t2","signed-off","signed-head:mm@0a1b2c3"]'
@@ -236,6 +250,54 @@ call label add sy-plain t1;                             check "ops: another labe
 check "...reads nothing" noshow
 call label add sy-plain signed-offish;                  check "ops: signed-offish is not signed-off: passed" passed
 call list -l signed-off;                                check "ops: a read with -l signed-off: passed" passed
+
+echo "== review signs off a head only with the gates result for that exact head (sy-n4f5)"
+gfail() { [ "$(cat "$T/code")" = 1 ] && [ ! -s "$T/ran" ] && grep -q '^bd: refused: review signs off a head only with the gates result for that exact head: ' "$T/err"; }
+item sy-g1 "Plan." '["t1"]'
+item sy-g2 "Plan." '["t2"]'
+G=1122334455667788990011223344556677889900
+as review label add sy-g1 signed-head:mm@1122334;       check "no gates file: refused" gfail
+check "...names the missing file" says "signed-head:mm@1122334 needs the gates result for that head: no artifacts/sy-g1/gates-1122334.txt. Run test/gates <base>..1122334 --item sy-g1"
+as review update sy-g1 --add-label signed-off,signed-head:mm@1122334; check "...update --add-label too" gfail
+as review update sy-g1 --set-labels t1,signed-head:mm@1122334; check "...--set-labels too" gfail
+as review create "a title" -l signed-off,signed-head:mm@1122334; check "...create with no --id: refused" gfail
+check "...the reason" says "on a new item: its gates file has no item yet"
+gates sy-g1 $G failed
+as review label add sy-g1 signed-head:mm@1122334;       check "a failed suite: refused" gfail
+check "...names the failed suite" says "signed-head:mm@1122334: the gates failed for 1122334: test/b.sh"
+gates sy-g1 9999999999999999999999999999999999999999 passed gates-1122334.txt
+as review label add sy-g1 signed-head:mm@1122334;       check "a file named for the sha, its head another: refused" gfail
+check "...the reason" says "artifacts/sy-g1/gates-1122334.txt is for another head (999999999999), not 1122334"
+rm -f "$T/artifacts/sy-g1/gates-1122334.txt"; gates sy-g1 9999999999999999999999999999999999999999 passed
+as review label add sy-g1 signed-head:mm@1122334;       check "only another sha's file: refused (missing)" gfail
+check "...the reason" says "no artifacts/sy-g1/gates-1122334.txt"
+gates sy-g1 $G passed
+as review label add sy-g1 signed-head:mm@1122334;       check "a passing file for that head: passed" passed
+check "...reads nothing" noshow
+as review update sy-g1 --add-label signed-off,signed-head:mm@$G; check "the full sha, the 7-char file: passed" passed
+gates sy-g1 $G passed gates-$G.txt; rm -f "$T/artifacts/sy-g1/gates-1122334.txt"
+as review label add sy-g1 signed-head:mm@1122334;       check "a file named for the full sha: passed" passed
+as review label add sy-g1 signed-head:mm@nothex;        check "a malformed signed-head: refused" gfail
+rm -f "$T/artifacts/sy-g1/gates-$G.txt"; gates sy-g1 $G live
+as review label add sy-g1 signed-head:mm@1122334;       check "live skipped (--no-live) on a t1 item: passed" passed
+check "...and read the item (is it t2?)" grep -qx sy-g1 "$T/shows"
+gates sy-g2 $G live
+as review label add sy-g2 signed-head:mm@1122334;       check "live skipped on a t2 item: refused" gfail
+check "...the reason" says "a t2 head needs every group, live too; artifacts/sy-g2/gates-1122334.txt skipped test/c.sh (--no-live)"
+as review update sy-g1 --add-label t2,signed-head:mm@1122334; check "...t2 added in the same call: refused" gfail
+gates sy-g2 $G passed
+as review label add sy-g2 signed-head:mm@1122334;       check "a t2 item with every group passed: passed" passed
+as review label add sy-g1 signed-head:brain@abcdef0;    check "a repo not in the list (brain): no gates file needed" passed
+printf '{"repos":["mm","brain"]}\n' >"$T/gates.json"
+as review label add sy-g1 signed-head:brain@abcdef0;    check "...gates.json lists brain: refused" gfail
+rm -f "$T/gates.json"
+item sy-g3 "Plan." '["t1","signed-head:mm@7777777"]'
+as review update sy-g3 --set-labels t1,signed-off,signed-head:mm@7777777; check "--set-labels that keeps a signed-head the item has: passed" passed
+as review label add sy-g1 signed-off;                   check "review: signed-off alone: no gates check, reads nothing" passed
+check "...reads nothing" noshow
+as review label remove sy-g1 signed-head:mm@1122334;    check "review: removing a signed-head: passed" passed
+as review label add sy-g1 t1;                           check "review: another label: passed" passed
+as ops label add sy-g1 signed-head:mm@1122334;          check "ops with a passing file: still only review signs off" sorefused
 
 echo "== the actor check still comes first"
 (unset BEADS_ACTOR; call label add sy-good needs-you; grep -q 'needs an actor' "$T/err" && [ ! -s "$T/shows" ]); check "no actor: refused for the actor, no read" test $? = 0

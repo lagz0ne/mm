@@ -17,7 +17,10 @@
 //                                  Removing needs-you, or any other call: exit 0.
 //   owner-card signoff -- <bd args> bin/bd runs it when its actor is not review and its arguments name signed-off or
 //                                  signed-head: (or set labels): refuses (exit 1) a call that adds or removes one
-//                                  (sy-9bss: only review signs off). Any other call: exit 0.
+//                                  (sy-9bss: only review signs off). For review it runs when an argument names
+//                                  signed-head:: a signed-head:<repo>@<sha> it adds, for a repo of gates.json (default
+//                                  mm), needs artifacts/<item>/gates-<sha7>.txt showing all passed (sy-n4f5;
+//                                  bin/lib/gates-file.mjs). Any other call: exit 0.
 // The card's words follow the writing rules (sy-ko6r; bin/lib/writing.mjs, glossary.yaml, glossary.local.yaml,
 // bin/lib/words.txt): check always reads them; gate only for a lead's call (its actor, --actor or BEADS_ACTOR, is a role
 // of leads/roles.json), never a person's. Before the glossary's refuse_from (or with none) a problem is a warning on
@@ -27,6 +30,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readGlossary } from './lib/glossary.mjs'
+import { signedHeadRefusal } from './lib/gates-file.mjs'
 import { FORMAT, SIGNED_HEAD, headRefusal, isGoAsk, parseCard } from './lib/owner-card.mjs'
 import { goTaskRefusal } from './lib/task.mjs'
 import { sayWriting } from './lib/writing.mjs'
@@ -94,6 +98,8 @@ const isSignoff = (l) => l === SIGNED || l.startsWith(SIGNED_HEAD)
 const SIGNOFF_REFUSED = `bd: refused: only review signs off (${SIGNED}, ${SIGNED_HEAD}): ask review on the item`
 function signoff(argv) {
   const { cmd, args, values, list } = parse(argv)
+  const actor = String(values('--actor').pop() ?? process.env.BEADS_ACTOR ?? process.env.BD_ACTOR ?? '')
+  if (actor.split('/')[0] === 'review') { gates(cmd, args, values, list); process.exit(0) }
   const no = (why) => { console.error(`${SIGNOFF_REFUSED}${why ? ` (${why})` : ''}`); process.exit(1) }
   if (cmd === 'create' || cmd === 'q' || cmd === 'new') { if (list('-l', '--labels').some(isSignoff)) no(); process.exit(0) }
   if (cmd === 'label' && (args[0] === 'add' || args[0] === 'remove')) { if (args.slice(1).some(isSignoff)) no(); process.exit(0) }
@@ -108,6 +114,41 @@ function signoff(argv) {
     if ([...new Set(it.labels.filter(isSignoff))].sort().join(',') !== want) no(`--set-labels changes ${id}'s sign-off`)
   }
   process.exit(0)
+}
+
+// Review signs off a head only with the gates result for that exact head (sy-n4f5): each signed-head:<repo>@<sha> the
+// call adds is checked by signedHeadRefusal (the repos of gates.json, default mm; others pass). The item is read (bd
+// show) only for --set-labels (what it adds) and for a result that skipped the live group (is the item t2?).
+const GATES_REFUSED = 'bd: refused: review signs off a head only with the gates result for that exact head'
+function gates(cmd, args, values, list) {
+  const no = (why) => { console.error(`${GATES_REFUSED}: ${why}`); process.exit(1) }
+  const heads = (ls) => ls.filter((l) => l.startsWith(SIGNED_HEAD))
+  // [id, the signed-heads it adds, those only --set-labels names (checked when the item has none of them yet), t2 in the call, a new item]
+  let items = []
+  if (cmd === 'create' || cmd === 'q' || cmd === 'new') {
+    const ls = list('-l', '--labels'), add = heads(ls)
+    if (!add.length) return
+    const id = values('--id').pop()
+    if (!id) no(`${add.join(', ')} on a new item: its gates file has no item yet. Create the item, run test/gates --item <id>, then add the label`)
+    items = [[id, add, [], ls.includes(T2), true]]
+  } else if (cmd === 'label' && args[0] === 'add') {
+    const rest = args.slice(1), add = heads(rest)
+    items = rest.filter((x) => !x.startsWith(SIGNED_HEAD)).map((id) => [id, add, [], false, false])
+  } else if (cmd === 'update' || cmd === 'edit') {
+    const ls = list('--add-label', '-l'), set = list('--set-labels'), add = heads(ls)
+    items = args.map((id) => [id, add, heads(set).filter((l) => !add.includes(l)), ls.includes(T2) || set.includes(T2), false])
+  } else return
+  for (const [id, add, setOnly, t2call, isNew] of items) {
+    if (!add.length && !setOnly.length) continue
+    let it = null
+    const item = () => { if (!it) { try { it = isNew ? { labels: [] } : show(id) } catch (e) { no(e.message) } } return it }
+    for (const l of [...add, ...setOnly.filter((x) => !item().labels.includes(x))]) {
+      let why = signedHeadRefusal(P, id, l, { t2: false })
+      // passed with the live group skipped: enough unless the item is t2 (it is read only then)
+      if (!why) { const t2why = signedHeadRefusal(P, id, l, { t2: true }); if (t2why && (t2call || item().labels.includes(T2))) why = t2why }
+      if (why) no(why)
+    }
+  }
 }
 
 function gate(argv) {

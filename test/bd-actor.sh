@@ -13,7 +13,7 @@ check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then printf '  \033[32mok\
 
 mkdir -p "$T/bin/lib" "$T/tools" "$T/control" "$T/leads"
 cp "$SRC/template/bin/bd" "$SRC/template/bin/message" "$SRC/template/bin/task" "$T/bin/"
-cp "$SRC/template/bin/lib/message.mjs" "$SRC/template/bin/lib/owner-card.mjs" "$SRC/template/bin/lib/writing.mjs" "$SRC/template/bin/lib/glossary.mjs" "$SRC/template/bin/lib/task.mjs" "$SRC/template/bin/lib/raci.mjs" "$SRC/template/bin/lib/structured.mjs" "$SRC/template/bin/lib/schema.mjs" "$SRC/template/bin/lib/schemas.mjs" "$T/bin/lib/"
+cp "$SRC/template/bin/lib/message.mjs" "$SRC/template/bin/lib/owner-card.mjs" "$SRC/template/bin/lib/gates-file.mjs" "$SRC/template/bin/lib/writing.mjs" "$SRC/template/bin/lib/glossary.mjs" "$SRC/template/bin/lib/task.mjs" "$SRC/template/bin/lib/raci.mjs" "$SRC/template/bin/lib/structured.mjs" "$SRC/template/bin/lib/schema.mjs" "$SRC/template/bin/lib/schemas.mjs" "$T/bin/lib/"
 cp -R "$SRC/template/bin/lib/schemas" "$T/bin/lib/"
 printf '{"roles":[{"id":"ops"},{"id":"review"},{"id":"platform"}]}\n' >"$T/leads/roles.json"
 printf '#!/bin/sh\n# stand-in for bin/trace: no span, just the command after --\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n' >"$T/bin/trace"

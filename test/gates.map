@@ -248,6 +248,7 @@ rule template/bin/message         test/message.mjs test/bd-actor.sh test/owner-c
 rule template/site/src/lib/message.mjs test/message.mjs test/board-message.mjs
 rule template/bin/lib/owner-card.mjs test/owner-card.mjs test/owner-card-bd.sh test/bd-actor.sh test/board-owner-card.mjs test/board-approve.sh test/waiting-phone.mjs
 rule template/bin/owner-card      test/owner-card.mjs test/owner-card-bd.sh
+rule template/bin/lib/gates-file.mjs test/owner-card-bd.sh test/bd-actor.sh
 rule template/site/src/lib/owner-card.mjs test/owner-card.mjs test/board-owner-card.mjs
 rule template/site/src/**         @browser test/machine-panel.sh
 rule template/site/*              @site test/auth.sh test/board-approve.sh test/front.sh test/sync.sh test/doop-designs.sh test/machine-panel.sh
