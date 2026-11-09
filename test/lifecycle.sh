@@ -59,7 +59,7 @@ fi
 OLDV=$(sed -n 's/^template_version: //p' "$ROOT/.mm-answers.yaml")
 
 step "data and local edits"
-ITEM=$(bdq create "qa lifecycle item" --json --actor qa 2>/dev/null | jq -r '.id'); [ -n "$ITEM" ] && ok "item $ITEM created" || bad "create item"
+ITEM=$(bdq create "qa lifecycle item" -d "$(printf '## Task\n- **Task:** Keep this item through the lifecycle.\n- **Act:** test\n- **Done when:** the item survives update, archive and restore.\n- **Verify:** bd show <id> → the item\n')" --json --actor qa 2>/dev/null | jq -r '.id'); [ -n "$ITEM" ] && ok "item $ITEM created" || bad "create item"
 echo "- QA: a project-local rule that an update must keep." >>"$ROOT/CLAUDE.md"
 sed -i 's/"build": "tsc -b && vite build"/"build": "tsc -b \&\& vite build --logLevel warn"/' "$ROOT/site/package.json"
 (cd "$ROOT" && git add CLAUDE.md site/package.json && SETUP_HUMAN=1 git commit -qm "qa: local edits") && ok "local edits committed" || bad "commit local edits"
