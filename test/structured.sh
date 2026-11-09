@@ -16,7 +16,7 @@ mkdir -p "$T/bin" "$T/tools" "$T/control" "$T/leads"
 cp "$SRC/template/bin/bd" "$SRC/template/bin/message" "$SRC/template/bin/task" "$SRC/template/bin/owner-card" "$SRC/template/bin/structured" "$T/bin/"
 cp -R "$SRC/template/bin/lib" "$T/bin/"
 printf '{"roles":[{"id":"ops"},{"id":"review"},{"id":"platform"}]}\n' >"$T/leads/roles.json"
-printf '{"activities":[{"id":"build","R":"platform"},{"id":"incident","R":"ops"}]}\n' >"$T/leads/raci.json"
+printf '{"activities":[{"id":"build","R":"platform"},{"id":"incident","R":"ops"},{"id":"mm-template","R":"platform"}]}\n' >"$T/leads/raci.json"
 printf '#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n' >"$T/bin/trace"
 # the stand-in for bd: show prints the fixture; anything else is recorded, with the file after -f / --body-file
 cat >"$T/tools/bd" <<EOF
@@ -137,7 +137,7 @@ check "task new: posted as bd create, its flags kept, --body-file" ran '^create 
 check "...the description is one mm-task v1 block" sh -c "head -1 '$T/body' | grep -qx '\`\`\`mm-task v1'"
 check "...task check - reads it" sh -c "'$T/bin/task' check - <'$T/body' | grep -qF 'task ok (act:build)'"
 call task new --title x --act deploy --do build --done closed --verify-check a --verify-expect b --actor platform
-check "task new: act not in leads/raci.json" refused 'act: deploy is not an activity of leads/raci.json (build, incident)'
+check "task new: act not in leads/raci.json" refused 'act: deploy is not an activity of leads/raci.json (build, incident, mm-template)'
 call task new --act build --do build --done closed --verify-check a --verify-expect b --actor platform
 check "task new with no --title" refused 'bd task new needs --title'
 call task new --title x --act build --do make --verify-check a --verify-expect b --actor platform
@@ -185,6 +185,19 @@ call card set sy-1 --what apply --why access --you check --actor ops
 check "card set: you check with no --you-at" refused 'you.at: is missing (with kind check)'
 call card set sy-1 --what apply --why because --you nothing --actor ops
 check "card set: --why not a reason" refused 'why: "because" is not one of security'
+
+echo "== the leads' brief's examples (\"Structured messages (step 1)\") pass, in both copies"
+show ''
+for brief in template/profiles/system/leads/CLAUDE.md template/leads/CLAUDE.md; do
+  # the fenced example of the section, its continuation lines joined; each line one call, with --print
+  sed -n '/^## Structured messages (step 1)/,/^## /p' "$SRC/$brief" | sed -n '/^```$/,/^```$/p' | grep -v '^```' | sed -e ':a' -e '/\\$/N; s/\\\n *//; ta' >"$T/examples"
+  check "$brief: three examples" test "$(wc -l <"$T/examples")" = 3
+  while IFS= read -r line; do
+    eval "set -- ${line#bd }"
+    call "$@" --print --actor platform
+    check "$brief: bd $1 ${2:-} passes (--print)" sh -c "[ \"\$(cat '$T/code')\" = 0 ]"
+  done <"$T/examples"
+done
 
 echo
 echo "$pass passed, $fail failed"

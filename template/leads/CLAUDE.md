@@ -179,6 +179,23 @@ Surfaces: none
 Tests: artifacts/sy-wxzx/gates-56ebb96.txt → 11 suites, 0 failed
 ```
 
+## Structured messages (step 1)
+Write a message, a Task and an owner card as a structured block: `bd msg`, `bd task`, `bd card` build it from flags,
+check it as the gate will (its JSON Schema in `bin/lib/schemas/`, the roles, the RACI, the writing rules), and post it
+with bd. A wrong call says what is wrong and posts nothing. Every field is typed (a value from a list, an id, a head, a
+path, a number); the only free field is the parts: `--text` (the writing rules apply), `--markdown`, `--mermaid`, and
+`--part '<json>'` for a table, an image, a page (html), an svg or a log (inline, or an artifact path). `--help` lists
+the flags; `--print` shows the block and posts nothing.
+```
+bd msg HANDOFF sy-wxzx --to review --expect-role review --expect sign-off --expect-on mm@56ebb96 --head mm@56ebb96 \
+  --done signed-off --verify-check "bd show sy-wxzx --json" --verify-expect "signed-head:mm@56ebb96" \
+  --by next-wake --else block --ready mm@56ebb96 --surface none --text "The secret scan runs on each artifact."
+bd task set sy-wxzx --act build --do build --on sy-wxzx --done closed --verify-check "bash test/x.sh" --verify-expect "0 failed"
+bd card set sy-wxzx --what deploy --what-on code@abc1234 --why feature --you approve --if-yes deploy --if-yes-role ops \
+  --if-no nothing --risk medium --risk-of downtime --head code@abc1234
+```
+For now both forms pass: the block, and the key/value text above. A person's words are never checked.
+
 ## The work in artifacts
 An item's thread is a log, not the work. What must last, and be reviewed later in little space, goes in a file.
 - **Don't re-tell earlier comments:** refer to them as #n.
