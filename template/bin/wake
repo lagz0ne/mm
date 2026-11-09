@@ -31,6 +31,7 @@ import os from 'node:os'
 import * as P_ from './lib/paseo.mjs'
 import { SETUP, SETUP_BRIEF, messageRoles, parseMessage } from './lib/message.mjs'
 import { actOf, lettersOf, mayAsk, rowOf, withLetter } from './lib/raci.mjs'
+import { pickOf } from './lib/to.mjs'
 import { places, total as placesTotal, workersOf } from './lib/places.mjs'
 import http from 'node:http'
 import path from 'node:path'
@@ -114,6 +115,18 @@ const SYSTEM = ['ui', 'wake', 'watchdog', 'smoke', 'beads', 'mm-upstream', 'brai
 // still wake as before, but its comments are no human's to answer. bin/bd now refuses a write with no actor (sy-28ev);
 // the journal keeps the older ones
 const isHuman = (actor) => !!actor && actor !== 'mm' && !leadOf(actor) && !SYSTEM.includes(actor)
+// Whom a person's comment wakes (sy-uykv): the role they picked in the board's comment box (its first line `→ <role>`,
+// lib/to.mjs), else the board's Lead (roles.json `lead`), who routes it on; a board with no Lead: the item's assignee,
+// as before. A lead's and the system's comments still wake the assignee. { role, why: 'picked' | 'lead' | 'assignee' }
+function personTo(text, assignee) {
+  const pick = pickOf(text, ROLES)
+  if (pick) return { role: pick, why: 'picked' }
+  if (BOARD_LEAD) return { role: BOARD_LEAD, why: 'lead' }
+  return { role: assignee, why: 'assignee' }
+}
+const personSaid = (to, assignee) => (to.why === 'picked' ? ', to you: they picked you in the board\'s To'
+  : to.why === 'lead' && to.role !== assignee ? `, to you as the board's Lead (they picked no role): answer it, or route it on with a message to the role it is for (the assignee: ${ROLES.includes(assignee) ? assignee : 'none'})`
+    : '')
 
 // The hop limit (sy-0omb): a person never gets a pause for an agent loop. wake labels the item `paused`, says so once on
 // it, and wakes the board's Lead (roles.json `lead`) with it; while `paused` is on, no lead is woken for the item.
@@ -333,13 +346,14 @@ function onEvent1(e) {
   raciRoute(e, byLead)
   const asked = messageRoute(e, byLead)
   const signalled = transition(e, byLead)
-  const role = e.issue?.assignee
+  const person = e.op === 'comment' && e.comment && isHuman(e.comment.author) ? personTo(e.comment.text, e.issue?.assignee) : null
+  const role = person ? person.role : e.issue?.assignee
   if (!ROLES.includes(role) || leadOf(e.actor) === role || signalled.has(role) || asked.has(role)) return
   const who = actorName(e.actor || 'beads')
   const title = boardLine(e.issue_id, e.issue?.title)
   if (e.op === 'comment' && e.comment) {
     const author = actorName(e.comment.author)
-    const reason = (n) => `${author} commented${n ? ` #${n}` : ''} on ${e.issue_id} (quoted below)`
+    const reason = (n) => `${author} commented${n ? ` #${n}` : ''} on ${e.issue_id} (quoted below)${person ? personSaid(person, e.issue?.assignee) : ''}`
     const text = (n) => [title, boardLine(`${e.issue_id} comment${n ? ` #${n}` : ''} by ${author}`, e.comment.text, 400)]
     note(role, e.issue_id, reason(0), byLead, 'talk', text(0))
     // Number the comment as the board shows it (#n = position in the thread), so leads can answer "re #n".
@@ -382,12 +396,15 @@ async function journal(since) {
 async function catchUp() {
   const [open, ev] = await Promise.all([allIssues(), journal(0)])
   const last = {}
-  for (const e of ev.records) if (e.op === 'comment' && e.comment) last[e.issue_id] = e.comment.author
+  for (const e of ev.records) if (e.op === 'comment' && e.comment) last[e.issue_id] = e.comment
   for (const e of ev.records) upSeen(e) // how long an upstream:* item has waited blocked on the system board
   for (const i of open) seen.set(i.id, { assignee: i.assignee || '', status: i.status })
   for (const i of open) if (i.status !== 'closed' && (i.labels || []).includes(PAUSED)) { paused.add(i.id); pauseOn.add(i.id) } // paused before this start
   for (const i of open) {
-    if (last[i.id] && isHuman(last[i.id])) note(i.assignee, i.id, `${i.id} has an unanswered comment from ${actorName(last[i.id])}`, false, 'talk', [boardLine(i.id, i.title)])
+    const c = last[i.id]
+    if (!c || !isHuman(c.author)) continue
+    const to = personTo(c.text, i.assignee) // the role it was for (sy-uykv), as when it came
+    note(to.role, i.id, `${i.id} has an unanswered comment from ${actorName(c.author)}${personSaid(to, i.assignee)}`, false, 'talk', [boardLine(i.id, i.title)])
   }
   return ev.head || 0
 }

@@ -52,6 +52,8 @@ Label the item `act:<Act>` too. The Supervisor lists the open items without a va
 ## Each time you are woken ("Board update" message)
 1. Read the update, then your items (ready, in progress, blocked) and any new comments.
 2. **Answer every human comment on your items in this turn**, even if only "noted, doing X next".
+   A person's comment goes to the board's Lead unless its first line is `→ <role>` (the role the person picked in
+   the board's To). The Lead answers it, or routes it on: a message to the role it is for.
 3. Pulling a ready item (within your capacity, see below): `bd update ID --claim`, then a `NOTE` with what you
    understood and your plan (2–4 lines). Never set `--status in_progress` by hand: your settings refuse it.
 4. Do the work. Post progress as comments at meaningful points, not every step, and at least every 30 min (that keeps
