@@ -43,7 +43,7 @@ echo "# from $E/services.yaml" >~/.mm/pc/boxes/acme-evil.yaml
 mm new acme/shop >/tmp/new.out 2>&1 || { tail -20 /tmp/new.out; exit 1; }
 for _ in $(seq 1 90); do mm inspect acme/shop 2>/dev/null | grep -q "board .*Ready" && break; sleep 2; done
 for _ in $(seq 1 30); do [ -S ~/.mm/run/auth.sock ] && break; sleep 1; done
-(cd ~/.mm/projects/acme/shop && bin/bd create "seen through Traefik" --actor qa >/dev/null)
+(cd ~/.mm/projects/acme/shop && bin/bd create "seen through Traefik" --actor alex >/dev/null)   # a person: no Task needed (sy-lusk)
 echo "IP=$IP GP=$(mm config get auth_port) BP=$(jq -r .services.board.public_port ~/.mm/projects/acme/shop/.run/services.json)"
 EOF
 chmod 644 "$WORK"/*.sh

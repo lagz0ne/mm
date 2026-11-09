@@ -70,7 +70,7 @@ start() {
 }
 stop_services() { kill "$SPID" "$DPID" 2>/dev/null; wait "$SPID" "$DPID" 2>/dev/null; }
 calls() {  # a few board calls, as leads, wake and the board make them
-  id=$(B create "hello" --actor qa --json 2>/dev/null | sed -n 's/.*"id": *"\([^"]*\)".*/\1/p' | head -1)
+  id=$(B create "hello" --actor alex --json 2>/dev/null | sed -n 's/.*"id": *"\([^"]*\)".*/\1/p' | head -1)
   B list --json >/dev/null 2>&1; B show "$id" --json >/dev/null 2>&1; B comments add "$id" "a comment" --actor qa >/dev/null 2>&1
   B update "$id" --claim --actor qa >/dev/null 2>&1; B ready --json >/dev/null 2>&1; B config get no-hooks >/dev/null 2>&1
   (cd "$P" && bin/bd-quiet) >"$T/quiet2.out" 2>&1
