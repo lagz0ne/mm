@@ -68,7 +68,10 @@ $SANDBOX
 }
 JSON
          sed -i 's|"Edit(/|"Edit(//|; s|"Write(/|"Write(//|' "$W/.claude/settings.local.json"
-         grep -qx '.claude/settings.local.json' "$P/code/.git/info/exclude" 2>/dev/null || echo '.claude/settings.local.json' >> "$P/code/.git/info/exclude"
+         # kept out of the worker's commits by a .gitignore of its own in .claude/ ("*": the settings and the ignore file
+         # itself), not by code/.git/info/exclude: a box mounts that read-only, and wt stopped there (sy-r069). An ignore
+         # rule hides untracked files only: a .claude/ file the repo tracks stays as it is.
+         printf '*\n' >"$W/.claude/.gitignore"
          ;;
        esac
      fi
