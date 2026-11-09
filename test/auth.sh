@@ -669,6 +669,13 @@ echo '== sign-in by code (for the bridge: /login and Allow)'
 JC="$T/jarc"; rm -f "$JC"
 CODE=$(gw -c "$JC" -b "$JC" "$G/s?b=$BOARD&r=/items" | sed -n 's/.*id="code"[^>]*>\([0-9A-Z-]*\)<.*/\1/p')
 check "no session: the page shows a code (XXXX-XXXX), bound to this browser (pending cookie)" bash -c "echo '$CODE' | grep -qE '^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}\$' && grep -q mm_pending '$JC'"
+# sy-85ib: a board page's background requests never reach /s (they used the owner's code limit up), and a reload of
+# the sign-in page shows the same code
+check "a background request with no session (Sec-Fetch-Mode cors, no-cors, same-origin): 401, no redirect to /s" bash -c "for m in cors no-cors same-origin; do r=\$(curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' -H 'x-forwarded-uri: /api/pull' -H \"sec-fetch-mode: \$m\" $G/verify); echo \"\$r\" | head -1 | grep -q 401 && ! echo \"\$r\" | grep -qi '^location:' || exit 1; done"
+check "...a page visit (Sec-Fetch-Mode navigate) still goes to sign in (302)" bash -c "curl -s -D - -o /dev/null -H 'x-forwarded-host: $BOARD' -H 'x-forwarded-uri: /items' -H 'sec-fetch-mode: navigate' $G/verify | grep -qi '^location: https://$AUTH/s?b=$BOARD&'"
+N0=$(grep -c 'code issued' "$T/gw.log")
+CODE2=$(gw -c "$JC" -b "$JC" "$G/s?b=$BOARD&r=/items" | sed -n 's/.*id="code"[^>]*>\([0-9A-Z-]*\)<.*/\1/p')
+check "...the sign-in page again in the same browser: the same code, and no new 'code issued'" bash -c "[ '$CODE2' = '$CODE' ] && [ \"\$(grep -c 'code issued' '$T/gw.log')\" = '$N0' ]"
 check "the page waits" bash -c "gw -b '$JC' $G/s/poll | grep -q waiting"
 check "mm auth pending <code>: what is asking (board, age)" bash -c "mm auth pending $CODE -o json | jq -e '.board == \"$BOARD\" and .age_s >= 0'"
 check "approve for a person who doesn't exist: refused" bash -c "! mm auth approve $CODE --as nobody"

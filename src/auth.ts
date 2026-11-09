@@ -567,6 +567,11 @@ export async function gateway() {
       // a board session lives only while its person's session lives: sign out or `mm user rm` ends it at once
       const role = bs && bs.host === host && bs.expires > now() && alive(liveSession(bs.parent)) ? roleOn(bs.user_id, project) : null
       if (role) return assertion(bs!.user_id, role, host)
+      // only a page visit goes to sign-in (sy-85ib): a board page's background fetch (Sec-Fetch-Mode cors, no-cors,
+      // same-origin) that was sent to /s made a new code each time and used up the owner's code limit. Every browser
+      // sends Sec-Fetch-Mode; a client that sends none keeps the redirect, as before.
+      const mode = (req.headers.get('sec-fetch-mode') || '').toLowerCase()
+      if (mode && mode !== 'navigate' && mode !== 'nested-navigate') return new Response('sign in first', { status: 401, headers: denied })
       return new Response(null, { status: 302, headers: { location: `https://${authHost}/s?b=${encodeURIComponent(host)}&r=${encodeURIComponent(safeBack(fwdUri))}`, ...denied } })
     }
     // a board host: its one-time callback code -> that board's own cookie
@@ -635,6 +640,12 @@ export async function gateway() {
       if (p) return html(page(`Signed in as <b>${esc(p.name)}</b>, but you have no access to ${esc(board || 'this board')}. Ask the owner.`))
       // not signed in: a code on the screen, bound to this browser, for the owner to approve (or a link from them)
       const ip = clientIp(req, srv)
+      // this browser's code, still waiting for the owner (sy-85ib): shown again, not a new one, and not counted
+      const pv = cookies(req).mm_pending, pk = pv ? h(pv) : '', had = pk ? pending.get(pk) : undefined
+      if (had && !had.link && had.board === board && now() - had.created < CODE_MS) {
+        had.back = back
+        return html(codePage(had.code, board))
+      }
       if (limited(`code:${ip}`, 10, 10 * 60e3)) { log('warn', 'code issuing limited', { ip }); return html(page('Too many sign-in attempts from here. Wait a few minutes.'), 429) }
       const id = randomBytes(32).toString('base64url'), code = newCode()
       pending.set(h(id), { code, board, back, created: now(), ip, ua: (req.headers.get('user-agent') || '').slice(0, 160) }); byCode.set(h(code), h(id))
