@@ -190,7 +190,7 @@ for (const l of process.argv.slice(2)) console.log(listenRefusal(l) === null ? '
 EOF
 lr() { "$BUN" "$T/lr.ts" "$@" | tr '\n' ' ' | sed 's/ $//'; }
 is "allowed: 127.0.0.1:6767, [::1]:6767, a socket path, unix:///path" [ "$(lr 127.0.0.1:6767 '[::1]:6767' /run/x/paseo.sock unix:///run/x/p.sock)" = "ok ok ok ok" ]
-is "refused: 0.0.0.0, ::, a LAN address, a name, localhost, a bare port, port 0 or 70000" [ "$(lr 0.0.0.0:6767 '[::]:6767' 192.168.1.5:6767 vibea:6767 localhost:6767 6767 127.0.0.1:0 127.0.0.1:70000)" = "refused refused refused refused refused refused refused refused" ]
+is "refused: 0.0.0.0, ::, a LAN address, a name, localhost, a bare port, port 0 or 70000" [ "$(lr 0.0.0.0:6767 '[::]:6767' 192.168.1.5:6767 myhost:6767 localhost:6767 6767 127.0.0.1:0 127.0.0.1:70000)" = "refused refused refused refused refused refused refused refused" ]
 is "refused: 127.0.0.2 and a look-alike (127.0.0.1.evil:1)" [ "$(lr 127.0.0.2:6767 127.0.0.1.evil:1)" = "refused refused" ]
 is "refused: a socket path with shell characters" [ "$(lr '/tmp/a b' '/tmp/$(x)' '/tmp/a;b')" = "refused refused refused" ]
 cfg 'layout: one-root' 'paseo:' '  managed: true' '  listen: 0.0.0.0:6767'
