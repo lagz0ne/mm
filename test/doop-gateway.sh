@@ -43,8 +43,10 @@ IMAGE=$(DOCKER=$DOCKER "$HERE/box/doop/build.sh" "$TAG" "$BASE" 2>"$T/build.err"
 check "box/doop/build.sh: the patch applies to the pinned image's own source and builds ($IMAGE)" bash -c "echo '$IMAGE' | grep -Eq '^sha256:[0-9a-f]{64}\$' || { cat '$T/build.err'; exit 1; }"
 check "...a moved tag is refused (the base must be the image the patch is for)" bash -c "! DOCKER='$DOCKER' '$HERE/box/doop/build.sh' '$TAG-x' '$TAG' 2>&1 | grep -q '^sha256:'"
 # the patches' own unit tests (tests/ is not in the image), run in the image against its patched server/
-mkdir -p "$T/src"; for p in "$HERE"/box/doop/[0-9][0-9][0-9][0-9]-*.patch; do git -C "$T/src" apply --include='tests/*' "$p"; done
+# readable by the container's uid whatever the caller's umask (077 left them 0600: vitest found no test files)
+mkdir -p "$T/src"; for p in "$HERE"/box/doop/[0-9][0-9][0-9][0-9]-*.patch; do git -C "$T/src" apply --include='tests/*' "$p"; done; chmod -R a+rX "$T/src"
 check "the fork's own unit tests pass in it (vitest, no network: the assertion, the source link)" bash -c "D run --rm --network none --user 210000:$(id -g) --cap-drop ALL --read-only --tmpfs /tmp -e HOME=/tmp -e NO_COLOR=1 -v '$T/src/tests:/app/tests:ro' --entrypoint sh '$IMAGE' -c 'cd /app && node_modules/.bin/vitest run tests/mmGateway.test.ts tests/mmSource.test.ts --cache=false' >'$T/unit.out' 2>&1; grep -E 'Tests +[0-9]+ passed' '$T/unit.out' && ! grep -q failed '$T/unit.out'"
+grep -E 'Tests +[0-9]+ passed' "$T/unit.out" >/dev/null && ! grep -q failed "$T/unit.out" || tail -25 "$T/unit.out" | sed 's/^/       unit.out: /'
 fi
 
 # the project, as mm stamps it (only what doop-run reads), with a test key in the gateway's place
@@ -107,6 +109,7 @@ export -f D code as A; export DOCKER T HOST PB B
 echo "== bin/doop-run with the gateway's key: the public side"
 PORT=$PORT DOOP_URL=$URL DOOP_PUBLIC_PORT=$PUB "$P/bin/doop-run" >"$T/run.log" 2>&1 & RUN=$!
 check "the loopback side answers ($B)" upl
+curl -sf -o /dev/null "$B/healthz" || tail -15 "$T/run.log" | sed 's/^/       run.log: /'
 check "the public side listens on loopback only ($PUB)" bash -c "for i in \$(seq 1 30); do /usr/sbin/ss -Hltn | awk '{print \$4}' | grep -qx '127.0.0.1:$PUB' && break; sleep 1; done; /usr/sbin/ss -Hltn | awk '{print \$4}' | grep -qx '127.0.0.1:$PUB' && ! /usr/sbin/ss -Hltn | awk '{print \$4}' | grep -v '^127.0.0.1:' | grep -qE ':$PUB\$'"
 check "...the key went in read-only, the env names the host (no key in the env)" bash -c "D inspect -f '{{range .Mounts}}{{.Destination}}:{{.RW}} {{end}}' '$C' | grep -q '/run/mm-gateway.pem:false' && grep -qx 'MM_GATEWAY_HOST=$HOST' '$P/secrets/doop.env' && ! grep -q 'BEGIN' '$P/secrets/doop.env'"
 check "the design lead's account and agent key (the first start, as before)" bash -c "for i in \$(seq 1 60); do [ -s '$P/secrets/doop-agent-key' ] && break; sleep 1; done; [ -s '$P/secrets/doop-agent-key' ]"
