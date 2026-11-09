@@ -32,7 +32,8 @@ case "${1:-}" in
        node "$(dirname "$(readlink -f "$0")")/lib/claude.mjs" trust $mem "$W" >/dev/null 2>&1 || true
        # commits show who made them: lead-<role> -> <role>, w-<item> -> code-worker
        case "$1" in lead-*) who=${1#lead-};; w-*) who=code-worker;; *) who=$1;; esac
-       $G config extensions.worktreeConfig true
+       # a box mounts code/.git/config read-only (sy-jzl8): write it only when the setting is not there yet
+       [ "$($G config --bool --get extensions.worktreeConfig 2>/dev/null)" = true ] || $G config extensions.worktreeConfig true
        git -C "$W" config --worktree user.name "$who"
        git -C "$W" config --worktree user.email "$who@$(basename "$P").local"
        # Workers run arbitrary code (npm, node): every shell command they run is jailed by bubblewrap through

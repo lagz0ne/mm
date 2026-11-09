@@ -45,6 +45,7 @@ suite test/engine-drift.sh        hermetic
 suite test/guard.sh               hermetic
 suite test/init-retry.sh          hermetic
 suite test/lead.sh                hermetic
+suite test/wt-ro-config.sh        hermetic
 suite test/lead-workspace.sh      hermetic
 suite test/memory-links.sh        hermetic
 suite test/mm-approve.sh          hermetic
@@ -290,7 +291,7 @@ rule template/bin/lead            test/lead.sh test/lead-workspace.sh test/memor
 rule template/bin/svc             test/upstream.mjs test/sockets.sh
 rule template/bin/trace           test/trace-refused.sh test/bd-actor.sh test/owner-card-bd.sh test/span-answers.sh test/bd-home.sh
 rule template/bin/wake            test/wake-*.mjs test/restore-drill.sh
-rule template/bin/wt              test/sysworkers.sh test/memory-links.sh test/lead.sh
+rule template/bin/wt              test/sysworkers.sh test/memory-links.sh test/lead.sh test/wt-ro-config.sh
 rule template/bin/persona         @engine
 rule template/bin/raci            @engine
 rule template/bin/role            @engine
