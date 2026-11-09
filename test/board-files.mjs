@@ -96,6 +96,15 @@ w('docs/guide.md', '# Guide\n\nRead me.\n')
 w('docs/sub/deeper.txt', 'deep\n')
 w('plans/next.md', '# Next\n')
 w('memory/MEMORY.md', '# Memory\n')
+// files that look like they hold a key (the shapes of bin/lib/secret-scan.mjs, built here so this file holds none)
+const AWS_SHAPE = 'AKIA' + 'Q'.repeat(4) + '7'.repeat(12), PEM_SHAPE = '-----BEGIN ' + 'OPENSSH PRIVATE KEY' + '-----'
+w('docs/aws.md', `# Deploy notes\n\nkey id: ${AWS_SHAPE}\n${MARK}\n`)
+w('docs/sub/keys.md', `# Keys\n\n${PEM_SHAPE}\n${MARK}\n`)
+w('artifacts/ab-7/shot.txt', 'x'.repeat(3 << 20) + `\n${AWS_SHAPE}\n${MARK}\n`) // past the first 1 MB chunk, past the 2 MB view
+w('memory/leak.md', `${PEM_SHAPE}\n${MARK}\n`)
+// a file that changes: clean, then a key of the same size (only its mtime differs), then clean again
+const LATER_CLEAN = `# Later\n${'a'.repeat(AWS_SHAPE.length)}\n`, LATER_KEY = `# Later\n${AWS_SHAPE}\n`
+w('docs/later.md', LATER_CLEAN)
 w('leads/notes.md', `# ${MARK}\n`)
 // links: one inside its folder (kept), one out of it, one to a forbidden folder, a top folder that is a link out
 fs.symlinkSync('guide.md', path.join(B, 'docs', 'inlink.md'))
@@ -120,7 +129,12 @@ const bdSrv = http.createServer((req, res) => {
 })
 await new Promise((r) => bdSrv.listen(0, '127.0.0.1', r))
 fs.writeFileSync(path.join(T, 'paseo'), '#!/bin/sh\ncase "$1" in ls) echo "[]" ;; esac\n', { mode: 0o755 })
-fs.writeFileSync(path.join(T, 'merman'), '#!/bin/sh\ncat >/dev/null\nprintf \'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 80" width="200" height="80"><rect width="200" height="80" fill="#e30613"/></svg>\'\n', { mode: 0o755 })
+// Mermaid: the real merman-cli when one is given (BOARD_FILES_MERMAN) or on PATH; else a stand-in that draws a grey
+// box marked "stand-in" (the first round's stand-in drew a red box, which a screenshot showed as if an error)
+const which = (b) => (process.env.PATH || '').split(':').map((d) => path.join(d, b)).find((p) => { try { fs.accessSync(p, fs.constants.X_OK); return true } catch { return false } })
+const MERMAN_REAL = process.env.BOARD_FILES_MERMAN || which('merman-cli') || ''
+fs.writeFileSync(path.join(T, 'merman'), '#!/bin/sh\ncat >/dev/null\nprintf \'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 80" width="200" height="80"><rect width="200" height="80" fill="#ddd"/><text x="100" y="45" text-anchor="middle" font-size="14">stand-in diagram</text></svg>\'\n', { mode: 0o755 })
+console.log(`  mermaid: ${MERMAN_REAL ? 'the real merman-cli' : 'a stand-in (set BOARD_FILES_MERMAN=<merman-cli> for the real one)'}`)
 
 // ---------- the board: the real server.mjs ----------
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519')
@@ -131,7 +145,7 @@ const PORT = await freePort(), PPORT = await freePort()
 let out = ''
 const srv = spawn('node', [path.join(B, 'site', 'server.mjs')], { cwd: B, stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, PORT: String(PORT), HOST: '127.0.0.1',
   BD_SERVE: `http://127.0.0.1:${bdSrv.address().port}`, PASEO_BIN: path.join(T, 'paseo'), PASEO_NO_SDK: '1', BOARD_PROJECT: 'ab', MM_PROJECT: 'ab',
-  MERMAN_BIN: path.join(T, 'merman'), BOARD_PUBLIC_PORT: String(PPORT), MM_AUTH_PUBLIC_KEY: publicKey.export({ type: 'spki', format: 'pem' }) } })
+  MERMAN_BIN: MERMAN_REAL || path.join(T, 'merman'), BOARD_PUBLIC_PORT: String(PPORT), MM_AUTH_PUBLIC_KEY: publicKey.export({ type: 'spki', format: 'pem' }) } })
 srv.stdout.on('data', (d) => (out += d)); srv.stderr.on('data', (d) => (out += d))
 let up = false
 for (let i = 0; i < 80 && !up; i++) { try { await fetch(`http://127.0.0.1:${PORT}/api/whoami`); up = true } catch { await sleep(100) } }
@@ -152,7 +166,7 @@ try {
   let r = await raw('/api/files')
   ok('the top: artifacts, docs, memory, plans (not code/docs, a link out; nothing else of the root)', r.status === 200 && names(r) === 'artifacts docs memory plans', r.body.toString().slice(0, 300))
   r = await raw('/api/files?path=docs')
-  ok('docs/: the guide, the link inside it and the sub-folder; no dotfile, secrets, node_modules or link out', r.status === 200 && names(r) === 'guide.md inlink.md sub', r.body.toString().slice(0, 400))
+  ok('docs/: the guide, the link inside it, later.md and the sub-folder; no dotfile, secrets, node_modules, link out or file with a key', r.status === 200 && names(r) === 'guide.md inlink.md later.md sub', r.body.toString().slice(0, 400))
   r = await raw('/api/files?path=artifacts/ab-7')
   const ab7 = JSON.parse(r.body.toString()).entries
   ok('artifacts/ab-7/: every document, not the dotfile nor the link out', ab7.map((e) => e.name).sort().join(' ') === 'big.txt code.js flow.mmd logo.svg notes.md page.html pic.png tool.bin', ab7.map((e) => e.name).join(' '))
@@ -206,11 +220,64 @@ try {
   r = await raw('/api/files/raw/docs/guide.md', PPORT, { host: HOST, 'x-mm-assertion': 'e30.bad' })
   ok('a forged assertion: 401', r.status === 401)
   r = await raw('/api/files?path=docs', PPORT, { host: HOST, 'x-mm-assertion': sign('vic', 'viewer') })
-  ok('a viewer signed in: the list', r.status === 200 && names(r) === 'guide.md inlink.md sub')
+  ok('a viewer signed in: the list', r.status === 200 && names(r) === 'guide.md inlink.md later.md sub')
   r = await raw('/api/files/raw/docs/guide.md', PPORT, { host: HOST, 'x-mm-assertion': sign('vic', 'viewer') })
   ok('a viewer signed in: the file', r.status === 200 && r.body.toString().includes('# Guide'))
   r = await raw('/api/files/raw/secrets/key', PPORT, { host: HOST, 'x-mm-assertion': sign('olga', 'owner') })
   ok('the owner signed in, a way out: 404', r.status === 404 && !r.body.toString().includes(MARK))
+
+  step('plans/ and memory/: the team\'s only')
+  const as = (u, role) => ({ host: HOST, 'x-mm-assertion': sign(u, role) })
+  r = await raw('/api/files', PPORT, as('vic', 'viewer'))
+  ok('a viewer: the top lists artifacts and docs only', r.status === 200 && names(r) === 'artifacts docs', r.body.toString().slice(0, 300))
+  for (const p of ['plans', 'memory', 'plans/next.md', 'memory/MEMORY.md']) {
+    const l = await raw(`/api/files?path=${encodeURIComponent(p)}`, PPORT, as('vic', 'viewer')), a = await raw(`/api/files/raw/${p}`, PPORT, as('vic', 'viewer'))
+    const d = await raw(`/api/files/raw/${p}?download=1`, PPORT, as('vic', 'viewer'))
+    ok(`a viewer, ${p}: 404 to list, read and download`, l.status === 404 && a.status === 404 && d.status === 404 && !/Next|Memory/.test(a.body.toString() + d.body.toString()), `${l.status}/${a.status}/${d.status}`)
+  }
+  for (const role of ['member', 'designer', 'owner']) {
+    const top = await raw('/api/files', PPORT, as('mia', role))
+    const l = await raw('/api/files?path=memory', PPORT, as('mia', role))
+    const a = await raw('/api/files/raw/plans/next.md', PPORT, as('mia', role)), m = await raw('/api/files/raw/memory/MEMORY.md', PPORT, as('mia', role))
+    ok(`a ${role}: all four folders, memory/ listed, plans/next.md and memory/MEMORY.md read (200)`, top.status === 200 && names(top) === 'artifacts docs memory plans'
+      && l.status === 200 && names(l) === 'MEMORY.md' && a.status === 200 && a.body.toString() === '# Next\n' && m.status === 200 && m.body.toString() === '# Memory\n',
+      `${top.status} ${top.status === 200 ? names(top) : ''} / ${l.status} / ${a.status} / ${m.status}`)
+  }
+  r = await raw('/api/files?path=plans')
+  ok('the local side (the leads): plans/ as before', r.status === 200 && names(r) === 'next.md')
+
+  step('a file that looks like it holds a key: 404 for everyone, and not listed')
+  const KEYED = ['docs/aws.md', 'docs/sub/keys.md', 'artifacts/ab-7/shot.txt', 'memory/leak.md']
+  const askers = [['the local side', PORT, {}], ['a viewer', PPORT, as('vic', 'viewer')], ['a member', PPORT, as('mia', 'member')], ['the owner', PPORT, as('olga', 'owner')]]
+  for (const p of KEYED) for (const [who, port, h] of askers) {
+    if (p.startsWith('memory/') && who === 'a viewer') continue // already a 404 for the folder
+    const a = await raw(`/api/files/raw/${p}`, port, h), d = await raw(`/api/files/raw/${p}?download=1`, port, h), hd = await raw(`/api/files/raw/${p}`, port, h, 'HEAD')
+    const body = a.body.toString('latin1') + d.body.toString('latin1')
+    ok(`${p}, ${who}: 404 to read, download and HEAD, nothing of it`, a.status === 404 && d.status === 404 && hd.status === 404 && !body.includes(MARK) && !body.includes('AKIA') && !body.includes('BEGIN'), `${a.status}/${d.status}/${hd.status}`)
+  }
+  r = await raw('/api/files/raw/artifacts/ab-7/shot.txt')
+  ok('the 404 is the same as a missing file\'s (no hint of why)', r.body.toString() === (await raw('/api/files/raw/artifacts/ab-7/nope.txt')).body.toString(), r.body.toString())
+  const lists = await Promise.all(['docs', 'docs/sub', 'artifacts/ab-7', 'memory'].map((p) => raw(`/api/files?path=${encodeURIComponent(p)}`, PORT, {})))
+  const listed = lists.map((x) => JSON.parse(x.body.toString()))
+  const FIELDS = 'dir kind mtime name path size'
+  ok('no list names them or marks anything (each answer: path and entries; each entry: its six fields)', listed.every((x) => Object.keys(x).sort().join(' ') === 'entries path'
+    && x.entries.every((e) => Object.keys(e).sort().join(' ') === FIELDS && !KEYED.includes(e.path))), JSON.stringify(listed).slice(0, 400))
+
+  step('the scan\'s cache follows the file (path + mtime + size)')
+  const later = path.join(B, 'docs', 'later.md')
+  const laterNow = async () => { const a = await raw('/api/files/raw/docs/later.md'); const l = await raw('/api/files?path=docs'); return { status: a.status, body: a.body.toString(), listed: names(l).includes('later.md') } }
+  let s = await laterNow()
+  ok('clean: 200 and listed', s.status === 200 && s.body === LATER_CLEAN && s.listed, JSON.stringify(s))
+  fs.writeFileSync(later, LATER_KEY); fs.utimesSync(later, new Date(), new Date(Date.now() + 5000))
+  s = await laterNow()
+  ok('a key written in (the same size, a new mtime): 404 and not listed', s.status === 404 && !s.body.includes('AKIA') && !s.listed, JSON.stringify(s))
+  fs.writeFileSync(later, LATER_CLEAN); fs.utimesSync(later, new Date(), new Date(Date.now() + 10000))
+  s = await laterNow()
+  ok('clean again: 200 and listed', s.status === 200 && s.body === LATER_CLEAN && s.listed, JSON.stringify(s))
+  const t0 = performance.now()
+  for (let i = 0; i < 20; i++) await raw('/api/files?path=artifacts/ab-7')
+  const per = (performance.now() - t0) / 20
+  ok(`a folder with a 3 MB file, listed again: fast (cached; ${per.toFixed(1)} ms a list)`, per < 50, `${per} ms`)
 
   step('the view at 390x844')
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
@@ -260,6 +327,8 @@ try {
   f = await open('flow.mmd')
   await f.locator('img[alt="Mermaid diagram"]').waitFor({ timeout: 5000 }).catch(() => {})
   ok('a .mmd file: a diagram', (await f.locator('img[alt="Mermaid diagram"]').count()) === 1)
+  await f.locator('img[alt="Mermaid diagram"]').evaluate((i) => i.complete || new Promise((r) => { i.onload = r; i.onerror = r })).catch(() => {})
+  await page.screenshot({ path: path.join(SHOTS, 'files-mmd-390.png') })
   f = await open('pic.png')
   const img = f.locator('img[src="/api/files/raw/artifacts/ab-7/pic.png"]')
   await img.evaluate((i) => i.complete || new Promise((r) => { i.onload = r; i.onerror = r })).catch(() => {})

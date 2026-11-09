@@ -16,7 +16,7 @@ import { exportQuery, flowRows, parseExport, PAIRS } from './flow-rows.mjs'
 import { waitingFor } from './waiting.mjs'
 import { toReview } from './review.mjs'
 import { designsApi } from './designs.mjs'
-import { filesApi } from './files.mjs'
+import { filesApi, INNER_ROLES } from './files.mjs'
 import { APPROVED_HEAD, goLabels, headRefusal, isApproved, isNonGoAsk, parseCard, SIGNED_HEAD } from '../bin/lib/owner-card.mjs'
 import { readGlossary } from '../bin/lib/glossary.mjs'
 import { SETUP_BRIEF } from '../bin/lib/message.mjs'
@@ -1070,9 +1070,9 @@ const getItem = (id) => fetch(new URL(`/v0/beads/issues/${encodeURIComponent(id)
 const designs = designsApi({ ROOT, send, getItem, allItems, svcUrl, svcPublic,
   me: (req) => (req.gateway ? req.gateway.u : cookieUser(req) || '') })
 
-// Files (sy-oprc; site/files.mjs): the board's document folders, read-only. GET only: every role on the public side
-// may read them, as the artifacts.
-const files = filesApi({ ROOT, send })
+// Files (sy-oprc; site/files.mjs): the board's document folders, read-only, GET only. On the public side every role
+// reads artifacts/ and docs/; plans/ and memory/ only the owner, a member or a designer (a viewer gets 404).
+const files = filesApi({ ROOT, send, inner: (req) => !req.gateway || INNER_ROLES.has(req.gateway.r) })
 
 let cfg
 startMetrics()
