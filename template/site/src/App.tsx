@@ -36,6 +36,7 @@ const NewItemM = memo(NewItem), IdentifyM = memo(Identify), ForYouM = memo(ForYo
 const EMPTY_META: Meta = { project: '', leads: {}, creators: {}, last: {} }
 const SLOW_MIN = 15 // a ready item nobody picked up for this long turns red
 const LONG_PRESS_MS = 450 // a press this long on a phone marks the card's links instead of opening it
+const ANSWERED_MS = 120e3 // an answered item stays out of Needs you this long while wake removes its needs-you (sy-e234)
 
 export default function App() {
   const [issues, setIssues] = useState<Issue[]>([])
@@ -46,6 +47,9 @@ export default function App() {
   const [idSource, setIdSource] = useState('')
   const [me, setMe] = useState<{ approval?: 'label' | 'telegram'; home?: string; role?: string }>({})
   const [waiting, setWaiting] = useState<WaitingEntry[] | null>(null)
+  // an item the owner answered in For you (Send reply, Done: their comment, sy-e234) leaves Needs you and its count at
+  // once; wake removes its needs-you a moment later. Out for ANSWERED_MS only: one still labelled then shows again.
+  const [answered, setAnswered] = useState<Record<string, number>>({})
   const [identifying, setIdentifying] = useState(false)
   const [links, setLinks] = useState<{ name: string; label: string; url: string }[]>([])
   const [role, setRole] = useState('all')
@@ -91,6 +95,7 @@ export default function App() {
   const [tick, setTick] = useState(0)
   // bumps when the open item changed (or after a full load): the open item reloads
   const [itemTick, setItemTick] = useState(0)
+  const shownWaiting = useMemo(() => waiting && waiting.filter((w) => !(Date.now() - (answered[w.id] || 0) < ANSWERED_MS)), [waiting, answered, tick])
   const search = useRef<HTMLInputElement>(null)
   // Phones (sy-81dm): one column at a time, its tabs on top; Now and Activity cover the board behind one tap.
   const phone = usePhone()
@@ -262,6 +267,7 @@ export default function App() {
   const closeOpen = useCallback(() => setOpenId(null), [setOpenId])
   const onCreated = useCallback((i: Issue) => { load(); toast.success(`Created ${i.id}`) }, [load])
   const onIdentified = useCallback((n: string) => { setActor(n); setIdSource('self'); toast.success(`You are ${n}`) }, [])
+  const onAnswered = useCallback((id: string) => setAnswered((a) => ({ ...a, [id]: Date.now() })), [])
   // the links a hovered (or long-pressed) card marks come from this list: no fetch per hover (sy-x7kh)
   useEffect(() => setLinkGraph(issues), [issues])
   // a long press marks until the next tap anywhere, Escape, or another view
@@ -319,7 +325,7 @@ export default function App() {
       {/* One line (sy-p88g): the project, its views, the goal chip; the column counts only on wide screens (the
           column heads and the phone's tabs show them anyway), who is working, live, and who you are. */}
       {human ? (
-        <HumanBar project={meta.project} view={hview} needs={waiting?.length ?? 0} panels={meta.panels || []} links={links}
+        <HumanBar project={meta.project} view={hview} needs={shownWaiting?.length ?? 0} panels={meta.panels || []} links={links}
           role={role} onRole={setRole} q={q} onQ={setQ} search={search} epics={epics} issues={issues} onOpenItem={setOpenId}
           live={live} actor={actor} home={me.home} onNew={() => setCreating(true)} nowCount={presence.length} onNow={() => setSide(true)} />
       ) : phone ? (
@@ -371,8 +377,8 @@ export default function App() {
       {human && hview === 'foryou' ? (
         <main className="min-h-0 flex-1 overflow-auto">
           {/* keyed by its marks' key: For you may mount before /api/meta names the project; it reads its marks again then */}
-          <ForYouM key={`${meta.project || 'board'}:${actor}`} waiting={waiting} owner={me.role === 'owner'} approval={me.approval} storeKey={`${meta.project || 'board'}:${actor}`} tick={tick}
-            onOpen={setOpenId} onChanged={load} />
+          <ForYouM key={`${meta.project || 'board'}:${actor}`} waiting={shownWaiting} owner={me.role === 'owner'} approval={me.approval} storeKey={`${meta.project || 'board'}:${actor}`} tick={tick}
+            onOpen={setOpenId} onChanged={load} onAnswered={onAnswered} />
         </main>
       ) : view === 'glossary' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Glossary /></Suspense> : view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
       {/* The toolbar from md up; on a phone the bar's menu holds the same controls (sy-hrsm). */}
