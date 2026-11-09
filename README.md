@@ -145,6 +145,7 @@ node test/wake-ondemand.mjs  # bin/wake starts a lead with no agent on demand, c
 node test/wake-twoleads.mjs  # bin/wake keeps one live lead per role: archives an older one (never mid-turn), wakes only the newest
 node test/wake-reconcile.mjs # bin/wake's reconcile loop: queue heads within capacity, expired claims requeued, restarts lose nothing
 node test/wake-kept.mjs      # bin/wake, a kept role's agent gone and back: one note, needs-you on P0/P1 only, its own labels removed
+node test/wake-owner-card.mjs  # bin/wake: the hop limit pauses (label paused, the Lead woken); needs-you only with an owner card
 node test/lead-state.mjs     # the board's lead states (ready / working on / waiting for you / blocked / start failed)
 test/machine-panel.sh        # the system board's machine panel (SITE_NODE_MODULES=<a site's node_modules>)
 node test/project-item.mjs   # the machine panel's filing on the public side: the owner's only (hermetic, stub mm)
