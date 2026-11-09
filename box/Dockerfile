@@ -49,6 +49,34 @@ RUN cd /opt/mm-npm && npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
  && for b in claude paseo portless; do ln -s /opt/mm-npm/node_modules/.bin/$b /usr/local/bin/$b; done \
  && npm cache clean --force && claude --version && paseo --version && portless --version
 
+# What a project's own work needs (sy-qfca): ffmpeg (apt); merman-cli, the board's Mermaid renderer (MERMAN_BIN, the
+# version and sha256 the manifest installs on the host); a headless Chrome for browser tests (Chrome for Testing,
+# sha256 pinned here; not apt's chromium, a snap stub on 24.04) with the libraries it links (ldd clean, checked below).
+# `chromium` runs it with --no-sandbox: the box is the jail (its seccomp refuses the user namespace Chrome's sandbox
+# needs) and --disable-dev-shm-usage (the box's /dev/shm is small). Playwright / Vitest: launchOptions.executablePath =
+# process.env.CHROME_PATH (no `playwright install`: the box can't reach its CDN); Puppeteer reads its own variable.
+ARG MERMAN=0.9.3
+ARG MERMAN_SHA256=e93dbf741319190d53107c4277b373d357dcdad3f4f7e50f114a51c9b682109b
+ARG CHROME=157.0.8103.38
+ARG CHROME_SHA256=8cdeb344e9b2cefe59f4aea8d1d93d5d93054c03cde217665c16fc1f62e72a66
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends ffmpeg fonts-liberation libasound2t64 libatk-bridge2.0-0t64 \
+    libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libexpat1 libgbm1 libglib2.0-0t64 libnspr4 \
+    libnss3 libpango-1.0-0 libudev1 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
+ && dpkg-query -W -f '${Package} ${Version}\n' >/etc/mm-box.packages && rm -rf /var/lib/apt/lists/* \
+ && cd /tmp \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o merman.tar.xz https://github.com/Latias94/merman/releases/download/v${MERMAN}/merman-cli-x86_64-unknown-linux-gnu.tar.xz \
+ && echo "${MERMAN_SHA256}  merman.tar.xz" | sha256sum -c - \
+ && tar -xJf merman.tar.xz -C /usr/local/bin --strip-components=1 merman-cli-x86_64-unknown-linux-gnu/merman-cli \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o chrome.zip https://storage.googleapis.com/chrome-for-testing-public/${CHROME}/linux64/chrome-linux64.zip \
+ && echo "${CHROME_SHA256}  chrome.zip" | sha256sum -c - \
+ && unzip -q chrome.zip -d /opt && mv /opt/chrome-linux64 /opt/chrome && rm -f /opt/chrome/chrome_sandbox \
+ && printf '#!/bin/sh\nexec /opt/chrome/chrome --no-sandbox --disable-dev-shm-usage "$@"\n' >/usr/local/bin/chromium \
+ && chmod 0755 /usr/local/bin/chromium && rm -rf /tmp/* \
+ && ! ldd /opt/chrome/chrome | grep 'not found' && ! ldd /usr/local/bin/merman-cli | grep 'not found' \
+ && ffmpeg -version | head -1 && merman-cli --version && chromium --version
+ENV CHROME_PATH=/usr/local/bin/chromium PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/chromium PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
 RUN userdel -r ubuntu 2>/dev/null; mkdir -p "$(dirname ${HOME_DIR})" && useradd -u ${UID} -d ${HOME_DIR} -M -s /bin/bash box
 # the box runs as its own uid (mm passes --user and its own passwd), so the project's repos are owned by another uid:
 # git trusts them (every repo in a box is that project's), in the system config the box can't change
