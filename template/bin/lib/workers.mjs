@@ -83,6 +83,8 @@ export function folders(P = ROOT) {
 
 // ---------- bin/lead worker ... ----------
 const die = (m, code = 1) => { console.error(`lead worker: ${m}`); process.exit(code) }
+// a policy answer to the lead, not a failure (sy-60id): bin/trace counts "lead worker: refused: " as refused, as bd's
+const refuse = (m) => { console.error(`lead worker: refused: ${m}`); process.exit(1) }
 const PASEO = E.PASEO_BIN || 'paseo'
 // the CLI only (leads' Paseo use stays the CLI, under their permission rules; bin/lib/paseo.mjs is the engine's)
 const pcli = (args, ms = 60000) => execFileSync(PASEO, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: ms, env: agentEnv() })
@@ -129,7 +131,7 @@ async function mine(P, role, name, archived = false) {
 
 async function start(P, role, name, o) {
   const s = need(P, role, name)
-  if (!s.on) die(`${role}: workers are not switched on (roles.json "workers": true is setup's step, after the owner's yes)`)
+  if (!s.on) refuse(`${role}: workers are not switched on (roles.json "workers": true is setup's step, after the owner's yes)`)
   if (!o.item || !/^[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*$/.test(o.item)) die('--item <ID> is required (the item you claimed for it)', 2)
   if (!o.brief) die('--brief <file> is required (what the worker does, tests and reports)', 2)
   let brief = ''
@@ -137,15 +139,15 @@ async function start(P, role, name, o) {
   if (!brief.trim() || brief.length > 65536) die('the brief is empty or longer than 64 KB', 2)
   // the item: yours, in progress (claim it first)
   const items = inProgress(P), it = items.find((i) => i.id === o.item)
-  if (!it || !(it.assignee === role || String(it.assignee || '').startsWith(`${role}/`))) die(`${o.item} is not in progress for ${role}: claim it first (bd update ${o.item} --claim)`)
+  if (!it || !(it.assignee === role || String(it.assignee || '').startsWith(`${role}/`))) refuse(`${o.item} is not in progress for ${role}: claim it first (bd update ${o.item} --claim)`)
   // its place: within the role's capacity and the project's cap (a P0 may go past by one, as wake hands it)
   const ws = await workersOf(cliPaseo, projectName(), workerRoles(P))
-  if (ws.some((w) => w.role === role && w.name === name)) die(`a ${role} worker named ${name} is still there: stop it first (lead worker stop ${role} ${name})`)
+  if (ws.some((w) => w.role === role && w.name === name)) refuse(`a ${role} worker named ${name} is still there: stop it first (lead worker stop ${role} ${name})`)
   const p = places(role, items, ws), add = p.unworked.some((i) => i.id === o.item) ? 0 : 1, over = it.priority === 0 ? 1 : 0
   const cap = Number.isInteger(s.capacity) && s.capacity > 0 ? s.capacity : 1
-  if (p.used + add > cap + over) die(`${role} holds ${p.used} of its capacity ${cap} (each worker is one place, and each item no worker works on): finish, stop or hand over one first`)
+  if (p.used + add > cap + over) refuse(`${role} holds ${p.used} of its capacity ${cap} (each worker is one place, and each item no worker works on): finish, stop or hand over one first`)
   const pcap = projectCap(dirs().mm), t = total([...roleDefs(P).map((r) => r.id), 'setup'], items, ws)
-  if (pcap && t + add > pcap + over) die(`the project holds ${t} of its cap ${pcap}: no new worker now`)
+  if (pcap && t + add > pcap + over) refuse(`the project holds ${t} of its cap ${pcap}: no new worker now`)
   // its folder (bin/wt renders its permissions), then the agent
   const W = execFileSync(path.join(P, 'bin', 'wt'), [role, name, ...(o.ref ? [o.ref] : [])], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], cwd: P }).trim().split('\n').pop()
   const cdir = execFileSync('node', [path.join(P, 'bin', 'lib', 'claude.mjs'), 'trust', '--no-memory', W], { encoding: 'utf8', env: { ...E, MM_PROJECT: projectName() } }).trim()
@@ -171,7 +173,7 @@ async function stop(P, role, name) {
 async function report(P, role, name) {
   need(P, role, name)
   const a = (await mine(P, role, name, true))[0]
-  if (!a) die(`no ${role} worker named ${name}`)
+  if (!a) refuse(`no ${role} worker named ${name}`)
   process.stdout.write(`${role}/${name} (${a.shortId || a.id}, ${a.status}${a.archived ? ', archived' : ''}):\n`)
   process.stdout.write(pcli(['logs', a.id, '--filter', 'text', '--tail', '1']))
 }
