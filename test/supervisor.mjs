@@ -85,6 +85,15 @@ function comment(id, author, text, t = clock) {
   i.comments.push(c); i.updated_at = iso(t); record('comment', i, author, t, c)
 }
 function update(id, f, actor, t = clock) { const i = items.get(id); Object.assign(i, f, { updated_at: iso(t) }); record(f.status === 'closed' ? 'close' : 'update', i, actor, t) }
+// the go as it is given since sy-6gz6: the card names its Head, review signed that head (review's own write, first), and
+// the approver writes approved with approved-head:<that head>. go(): an approver's approved, the way the bridge writes it.
+const GH = 'mm@0a1b2c3'
+const GCARD = (head = GH) => `## Owner\n- **What:** Open a port.\n- **Why:** The service needs it.\n- **You:** Tap Approve\n- **If yes:** Ops opens it.\n- **If no:** It stays shut.\n- **Risk:** low, one port\n- **Head:** ${head}\n\nThe plan.`
+function go(id, labels, actor, t = clock) {
+  const i = items.get(id), sh = `signed-head:${GH}`
+  if (!/\*\*Head:\*\*/.test(i.description) || !i.labels.includes(sh)) update(id, { description: GCARD(), labels: [...new Set([...i.labels, sh])] }, 'review', t)
+  update(id, { labels: [...new Set([...labels, sh, `approved-head:${GH}`])] }, actor, t)
+}
 const srv = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x')
   let body = ''; for await (const ch of req) body += ch
@@ -277,7 +286,7 @@ update('sy-11', { status: 'in_progress' }, 'ops')
 item('sy-12', { title: 't2, approved by a lead', priority: 2, assignee: 'ops', labels: ['t2'] })
 update('sy-12', { labels: ['t2', 'approved'] }, 'platform'); update('sy-12', { status: 'in_progress' }, 'ops')
 item('sy-13', { title: 't2, approved by the bridge', priority: 2, assignee: 'ops', labels: ['t2'] })
-update('sy-13', { labels: ['t2', 'approved'] }, 'bridge'); update('sy-13', { status: 'in_progress' }, 'ops')
+go('sy-13', ['t2', 'approved'], 'bridge'); update('sy-13', { status: 'in_progress' }, 'ops')
 item('sy-14', { title: 't2, its migration applied while open', priority: 2, assignee: 'ops', labels: ['t2'] })
 migration('1800000001-fw', 'open a port (sy-14)', true)
 item('sy-15', { title: 't2, its migration not applied', priority: 2, assignee: 'ops', labels: ['t2'] })
@@ -309,16 +318,16 @@ ok('the migration finding names the migration', /1800000001-fw\.sh/.test(openOf(
 
 step('run 9d (+91 min): approved by the bridge or the owner clears it; leaving in progress clears it; a lead\'s still does not')
 clock = T0 + 91 * MIN
-update('sy-11', { labels: ['t2', 'signed-off', 'approved'] }, 'bridge')
-update('sy-14', { labels: ['t2', 'approved'] }, 'alex') // the owner's name (endpoints.json owner_name)
-update('sy-17', { labels: ['t2', 'approved'] }, 'bridge') // after the fact, on a closed item
-update('sy-20', { labels: ['t2', 'approved'] }, 'bridge')
+go('sy-11', ['t2', 'signed-off', 'approved'], 'bridge')
+go('sy-14', ['t2', 'approved'], 'alex') // the owner's name (endpoints.json owner_name)
+go('sy-17', ['t2', 'approved'], 'bridge') // after the fact, on a closed item
+go('sy-20', ['t2', 'approved'], 'bridge')
 update('sy-12', { status: 'blocked' }, 'ops') // no longer in progress, no migration
 update('sy-18', { labels: ['t2', 'approved', 'signed-off'] }, 'review') // approved was already there (a lead's): still not the approver's
 ok('exit 0', (await supervise()) === 0)
 ok('only sy-18 stays (its approved came from a lead)', openKeys() === `${DIRTY} ${T2('sy-18')}`)
 ok('each cleared one is closed with "Cleared"', ['sy-11', 'sy-12', 'sy-14', 'sy-17'].every((id) => byKey(T2(id)).every((i) => i.status === 'closed' && /Cleared/.test(i.comments.at(-1).text))))
-update('sy-18', { labels: ['t2', 'signed-off'] }, 'ops'); update('sy-18', { labels: ['t2', 'signed-off', 'approved'] }, 'bridge')
+update('sy-18', { labels: ['t2', 'signed-off'] }, 'ops'); go('sy-18', ['t2', 'signed-off', 'approved'], 'bridge')
 clock = T0 + 96 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('approved removed, then set by the bridge: cleared', openKeys() === DIRTY)
@@ -339,7 +348,7 @@ ok('exit 0', (await supervise()) === 0)
 ok('open: sy-21 (/etc/ in the script), sy-22 (/usr/local/ in the rollback), sy-24 (mark tier=2); not sy-23 (a comment), sy-25 (mark tier=1)',
   openKeys() === `${DIRTY} ${T2('sy-21')} ${T2('sy-22')} ${T2('sy-24')}`)
 ok('the finding names the tier it read', /tier-2 migration 1800000006-wrap\.sh/.test(openOf(T2('sy-21'))?.description || ''))
-for (const id of ['sy-21', 'sy-22', 'sy-24']) update(id, { labels: ['t2', 'approved'] }, 'bridge')
+for (const id of ['sy-21', 'sy-22', 'sy-24']) go(id, ['t2', 'approved'], 'bridge')
 clock = T0 + 106 * MIN
 await supervise()
 ok('approved by the bridge: cleared', openKeys() === DIRTY)
@@ -371,7 +380,7 @@ clock = T0 + 121 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('the closed item\'s finding stays open (the same item, not cleared)', items.get(G.id).status !== 'closed' && openOf(T2('sy-27'))?.id === G.id)
 fs.rmSync(path.join(DONE, '1800000012-probe.sh')) // rolled back: its state mark is gone
-update('sy-26', { labels: ['t1', 'approved'] }, 'alex')
+go('sy-26', ['t1', 'approved'], 'alex')
 clock = T0 + 126 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('rollback clears sy-27, the owner\'s approved clears sy-26', openKeys() === DIRTY && /Cleared/.test(items.get(G.id).comments.at(-1).text))
@@ -400,7 +409,7 @@ git(MMR, ['commit', '-q', '--allow-empty', '-m', 'land', '-m', 'sy-32'])
 clock = T0 + 141 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('a commit naming it on mm\'s main opens one (sy-32)', openKeys() === `${DIRTY} ${T2('sy-31')} ${T2('sy-32')}` && openOf(T2('sy-32'))?.priority === 1)
-update('sy-31', { labels: ['t2', 'approved'] }, 'bridge'); update('sy-32', { labels: ['t2', 'approved'] }, 'bridge')
+go('sy-31', ['t2', 'approved'], 'bridge'); go('sy-32', ['t2', 'approved'], 'bridge')
 
 step('run 9i (+377..441 min): unapproved t2 items in progress over 4 h with nothing live: one P3 list, refreshed')
 clock = T0 + 200 * MIN
@@ -426,17 +435,17 @@ const L = openOf(T2('sy-30'))
 ok('sy-30 and sy-33 get a P1; the list clears', openKeys() === `${DIRTY} ${T2('sy-30')} ${T2('sy-33')}` && L?.priority === 1 && byKey('t2-waiting').every((i) => i.status === 'closed'))
 ok('it names the action and its time, never the value', /mm config set api\.enabled" at /.test(L?.description || '') && L.description.includes(iso(T0 + 445 * MIN).replace(/\.\d+Z$/, 'Z')) && !L.description.includes('s3cr3t'))
 ok('and the bridge\'s applied request from mm.api\'s log, not the CLI\'s twice', /mm\.api applied route for p9 \(r1, by bridge\)/.test(L?.description || '') && !/r2/.test(L.description))
-for (const id of ['sy-30', 'sy-33']) update(id, { labels: ['t2', 'approved'] }, 'bridge')
+for (const id of ['sy-30', 'sy-33']) go(id, ['t2', 'approved'], 'bridge')
 clock = T0 + 451 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('approved by the bridge: cleared', openKeys() === DIRTY)
 
 step('run 9k (+456..461 min): a summary from an older Supervisor is read again from the start (sy-m5qr)')
 item('sy-40', { title: 't2, approved by the bridge before an upgrade', priority: 2, assignee: 'ops', labels: ['t2'] })
-update('sy-40', { labels: ['t2', 'approved'] }, 'bridge')
+go('sy-40', ['t2', 'approved'], 'bridge')
 clock = T0 + 456 * MIN
 ok('exit 0', (await supervise()) === 0)
-ok('the state carries its version', JSON.parse(fs.readFileSync(STATE, 'utf8')).v === 4)
+ok('the state carries its version', JSON.parse(fs.readFileSync(STATE, 'utf8')).v === 5)
 // as an older Supervisor left it: no version, its position at the head, and no summary of sy-40's approval
 { const s = JSON.parse(fs.readFileSync(STATE, 'utf8')); delete s.v; delete s.items['sy-40']; fs.writeFileSync(STATE, JSON.stringify(s)) }
 migration('1800000024-fw', 'open a port (sy-40)', true)
@@ -488,10 +497,41 @@ ok('exit 0', (await supervise()) === 0)
 const RL = openOf(T2('sy-41'))
 ok('a recorded route add while sy-41 is in progress, unapproved: a P1', openKeys() === `${DIRTY} ${T2('sy-41')}` && RL?.priority === 1)
 ok('it names the route and its time, the removal too', RL?.description.includes(`"mm route add p7 app.p7 4310 open" at ${iso(T0 + 469 * MIN).replace(/\.\d+Z$/, 'Z')}`) && /"mm route rm p7 p7-old" at /.test(RL.description) && !/tq/.test(RL.description))
-update('sy-41', { labels: ['t2', 'approved'] }, 'bridge')
+go('sy-41', ['t2', 'approved'], 'bridge')
 clock = T0 + 472 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('approved by the bridge: cleared', openKeys() === DIRTY)
+
+step('run 9l2 (+473..476 min): approved counts only for the head it was given for (sy-6gz6)')
+clock = T0 + 473 * MIN
+// sy-50: the bridge's go for mm@0a1b2c3, then the head moved (a rebase) and review signed the new head: no go for it
+item('sy-50', { title: 't2, approved, then its head moved', priority: 2, assignee: 'ops', labels: ['t2'] })
+go('sy-50', ['t2', 'approved'], 'bridge')
+update('sy-50', { description: GCARD('mm@9f8e7d6'), labels: [...items.get('sy-50').labels.filter((l) => !l.startsWith('signed-head:')), 'signed-head:mm@9f8e7d6'] }, 'review')
+migration('1800000030-fw', 'open a port (sy-50)', true)
+// sy-51: an approved from before the head was recorded (no approved-head:), by the bridge: a new tap is needed
+item('sy-51', { title: 't2, approved with no approved-head', priority: 2, assignee: 'ops', labels: ['t2', 'signed-off', `signed-head:${GH}`], description: GCARD() }, 'review')
+update('sy-51', { labels: ['t2', 'signed-off', `signed-head:${GH}`, 'approved'] }, 'bridge')
+migration('1800000031-fw', 'open a port (sy-51)', true)
+// sy-52: the bridge's approved, but a lead wrote the approved-head (to the new head): it does not count
+item('sy-52', { title: 't2, approved-head by a lead', priority: 2, assignee: 'ops', labels: ['t2', 'signed-off', `signed-head:${GH}`], description: GCARD() }, 'review')
+update('sy-52', { labels: ['t2', 'signed-off', `signed-head:${GH}`, 'approved'] }, 'bridge')
+update('sy-52', { labels: ['t2', 'signed-off', `signed-head:${GH}`, 'approved', `approved-head:${GH}`] }, 'platform')
+migration('1800000032-fw', 'open a port (sy-52)', true)
+ok('exit 0', (await supervise()) === 0)
+ok('open: sy-50 (head moved), sy-51 (no approved-head), sy-52 (approved-head by a lead)', openKeys() === `${DIRTY} ${T2('sy-50')} ${T2('sy-51')} ${T2('sy-52')}`)
+ok('sy-50 says for which head the go was and that a new one is needed',
+  /approved for mm@0a1b2c3; the Head is now mm@9f8e7d6: a new go is needed/.test(openOf(T2('sy-50'))?.description || ''))
+ok('sy-51 says its approved names no head', /approved names no head/.test(openOf(T2('sy-51'))?.description || ''))
+ok('sy-52 names who wrote its approved-head', /approved-head:mm@0a1b2c3 was added by platform, who is not an approver/.test(openOf(T2('sy-52'))?.description || ''))
+// the owner's new go for each head now: cleared
+update('sy-50', { labels: ['t2', 'approved', 'signed-head:mm@9f8e7d6', 'approved-head:mm@9f8e7d6'] }, 'bridge')
+update('sy-51', { labels: [...items.get('sy-51').labels, `approved-head:${GH}`] }, 'bridge')
+update('sy-52', { labels: items.get('sy-52').labels.filter((l) => !l.startsWith('approved-head:')) }, 'ops')
+update('sy-52', { labels: [...items.get('sy-52').labels, `approved-head:${GH}`] }, 'bridge')
+clock = T0 + 476 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('a new go for the head now (the bridge\'s approved-head): all three cleared', openKeys() === DIRTY)
 
 step('run 9m (+481..491 min): the ledger switched on (sy-1jmi): only signed lines count, each for its migration\'s subject')
 if (fs.existsSync('/etc/mm-approve.conf')) console.log('  skip: this machine has /etc/mm-approve.conf (the verifiers never read a test config then)')
@@ -517,7 +557,7 @@ else {
   ENV.MM_APPROVE_CONF = ACONF
   clock = T0 + 481 * MIN
   item('sy-60', { title: 't2 in progress, approved by the bridge, no ledger line', priority: 2, assignee: 'ops', labels: ['t2'] })
-  update('sy-60', { labels: ['t2', 'approved'] }, 'bridge'); update('sy-60', { status: 'in_progress' }, 'ops')
+  go('sy-60', ['t2', 'approved'], 'bridge'); update('sy-60', { status: 'in_progress' }, 'ops')
   item('sy-61', { title: 't2 in progress, a signed line', priority: 2, assignee: 'ops', labels: ['t2'] })
   update('sy-61', { status: 'in_progress' }, 'ops'); approve('sy-61', ['git:' + 'a'.repeat(40)])
   item('sy-62', { title: 't2, migration applied, a line for another subject', priority: 2, assignee: 'ops', labels: ['t2'] })
@@ -525,7 +565,7 @@ else {
   item('sy-63', { title: 't2, migration applied, a line for its subject', priority: 2, assignee: 'ops', labels: ['t2'] })
   migration('1800000015-fw', 'a port (sy-63)', true); approve('sy-63', ['1800000015-fw'])
   item('sy-64', { title: 't1, approved label by the bridge, no line', priority: 2, assignee: 'ops', labels: ['t1'] })
-  update('sy-64', { labels: ['t1', 'approved'] }, 'bridge')
+  go('sy-64', ['t1', 'approved'], 'bridge')
   item('sy-65', { title: 't2, a line for its subject, then a second migration naming it', priority: 2, assignee: 'ops', labels: ['t2'] })
   migration('1800000016-a', 'step a (sy-65)', true); approve('sy-65', ['1800000016-a']); migration('1800000017-b', 'step b (sy-65)', true)
   // a forged line: well formed, signed by another key, for sy-60 (the ledger's owner may append; it doesn't count)
