@@ -98,6 +98,20 @@ check() { local d=$1; shift; if "$@" >"$WORK/check.out" 2>&1; then ok "$d"; else
 # the browser: curl from the box's container, to Traefik only, with names resolved to Traefik
 B() { $DOCKER exec "$BOX" curl -sk --resolve "$BOARD:443:$TIP" --resolve "$AUTH:443:$TIP" "$@"; }
 J=/tmp/jar
+# ...and its board hop (sy-wbdn): the board's callback answers with a page that moves on by meta refresh (not a 302),
+# so the next request is same-site and carries the board's Strict cookie. curl -L stops at that page; BH follows the
+# redirects, then that one refresh (a path on the board's own host, from its callback only), with the same cookie jar,
+# as a browser does.
+BH() { local jar=$1 out eff next
+  out=$(B -L -c "$jar" -b "$jar" -w '\n%{url_effective}' "$2") || return 1
+  eff=$(printf '%s\n' "$out" | tail -1); out=$(printf '%s\n' "$out" | sed '$d')
+  next=$(printf '%s' "$out" | sed -n 's/.*<meta http-equiv="refresh" content="0;url=\([^"]*\)".*/\1/p' | head -1)
+  [ -n "$next" ] || { printf '%s\n' "$out"; return 0; }
+  case "$eff" in "https://$BOARD/_mm/auth/callback?"*) ;; *) echo "a refresh not from the board's callback: $eff"; return 1 ;; esac
+  next=$(printf '%s' "$next" | sed 's/&#34;/"/g; s/&#39;/'"'"'/g; s/&#60;/</g; s/&#62;/>/g; s/&#38;/\&/g')
+  case "$next" in /[!/]*|/) ;; *) echo "a refresh off the board's host: $next"; return 1 ;; esac
+  B -c "$jar" -b "$jar" "https://$BOARD$next"
+}
 
 echo "== through Traefik"
 check "no session: Traefik sends the browser to the sign-in page" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -D - -o /dev/null https://$BOARD/api/whoami | grep -qi '^location: https://$AUTH/s?b=$BOARD'"
@@ -111,7 +125,7 @@ check "mm user link alice: a single-use link on the gateway's host" sh -c "echo 
 B -c $J -b $J -o /dev/null "$L"
 LQ=${L#*\?}; LT=$(printf '%s' "$LQ" | tr '&' '\n' | sed -n 's/^token=//p'); LC=$(printf '%s' "$LQ" | tr '&' '\n' | sed -n 's/^callbackURL=//p')
 B -c $J -b $J -o /dev/null -H "origin: https://$AUTH" -d "t=$LT&c=$LC" "https://$AUTH/s/l"
-check "the link (through Traefik): a session, then the board opens with no new link (callback, the board's cookie)" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -L -c $J -b $J https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\"'"
+check "the link (through Traefik): a session, then the board opens with no new link (callback, the board's cookie)" sh -c "$(declare -f B BH); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; BH $J https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\"'"
 check "the same link again: no new session" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; ! B -D - -o /dev/null -H 'origin: https://$AUTH' -d 't=$LT&c=$LC' 'https://$AUTH/s/l' | grep -qi 'set-cookie: __Secure-better-auth.session_token'"
 check "the board knows alice, through Traefik and the gateway" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\".*\"source\":\"gateway\"'"
 check "alice sees the board's items" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J 'https://$BOARD/api/v0/beads/issues?limit=20' | grep -q 'seen through Traefik'"
@@ -122,7 +136,7 @@ TKB=$(MM_IN 'mm token bob acme-evil -o json' | jq -r .token); LB=$(MM_IN 'mm use
 B -c $J2 -b $J2 -o /dev/null "$LB"; LBQ=${LB#*\?}
 B -c $J2 -b $J2 -o /dev/null -H "origin: https://$AUTH" -d "t=$(printf '%s' "$LBQ" | tr '&' '\n' | sed -n 's/^token=//p')&c=$(printf '%s' "$LBQ" | tr '&' '\n' | sed -n 's/^callbackURL=//p')" "https://$AUTH/s/l"
 check "a box's .run/ claims this board's host (review sy-b15.17): its member's bearer token gets 401 here" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; [ \"\$(B -o /dev/null -w '%{http_code}' -H 'authorization: Bearer $TKB' https://$BOARD/api/whoami)\" = 401 ]"
-check "...and its member's session never gets into this board (no callback for it)" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; ! B -L -c $J2 -b $J2 https://$BOARD/api/whoami | grep -q '\"actor\":\"bob\"'"
+check "...and its member's session never gets into this board (no callback for it)" sh -c "$(declare -f B BH); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; ! BH $J2 https://$BOARD/api/whoami | grep -q '\"actor\":\"bob\"'"
 check "...while alice, the board's own member, still gets in" sh -c "$(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; B -b $J https://$BOARD/api/whoami | grep -q '\"actor\":\"alice\"'"
 check "mm revoke alice (every project): the next request goes back to sign-in" sh -c "$DOCKER exec -u dev $BOX sh -c 'PATH=\$HOME/.mm/bin:\$PATH mm revoke alice' >/dev/null && $(declare -f B); BOX=$BOX BOARD=$BOARD AUTH=$AUTH TIP=$TIP DOCKER='$DOCKER'; [ \"\$(B -b $J -o /dev/null -w '%{http_code}' https://$BOARD/api/whoami)\" = 302 ]"
 echo; echo "$pass passed, $fail failed"
