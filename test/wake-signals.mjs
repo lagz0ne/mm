@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // bin/wake and the end of a unit of work as a plain bd state change (plans/slp, "All of it is plain bd"):
 //   a reassign (bd update -a <role> --if-assignee/--if-status) wakes the new assignee, also when the writer is the old
-//   one; a reassign to a person labels needs-you; -s blocked wakes the Accountable role, else the board's Lead, else
-//   needs-you; bd dep add wakes the other item's assignee; bd reopen wakes its assignee; bd close wakes nobody. Words in a
+//   one; a reassign to a person labels needs-you only on a lead's card; -s blocked wakes the Accountable role, else the board's Lead, else
+//   nobody (never needs-you, sy-e234); bd dep add wakes the other item's assignee; bd reopen wakes its assignee; bd close wakes nobody. Words in a
 //   comment are not signals. The board's own actors never signal; the hop limit counts reassigns; a working lead gets its
 //   wake only once it is idle. Titles and comments reach a lead only in a fenced block marked as board text; an
 //   upstream:* item blocked with no answer from the system side for a day (here 5 s) gets needs-you, once; a block is read
@@ -112,8 +112,8 @@ try {
   ok('the assignee (platform) reassigns to review: review is woken, told who handed it over', await until(() => /HANDOFF to you from platform on s-1 \(was platform, now open\)[\s\S]*\ns-1: title of s-1\n/.test(to('review'))))
   ok('...the writer (platform) is not woken by its own change', !/s-1/.test(to('platform')))
   change('s-2', 'platform', { assignee: 'alex' })
-  ok('a reassign to a person (the owner, a human): the item is labelled needs-you', await until(() => /label add s-2 needs-you --actor wake/.test(bdlog())))
-  ok('...after wake wrote its owner card (sy-0omb)', /^update s-2 --body-file \S+ --actor wake\nlabel add s-2 needs-you/m.test(bdlog()))
+  ok('a reassign to a person (the owner, a human), no card a lead wrote: not labelled, no card written (sy-e234)',
+    await until(() => /s-2: no owner card a lead wrote: the owner is not asked/.test(opsLog())) && !/s-2/.test(bdlog()))
   change('s-3', 'alex', { assignee: 'review', status: 'open' })
   ok('a human reassigns to review: review is woken', await until(() => /HANDOFF to you from alex on s-3/.test(to('review'))))
   const quiet0 = sent()
@@ -127,8 +127,10 @@ try {
   change('s-5', 'platform', { status: 'blocked' })
   ok('blocked on an item with an activity: its Accountable role (review) is woken instead', await until(() => /BLOCKED: platform set s-5/.test(to('review'))))
   ok('...and not the Lead', !/s-5/.test(to('ops')))
+  const q6 = sent().length
   change('s-6', 'ops', { status: 'blocked' })
-  ok('blocked by the Lead itself: needs-you (the human)', await until(() => /label add s-6 needs-you/.test(bdlog())))
+  ok('blocked by the Lead itself: nobody woken, logged (sy-e234)', await until(() => /BLOCKED on s-6 by ops: no other lead to route it to; nobody woken, the owner not asked/.test(opsLog())))
+  ok('...never needs-you, no card', !/s-6/.test(bdlog()) && !/s-6/.test(sent().slice(q6)))
   const quietUp = sent()
   change('s-16', 'platform', { status: 'blocked' })
   change('s-17', 'ops', { status: 'blocked' })

@@ -30,6 +30,7 @@
 //                        activity of leads/raci.json), edited in place; to ops                                     P3
 //     card:<item>        an open item labelled needs-you whose description has no valid owner card (sy-z5lz; the
 //                        format: bin/lib/owner-card.mjs), with the reasons; to the item's role (its assignee), else ops.
+//                        A card whose You is "Nothing" (it asks nothing) is one too (sy-e234).
 //                        A comment when the reasons change; clears when the card is fixed or needs-you goes     P2
 //     signoff:<item>     an open item labelled signed-off or signed-head:* that an actor other than review (or
 //                        review/<worker>) added, read from the journal as approved is (sy-9bss). Label audit, to ops.
@@ -100,7 +101,7 @@ import * as paseo from './lib/paseo.mjs'
 import { loadConf as approveConf, migrationSubject, readLedger } from './lib/ledger.mjs'
 import { places, projectCap, total, workersOf } from './lib/places.mjs'
 import { leftovers as paseoLeftovers, paseoState } from './lib/workers.mjs'
-import { APPROVED_HEAD, SIGNED_HEAD, approvalRefusal, parseCard } from './lib/owner-card.mjs'
+import { APPROVED_HEAD, SIGNED_HEAD, approvalRefusal, parseCard, youKind } from './lib/owner-card.mjs'
 import { dueAt, openWaits, parseMessage } from './lib/message.mjs'
 import { actOf, lettersOf, mayAsk, noInputOk, rowOf } from './lib/raci.mjs'
 import { formatTask, parseTask } from './lib/task.mjs'
@@ -545,13 +546,16 @@ async function card() {
   for (const i of await issues()) {
     if (i.status === 'closed' || mine(i) || !(i.labels || []).includes('needs-you')) continue
     const r = parseCard(i.description || '', i.labels || [], i.id)
-    if (r.ok) continue
-    const why = r.errors.join('; ')
+    // sy-e234: a valid card whose You is "Nothing" asks the owner nothing, so the item must not wait on them
+    const nothing = r.ok && youKind(r.card.You) === 'nothing'
+    if (r.ok && !nothing) continue
+    const errors = nothing ? ['its You is "Nothing": it asks the owner nothing, so it must not wait on them (needs-you). Remove needs-you, or write what the owner does (Tap Approve, Reply: <question>, Check: <what, where>)'] : r.errors
+    const why = errors.join('; ')
     problems.push({ key: `card:${i.id}`, priority: 2, assignee: roleOf(i.assignee) || ASSIGNEE,
-      title: `Owner card ${r.found ? 'invalid' : 'missing'}: ${i.id} (needs-you)`,
+      title: `Owner card ${nothing ? 'asks nothing' : r.found ? 'invalid' : 'missing'}: ${i.id} (needs-you)`,
       note: why,
-      body: `${i.id} (${i.assignee || 'nobody'}) is labelled needs-you, but its description ${r.found ? 'has an invalid owner card' : 'does not start with the owner card'}:\n\n` +
-        `${r.errors.map((e) => `- ${e}`).join('\n')}\n\nThe owner reads only the card. Write it at the top of the description (\`bd update ${i.id} --body-file <file>\`; ` +
+      body: `${i.id} (${i.assignee || 'nobody'}) is labelled needs-you, but its description ${nothing ? 'has an owner card that asks the owner nothing' : r.found ? 'has an invalid owner card' : 'does not start with the owner card'}:\n\n` +
+        `${errors.map((e) => `- ${e}`).join('\n')}\n\nThe owner reads only the card. Write it at the top of the description (\`bd update ${i.id} --body-file <file>\`; ` +
         'the format: the leads\' brief, "Asking the owner: the owner card"), and check it with `owner-card check ' + i.id + '`. ' +
         'This item closes itself when the card is valid or needs-you is gone.' })
   }

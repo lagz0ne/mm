@@ -4,7 +4,11 @@
 //   - the hop limit: the item gets `paused` (never needs-you) and the board's Lead is woken with it; while `paused` is
 //     on no lead is woken for the item; removing `paused` (the Lead or a human; another lead's removal is undone) resumes it, so does a human comment (wake then
 //     removes the label itself);
-//   - where wake asks the owner itself (a reassign to a person, a block nobody else can take, an upstream wait): an item
+//   - a lead's act asks the owner only on the card a lead wrote (sy-e234): a reassign to a person labels needs-you on
+//     it and writes none; a card whose You is Nothing is never labelled; a block nobody else can take wakes nobody;
+//   - one answer path (sy-e234): a person's comment on a needs-you item whose card asks Reply:/Check: removes needs-you
+//     and wakes the board's Lead (or the role picked); a go ask keeps it; a lead's comment is no answer;
+//   - where wake asks the owner itself (an upstream wait): an item
 //     with no card gets a minimal one first, its old description below it unchanged; an item with a valid card keeps it;
 //     an invalid card someone wrote, or a t2 go ask review has not signed off, is never written over: the Lead is woken
 //     instead, and nothing is labelled;
@@ -53,6 +57,14 @@ add('h-4', { description: GO, labels: ['t2'] }) // a t2 go ask with no sign-off:
 add('b-1', { assignee: 'ops' }) // blocked by the Lead itself: nobody else to take it
 add('u-1', { labels: ['upstream:engine'] }) // waits on the system board
 add('r-1', { description: CARD }) // bd show answers with no card (it changed under wake): the gate refuses
+add('h-5', { description: CARD.replace('Reply: which name?', 'Nothing') }) // a card that asks nothing: never needs-you
+// the owner's answer (sy-e234): a person's comment on a needs-you item with a Reply/Check card removes needs-you
+const CHECK = CARD.replace('Reply: which name?', 'Check: the page at 390 px')
+add('a-1', { description: CARD, labels: ['needs-you'] })
+add('a-2', { description: CHECK, labels: ['needs-you'] })
+add('a-3', { description: GO, labels: ['needs-you', 't2', 'signed-off'] }) // a go ask: only Approve answers it
+add('a-4', { description: CARD, labels: ['needs-you'] }) // a lead's comment is no answer
+add('a-5', { description: CARD, labels: ['needs-you'] }) // a person picks review in the board's To
 const records = [], streams = []
 let seq = 0, n = 0
 const emit = (e) => { e.seq = ++seq; e.ts = now(); records.push(e); for (const s of streams) s.write(`data: ${JSON.stringify(e)}\n\n`) }
@@ -156,13 +168,12 @@ try {
   ok('wake removes paused itself', await until(() => /label remove p-2 paused --actor wake/.test(bdlog()) && !has('p-2', 'paused')))
   ok('...and the board\'s Lead (ops) is woken for the human comment (sy-uykv)', await until(() => /alex commented[\s\S]*Go on with option B/.test(to('ops')) && sent().length > q2.length))
 
-  console.log('== wake asks the owner only with an owner card')
+  console.log('== wake asks the owner only on a card a lead wrote (sy-e234)')
   change('h-1', 'platform', { assignee: 'alex' })
-  ok('a reassign to a person, no card: needs-you', await until(() => has('h-1', 'needs-you')))
-  const c1 = parseCard(I('h-1').description, I('h-1').labels, 'h-1')
-  ok('...with a valid card wake wrote first (a Check:, never a go ask)', c1.ok && /^Check: /.test(c1.card.You) && /handed h-1 to alex, a person/.test(c1.card.What))
-  ok('...the old description below it, unchanged', c1.rest === 'Old text.\n\nSecond paragraph, `as is`.')
-  ok('...card, then label (bd log order)', /update h-1 --body-file [^\n]*\n(?:[^\n]*\n)*?label add h-1 needs-you/.test(bdlog()))
+  ok('a reassign to a person, no card: no needs-you, no card written (only a lead writes one)', await until(() => /h-1: no owner card a lead wrote: the owner is not asked/.test(opsLog()))
+    && !has('h-1', 'needs-you') && I('h-1').description === 'Old text.\n\nSecond paragraph, `as is`.' && !/h-1/.test(bdlog()))
+  change('h-5', 'platform', { assignee: 'alex' })
+  ok('a card whose You is Nothing: no needs-you (it asks nothing)', await until(() => /h-5: its owner card asks the owner nothing/.test(opsLog())) && !has('h-5', 'needs-you') && !/h-5/.test(bdlog()))
   change('h-2', 'platform', { assignee: 'alex' })
   ok('a valid card already there: only the label', await until(() => has('h-2', 'needs-you')) && I('h-2').description === CARD && !/update h-2 /.test(bdlog()))
   change('h-3', 'platform', { assignee: 'alex' })
@@ -170,12 +181,32 @@ try {
   ok('...never written over, never labelled', I('h-3').description === '## Owner\n- **What:** half a card' && !has('h-3', 'needs-you') && !/h-3/.test(bdlog()))
   change('h-4', 'platform', { assignee: 'alex' })
   ok('a t2 go ask review has not signed off: the Lead, no label', await until(() => /OWNER CARD: wake must ask the owner on h-4[\s\S]*before review signed off/.test(to('ops'))) && !has('h-4', 'needs-you') && I('h-4').description === GO)
+  const qb = sent().length
   change('b-1', 'ops', { status: 'blocked' })
-  ok('blocked by the Lead itself (nobody to route it to): a card (Reply:) and needs-you', await until(() => has('b-1', 'needs-you')) && /^Reply: /.test(parseCard(I('b-1').description).card?.You || ''))
+  ok('blocked by the Lead itself (nobody to route it to): nobody woken, logged', await until(() => /BLOCKED on b-1 by ops: no other lead to route it to; nobody woken, the owner not asked/.test(opsLog())))
+  await sleep(800)
+  ok('...no needs-you, no card, no lead woken (sy-e234)', !has('b-1', 'needs-you') && I('b-1').description === '' && !/b-1/.test(bdlog()) && !/b-1/.test(sent().slice(qb)))
   change('u-1', 'platform', { status: 'blocked' })
   await sleep(3500); change('p-1', 'beads', {}) // past the wait (3 s here); any event: a reconcile pass soon after
   ok('an upstream wait past its limit: a card and needs-you, and why on the item', await until(() => has('u-1', 'needs-you') && (I('u-1').comments || []).length > 0)
     && parseCard(I('u-1').description).ok && (I('u-1').comments || []).some((c) => /Blocked on the system board \(upstream:engine\)/.test(c.text)))
+
+  console.log('== one answer path: a person\'s comment on a needs-you Reply/Check item is the answer (sy-e234)')
+  let qa = sent().length
+  comment('a-1', 'alex', '[owner] The first name.')
+  ok('Reply ask: the owner\'s comment removes needs-you (wake)', await until(() => !has('a-1', 'needs-you')) && /label remove a-1 needs-you --actor wake/.test(bdlog()))
+  ok('...and wakes the board\'s Lead (ops), with the comment (sy-uykv)', await until(() => /alex commented[^\n]*on a-1[\s\S]*The first name/.test(to('ops')) && sent().length > qa))
+  ok('...the card stays as the lead wrote it', I('a-1').description === CARD)
+  comment('a-2', 'alex', '[owner] Checked: done, said alex.')
+  ok('Check ask: the comment (the board\'s Done posts one) removes needs-you', await until(() => !has('a-2', 'needs-you')))
+  comment('a-3', 'alex', '[owner] Looks fine.')
+  ok('a go ask (Tap Approve): a comment is no go, needs-you stays', await until(() => /a-3: alex commented; its owner card asks for the go \(Approve\): needs-you left/.test(opsLog())) && has('a-3', 'needs-you') && !/label remove a-3/.test(bdlog()))
+  comment('a-4', 'platform', 'NOTE → ops\nstill waiting on the owner')
+  await sleep(1000)
+  ok('a lead\'s comment on a Reply ask is no answer: needs-you stays', has('a-4', 'needs-you') && !/label remove a-4/.test(bdlog()))
+  qa = sent().length
+  comment('a-5', 'alex', '[owner] → review\nThe second one.')
+  ok('a person\'s answer with a pick (→ review): needs-you removed, review woken', await until(() => !has('a-5', 'needs-you') && /alex commented[^\n]*on a-5[^\n]*they picked you/.test(to('review'))))
 
   console.log('== a refusal of bd\'s gate is bd\'s answer, not an error')
   change('r-1', 'platform', { assignee: 'alex' })
