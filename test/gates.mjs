@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // test/gates and test/gates.map (sy-v47f), hermetic: (1) the map's rules on their own (globs, sets, groups, the
-// catch-all, run order); (2) this repo's own map: it parses, every suite in it exists, every suite in test/ is in it,
+// fallback for an unmapped path, run order, a range that changes the map: sy-sbjh.1); (2) this repo's own map: it parses,
+// every suite in it exists, every suite in test/ is in it, no catch-all rule, a one-file change runs few suites,
 // and every tracked file matches a rule; (3) test/gates against a throwaway fixture repo with a fixture map and stub
 // suites: --list runs nothing; a run is on the head's content (not the caller's edits) in a worktree that is removed
 // after; the result file's shape; the docker group one at a time, hermetic ones side by side; --no-live; a failing
@@ -15,7 +16,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { CONFLICT_FILE, GROUPS, defaultJobs, fetchTool, gatesDir, globMatch, markRun, oldTemplateRef, parseMap, procStart, resolve, select, selectBoth, waitLine } from './lib/gates.mjs'
+import { CONFLICT_FILE, GROUPS, defaultJobs, fetchTool, gatesDir, globMatch, markRun, oldTemplateRef, parseMap, procStart, mapChanges, resolve, select, selectMapChange, waitLine } from './lib/gates.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const GATES = path.join(SRC, 'test', 'gates')
@@ -66,18 +67,52 @@ s = select(fx, ['new/thing.txt'])
 ok('a file no rule names: the fallback (%hermetic %ports)', s.suites.map((x) => x.path).join(' ') === 't/h1.sh t/h2.mjs t/p.sh' && s.files[0].rules.join() === '(fallback)')
 s = select(fx, ['t/d1.sh'])
 ok('a changed suite runs itself, without a rule', s.suites.map((x) => x.path).join(' ') === 't/d1.sh' && s.files[0].rules.join() === '(the suite itself)')
-// review #3, 1: a range that changes the map also uses the base's map (it cannot drop its own gates)
-const fxHead = parseMap(`
+// sy-sbjh.1: a range that changes the map: the head's map for its files, plus the suites of the rules it changed, plus
+// what the base's map chose for a file that the head's drops (review sy-v47f #3: it cannot drop its own gates). Never
+// the base's whole selection, never every suite.
+const fxBase = parseMap(`
 suite t/h1.sh hermetic
+suite t/h2.mjs hermetic
+suite t/p.sh ports
 suite t/d1.sh docker
-rule lib/** t/h1.sh
-rule test/gates.map -
+suite t/d2.sh docker -- --local {mm}
+set two t/h2.mjs
+rule lib/** t/h1.sh t/d1.sh
+rule bin/** @two
+rule test/gates.map t/h1.sh
+rule docs/** -
 fallback %hermetic
 `)
-s = selectBoth(fxHead, fx, ['lib/x.mjs'])
-ok('map changed: the base map\'s suites run too (lib/x.mjs: the head chose t/h1.sh only)', s.suites.map((x) => x.path).join(' ') === 't/h1.sh t/h2.mjs t/d1.sh t/d2.sh', s.suites.map((x) => x.path))
-ok('...a suite only the base declares (dropped by the range) still runs, and its why names the base\'s map', s.suites.find((x) => x.path === 't/d2.sh')?.why.every((w) => /the base's map/.test(w.rule)))
-ok('...a suite both declare runs as the head declares it', s.suites.find((x) => x.path === 't/d1.sh')?.args.length === 0)
+const fxHead = parseMap(`
+suite t/h1.sh hermetic
+suite t/h2.mjs hermetic
+suite t/p.sh ports
+suite t/d1.sh docker
+suite t/d2.sh docker -- {mm}
+suite t/n.sh hermetic
+set two t/h2.mjs t/p.sh
+rule lib/** t/h1.sh
+rule bin/** @two
+rule test/gates.map t/h1.sh
+rule docs/** -
+rule new/** t/n.sh
+fallback %hermetic
+`)
+const paths = (x) => x.suites.map((y) => y.path).join(' ')
+const mc = mapChanges(fxHead, fxBase).map((c) => `${c.path}:${c.rule}`)
+ok('mapChanges: a new rule, a set that grew, a new suite, a changed declaration (nothing for a dropped target)', ['t/n.sh:rule new/** (changed)', 't/p.sh:rule bin/** (changed)', 't/n.sh:suite (new in the map)', 't/d2.sh:suite (its declaration changed)'].every((x) => mc.includes(x)) && !mc.some((x) => x.startsWith('t/d1.sh') || x.startsWith('t/h1.sh') || x.startsWith('t/h2.mjs')), mc)
+s = selectMapChange(fxHead, fxBase, ['test/gates.map'])
+ok("map change only: the map's own rule and the changed rules' suites, not every suite", paths(s) === 't/h1.sh t/n.sh t/p.sh t/d2.sh', paths(s))
+ok('...each changed suite says the map chose it', s.suites.find((x) => x.path === 't/p.sh')?.why.every((w) => w.file === 'test/gates.map' && /rule bin\/\*\* \(changed\)/.test(w.rule)))
+s = selectMapChange(fxHead, fxBase, ['test/gates.map', 'docs/a.md'])
+ok('map change + a docs file: still no more (docs/** runs nothing)', paths(s) === 't/h1.sh t/n.sh t/p.sh t/d2.sh', paths(s))
+s = selectMapChange(fxHead, fxBase, ['test/gates.map', 'lib/x.mjs'])
+ok("map change that drops lib/**'s t/d1.sh, and a lib file: t/d1.sh still runs (the base's map)", s.suites.some((x) => x.path === 't/d1.sh' && x.why.some((w) => w.file === 'lib/x.mjs' && /lib\/\*\* \(the base's map\)/.test(w.rule))), paths(s))
+ok('...a suite both maps declare runs as the head declares it', s.suites.find((x) => x.path === 't/d2.sh')?.args.join(' ') === '{mm}')
+s = selectMapChange(fxHead, fxBase, ['test/gates.map', 'other/new.txt'])
+ok("a file the base left to its fallback: the head's choice only (not the base's fallback again)", paths(s) === 't/h1.sh t/h2.mjs t/n.sh t/p.sh t/d2.sh', paths(s))
+s = selectMapChange(fxBase, fxBase, ['test/gates.map'])
+ok('an unchanged map (only its comments changed): only the map\'s own rule', paths(s) === 't/h1.sh', paths(s))
 const bad = parseMap('suite t/a.sh nightly\nsuite t/a.sh hermetic needs=gpu -- {foo}\nrule x/** t/nope.sh @none\nset loop @loop\nrule y @loop\nwhat now\n')
 const has = (re) => bad.errors.some((e) => re.test(e))
 ok('map errors: unknown group, twice, unknown need, unknown placeholder', has(/unknown group "nightly"/) && has(/declared twice/) && has(/unknown need "gpu"/) && has(/unknown placeholder \{foo\}/), bad.errors)
@@ -99,8 +134,24 @@ const live = real.suites.filter((x) => x.group === 'live').map((x) => x.path)
 ok('the suites that use the machine are live', ['test/lifecycle.sh', 'test/box.sh', 'test/doop.sh', 'test/sentinel.sh', 'test/machine-panel.sh', 'test/paseo-lib.mjs'].every((p) => live.includes(p)), live)
 const pick = (f) => select(real, [f]).suites.map((x) => x.path)
 ok('template/bin/lib/message.mjs -> message.mjs, bd-actor.sh, owner-card-bd.sh', ['test/message.mjs', 'test/bd-actor.sh', 'test/owner-card-bd.sh'].every((p) => pick('template/bin/lib/message.mjs').includes(p)))
-ok('src/** -> the CLI suites, clean-box.sh, lifecycle.sh', ['test/vault.sh', 'test/names.sh', 'test/clean-box.sh', 'test/lifecycle.sh'].every((p) => pick('src/pc.ts').includes(p)))
-ok('template/site/src/** -> the browser suites', ['test/board-message.mjs', 'test/board-phone.mjs', 'test/board-space.mjs'].every((p) => pick('template/site/src/App.tsx').includes(p)))
+// sy-sbjh.1: no catch-all; each path runs the suites it needs, and the heavy upgrade / box suites only for those paths
+ok('no catch-all rule (src/**, template/**, **)', !real.rules.some((r) => ['src/**', 'template/**', '**', 'src/', 'template/'].includes(r.glob)), real.rules.map((r) => r.glob).filter((g) => /^(src|template)\/\*\*$/.test(g)))
+ok('template/bin/wt -> only its suites (sysworkers, memory-links, lead)', [...pick('template/bin/wt')].sort().join(' ') === 'test/lead.sh test/memory-links.sh test/sysworkers.sh', pick('template/bin/wt'))
+ok('template/bin/lib/gates-file.mjs -> only its suites (bd-actor, owner-card-bd)', [...pick('template/bin/lib/gates-file.mjs')].sort().join(' ') === 'test/bd-actor.sh test/owner-card-bd.sh', pick('template/bin/lib/gates-file.mjs'))
+ok('src/flow.ts -> flow.mjs and board-pull.mjs only', [...pick('src/flow.ts')].sort().join(' ') === 'test/board-pull.mjs test/flow.mjs', pick('src/flow.ts'))
+ok('a brief (CLAUDE.md) -> the writing rule and a rendered board, nothing else', [...pick('template/leads/CLAUDE.md')].sort().join(' ') === 'test/template-base.sh test/writing-rule.sh', pick('template/leads/CLAUDE.md'))
+ok('docs/**, README.md -> nothing', pick('docs/vault.md').length === 0 && pick('README.md').length === 0)
+const heavy = ['test/lifecycle.sh', 'test/clean-box.sh', 'test/restore-drill.sh']
+const heavyFrom = tracked.filter((f) => pick(f).some((p) => heavy.includes(p)))
+const heavyOk = (f) => /^(src\/(box|lifecycle|install|onboard|manifest|pack|restore|sync|template|updlock)\.ts|box\/|bin\/mm|manifest\.yaml|package\.json|bun\.lock|deps\/|scripts\/pack-template\.ts|template\/(services\.yaml|tools\.json|bin\/(backup|init)|ops\/githooks\/|setup\/|site\/package(-lock)?\.json)|test\/(lib\/|lifecycle\.sh|clean-box\.sh|restore-drill\.sh))/.test(f)
+ok('lifecycle, clean-box, restore-drill: only for paths that change the upgrade, the install or a box', heavyFrom.every(heavyOk) && heavyFrom.length < 40, heavyFrom.filter((f) => !heavyOk(f)))
+ok('src/pc.ts, template/bin/lead: no lifecycle, clean-box or restore-drill', !['src/pc.ts', 'template/bin/lead'].some((f) => pick(f).some((p) => heavy.includes(p))))
+const sizes = tracked.map((f) => pick(f).length)
+const small = sizes.filter((n) => n <= 15).length
+ok(`a one-file change: at most 15 suites for most tracked files (${small}/${tracked.length})`, small / tracked.length >= 0.95, tracked.filter((f) => pick(f).length > 15).map((f) => `${f}:${pick(f).length}`))
+const dflt = select(real, ['a-new-folder/x.txt'])
+ok(`an unmapped path: a small default set (${dflt.suites.length} suites, not every one of ${real.suites.length}), and it says "(fallback)"`, dflt.suites.length > 0 && dflt.suites.length <= 15 && dflt.files[0].rules.join() === '(fallback)', dflt.suites.map((x) => x.path))
+ok('a page of template/site/src -> the site build and its two pages, plus its own suite (Message.tsx: board-message)', [...pick('template/site/src/Message.tsx')].sort().join(' ') === 'test/board-message.mjs test/board-phone.mjs test/board-space.mjs', pick('template/site/src/Message.tsx'))
 ok('docs/** -> nothing', pick('docs/vault.md').length === 0)
 ok('a suite that builds the site has needs=site (built once by gates)', real.suites.filter((x) => /board-(message|owner-card|phone|phone-space|space|artifacts)\.mjs$/.test(x.path)).every((x) => x.needs.includes('site')))
 const mmSuites = real.suites.filter((x) => x.args.some((a) => a.includes('{mm}'))).map((x) => x.path)
@@ -156,6 +207,7 @@ let r = run(['main~1..main', '--list'])
 ok('--list: exit 0', r.status === 0, r.stderr)
 ok('--list: each changed file with its rules (docs: no suite; a new folder: the fallback)', /lib\/a\.txt\s+lib\/\*\*/.test(r.stdout) && /docs\/a\.md\s+docs\/\*\*\s+\(no suite\)/.test(r.stdout) && /other\/new\.txt\s+\(fallback\)/.test(r.stdout), r.stdout)
 ok('--list: the suites in run order with why', /hermetic\s+test\/h1\.sh\s+<- lib\/\*\* \(lib\/a\.txt\), \(fallback\)/.test(r.stdout) && r.stdout.indexOf('test/d2.sh') < r.stdout.indexOf('test/l.sh'), r.stdout)
+ok('--list: an unmapped path is named, and gates warns on stderr', /unmapped \(no rule names them[^\n]*\n\s+other\/new\.txt/.test(r.stdout) && /no rule of test\/gates\.map names: other\/new\.txt/.test(r.stderr) && /default set \(1 suite/.test(r.stderr), r.stdout + r.stderr)
 ok('--list runs nothing', !fs.existsSync(MARK))
 ok('--list: no worktree left, no result file', !fs.readdirSync(R).some((f) => f.startsWith('gates-')) && g('worktree', 'list').stdout.trim().split('\n').length === 1)
 
@@ -215,7 +267,13 @@ const mapNow = fs.readFileSync(path.join(R, 'test/gates.map'), 'utf8')
 W('test/gates.map', mapNow.replace('rule lib/** test/h1.sh test/h2.sh test/d1.sh test/d2.sh test/l.sh', 'rule lib/** test/h1.sh'))
 W('lib/a.txt', '3\n'); g('add', 'lib/a.txt', 'test/gates.map'); g('commit', '-qm', 'drop gates from the map')
 r = run(['main~1..main', '--list'])
-ok("a range that changes the map: the base's map chooses too (the dropped suites still listed)", r.status === 0 && /test\/d1\.sh\s+<- lib\/\*\* \(the base's map\) \(lib\/a\.txt\)/.test(r.stdout) && /test\/l\.sh/.test(r.stdout) && /the base's: this range changes the map/.test(r.stdout), r.stdout + r.stderr)
+ok("a range that changes the map: the base's map chooses too (the dropped suites still listed)", r.status === 0 && /test\/d1\.sh\s+<- lib\/\*\* \(the base's map\) \(lib\/a\.txt\)/.test(r.stdout) && /test\/l\.sh/.test(r.stdout) && /this range changes the map/.test(r.stdout), r.stdout + r.stderr)
+ok('...and only those: no fallback to every suite (test/m.sh, test/f.sh not listed)', !/test\/(m|f)\.sh/.test(r.stdout), r.stdout)
+// sy-sbjh.1: a range that changes only one rule of the map: that rule's new suite, nothing else
+W('test/gates.map', fs.readFileSync(path.join(R, 'test/gates.map'), 'utf8').replace('rule bad/** test/f.sh', 'rule bad/** test/f.sh test/m.sh\nrule test/gates.map -'))
+g('add', 'test/gates.map'); g('commit', '-qm', 'one rule gains a suite')
+r = run(['main~1..main', '--list'])
+ok("a range that changes only one rule of the map: only that rule's new suite (test/m.sh)", r.status === 0 && /test\/m\.sh\s+<- rule bad\/\*\* \(changed\) \(test\/gates\.map\)/.test(r.stdout) && (r.stdout.match(/^\s+(hermetic|ports|docker|live)\s+test\//gm) || []).length === 1, r.stdout + r.stderr)
 
 step('markRun: the mark wake reads (sy-brny)')
 {
