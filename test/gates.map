@@ -3,12 +3,18 @@
 #   suite <path> <group> [needs=<a,b>] [-- <args>]   a suite, its group, what test/gates prepares for it, its arguments
 #   set <name> <target>...                           a named list of targets (used as @name)
 #   rule <glob> <target>...                          a changed file that matches <glob> needs these suites ("-": none)
-#   fallback <target>...                             a changed file that matches no rule needs these
+#   fallback <target>...                             a changed file no rule names (unmapped): a small default set;
+#                                                    test/gates warns and --list names the file
 #
 # A target is a suite's path, a glob over the suites' paths (test/wake-*.mjs), @set, or %group (every suite of that
 # group). A changed file that is itself a suite runs that suite (no rule needed). Globs: * and ? stay inside one
 # path segment, ** spans any number of them, and a glob ending in / or /** takes the whole folder. Every rule a file
-# matches adds its suites (rules add up; none wins over another).
+# matches adds its suites (rules add up; none wins over another). There is no catch-all (no src/**, no template/**):
+# each path's rule names the suites that really run it, so a one-file change runs a handful of suites.
+#
+# A range that changes this map: the head's map chooses for the range's files, plus the suites whose rules (or sets,
+# or declarations) the range changed, plus, for a file whose rules changed, what the base's map chose for it (a range
+# cannot drop its own gates). Never every suite.
 #
 # Groups, and how test/gates runs them:
 #   hermetic  throwaway HOME / MM_HOME and free ports only: in parallel with each other
@@ -171,96 +177,120 @@ suite test/paseo-lib.mjs          live
 
 # --- sets ---------------------------------------------------------------------------------------------------------
 
-# the suites that run mm's CLI (bun src/cli.ts, or a built mm) or import its modules
-set cli test/ai.sh test/api.sh test/auth.sh test/auth-start.sh test/bd-proxy-stop.sh test/board-approve.sh test/box-boot.sh test/box-doop.sh
-set cli test/box-pc.sh test/box-person-runs.sh test/box-slot.sh test/box-stamp.sh test/box-trust.sh test/boxreg.sh
-set cli test/brain-deny.sh test/denies.sh test/engine-drift.sh test/front.sh test/guard.sh test/memory-links.sh
-set cli test/mm-approve.sh test/mm-docker.sh test/mm-home-modes.sh test/mm-paseo.sh test/names.sh test/needs-fill.sh
-set cli test/npm-lock.sh test/obs-home.sh test/outside.sh test/paseo-token.sh test/pc-logs.sh test/pc-skipped.sh
-set cli test/person-run.sh test/portless-claim.sh test/restore.sh test/root-leftover.sh test/routes.sh test/sockets.sh
-set cli test/span-answers.sh test/sync.sh test/sysworkers.sh test/template-base.sh test/update-lock.sh test/vault.sh
-set cli test/writing-rule.sh test/board-pull.mjs test/flow.mjs test/board-phone.mjs test/waiting-phone.mjs
-set cli test/wake-box-person-runs.mjs test/wake-person-runs.mjs
+# a smoke of mm's CLI: the suites that run its commonest commands (bun src/cli.ts) on a throwaway MM_HOME, for a file
+# every command loads (src/cli.ts, src/env.ts, src/project.ts...). The rest of the CLI suites run on the files they
+# test (and all of them in the nightly full run, sy-sbjh step 3).
+set cli-smoke test/names.sh test/vault.sh test/outside.sh test/template-base.sh test/update-lock.sh test/needs-fill.sh
+set cli-smoke test/obs-home.sh test/api.sh
 
-# the suites that render the template as mm new lays it out and run config-check on it (the leads' and setup's files)
-set render test/denies.sh test/guard.sh test/brain-deny.sh test/memory-links.sh test/sysworkers.sh test/writing-rule.sh
-set render test/engine-drift.sh test/template-base.sh test/update-lock.sh test/assist.sh test/artifact.sh
+# the suites that take an mm built from the head ({mm}): a file only the build reads (tsconfig, a .d.ts)
+set build test/needs-fill.sh test/npm-lock.sh
 
-# the built site in a browser (Playwright)
-set browser test/board-artifacts.mjs test/board-message.mjs test/board-owner-card.mjs test/board-phone.mjs
-set browser test/board-phone-space.mjs test/board-space.mjs
-set browser test/board-ships.mjs
+# the leads' and setup's settings as config-check renders and checks them (permissions, denies, the guard hook)
+set settings test/denies.sh test/guard.sh test/brain-deny.sh test/sysworkers.sh test/writing-rule.sh
 
-# the board's site and its server
+# a brief (CLAUDE.md, START.md, SKILL.md): the writing rule's section, and a board rendered as mm new lays it out
+set brief test/writing-rule.sh test/template-base.sh
+
+# a board built from template/site (vite) and opened in a browser: for a site file every page loads
+set site-smoke test/board-space.mjs test/board-phone.mjs
+
+# the board's site and its server (every suite that starts template/site's server)
 set site test/board-*.mjs test/lead-state.mjs test/config-review.mjs test/project-item.mjs test/waiting-phone.mjs
-
-# the engine's bin/ code, run straight from template/bin (or a copy of it)
-set engine test/wake-*.mjs test/supervisor*.mjs test/upstream.mjs test/sentinel-assist.mjs test/flow.mjs
-set engine test/trace-refused.sh test/lead.sh test/lead-workspace.sh test/bd-actor.sh test/owner-card-bd.sh
-set engine test/message.mjs test/owner-card.mjs test/paseo-refuse.mjs test/allow-only.mjs test/sockets.sh
-set engine test/glossary.mjs test/writing.mjs test/task.mjs test/raci.mjs
-set engine test/schema.mjs test/placements.mjs test/structured.sh
-set engine test/span-answers.sh test/init-retry.sh test/dolt-run.sh test/backup-data.sh test/pc-skipped.sh @site @render
 
 # the containers built from box/ and the Docker wrapper
 set containers test/mm-docker-container.sh test/box-egress.sh test/front-container.sh test/doop-container.sh
 set containers test/doop-designs.sh test/doop-gateway.sh test/box.sh test/doop.sh
 
-# --- rules: mm's CLI ----------------------------------------------------------------------------------------------
+# the libs nearly every bin imports (svc.mjs, obs.mjs): one suite or two per bin family
+set engine-smoke test/wake-start.mjs test/supervisor.mjs test/lead.sh test/message.mjs test/upstream.mjs test/sockets.sh
+set engine-smoke test/engine-drift.sh test/raci.mjs test/flow.mjs test/sentinel-assist.mjs test/sysworkers.sh
 
-rule src/**                       @cli test/clean-box.sh test/lifecycle.sh
-rule src/box.ts                   test/box-*.sh test/boxreg.sh test/mm-docker-container.sh test/doop-container.sh test/box.sh
+# --- rules: mm's CLI ----------------------------------------------------------------------------------------------
+# Each src file: the suites that test it or run the commands it implements. No src/** catch-all: a new src file needs
+# its own rule (test/gates warns about it, --list names it, and test/gates.mjs refuses a tracked file with no rule).
+
+rule src/cli.ts                   @cli-smoke test/flow.mjs test/auth.sh
+rule src/env.ts                   @cli-smoke test/mm-home-modes.sh
+rule src/config.ts                @cli-smoke test/ai.sh test/denies.sh test/npm-lock.sh test/mm-paseo.sh
+rule src/out.ts                   @cli-smoke
+rule src/project.ts               @cli-smoke test/routes.sh test/sockets.sh test/pc-logs.sh test/root-leftover.sh test/box-slot.sh
+rule src/inputs.ts                test/needs-fill.sh test/vault.sh test/ai.sh test/paseo-token.sh test/api.sh test/sync.sh test/restore.sh
+rule src/assets.d.ts              @build
+rule src/ai.ts                    test/ai.sh test/person-run.sh test/box-person-runs.sh
+rule src/api.ts                   test/api.sh test/span-answers.sh test/names.sh test/box-person-runs.sh
+rule src/apistate.ts              test/api.sh test/auth.sh test/box-slot.sh test/board-approve.sh test/mm-approve.sh
+rule src/auth.ts                  test/auth.sh test/auth-start.sh test/board-approve.sh test/board-owner-card.mjs test/board-phone.mjs test/waiting-phone.mjs test/names.sh test/api.sh test/doop-gateway.sh test/auth-e2e.sh test/box-gateway.sh test/ba-spike.ts
+rule src/box.ts                   test/box-*.sh test/boxreg.sh test/mm-docker.sh test/portless-claim.sh test/mm-docker-container.sh test/doop-container.sh test/box.sh test/clean-box.sh
 rule src/boxreg.ts                test/boxreg.sh test/api.sh test/ai.sh
-rule src/boxruns.ts               test/wake-box-person-runs.mjs test/box-person-runs.sh
-rule src/auth.ts                  test/auth.sh test/auth-start.sh test/board-approve.sh test/board-owner-card.mjs test/board-phone.mjs test/waiting-phone.mjs test/doop-gateway.sh test/auth-e2e.sh test/box-gateway.sh test/ba-spike.ts
+rule src/boxruns.ts               test/wake-box-person-runs.mjs test/box-person-runs.sh test/api.sh
+rule src/cron.ts                  test/flow.mjs test/sentinel.sh
+rule src/doctor.ts                test/doctor-docker.sh test/mm-approve.sh test/mm-docker.sh test/mm-home-modes.sh test/npm-lock.sh test/span-answers.sh test/needs-fill.sh test/outside.sh test/mm-paseo.sh test/vault.sh
 rule src/flow.ts                  test/flow.mjs test/board-pull.mjs
-rule src/doctor.ts                test/doctor-docker.sh
-rule src/personasks.ts            test/wake-person-runs.mjs test/box-person-runs.sh
-rule src/paseo.ts                 test/mm-paseo.sh test/paseo-token.sh
-rule src/restore.ts               test/restore.sh test/restore-drill.sh
-rule src/sync.ts                  test/sync.sh test/restore.sh test/restore-drill.sh
-rule src/vault.ts                 test/vault.sh test/paseo-token.sh test/in-box.sh
-rule src/onboard.ts               test/outside.sh test/clean-box.sh test/auth-e2e.sh
+rule src/front.ts                 test/front.sh test/routes.sh test/front-container.sh
 rule src/install.ts               test/outside.sh test/npm-lock.sh test/clean-box.sh
-rule src/cron.ts                  test/sentinel.sh
+rule src/lifecycle.ts             test/update-lock.sh test/engine-drift.sh test/template-base.sh test/root-leftover.sh test/sync.sh test/restore.sh test/lifecycle.sh test/clean-box.sh test/restore-drill.sh
+rule src/manifest.ts              test/npm-lock.sh test/outside.sh test/needs-fill.sh test/clean-box.sh
+rule src/names.ts                 test/names.sh test/routes.sh test/api.sh test/auth.sh
+rule src/npmlock.ts               test/npm-lock.sh test/outside.sh
+rule src/obs.ts                   test/obs-home.sh test/pc-logs.sh test/flow.mjs test/board-pull.mjs
+rule src/onboard.ts               test/outside.sh test/npm-lock.sh test/clean-box.sh test/auth-e2e.sh
+rule src/outside.ts               test/outside.sh test/paseo-token.sh test/mm-home-modes.sh
+rule src/pack.ts                  @build test/template-base.sh test/clean-box.sh
+rule src/paseo.ts                 test/mm-paseo.sh test/paseo-token.sh
+rule src/pc.ts                    test/box-boot.sh test/box-pc.sh test/box-person-runs.sh test/front.sh test/mm-paseo.sh test/npm-lock.sh test/outside.sh test/paseo-token.sh test/pc-logs.sh test/pc-skipped.sh
+rule src/personasks.ts            test/wake-person-runs.mjs test/box-person-runs.sh test/person-run.sh
+rule src/personruns.ts            test/wake-person-runs.mjs test/box-person-runs.sh test/person-run.sh
+rule src/persontoken.ts           test/box-person-runs.sh test/person-run.sh
 rule src/portless-claim.mjs       test/portless-claim.sh test/pc-skipped.sh
-rule scripts/pack-template.ts     @cli test/clean-box.sh
-rule package.json                 @cli test/ba-spike.ts @site test/clean-box.sh
-rule bun.lock                     @cli test/ba-spike.ts @site test/clean-box.sh
-rule tsconfig.json                @cli
-rule manifest.yaml                test/npm-lock.sh test/outside.sh test/mm-paseo.sh test/clean-box.sh
+rule src/restore.ts               test/restore.sh test/sync.sh test/restore-drill.sh
+rule src/runas.ts                 test/person-run.sh test/box-person-runs.sh test/denies.sh test/wake-person-runs.mjs
+rule src/sync.ts                  test/sync.sh test/restore.sh test/in-box.sh test/restore-drill.sh
+rule src/template.ts              test/template-base.sh test/engine-drift.sh test/update-lock.sh test/writing-rule.sh test/denies.sh test/guard.sh test/sysworkers.sh test/lifecycle.sh
+rule src/updlock.ts               test/update-lock.sh test/lifecycle.sh
+rule src/vault.ts                 test/vault.sh test/paseo-token.sh test/needs-fill.sh test/brain-deny.sh test/box-boot.sh test/in-box.sh
+rule scripts/pack-template.ts     @build test/template-base.sh test/clean-box.sh
+rule package.json                 @cli-smoke @build test/ba-spike.ts test/clean-box.sh
+rule bun.lock                     @cli-smoke @build test/ba-spike.ts test/clean-box.sh
+rule tsconfig.json                @build
+rule manifest.yaml                test/npm-lock.sh test/outside.sh test/mm-paseo.sh test/clean-box.sh test/lifecycle.sh
 rule bin/mm                       test/clean-box.sh test/auth-e2e.sh test/restore-drill.sh
 rule deps/**                      test/npm-lock.sh test/mm-paseo.sh test/clean-box.sh
 
 # --- rules: box/ (images, the Docker wrapper, the signer) ----------------------------------------------------------
 
-rule box/mm-docker                test/mm-docker.sh test/mm-docker-container.sh @containers
+rule box/mm-docker                test/mm-docker.sh @containers test/clean-box.sh
 rule box/mm-approve               test/mm-approve.sh test/flow.mjs test/supervisor.mjs test/board-approve.sh
-rule box/Dockerfile               test/front-container.sh test/box-egress.sh test/box.sh
-rule box/npm/**                   test/front-container.sh test/box.sh
+rule box/Dockerfile               test/front-container.sh test/box-egress.sh test/box.sh test/clean-box.sh
+rule box/npm/**                   test/front-container.sh test/box.sh test/clean-box.sh
 rule box/paseo-join.mjs           test/box.sh
 rule box/egress.Dockerfile        test/box-egress.sh test/box.sh
 rule box/egress/**                test/box-egress.sh test/box.sh
-rule box/doop/**                  test/doop-gateway.sh test/mm-docker.sh test/doop.sh
+rule box/doop/*.patch             test/doop-gateway.sh test/mm-docker.sh test/doop.sh
+rule box/doop/Dockerfile          test/doop-gateway.sh test/mm-docker.sh test/doop.sh
+rule box/doop/build.sh            test/doop-gateway.sh test/mm-docker.sh test/doop.sh
+rule box/doop/README.md           -
 
-# --- rules: the template ------------------------------------------------------------------------------------------
+# --- rules: the template's engine (bin/) ---------------------------------------------------------------------------
+# Each file: the suites that run it, and the own suites of the bins that import it. No template/** catch-all.
 
-# every template file: the suites that render it (and, as a floor, a new project's life on the machine)
-rule template/**                  @render test/lifecycle.sh
-
-rule template/bin/lib/message.mjs test/message.mjs test/bd-actor.sh test/owner-card-bd.sh test/board-message.mjs
-rule template/bin/message         test/message.mjs test/bd-actor.sh test/owner-card-bd.sh
-rule template/site/src/lib/message.mjs test/message.mjs test/board-message.mjs
-rule template/bin/lib/owner-card.mjs test/owner-card.mjs test/owner-card-bd.sh test/bd-actor.sh test/board-owner-card.mjs test/board-approve.sh test/waiting-phone.mjs
-rule template/bin/owner-card      test/owner-card.mjs test/owner-card-bd.sh
+rule template/bin/lib/svc.mjs     @engine-smoke test/front.sh test/lead-workspace.sh test/paseo-refuse.mjs
+rule template/bin/lib/obs.mjs     @engine-smoke test/obs-home.sh test/trace-refused.sh
+rule template/bin/lib/message.mjs test/message.mjs test/bd-actor.sh test/owner-card-bd.sh test/board-message.mjs test/task.mjs test/writing.mjs test/structured.sh test/wake-signals.mjs
+rule template/bin/lib/owner-card.mjs test/owner-card.mjs test/owner-card-bd.sh test/bd-actor.sh test/board-owner-card.mjs test/board-approve.sh test/waiting-phone.mjs test/message.mjs test/task.mjs test/supervisor.mjs test/wake-owner-card.mjs test/wake-kept.mjs test/wake-reconcile.mjs
+rule template/bin/lib/task.mjs    test/task.mjs test/owner-card.mjs test/owner-card-bd.sh test/bd-actor.sh test/message.mjs test/api.sh test/supervisor.mjs
+rule template/bin/lib/writing.mjs test/writing.mjs test/message.mjs test/owner-card.mjs test/bd-actor.sh test/owner-card-bd.sh test/task.mjs
+rule template/bin/lib/glossary.mjs test/glossary.mjs test/writing.mjs test/message.mjs test/board-glossary.mjs test/bd-actor.sh test/owner-card-bd.sh
+rule template/bin/lib/words.txt   test/glossary.mjs test/writing.mjs
+rule template/bin/lib/structured.mjs test/structured.sh test/schema.mjs test/placements.mjs test/message.mjs test/task.mjs test/bd-actor.sh test/owner-card-bd.sh test/board-structured.mjs
+rule template/bin/lib/schema.mjs  test/schema.mjs test/structured.sh test/message.mjs test/task.mjs test/bd-actor.sh test/owner-card-bd.sh test/board-structured.mjs
+rule template/bin/lib/schemas.mjs test/schema.mjs test/structured.sh test/message.mjs test/task.mjs test/bd-actor.sh test/owner-card-bd.sh test/placements.mjs
+rule template/bin/lib/schemas/**  test/schema.mjs test/structured.sh test/message.mjs test/task.mjs test/bd-actor.sh test/owner-card-bd.sh test/placements.mjs test/board-structured.mjs
+rule template/bin/lib/placements.mjs test/placements.mjs test/supervisor.mjs
+rule template/bin/lib/raci.mjs    test/raci.mjs test/supervisor-raci.mjs test/message.mjs test/task.mjs test/bd-actor.sh test/owner-card-bd.sh test/wake-hops.mjs
+rule template/bin/lib/to.mjs      test/wake-person-to.mjs test/board-thread.mjs test/message.mjs
 rule template/bin/lib/gates-file.mjs test/owner-card-bd.sh test/bd-actor.sh
-rule template/site/src/lib/owner-card.mjs test/owner-card.mjs test/board-owner-card.mjs
-rule template/site/src/**         @browser test/machine-panel.sh
-rule template/site/*              @site test/auth.sh test/board-approve.sh test/front.sh test/sync.sh test/doop-designs.sh test/machine-panel.sh
-
-rule template/bin/lib/obs.mjs     @engine test/obs-home.sh
-rule template/bin/lib/svc.mjs     @engine test/engine-drift.sh
-rule template/bin/lib/paseo.mjs   test/paseo-refuse.mjs test/lead.sh test/lead-workspace.sh test/npm-lock.sh test/wake-*.mjs test/paseo-lib.mjs
+rule template/bin/lib/paseo.mjs   test/paseo-refuse.mjs test/lead.sh test/lead-workspace.sh test/npm-lock.sh test/wake-start.mjs test/wake-twoleads.mjs test/wake-ondemand.mjs test/supervisor-workers.mjs test/paseo-lib.mjs
 rule template/bin/lib/run-as.mjs  test/wake-person-runs.mjs test/wake-box-person-runs.mjs test/person-run.sh test/box-person-runs.sh test/paseo-refuse.mjs
 rule template/bin/lib/claude.mjs  test/memory-links.sh test/lead.sh test/person-run.sh test/box-person-runs.sh test/assist.sh test/config-review.mjs
 rule template/bin/lib/lead-workspace.mjs test/lead-workspace.sh test/lead.sh test/person-run.sh test/box-person-runs.sh
@@ -269,59 +299,141 @@ rule template/bin/lib/workers.mjs test/wake-workers.mjs test/supervisor-workers.
 rule template/bin/lib/allow-only.mjs test/allow-only.mjs test/sysworkers.sh
 rule template/bin/lib/assist.mjs  test/assist.sh test/sentinel-assist.mjs
 rule template/bin/lib/guard-rules.mjs test/guard.sh test/sysworkers.sh
-rule template/bin/lib/ledger.mjs  test/mm-approve.sh test/guard.sh test/board-approve.sh
+rule template/bin/lib/ledger.mjs  test/mm-approve.sh test/guard.sh test/board-approve.sh test/auth.sh test/flow.mjs
 rule template/bin/lib/secret-scan.mjs test/artifact.sh test/board-artifacts.mjs test/guard.sh
 rule template/bin/lib/doop-init.mjs test/box-doop.sh test/doop-container.sh test/doop-gateway.sh test/doop.sh
 rule template/bin/lib/flow.mjs    test/flow.mjs test/board-pull.mjs
+
+rule template/bin/message         test/message.mjs test/bd-actor.sh test/owner-card-bd.sh test/writing.mjs test/structured.sh test/raci.mjs test/trace-refused.sh
+rule template/bin/owner-card      test/owner-card.mjs test/owner-card-bd.sh test/wake-owner-card.mjs test/writing.mjs test/structured.sh test/trace-refused.sh test/api.sh
+rule template/bin/task            test/task.mjs test/bd-actor.sh test/owner-card-bd.sh test/structured.sh test/bd-home.sh
+rule template/bin/structured      test/structured.sh
 rule template/bin/flow            test/flow.mjs test/board-pull.mjs
-rule template/bin/artifact        test/artifact.sh test/board-artifacts.mjs
+rule template/bin/artifact        test/artifact.sh test/board-artifacts.mjs test/structured.sh
 rule template/bin/backup          test/backup-data.sh test/sync.sh test/restore.sh test/engine-drift.sh test/doop-container.sh test/clean-box.sh test/restore-drill.sh
-rule template/bin/bd              test/bd-actor.sh test/owner-card-bd.sh test/trace-refused.sh test/init-retry.sh test/bd-autostart.sh test/bd-home.sh test/wake-*.mjs test/clean-box.sh
+rule template/bin/bd              test/bd-actor.sh test/owner-card-bd.sh test/trace-refused.sh test/init-retry.sh test/bd-autostart.sh test/bd-home.sh test/task.mjs test/message.mjs test/structured.sh test/wake-start.mjs test/wake-signals.mjs test/upstream.mjs
 rule template/bin/bd-quiet        test/bd-autostart.sh test/bd-home.sh test/init-retry.sh
-rule template/bin/config-check    @render test/api.sh test/lead.sh test/box.sh
+rule template/bin/config-check    @settings test/memory-links.sh test/template-base.sh test/engine-drift.sh test/update-lock.sh test/assist.sh test/artifact.sh test/glossary.mjs test/api.sh test/lead.sh test/box.sh
 rule template/bin/dolt-ready      test/pc-skipped.sh test/bd-autostart.sh
 rule template/bin/dolt-run        test/dolt-run.sh test/bd-autostart.sh test/bd-home.sh
 rule template/bin/doop-mcp-headers test/denies.sh test/doop.sh
 rule template/bin/doop-run        test/box-doop.sh test/mm-docker.sh test/auth.sh test/names.sh test/sync.sh test/backup-data.sh test/doop-container.sh test/doop-designs.sh test/doop-gateway.sh test/doop.sh
 rule template/bin/guard           test/guard.sh test/sysworkers.sh
-rule template/bin/health          test/engine-drift.sh test/template-base.sh
+rule template/bin/health          test/engine-drift.sh test/template-base.sh test/task.mjs
 rule template/bin/init            test/init-retry.sh test/bd-autostart.sh test/bd-home.sh test/clean-box.sh
 rule template/bin/land            test/trace-refused.sh test/box.sh
+rule template/bin/lead            test/lead.sh test/lead-workspace.sh test/memory-links.sh test/paseo-refuse.mjs test/person-run.sh test/box-person-runs.sh test/wake-start.mjs test/wake-twoleads.mjs test/wake-ondemand.mjs test/wake-stale-lead.mjs test/sysworkers.sh
+rule template/bin/svc             test/upstream.mjs test/sockets.sh test/engine-drift.sh
+rule template/bin/trace           test/trace-refused.sh test/bd-actor.sh test/owner-card-bd.sh test/span-answers.sh test/bd-home.sh test/task.mjs
+rule template/bin/wake            test/wake-*.mjs test/paseo-refuse.mjs
+rule template/bin/wt              test/sysworkers.sh test/memory-links.sh test/lead.sh test/wt-ro-config.sh
+rule template/bin/raci            test/raci.mjs test/task.mjs
+rule template/bin/role            test/person-run.sh test/raci.mjs
+rule template/bin/persona         test/raci.mjs test/person-run.sh
+rule template/bin/skill           test/raci.mjs test/lead.sh
+rule template/bin/smoke-beads     test/bd-autostart.sh
+rule template/bin/purge           test/engine-drift.sh test/template-base.sh
+rule template/bin/deploy          test/trace-refused.sh
 rule template/ops/land-check      test/trace-refused.sh
 rule template/ops/githooks/**     test/artifact.sh test/sync.sh test/template-base.sh test/restore-drill.sh
-rule template/bin/lead            test/lead.sh test/lead-workspace.sh test/memory-links.sh test/paseo-refuse.mjs test/person-run.sh test/box-person-runs.sh test/wake-*.mjs
-rule template/bin/svc             test/upstream.mjs test/sockets.sh
-rule template/bin/trace           test/trace-refused.sh test/bd-actor.sh test/owner-card-bd.sh test/span-answers.sh test/bd-home.sh
-rule template/bin/wake            test/wake-*.mjs test/restore-drill.sh
-rule template/bin/wt              test/sysworkers.sh test/memory-links.sh test/lead.sh test/wt-ro-config.sh
-rule template/bin/persona         @engine
-rule template/bin/raci            @engine
-rule template/bin/role            @engine
-rule template/bin/skill           @engine
-rule template/bin/smoke-beads     @engine
-rule template/bin/purge           @engine
-rule template/bin/deploy          @engine
-rule template/services.yaml       @cli test/bd-autostart.sh test/box.sh test/doop.sh test/clean-box.sh
+
+# --- rules: the template's site -------------------------------------------------------------------------------------
+
+# the browser's copies of the engine's libs ("the same file", checked by the lib's own suite)
+rule template/site/src/lib/message.*    test/message.mjs test/board-message.mjs
+rule template/site/src/lib/owner-card.* test/owner-card.mjs test/board-owner-card.mjs test/board-phone.mjs
+rule template/site/src/lib/task.mjs     test/task.mjs test/board-owner-card.mjs
+rule template/site/src/lib/writing.*    test/writing.mjs test/board-phone-space.mjs
+rule template/site/src/lib/glossary.*   test/glossary.mjs test/board-glossary.mjs
+rule template/site/src/lib/raci.*       test/raci.mjs
+rule template/site/src/lib/to.*         test/board-thread.mjs test/wake-person-to.mjs
+rule template/site/src/lib/schema.*     test/schema.mjs test/board-structured.mjs
+rule template/site/src/lib/schemas.*    test/schema.mjs test/board-structured.mjs
+rule template/site/src/lib/structured.* test/structured.sh test/board-structured.mjs
+# the app: a build and the two pages every change reaches (site-smoke), plus the page's own suite
+rule template/site/src/*.tsx            @site-smoke
+rule template/site/src/*.css            @site-smoke
+rule template/site/src/components/**    @site-smoke
+rule template/site/src/lib/*.ts         @site-smoke
+rule template/site/src/lib/*.tsx        @site-smoke
+rule template/site/src/lib/links.ts     test/board-links.mjs
+rule template/site/src/lib/phone.ts     test/board-phone-space.mjs test/waiting-phone.mjs
+rule template/site/src/lib/api.ts       test/board-message.mjs test/board-pull.mjs
+rule template/site/src/lib/persona.tsx  test/board-presence.mjs
+rule template/site/src/App.tsx          test/board-for-you.mjs test/board-pull.mjs test/board-owner-card.mjs test/waiting-phone.mjs
+rule template/site/src/Designs.tsx      test/board-designs.mjs test/board-phone-space.mjs
+rule template/site/src/Detail.tsx       test/board-owner-card.mjs test/board-message.mjs test/board-artifacts.mjs
+rule template/site/src/Diff.tsx         test/board-artifacts.mjs
+rule template/site/src/Flow.tsx         test/board-structured.mjs test/board-pull.mjs
+rule template/site/src/ForYou.tsx       test/board-for-you.mjs
+rule template/site/src/Glossary.tsx     test/board-glossary.mjs
+rule template/site/src/Goals.tsx        test/board-space.mjs
+rule template/site/src/HumanBar.tsx     test/board-owner-card.mjs test/board-approve.sh
+rule template/site/src/Identify.tsx     test/board-presence.mjs test/auth.sh
+rule template/site/src/Leads.tsx        test/lead-state.mjs test/config-review.mjs test/board-for-you.mjs
+rule template/site/src/Machine.tsx      test/board-phone-space.mjs test/machine-panel.sh
+rule template/site/src/Markdown.tsx     test/board-thread.mjs test/board-links.mjs
+rule template/site/src/Message.tsx      test/board-message.mjs
+rule template/site/src/NewItem.tsx      test/board-structured.mjs test/project-item.mjs
+rule template/site/src/OwnerCard.tsx    test/board-owner-card.mjs test/waiting-phone.mjs
+rule template/site/src/PhoneBar.tsx     test/board-phone-space.mjs
+rule template/site/src/Presence.tsx     test/board-presence.mjs
+rule template/site/src/Pull.tsx         test/board-pull.mjs
+rule template/site/src/Raci.tsx         test/raci.mjs test/board-space.mjs
+rule template/site/src/Structured.tsx   test/board-structured.mjs
+rule template/site/src/Thread.tsx       test/board-thread.mjs test/board-artifacts.mjs
+# the server and its build: every suite that starts it
+rule template/site/server.mjs           @site test/auth.sh test/board-approve.sh test/front.sh
+rule template/site/review.mjs           test/board-owner-card.mjs test/board-approve.sh test/board-for-you.mjs test/board-pull.mjs
+rule template/site/waiting.mjs          test/waiting-phone.mjs test/board-pull.mjs test/board-owner-card.mjs test/board-approve.sh test/board-for-you.mjs
+rule template/site/lead-state.mjs       test/lead-state.mjs test/board-for-you.mjs
+rule template/site/pull-state.mjs       test/board-pull.mjs
+rule template/site/flow-rows.mjs        test/board-pull.mjs test/flow.mjs
+rule template/site/config-api.mjs       test/config-review.mjs test/lead-state.mjs
+rule template/site/designs.mjs          test/board-designs.mjs test/doop-designs.sh
+rule template/site/compress.mjs         test/front.sh @site-smoke
+rule template/site/annotate.js          test/board-designs.mjs test/doop-designs.sh
+rule template/site/index.html           @site-smoke
+rule template/site/*.json               @site-smoke
+rule template/site/vite.config.ts       @site-smoke
+rule template/site/package.json         @site test/npm-lock.sh test/clean-box.sh test/lifecycle.sh
+rule template/site/package-lock.json    @site test/npm-lock.sh test/clean-box.sh
+rule template/site/.gitignore           test/template-base.sh
+rule template/site/README.md            -
+
+# --- rules: the template's config, briefs and settings -------------------------------------------------------------
+
+rule template/**/CLAUDE.md        @brief
+rule template/**/START.md         @brief
+rule template/**/SKILL.md         @brief
+rule template/**/*.tmpl.json      @settings
+rule template/**/.keep            -
+rule template/memory/**           test/memory-links.sh test/template-base.sh
+rule template/glossary.yaml       test/glossary.mjs test/writing.mjs test/writing-rule.sh test/assist.sh
+rule template/services.yaml       test/bd-autostart.sh test/pc-skipped.sh test/engine-drift.sh test/template-base.sh test/sockets.sh test/clean-box.sh test/lifecycle.sh
 rule template/tools.json          test/bd-autostart.sh test/bd-home.sh test/init-retry.sh test/clean-box.sh test/restore-drill.sh test/box.sh
 rule template/secrets.json        test/needs-fill.sh test/vault.sh test/sync.sh test/restore.sh test/api.sh test/board-artifacts.mjs
-rule template/.gitignore          test/artifact.sh test/board-artifacts.mjs test/restore.sh test/sync.sh test/supervisor.mjs
-rule template/leads/roles.json    test/wake-*.mjs test/supervisor*.mjs test/flow.mjs test/message.mjs test/lead.sh test/bd-actor.sh test/auth.sh test/board-approve.sh test/person-run.sh test/box-person-runs.sh test/doop-designs.sh
-rule template/leads/raci.json     test/wake-*.mjs test/lead.sh
+rule template/.gitignore          test/artifact.sh test/board-artifacts.mjs test/restore.sh test/sync.sh test/supervisor.mjs test/template-base.sh
+rule template/leads/roles.json    test/wake-start.mjs test/wake-hops.mjs test/supervisor.mjs test/flow.mjs test/message.mjs test/lead.sh test/bd-actor.sh test/auth.sh test/board-approve.sh test/person-run.sh test/raci.mjs test/doop-designs.sh
+rule template/leads/raci.json     test/raci.mjs test/supervisor-raci.mjs test/wake-hops.mjs test/lead.sh
 rule template/leads/design/**     test/doop.sh test/doop-designs.sh
-rule template/leads/START.md      test/lead.sh test/person-run.sh test/box-person-runs.sh
-rule template/setup/**            test/restore-drill.sh test/sync.sh
+rule template/leads/START.md      test/lead.sh test/person-run.sh
+rule template/setup/**            test/sync.sh test/restore-drill.sh
 rule template/worktrees/**        test/sysworkers.sh
 
 # the system profile
 rule template/profiles/system/bin/assist test/assist.sh test/sentinel-assist.mjs test/memory-links.sh
 rule template/profiles/system/bin/project-item test/project-item.mjs test/machine-panel.sh
-rule template/profiles/system/bin/sentinel test/sentinel-assist.mjs test/sentinel.sh
+rule template/profiles/system/bin/sentinel test/sentinel-assist.mjs test/sentinel.sh test/task.mjs
 rule template/profiles/system/bin/supervisor test/supervisor*.mjs
 rule template/profiles/system/bin/upstream test/upstream.mjs
 rule template/profiles/system/bin/wt test/sysworkers.sh test/memory-links.sh test/lead.sh
 rule template/profiles/system/assistants/** test/assist.sh test/sentinel-assist.mjs
-rule template/profiles/system/leads/roles.json test/supervisor*.mjs test/upstream.mjs test/sysworkers.sh
-rule template/profiles/system/**  test/sysworkers.sh test/artifact.sh test/machine-panel.sh test/sentinel.sh
+rule template/profiles/system/leads/roles.json test/supervisor*.mjs test/upstream.mjs test/sysworkers.sh test/brain-deny.sh
+rule template/profiles/system/leads/raci.json test/supervisor-raci.mjs test/raci.mjs
+rule template/profiles/system/governance.json test/supervisor.mjs test/sysworkers.sh test/artifact.sh
+rule template/profiles/system/profile.json test/sysworkers.sh test/brain-deny.sh test/guard.sh test/template-base.sh
+rule template/profiles/system/services.yaml test/sysworkers.sh test/sentinel-assist.mjs test/machine-panel.sh test/sentinel.sh
 
 # --- rules: the tests themselves ----------------------------------------------------------------------------------
 
@@ -344,9 +456,10 @@ rule test/lib/guard-run.mjs       test/guard.sh
 rule docs/**                      -
 rule README.md                    -
 rule .gitignore                   -
-rule .github/**                   @cli
+rule .github/**                   @cli-smoke
 
-# --- anything else ------------------------------------------------------------------------------------------------
+# --- a file no rule names -----------------------------------------------------------------------------------------
 
-# a file no rule names (a new folder, a new top-level file): every hermetic and ports suite (cheap, and safe)
-fallback %hermetic %ports
+# a new file with no rule yet: test/gates warns (and --list names it under "unmapped"), and runs this small default
+# (a CLI smoke, three engine suites, a site build), never every suite. Give the file its rule in the same change.
+fallback @cli-smoke test/wake-start.mjs test/message.mjs test/lead.sh @site-smoke
