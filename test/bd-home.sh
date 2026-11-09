@@ -49,7 +49,9 @@ project() {
   mkdir -p "$P/bin/lib" "$P/tools"
   cp "$SRC/template/bin/init" "$SRC/template/bin/bd" "$SRC/template/bin/bd-quiet" "$SRC/template/bin/message" "$SRC/template/bin/task" "$P/bin/"
   # bin/bd's gates (bin/message, bin/task) and their libs: without them bd refuses the comment and the create below
-  for f in message owner-card task raci; do cp "$SRC/template/bin/lib/$f.mjs" "$P/bin/lib/"; done
+  # (and what those libs import: the structured block's parser, its schema checker and the schemas)
+  for f in message owner-card task raci writing glossary gates-file structured schema schemas; do cp "$SRC/template/bin/lib/$f.mjs" "$P/bin/lib/"; done
+  cp -R "$SRC/template/bin/lib/schemas" "$P/bin/lib/"
   cp "$SRC/template/tools.json" "$P/"
   printf '#!/bin/sh\n# stand-in for bin/trace: no span, just the command after --\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n' >"$P/bin/trace"
   chmod +x "$P/bin/"*; ln -s "$BD" "$P/tools/bd"; ln -s "$DOLT" "$P/tools/dolt"
