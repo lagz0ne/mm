@@ -167,6 +167,8 @@ const env = { ...process.env, HOME: path.join(T, 'home'), MM_HOME: path.join(T, 
 for (const k of ['BEADS_ACTOR', 'BD_ACTOR', 'MM_SERVICE', 'MM_BIND']) delete env[k]
 fs.mkdirSync(env.HOME)
 
+const until = async (fn, ms = 5000) => { const t = Date.now(); while (Date.now() - t < ms) { if (fn()) return true; await sleep(100) } return false }
+const POSTED = [], WRITES = [] // the comments the board posted (sy-e234: Reply and Done), and any other write
 const bdSrv = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x'), json = (o, code = 200) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)) }
   const list = (xs) => xs.map(({ comments, ...i }) => ({ ...i, comment_count: comments.length }))
@@ -177,6 +179,9 @@ const bdSrv = http.createServer((req, res) => {
   }
   if (u.pathname === '/v0/beads/issues') return json({ items: list(u.searchParams.get('status') === 'closed' ? CLOSED : OPEN), has_more: false })
   if (u.pathname === '/v0/beads/ready') return json({ items: list(OPEN.filter((i) => !i.labels.includes('needs-you'))), has_more: false })
+  const cm = /^\/v0\/beads\/issues\/([\w.-]+)\/comments$/.exec(u.pathname)
+  if (cm && req.method === 'POST') { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => { const c = JSON.parse(b || '{}'); POSTED.push({ item: cm[1], ...c }); json({ id: `c${POSTED.length}`, ...c }) }); return }
+  if (req.method !== 'GET') { WRITES.push(`${req.method} ${u.pathname}`); return json({}) }
   const m = /^\/v0\/beads\/issues\/([\w.-]+)$/.exec(u.pathname)
   if (m) { const i = all[m[1]]; return i ? json(i) : json({ title: 'not found' }, 404) }
   json({ items: [] })
@@ -320,6 +325,43 @@ try {
     await page.waitForTimeout(400)
     const top2 = await page.locator('#needs-you').boundingBox()
     ok('...again from For you, scrolled down: back at the list', !!top2 && top2.y >= 40 && top2.y < 120, JSON.stringify(top2))
+    ok('no page error', errs.length === 0, errs.join(' | '))
+    await ctx.close()
+  }
+
+  step('the owner at 390 px: Send reply and Done post the owner\'s comment, and the card leaves Needs you (sy-e234)')
+  {
+    const { ctx, page, errs } = await human('boss', 'owner', 390, 844)
+    // the page is served here on 127.0.0.1; the board's public side checks the request comes from https://<its host>
+    // (the gateway's address), so the owner's POSTs go on with that origin, as from the real address (a browser keeps
+    // its own Origin, so the test sends them on itself)
+    await page.route('**/api/{reply,done}', async (r) => {
+      const q = r.request(), h = { ...q.headers(), origin: `https://${HOST}`, 'sec-fetch-site': 'same-origin' }
+      const a = await fetch(q.url(), { method: 'POST', headers: h, body: q.postData() })
+      await r.fulfill({ status: a.status, contentType: 'application/json', body: await a.text() })
+    })
+    await page.goto(`${PUB}/`)
+    await page.locator('[data-needs-you="fy-3"]').waitFor({ timeout: 10000 }).catch(() => {})
+    await page.waitForTimeout(300)
+    await page.screenshot({ path: path.join(SHOTS, 'for-you-answer-before-390.png'), fullPage: true })
+    const p0 = POSTED.length
+    await page.locator('[data-needs-you="fy-3"] [data-act="reply-text"]').fill('Call it relay.')
+    await page.locator('[data-needs-you="fy-3"] [data-act="reply"]').click()
+    ok('Send reply: one comment as the owner, the text as typed', await until(() => POSTED.length === p0 + 1) && POSTED.at(-1).item === 'fy-3' && POSTED.at(-1).text === '[owner] Call it relay.' && POSTED.at(-1).author === 'boss', JSON.stringify(POSTED.slice(p0)))
+    ok('...the card leaves Needs you at once', await page.locator('[data-needs-you="fy-3"]').waitFor({ state: 'detached', timeout: 5000 }).then(() => true, () => false))
+    await page.locator('[data-needs-you="fy-4"] [data-act="done"]').click()
+    ok('Done: one comment "Done." as the owner (the same path as a reply)', await until(() => POSTED.length === p0 + 2) && POSTED.at(-1).item === 'fy-4' && POSTED.at(-1).text === '[owner] Done.' && POSTED.at(-1).author === 'boss', JSON.stringify(POSTED.slice(p0)))
+    ok('...the card leaves Needs you at once', await page.locator('[data-needs-you="fy-4"]').waitFor({ state: 'detached', timeout: 5000 }).then(() => true, () => false))
+    ok('...the board writes no label itself (wake removes needs-you)', WRITES.length === 0, WRITES.join(' | '))
+    ok('...the other asks stay, the count follows', (await page.locator('[data-needs-you]').evaluateAll((as) => as.map((a) => a.getAttribute('data-needs-you')))).join() === 'fy-1,fy-2,fy-11'
+      && /^Needs you3$/.test((await page.locator('#fy-needs').textContent()) || ''))
+    await page.waitForTimeout(300)
+    await page.screenshot({ path: path.join(SHOTS, 'for-you-answer-after-390.png'), fullPage: true })
+    // wake removes needs-you (test/wake-owner-card.mjs): the list from the board then has neither
+    for (const id of ['fy-3', 'fy-4']) all[id].labels = all[id].labels.filter((l) => l !== 'needs-you')
+    await page.reload()
+    await page.locator('[data-needs-you]').first().waitFor({ timeout: 10000 }).catch(() => {})
+    ok('...after wake\'s unlabel and a reload: still gone', (await page.locator('[data-needs-you]').evaluateAll((as) => as.map((a) => a.getAttribute('data-needs-you')))).join() === 'fy-1,fy-2,fy-11')
     ok('no page error', errs.length === 0, errs.join(' | '))
     await ctx.close()
   }
