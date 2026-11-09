@@ -169,7 +169,7 @@ step('bin/message check and gate')
 const D = fs.mkdtempSync(path.join(os.tmpdir(), 'message-'))
 fs.mkdirSync(path.join(D, 'bin', 'lib'), { recursive: true }); fs.mkdirSync(path.join(D, 'leads'))
 fs.copyFileSync(path.join(SRC, 'template/bin/message'), path.join(D, 'bin/message'))
-for (const f of ['message.mjs', 'owner-card.mjs']) fs.copyFileSync(path.join(SRC, 'template/bin/lib', f), path.join(D, 'bin/lib', f))
+for (const f of ['message.mjs', 'owner-card.mjs', 'writing.mjs', 'glossary.mjs']) fs.copyFileSync(path.join(SRC, 'template/bin/lib', f), path.join(D, 'bin/lib', f))
 fs.writeFileSync(path.join(D, 'leads/roles.json'), JSON.stringify({ roles: ROLES.map((id) => ({ id })) }))
 const run = (args, input, env = {}) => spawnSync(process.execPath, [path.join(D, 'bin/message'), ...args], { input, encoding: 'utf8', env: { PATH: process.env.PATH, ...env } })
 {

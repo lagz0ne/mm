@@ -1,0 +1,452 @@
+# The glossary (sy-ko6r): the technical names and technical verbs of a board, one meaning each. The writing check
+# (bin/lib/writing.mjs) accepts these terms and the approved words (bin/lib/words.txt), and no other words, in every
+# message between roles and every owner card. It comes from mm's template: mm update brings its changes, so do not
+# edit it here. A board adds its own terms in glossary.local.yaml (adds only). To add a term: an item labelled
+# glossary, with an owner card "What: add the term X, meaning Y"; review checks one meaning and no clash. No agent adds
+# a term by itself. The format: bin/lib/glossary.mjs.
+#
+# refuse_from: the first day (YYYY-MM-DD, UTC) the check refuses a message or a card. Empty: it only warns.
+refuse_from:
+terms:
+  - term: board
+    kind: technical name
+    means: The list of items of one project, where the leads and the people work.
+    not: tracker, backlog
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: item
+    kind: technical name
+    means: One unit of work on the board, with an id, a status, an owner and comments.
+    not: ticket, issue, task
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: lead
+    kind: technical name
+    means: The agent that does the work of one role on the board.
+    not: bot, assistant
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: role
+    kind: technical name
+    means: One kind of work on a board, with its own lead, brief and permissions.
+    not: team, function
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: worker
+    kind: technical name
+    means: An agent that a lead starts for one item, in its own folder.
+    not: helper, sub-agent
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: worktree
+    kind: technical name
+    means: A second folder of a repo, on its own branch, where one agent writes.
+    not: copy, clone
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: brief
+    kind: technical name
+    means: The file that tells an agent what it does and how (its CLAUDE.md).
+    not: prompt, instructions
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: capacity
+    kind: technical name
+    means: How many items a lead may hold at the same time.
+    not: load, bandwidth
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: queue
+    kind: technical name
+    means: The items that wait for a role, in the order of their priority.
+    not: backlog, inbox
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: claim
+    kind: technical verb
+    means: To take an item from the queue, so that it is yours.
+    not: take, grab, assign
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: lease
+    kind: technical name
+    means: The time a claim holds before the item goes back to the queue.
+    not: lock, hold
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: hand over
+    kind: technical verb
+    means: To give an item, and its work, to another role.
+    not: pass, transfer
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: owner
+    kind: technical name
+    means: The person who decides for the board and gives the go for a T2 change.
+    not: admin, boss, user
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: owner card
+    kind: technical name
+    means: The short block at the top of an item that asks the owner one thing.
+    not: card, summary
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: Supervisor
+    kind: technical name
+    means: The program that watches the board and tells a lead what waits on it.
+    not: manager, monitor
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: wake
+    kind: technical verb
+    means: To start a lead's turn with a message about what changed on the board.
+    not: ping, notify
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: template
+    kind: technical name
+    means: The files that mm gives every board, the same for each one.
+    not: skeleton, base
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: box
+    kind: technical name
+    means: A closed container where a project runs apart from the machine.
+    not: sandbox, VM
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: mm update
+    kind: technical name
+    means: The command that brings the template's changes to a board.
+    not: upgrade, sync
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: migration
+    kind: technical name
+    means: One change to the machine, written down with its rollback.
+    not: script, patch
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: rollback
+    kind: technical name
+    means: The steps that undo a migration and bring the machine back as it was.
+    not: revert, undo
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: T0
+    kind: technical name
+    means: The risk tier of a change that only reads.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: T1
+    kind: technical name
+    means: The risk tier of a small change that a lead can undo by itself.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: T2
+    kind: technical name
+    means: The risk tier of a change that needs a plan, the sign-off of review and the go of the owner.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: T3
+    kind: technical name
+    means: The risk tier of a change that only a person makes.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: risk tier
+    kind: technical name
+    means: The class of a change by how much harm it can do (T0 to T3).
+    not: level, severity
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: guard
+    kind: technical name
+    means: The check that runs before each tool call of an agent and stops a call that is not allowed.
+    not: filter, firewall
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: head
+    kind: technical name
+    means: One commit or migration, written as repo@sha, that review signs off.
+    not: version, build
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: sign off
+    kind: technical verb
+    means: To say, as review, that a head is safe to go on.
+    not: approve, accept
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: sign-off
+    kind: technical name
+    means: The label signed-off that review adds when it signs off an item.
+    not: approval
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: approve
+    kind: technical verb
+    means: To give the go for a T2 change, as the owner.
+    not: sign off, accept
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: RACI
+    kind: technical name
+    means: The table that says, for each kind of work, who does it, who approves it, who is asked and who is told.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: message
+    kind: technical name
+    means: One comment from a role, with one intent and one expectation, in the fixed format.
+    not: post, note
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: intent
+    kind: technical name
+    means: The first word of a message, which says what the message is for.
+    not: type, kind
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: ASK
+    kind: technical name
+    means: The intent of a message that needs something from another role.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: HANDOFF
+    kind: technical name
+    means: The intent of a message that gives an item, and its work, to another role.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: VERDICT
+    kind: technical name
+    means: The intent of the message of review that gives its result on a head, signed off or blocked.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: ANSWER
+    kind: technical name
+    means: The intent of a message that replies to an ASK.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: DONE
+    kind: technical name
+    means: The intent of a message that says the unit of work is finished.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: NOTE
+    kind: technical name
+    means: The intent of a message that is only for the record.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: expectation
+    kind: technical name
+    means: The one thing a message asks one role to do, with its check and its time.
+    not: request, task
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: needs-you
+    kind: technical name
+    means: The label of an item that waits on the owner.
+    not: blocked, help
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: go ask
+    kind: technical name
+    means: An owner card whose You line is Tap Approve, so that it asks for the go.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: go
+    kind: technical name
+    means: The approval of the owner for a T2 change.
+    not: permission, OK
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: P0
+    kind: technical name
+    means: The highest priority of an item, for work that cannot wait.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: P1
+    kind: technical name
+    means: The priority of an item that is important and comes next.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: P2
+    kind: technical name
+    means: The normal priority of an item.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: P3
+    kind: technical name
+    means: The low priority of an item.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: P4
+    kind: technical name
+    means: The lowest priority of an item, for work that can wait for a long time.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: label
+    kind: technical name
+    means: A short word on an item that sorts it or gives it a state, for example t2 or needs-you.
+    not: tag
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: artifact
+    kind: technical name
+    means: A file kept with an item, for tables, logs and test output.
+    not: attachment
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: land
+    kind: technical verb
+    means: To put the commits of a branch on main, without a merge.
+    not: merge, ship
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: upstream
+    kind: technical name
+    means: The label of an item that a project sends to the machine's own board.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: glossary
+    kind: technical name
+    means: This list of terms, each with one meaning, that the writing check accepts.
+    not: dictionary
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: approved word
+    kind: technical name
+    means: A common English word of the word list, with one meaning and one part of speech.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: setup
+    kind: technical name
+    means: The agent that changes the configuration of a board.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: config-check
+    kind: technical name
+    means: The program that checks the configuration of a board against its rules.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: repo
+    kind: technical name
+    means: A git repository.
+    not: repository, project
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: commit
+    kind: technical name
+    means: One saved change in a repo, with its sha.
+    not: revision
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: branch
+    kind: technical name
+    means: A line of commits in a repo, with its own name.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: main
+    kind: technical name
+    means: The branch of a repo that holds the work that landed.
+    not: master, trunk
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: sha
+    kind: technical name
+    means: The hex name of a commit.
+    not: hash, id
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: rebase
+    kind: technical verb
+    means: To move the commits of a branch on top of main.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: spec
+    kind: technical name
+    means: The document that says what a product must do.
+    not: requirements
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: deploy
+    kind: technical verb
+    means: To put a release of a product where its users get it.
+    not: ship, release
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: service
+    kind: technical name
+    means: A program that the machine keeps on, from the services.yaml of a board.
+    not: daemon, process
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: machine
+    kind: technical name
+    means: The one computer where mm, the boards and the projects run.
+    not: host, server
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: project
+    kind: technical name
+    means: One product of a client, with its own board, repo and services.
+    not: app
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: secret
+    kind: technical name
+    means: A key, token or password that no agent reads or prints.
+    not: credential
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: token
+    kind: technical name
+    means: A secret string that lets a program in.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: log
+    kind: technical name
+    means: The lines a program writes about what it did.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: unit of work
+    kind: technical name
+    means: The work a lead does in one turn, which ends with a board change.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: turn
+    kind: technical name
+    means: The time an agent works between one wake and its last reply.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: agent
+    kind: technical name
+    means: A program with an AI model that reads a brief and does work with tools.
+    not: bot
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: permission
+    kind: technical name
+    means: A rule that lets an agent use a tool, or stops it.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: mm
+    kind: technical name
+    means: The program that makes, runs and updates the boards and the projects of a machine.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: bd
+    kind: technical name
+    means: The command that reads and writes the items of a board.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: brain
+    kind: technical name
+    means: The repo of the machine's own board, with what it knows, its skills and its migrations.
+    owner: setup
+    since: 2026-11-08 sy-ko6r
+  - term: git
+    kind: technical name
+    means: The program that keeps the history of a repo.
+    owner: setup
+    since: 2026-11-08 sy-ko6r

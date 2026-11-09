@@ -12,10 +12,13 @@
 // NOTE (free text, no Expect block). An Expect that names a role needs Done when, Verify and By; Expect: none needs
 // Verify (the evidence) on an ANSWER and a DONE. The whole message is at most MAX characters: tables, logs and test
 // output go in an artifact, linked.
-// Pure; imports only its neighbour owner-card.mjs (the Head format). Used by bin/message (bin/bd's gate), the
+// The words follow the writing rules (sy-ko6r, writing.mjs): with o.writing, the lines after the header are checked;
+// the problems are out.writing (warnings), and from the glossary's refuse_from on also errors.
+// Pure; imports only its neighbours owner-card.mjs (the Head format) and writing.mjs. Used by bin/message (bin/bd's gate), the
 // Supervisor (openWaits), and, as an identical copy, the board's browser code (site/src/lib/message.mjs;
 // test/message.mjs keeps them equal).
 import { HEAD } from './owner-card.mjs'
+import { writingCheck } from './writing.mjs'
 
 export const MAX = 600
 /** The role that writes a VERDICT (review sy-0gsw #8): as only it signs off (bin/owner-card signoff). */
@@ -56,10 +59,12 @@ export const looksLikeMessage = (text) => LOOSE_HEADER.test(String(text ?? '').r
  * @param {{ roles?: string[], author?: string, reviewer?: string }} [o]  roles: the board's role ids (leads/roles.json);
  *   when given, the "→" of an ASK, HANDOFF or VERDICT and the role of an Expect must be one of them. author: who
  *   wrote it (bd's actor, a comment's author); when given, a VERDICT is valid only from the reviewer role (reviewer,
- *   default REVIEWER) or its worker <reviewer>/<name>
+ *   default REVIEWER) or its worker <reviewer>/<name>. writing: the writing check's setting ({ terms, words, roles,
+ *   refuseFrom, today }: writing.mjs writingCheck); none: no check
  * @returns {{ ok: boolean, found: boolean, intent: string|null, to: string|null, re: number|null,
  *   keys: Record<string,string>, expect: { role: string, action: string }|null, by: string|null, text: string,
- *   errors: string[] }}  found: the first line is a valid header; keys: the body's keys (continuation lines joined
+ *   errors: string[], writing: { rule: string, line: number, text: string }[] }}  writing: its lines count from the
+ *   header (line 1)  found: the first line is a valid header; keys: the body's keys (continuation lines joined
  *   with "\n"); by: the By value without its Else.
  */
 export function parseMessage(text, o = {}) {
@@ -67,7 +72,7 @@ export function parseMessage(text, o = {}) {
   const t = String(text ?? '').replace(/\r\n?/g, '\n').trim()
   const lines = t.split('\n')
   const errors = []
-  const out = { ok: false, found: false, intent: null, to: null, re: null, keys: {}, expect: null, by: null, text: t, errors }
+  const out = { ok: false, found: false, intent: null, to: null, re: null, keys: {}, expect: null, by: null, text: t, errors, writing: [] }
   const h = HEADER.exec(lines[0].trim())
   if (!h) {
     errors.push(looksLikeMessage(t)
@@ -85,6 +90,7 @@ export function parseMessage(text, o = {}) {
     errors.push(`only ${reviewer} writes a VERDICT (as only ${reviewer} signs off); ${o.author || 'nobody'} writes an ANSWER, a NOTE or a HANDOFF`)
   if (roles && ['ASK', 'HANDOFF', 'VERDICT'].includes(intent) && !roles.includes(out.to.split('/')[0]))
     errors.push(`${intent} → ${out.to}: ${an(intent)} goes to a role (${roles.join(', ')}); ask a person with an owner card, never in a message`)
+  out.writing = writingCheck(`\n${lines.slice(1).join('\n')}`, o.writing && { roles: roles || [], ...o.writing }, errors)
   if (len(t) > MAX) errors.push(`the message is too long (${len(t)} characters; at most ${MAX}): put tables, logs and test output in an artifact (artifact <id> <file>) and link it`)
 
   const body = lines.slice(1)

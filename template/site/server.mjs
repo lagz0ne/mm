@@ -16,6 +16,7 @@ import { exportQuery, flowRows, parseExport, PAIRS } from './flow-rows.mjs'
 import { waitingFor } from './waiting.mjs'
 import { designsApi } from './designs.mjs'
 import { headRefusal, isNonGoAsk, parseCard, SIGNED_HEAD } from '../bin/lib/owner-card.mjs'
+import { readGlossary } from '../bin/lib/glossary.mjs'
 import * as P_ from '../bin/lib/paseo.mjs'
 import { bridgeSocket, ITEM, loadConf } from '../bin/lib/ledger.mjs'
 
@@ -836,6 +837,16 @@ pollPresence()
 function sendPresence(res) { send(res, 200, { agents: presenceCache.data }) }
 
 // Links to this project's public services (services.json `public`), using the public URLs the machine assigned.
+// The glossary (sy-ko6r): the terms of glossary.yaml (the template's) and glossary.local.yaml (the board's own), each
+// with its plain meaning, for the board's Glossary page. Read-only, every role (the public side too): no secret in it.
+function sendGlossary(res) {
+  const g = readGlossary(readText)
+  const terms = g.entries.map((e) => ({ term: e.term, kind: e.kind, means: e.means, not: e.not || '', owner: e.owner, since: e.since, local: e.source !== 'glossary.yaml' }))
+    .sort((a, b) => a.term.localeCompare(b.term, 'en', { sensitivity: 'base' }))
+  const words = g.words.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length
+  send(res, 200, { terms, refuseFrom: g.refuseFrom, words, errors: g.errors.length })
+}
+
 function sendLinks(res) {
   let svc = {}
   svc = servicesDef()
@@ -1024,6 +1035,7 @@ async function handle(req, res) {
   if (url.pathname === '/api/pull' && req.method === 'GET') return pull().then((d) => send(res, 200, d), (e) => send(res, 502, { title: `pull failed: ${e.message}` }))
   if (url.pathname === '/api/flow' && req.method === 'GET') return sendFlow(res)
   if (url.pathname === '/api/links' && req.method === 'GET') return sendLinks(res)
+  if (url.pathname === '/api/glossary' && req.method === 'GET') return sendGlossary(res)
   if (url.pathname === '/api/mermaid' && req.method === 'POST') return sendMermaid(req, res, url).catch((e) => send(res, 500, { error: e.message }))
   if (url.pathname === '/api/presence' && req.method === 'GET') return sendPresence(res)
   if (url.pathname.startsWith('/api/designs/') && await designs(req, res, url)) return
