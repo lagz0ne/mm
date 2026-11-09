@@ -20,7 +20,7 @@ unset BEADS_ACTOR BD_ACTOR GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME G
 mkdir -p "$HOME"
 B="$T/sys"; mkdir -p "$B"
 # a system-like board, as test/assist.sh makes one: the base bin, the system profile's bin, leads, setup, assistants
-(cd "$SRC/template" && tar -cf - bin leads/START.md .gitignore) | tar -xf - -C "$B"
+(cd "$SRC/template" && tar -cf - bin leads/START.md .gitignore glossary.yaml) | tar -xf - -C "$B"
 (cd "$SRC/template/profiles/system" && tar -cf - bin leads setup assistants governance.json) | tar -xf - -C "$B"
 printf 'project: sysqa\nclient: system\nname: qa\nprofile: system\n' >"$B/.mm-answers.yaml"; touch "$B/CLAUDE.md"
 for f in $(find "$B" -name '*.md' -o -name '*.tmpl.json'); do sed -i "s|{{root}}|$B|g; s|{{project}}|sysqa|g; s|{{home}}|$HOME|g; s|{{brain}}|$HOME/brain|g; s|{{projects}}|$HOME/projects|g; s|{{mm}}|$HOME/.mm|g" "$f"; done
