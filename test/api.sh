@@ -93,7 +93,7 @@ own() { curl -s --unix-socket "$AS" -H 'content-type: application/json' "$@"; }
 st() { mm api show "$1" -o json | jq -r .status; }
 items() { grep -c '"create"' "$T/bd.jsonl" 2>/dev/null || echo 0; }
 # the one-time code mm.api sent the owner for a request: only the Telegram stand-in has it (sy-35f2)
-codeof() { local c; for _ in $(seq 1 50); do c=$(grep -o "mmapi:allow:$1:[A-Z2-7]\{8\}" "$T/tg.jsonl" 2>/dev/null | tail -1 | cut -d: -f4); [ -n "$c" ] && { echo "$c"; return; }; sleep 0.1; done; }
+codeof() { local c; for _ in $(seq 1 50); do c=$(grep -o "mmapi:allow:$1:[A-Z2-7]\{2,8\}" "$T/tg.jsonl" 2>/dev/null | tail -1 | cut -d: -f4); [ -n "$c" ] && { echo "$c"; return; }; sleep 0.1; done; }
 export -f call code own st items codeof; export S1 S2 AS
 
 echo '== the way in'
@@ -241,6 +241,27 @@ echo '== the codes: only on the Telegram stand-in'
 check "every code sent: in exactly one Telegram message, and in no item or board text, log line, or file of mm's or the projects'" bash -c "codes=\$(grep -o 'mmapi:allow:r-[0-9a-f]*:[A-Z2-7]*' '$T/tg.jsonl' | cut -d: -f4 | sort -u); [ \$(echo \"\$codes\" | wc -l) -ge 10 ] && for c in \$codes; do [ \"\$(grep -c \$c '$T/tg.jsonl')\" = 1 ] || exit 1; ! grep -raF \$c '$T/bd.jsonl' '$T/api.log' '$T/labels' '$T/routes' '$MM_HOME' '$HOME/projects' || exit 1; done"
 check "...one code message for each request filed, and one more for mm api code" bash -c "[ \"\$(grep -o 'mmapi:allow:r-[0-9a-f]*' '$T/tg.jsonl' | sort -u | wc -l)\" = \"\$(items)\" ] && [ \"\$(grep -o 'mmapi:allow:r-[0-9a-f]*' '$T/tg.jsonl' | sort | uniq -c | awk '\$1 != 1 {print \$2}')\" = 'mmapi:allow:$RC' ]"
 check "...the store keeps a code only as a slow hash (scrypt), and none for a decided request" bash -c "cd '$SRC' && bun -e \"import { Database } from 'bun:sqlite'; const d = new Database('$MM_HOME/api/api.db', { readonly: true }); const r = d.query('SELECT status, code FROM request').all(); process.exit(r.every((x) => x.code === null || (x.status === 'pending' && /^scrypt:[0-9a-f]{32}:[0-9a-f]{64}\$/.test(x.code))) && r.some((x) => x.code) ? 0 : 1)\""
+echo '== the code length: api.code_length (sy-64e7), on acme-spare'
+S3="$MM_HOME/box/acme-spare/api/api.sock"; export S3
+mkdir -p "$MM_HOME/box/acme-spare"; printf '{"services":{"app":{"public_port":38556}}}\n' >"$MM_HOME/box/acme-spare/ports.json"
+# a wrong code of the same length: never the right one
+other() { [ "$1" = "${1//A/B}" ] && echo "${1:0:-1}A" || echo "${1//A/B}"; }; export -f other
+R8=$(call "$S3" route '{"name":"len-eight"}' | jq -r .id); H8=$(mm api show "$R8" -o json | jq -r .hash); C8=$(codeof "$R8")
+check "the default (no setting): 8 characters" bash -c "[[ '$C8' =~ ^[A-Z2-7]{8}\$ ]]"
+mm config set api.code_length 2
+R2=$(call "$S3" route '{"name":"len-two"}' | jq -r .id); H2=$(mm api show "$R2" -o json | jq -r .hash); C2=$(codeof "$R2")
+check "api.code_length 2: a new request's code has 2 characters, in the text and the Allow button" bash -c "[[ '$C2' =~ ^[A-Z2-7]{2}\$ ]] && grep 'mmapi:allow:$R2:$C2\"' '$T/tg.jsonl' | jq -e '.text | test(\"Code: $C2 \")'"
+check "...a code sent before the change keeps its 8 characters, and works" bash -c "own -d '{\"id\":\"$R8\",\"hash\":\"$H8\",\"code\":\"$C8\"}' http://api/approve | jq -e .ok && [ \"\$(st $R8)\" = done ]"
+check "...the 2-character code, typed in lower case through the owner's command: done" bash -c "echo '$C2' | tr A-Z a-z | mm api approve $R2 --hash ${H2:0:12} && [ \"\$(st $R2)\" = done ] && grep -qx 'port=38556 --sso' '$T/routes/len-two.acme-spare'"
+RW=$(call "$S3" route '{"name":"len-wrong"}' | jq -r .id); HW=$(mm api show "$RW" -o json | jq -r .hash); CW=$(codeof "$RW"); XW=$(other "$CW")
+check "...5 wrong 2-character codes: the code is void, and then even the right one applies nothing (409)" bash -c "[[ '$CW' =~ ^[A-Z2-7]{2}\$ ]] && [ '$XW' != '$CW' ] && for i in 1 2 3 4 5; do [ \"\$(own -o /dev/null -w '%{http_code}' -d '{\"id\":\"$RW\",\"hash\":\"$HW\",\"code\":\"$XW\"}' http://api/approve)\" = 403 ] || exit 1; done; [ \"\$(own -o /dev/null -w '%{http_code}' -d '{\"id\":\"$RW\",\"hash\":\"$HW\",\"code\":\"$CW\"}' http://api/approve)\" = 409 ] && [ \"\$(st $RW)\" = pending ] && ! test -e '$T/routes/len-wrong.acme-spare'"
+for bad in 1 9 x; do
+  mm config set api.code_length "$bad"
+  RB_=$(call "$S3" route "{\"name\":\"len-bad-$bad\"}" | jq -r .id); CB_=$(codeof "$RB_")
+  check "api.code_length $bad: the default (8 characters), and a warning in mm.api's log" bash -c "[[ '$CB_' =~ ^[A-Z2-7]{8}\$ ]] && grep '\"api.code_length is not 2..8' '$T/api.log' | jq -e 'select(.level == \"warn\" and .code_length == \"$bad\")' | grep -q ."
+  mm api deny "$RB_" --why test >/dev/null
+done
+mm config unset api.code_length
 rm "$MM_HOME/pc/boxes/acme-other.yaml"; sleep 1
 check "a box gone from the registry: its socket goes" bash -c "! test -e '$S2'"
 

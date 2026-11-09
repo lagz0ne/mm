@@ -62,16 +62,25 @@ const CODE_TTL = 86400e3   // valid until the request is decided, or 24 h
 const CODE_TRIES = 5       // wrong tries, then the code is void
 const CODE_MAX = 5         // codes per request (the first and 4 new ones)
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
-/** 8 base32 characters: 40 random bits. */
-function newCode(): string {
-  const b = randomBytes(5); let n = 0n
-  for (const x of b) n = (n << 8n) | BigInt(x)
-  let s = ''; for (let i = 7; i >= 0; i--) s += B32[Number((n >> BigInt(i * 5)) & 31n)]
+export const CODE_LEN = 8  // the default and the longest: 40 random bits
+const CODE_MIN = 2
+/** The length of a NEW code: the setting api.code_length (CODE_MIN..CODE_LEN, sy-64e7); a bad value gives the default,
+ *  with a warning. A code already issued keeps its length: only its slow hash is kept, and the check takes any length. */
+export function codeLength(v: unknown = getPath(loadConfig(), 'api.code_length')): number {
+  if (v === undefined || v === null || v === '') return CODE_LEN
+  const n = typeof v === 'number' ? v : typeof v === 'string' && /^\d+$/.test(v.trim()) ? Number(v) : NaN
+  if (Number.isInteger(n) && n >= CODE_MIN && n <= CODE_LEN) return n
+  log('warn', `api.code_length is not ${CODE_MIN}..${CODE_LEN}: the default (${CODE_LEN}) is used`, { code_length: String(v).slice(0, 20) })
+  return CODE_LEN
+}
+/** len base32 characters, uniform (a byte's low 5 bits: 256 is a multiple of 32): 5 random bits each. */
+function newCode(len = CODE_LEN): string {
+  let s = ''; for (const x of randomBytes(len)) s += B32[x & 31]
   return s
 }
 /** What the owner typed: case and spaces or dashes don't matter. */
 export const normCode = (s: string) => s.toUpperCase().replace(/[\s-]/g, '')
-const CODE_RE = /^[A-Z2-7]{8}$/
+const CODE_RE = new RegExp(`^[A-Z2-7]{${CODE_MIN},${CODE_LEN}}$`)
 const slow = (code: string, salt: Buffer) => scryptSync(code, salt, 32, { N: 16384, r: 8, p: 1 })
 const sealCode = (code: string) => { const salt = randomBytes(16); return `scrypt:${salt.toString('hex')}:${slow(code, salt).toString('hex')}` }
 function codeOk(code: string, sealed: string): boolean {
@@ -345,7 +354,7 @@ export async function serve() {
   /** A new one-time code for a pending request: its slow hash in the store, the code itself only in the owner's message. */
   const issueCode = (r: Req, notice: string): boolean => {
     if (r.codes >= CODE_MAX) return false
-    const code = newCode()
+    const code = newCode(codeLength())
     d.query('UPDATE request SET code = ?, code_exp = ?, code_tries = 0, codes = codes + 1 WHERE id = ?').run(sealCode(code), now() + CODE_TTL, r.id)
     tellOwner(notice, { id: r.id, hash: r.hash, code, route: r.call === 'route' })
     return true
