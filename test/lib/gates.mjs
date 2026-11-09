@@ -776,7 +776,8 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
     })
     // a suite's own environment: the site built once (above); the mm and, for the head's build, its template
     const suiteEnv = (s) => {
-      const extra = s.needs.includes('site') ? { BOARD_PHONE_NOBUILD: '1' } : {}
+      // a suite that builds its own copy of the site links the packages gates installed (SITE_NODE_MODULES)
+      const extra = s.needs.includes('site') ? { BOARD_PHONE_NOBUILD: '1', SITE_NODE_MODULES: path.join(wt, 'template', 'site', 'node_modules') } : {}
       if (mmBin && (s.needs.includes('mm') || uses(s, '{mm}'))) { extra.MM_BIN_DIR = mmDir; if (mmTpl) extra.MM_TEMPLATE_DIR = mmTpl }
       return extra
     }
