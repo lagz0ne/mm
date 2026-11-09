@@ -20,13 +20,15 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => child.k
 child.on('error', (e) => { span.set('error', e.message); process.exit(127) })
 // bd's answers to its caller, not failures of the board: a guarded update that lost (exit 13), an item that can't be
 // claimed or closed, an id that isn't there, an item another role holds (a close or reassign of it: sy-936h), one
-// with open children, or a write with no actor (bin/bd refuses it). Anything else (Dolt down, a crash, a busy lock "held by another process") stays a failure.
+// with open children, or a policy refusal of bin/bd or its gates (a write with no actor, sy-28ev; a needs-you with no
+// valid owner card, a sign-off by another role, a lead's comment that is no message: every one says "bd: refused: " at
+// the start of a line, sy-0omb). Anything else (Dolt down, a crash, a busy lock "held by another process") stays a failure.
 const BD_REFUSED = new RegExp([
   /issue not claimable|already claimed|issue (is )?claimed by (another|a different) actor|issue is not in a claimable state/,
   /cannot close blocked issue|cannot close \S+: assignee is "[^"]*", actor is|cannot reassign \S+: held by "[^"]*"/,
   /\S+ is held by \S+(; coordinate with the holder|, expected )|cannot close \S+: \d+ open child issue|cannot close issue with open children/,
   /no issues found matching|issue [a-z]+-[a-z0-9.]+ not found|precondition failed/,
-  /bd: refused: a board write \(.*\) needs an actor/, // bin/bd's own: a write with no actor (sy-28ev)
+  /(^|\n)bd: refused: /, // bin/bd's own and its gates' (bin/owner-card, bin/message): policy, not a failure
 ].map((r) => r.source).join('|'), 'i')
 // land's answers to its caller (sy-4dg8): a branch it won't take (uncommitted changes, a conflict with main, its check
 // said no, a bad or missing worktree). A busy lock or anything else stays a failure.

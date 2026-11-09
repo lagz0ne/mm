@@ -53,6 +53,15 @@ run "bd close" 1 "Error closing sy-936h: cannot close sy-936h: 2 open child issu
 check "a close of an item with open children: refused" refused 1
 run "bd comments" 1 'bd: refused: a board write (bd comments add) needs an actor: pass --actor <name> or set BEADS_ACTOR (without one bd records "mm", which reads as a person)'
 check "bin/bd's own: a write with no actor (sy-28ev): refused" refused 1
+echo "== policy refusals of bin/bd's gates (sy-0omb): refused, not errors"
+run "bd label" 1 "$(printf 'bd: refused: needs-you only with a valid owner card; t-1: it has no owner card:\n  - no owner card\nThe format: ...')"
+check "needs-you with no owner card (bin/owner-card gate): refused" refused 1
+run "bd label" 1 "bd: refused: only review signs off (signed-off, signed-head:): ask review on the item"
+check "a sign-off by another role: refused" refused 1
+run "bd comments" 1 "$(printf 'bd: refused: a lead'"'"'s comment is one message (ops): no intent tag\nThe format: ...')"
+check "a lead's comment that is no message (bin/message): refused" refused 1
+run "bd update" 1 "Error: something said bd: refused: inside a line"
+check "...but the words inside another line are no refusal: error" failed 1
 echo "== real failures stay errors"
 run "bd update" 1 "Error: lock busy: held by another process"
 check "a busy lock (held by another process): error" failed 1
