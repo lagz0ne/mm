@@ -115,6 +115,13 @@ suite test/wake-owner-card.mjs    hermetic
 suite test/doctor-docker.sh       hermetic
 suite test/board-glossary.mjs     hermetic needs=site
 suite test/board-links.mjs        hermetic needs=site
+suite test/board-presence.mjs     hermetic needs=site
+suite test/board-thread.mjs       hermetic needs=site
+suite test/board-structured.mjs   hermetic needs=site
+suite test/wake-person-to.mjs     hermetic
+suite test/schema.mjs             hermetic
+suite test/placements.mjs         hermetic
+suite test/structured.sh          hermetic
 suite test/wake-stale-lead.mjs    hermetic
 suite test/wake-stall.mjs         hermetic
 suite test/wake-start.mjs         hermetic
@@ -183,6 +190,7 @@ set engine test/wake-*.mjs test/supervisor*.mjs test/upstream.mjs test/sentinel-
 set engine test/trace-refused.sh test/lead.sh test/lead-workspace.sh test/bd-actor.sh test/owner-card-bd.sh
 set engine test/message.mjs test/owner-card.mjs test/paseo-refuse.mjs test/allow-only.mjs test/sockets.sh
 set engine test/glossary.mjs test/writing.mjs test/task.mjs test/raci.mjs
+set engine test/schema.mjs test/placements.mjs test/structured.sh
 set engine test/span-answers.sh test/init-retry.sh test/dolt-run.sh test/backup-data.sh test/pc-skipped.sh @site @render
 
 # the containers built from box/ and the Docker wrapper
