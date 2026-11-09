@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// bin/wake at start (sy-u43j): an item whose last comment is a human's gets a start note ("has an unanswered comment");
-// one whose last comment is its lead's own gets none, also when that comment is past the journal's first page (bd serve
-// gives at most 500 events a read: wake reads every page); `brain` (the system board's ops before 2026-11-05) is never a
-// human; the events missed while wake was stopped are all replayed, also more than one page of them.
+// bin/wake at start (sy-u43j, sy-3r6u): the journal is read page by page (bd serve gives at most 500 events a read); a
+// comment at or before wake's saved place was handled before it stopped: no start note repeats it (sy-3r6u: the lead was
+// told then); `brain` (the system board's ops before 2026-11-05) and `mm` are never a human; the events missed while
+// wake was stopped are all replayed, also more than one page of them. The saved place here is a wake's before sy-3r6u
+// (`_seq` only): it becomes the cursor.
 // Hermetic: temp folder, stub paseo, bd and bd-serve (a fake board whose journal pages as bd serve's does), no obs.
 //   node test/wake-start.mjs            exit 0 = every check passed
 import { spawn } from 'node:child_process'
@@ -47,7 +48,7 @@ comment('a-2', 'alex', 'and a-2 too')                 // seq 2: unanswered to th
 comment('b-1', 'brain', 'ops (as brain) noted this')  // seq 3: the last comment on b-1
 comment('b-2', 'mm', 'ops, without --actor')         // bd's default actor (sy-s8su): never a person
 const SAVED = records.length                          // wake stopped here (its saved place)
-for (let i = 0; i < 597; i++) emit({ op: 'update', issue_id: 'f-1', actor: 'ops' }) // more than a page of other events
+for (let i = 0; i < 597; i++) emit({ op: 'update', issue_id: 'f-1', actor: 'ops', n: i }) // more than a page of other events
 comment('a-1', 'platform', 'done, see the commit')    // ...the lead answered a-1 (past the first page)
 comment('a-3', 'alex', 'late question on a-3')        // a human, past the first page, and past 500 after SAVED
 const HEAD = records.length
@@ -82,8 +83,9 @@ try {
   ok('wake starts', await until(() => /watching .* from seq (\d+)/.test(opsLog())))
   ok(`...from the board's head (seq ${HEAD}), past the first page of the journal`, new RegExp(`from seq ${HEAD} `).test(opsLog()))
   ok('the journal is read page by page (since 0, 500, ...)', reads.includes(0) && reads.includes(500))
-  ok('an item whose last comment is a human\'s gets a start note, to the board\'s Lead (ops; sy-uykv)', await until(() => /a-2 has an unanswered comment from alex, to you as the board's Lead[\s\S]*a-2: title of a-2/.test(to('ops'))))
+  ok('the replay reaches the board\'s Lead (ops)', await until(() => /a-3: title of a-3/.test(to('ops'))))
   await sleep(1500)
+  ok('a human comment before the saved place (a-2) is not told again (sy-3r6u)', !/a-2/.test(sent()) && !/unanswered/.test(sent()))
   const p = to('platform'), lp = to('ops')
   ok('an item whose last comment is its lead\'s own (past the first page) gets no start note', !/a-1/.test(p))
   ok('a comment by brain is never "unanswered from a human"', !/from brain/.test(sent()) && !/b-1/.test(sent()))
