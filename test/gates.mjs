@@ -5,9 +5,10 @@
 // suites: --list runs nothing; a run is on the head's content (not the caller's edits) in a worktree that is removed
 // after; the result file's shape; the docker group one at a time, hermetic ones side by side; --no-live; a failing
 // suite's exit code; --bin as {mm}; --item with and without artifact on PATH; usage and map errors exit 2; (4) the
-// heavy lock (sy-gb26), flock and mkdir both: two runs at once never run heavy suites side by side and take turns
-// suite by suite; light suites run while another run holds it; a holder that is gone (dead or its pid reused) frees
-// it; the --jobs default under load.
+// run lock (sy-1nb8; the heavy lock of sy-gb26 before it), flock and mkdir both: two runs at once never run a suite
+// side by side (ports, docker, live or hermetic): one run's suites, then the other's; a run waits for another holder
+// before its first suite and says who holds it; a holder that is gone (dead or its pid reused) frees it; a run with
+// nothing to start takes no lock; the --jobs default under load. Every test/gates it starts has a clean PATH.
 //   node test/gates.mjs          exit 0 = every check passed
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -148,7 +149,7 @@ W('lib/a.txt', '1\n'); W('docs/a.md', '1\n')
 g('init', '-q', '-b', 'main'); g('add', '-A'); g('commit', '-qm', 'base')
 W('lib/a.txt', '2\n'); W('docs/a.md', '2\n'); W('other/new.txt', 'x\n')
 g('add', '-A'); g('commit', '-qm', 'change lib, docs, a new folder')
-// never the machine's heavy lock: this test's own
+// never the machine's run lock: this test's own
 const run = (args, opts = {}) => sh(GATES, args, { cwd: R, env: { ...process.env, MM_GATES_LOCK: path.join(T, 'fixture.lock'), MM_GATES_DIR: GATES_DIR, PATH: opts.path || CLEAN_PATH }, ...opts })
 
 let r = run(['main~1..main', '--list'])
@@ -290,20 +291,22 @@ step('the --jobs default under load')
 ok('idle: half the CPUs, 2 to 6', defaultJobs(8, 0) === 4 && defaultJobs(2, 0) === 2 && defaultJobs(32, 0) === 6 && defaultJobs(1, 0) === 1)
 ok('busy: at most the idle CPUs, max(1, CPUs - load)', defaultJobs(8, 5) === 3 && defaultJobs(8, 6.4) === 1 && defaultJobs(16, 40) === 1 && defaultJobs(8, 3.9) === 4)
 
-step('the heavy lock (sy-gb26)')
-ok('the wait line', waitLine({ label: 'sy-x', pid: 42, since: '2026-01-02T03:04:05.678Z' }) === 'gates: waits for the heavy lock, held by sy-x pid 42 since 2026-01-02T03:04:05Z')
+step('the run lock (sy-1nb8)')
+ok('the wait line', waitLine({ label: 'sy-x', pid: 42, since: '2026-01-02T03:04:05.678Z' }) === 'gates: waits for the run lock, held by sy-x pid 42 since 2026-01-02T03:04:05Z')
 {
-  // a fixture of its own: two hermetic, two docker and one live suite, a second each; spans tagged by run
+  // a fixture of its own: two hermetic, two ports (fake: they bind nothing), two docker and one live suite, a second
+  // each; spans tagged by run
   const R2 = path.join(T, 'repo2'), SP = path.join(T, 'spans2')
   const W2 = (f, x) => { fs.mkdirSync(path.dirname(path.join(R2, f)), { recursive: true }); fs.writeFileSync(path.join(R2, f), x) }
   const stub2 = (sec) => `#!/usr/bin/env bash\necho "$(basename "$0")@\${RUN_TAG:-x} $(date +%s.%N) start" >>"${SP}"\necho "  ok   one"\nsleep ${sec}\necho "$(basename "$0")@\${RUN_TAG:-x} $(date +%s.%N) end" >>"${SP}"\n`
-  for (const n of ['h1', 'h2', 'd1', 'd2', 'l1']) W2(`test/${n}.sh`, stub2(1))
-  W2('test/gates.map', 'suite test/h1.sh hermetic\nsuite test/h2.sh hermetic\nsuite test/d1.sh docker\nsuite test/d2.sh docker\nsuite test/l1.sh live\nrule lib/** %hermetic %docker %live\nrule light/** %hermetic\nrule heavy1/** test/d1.sh\nfallback %hermetic\n')
-  W2('lib/a', '1\n'); W2('light/a', '1\n'); W2('heavy1/a', '1\n')
+  for (const n of ['h1', 'h2', 'p1', 'p2', 'd1', 'd2', 'l1']) W2(`test/${n}.sh`, stub2(1))
+  W2('test/gates.map', 'suite test/h1.sh hermetic\nsuite test/h2.sh hermetic\nsuite test/p1.sh ports\nsuite test/p2.sh ports\nsuite test/d1.sh docker\nsuite test/d2.sh docker\nsuite test/l1.sh live\nrule lib/** %hermetic %ports %docker %live\nrule light/** %hermetic\nrule heavy1/** test/d1.sh\nrule ports1/** test/p1.sh\nrule live1/** test/l1.sh\nfallback %hermetic\n')
+  W2('lib/a', '1\n'); W2('light/a', '1\n'); W2('heavy1/a', '1\n'); W2('ports1/a', '1\n'); W2('live1/a', '1\n')
   const g2 = (...a) => sh('git', ['-C', R2, ...a], { env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.org', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.org' } })
   g2('init', '-q', '-b', 'main'); g2('add', '-A'); g2('commit', '-qm', 'base')
-  W2('lib/a', '2\n'); g2('add', '-A'); g2('commit', '-qm', 'lib') // main~2..main~1: every suite
-  W2('light/a', '2\n'); W2('heavy1/a', '2\n'); g2('add', '-A'); g2('commit', '-qm', 'light and heavy') // main~1..main: h1 h2 d1
+  W2('live1/a', '2\n'); g2('add', '-A'); g2('commit', '-qm', 'live only') // main~3..main~2: l1
+  W2('ports1/a', '2\n'); g2('add', '-A'); g2('commit', '-qm', 'ports only') // main~2..main~1: p1
+  W2('lib/a', '2\n'); W2('light/a', '2\n'); W2('heavy1/a', '2\n'); g2('add', '-A'); g2('commit', '-qm', 'lib') // main~1..main: every suite
   const runA = (args, env) => new Promise((done) => {
     // review sy-gb26 #3: these runs pass --item; with the real PATH they posted their result files to a real board
     const c = spawn(GATES, args, { cwd: R2, env: { ...process.env, MM_GATES_DIR: GATES_DIR, ...env, PATH: CLEAN_PATH } })
@@ -312,33 +315,54 @@ ok('the wait line', waitLine({ label: 'sy-x', pid: 42, since: '2026-01-02T03:04:
   })
   const readSpans = () => (fs.existsSync(SP) ? fs.readFileSync(SP, 'utf8') : '').trim().split('\n').filter(Boolean).map((l) => l.split(' '))
     .reduce((a, [n, t, k]) => ((a[n] ||= { n })[k] = Number(t), a), {})
-  const isHeavy = (n) => /^(d1|d2|l1)\.sh@/.test(n)
   const pairsOverlap = (xs) => xs.some((a, i) => xs.some((b, j) => i < j && a.start < b.end && b.start < a.end))
+  const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return null } }
+  const runOf = (x) => x.n.split('@')[1]
+  // the two runs' suites never side by side: every suite of one ended before any of the other's started
+  const apart = (xs) => { const by = (t) => xs.filter((x) => runOf(x) === t); const [p, q] = ['a', 'b'].map(by); return p.length && q.length && xs.every((x) => x.end) && (Math.max(...p.map((x) => x.end)) <= Math.min(...q.map((x) => x.start)) || Math.max(...q.map((x) => x.end)) <= Math.min(...p.map((x) => x.start))) }
   const wait = (ms) => new Promise((r) => setTimeout(r, ms))
   const hasFlock = sh('sh', ['-c', 'command -v flock']).status === 0
   const deadPid = () => Number(sh('sh', ['-c', 'echo $$']).stdout.trim())
   for (const mode of ['flock', 'mkdir']) {
     if (mode === 'flock' && !hasFlock) { ok('flock: not on PATH, its checks skipped', true); continue }
-    const LOCK = path.join(T, `heavy-${mode}`, 'heavy.lock')
+    const LOCK = path.join(T, `lock-${mode}`, 'heavy.lock')
     const env = (tag) => ({ MM_GATES_LOCK: LOCK, MM_GATES_LOCK_MODE: mode, RUN_TAG: tag })
-    // 1. two runs at once
+    const clean = () => !fs.existsSync(LOCK + '.d') && (!fs.existsSync(LOCK + '.q') || fs.readdirSync(LOCK + '.q').length === 0) && !fs.existsSync(LOCK + '.break')
+    // 1. two runs at once, every suite (hermetic, ports, docker, live)
     fs.rmSync(SP, { force: true })
     const [a, b] = await Promise.all([
-      runA(['main~2..main~1', '--item', 'run-a', '--out', path.join(T, `a-${mode}.txt`)], env('a')),
-      runA(['main~2..main~1', '--item', 'run-b', '--out', path.join(T, `b-${mode}.txt`)], env('b')),
+      runA(['main~1..main', '--item', 'run-a', '--jobs', '2', '--out', path.join(T, `a-${mode}.txt`)], env('a')),
+      runA(['main~1..main', '--item', 'run-b', '--jobs', '2', '--out', path.join(T, `b-${mode}.txt`)], env('b')),
     ])
-    const sp = readSpans(), heavy = Object.values(sp).filter((x) => isHeavy(x.n)).sort((x, y) => x.start - y.start)
+    const sp = Object.values(readSpans())
     ok(`${mode}: two runs at once both pass`, a.code === 0 && b.code === 0, a.out + b.out)
     ok(`${mode}: ...and neither reached a board (artifact not on their PATH)`, /artifact: not on PATH; the result file is not on run-a/.test(a.out) && /artifact: not on PATH; the result file is not on run-b/.test(b.out), a.out + b.out)
-    ok(`${mode}: their six heavy suites never side by side`, heavy.length === 6 && heavy.every((x) => x.end) && !pairsOverlap(heavy), JSON.stringify(heavy))
-    const tags = heavy.map((x) => x.n.split('@')[1]).join('')
-    ok(`${mode}: they take turns suite by suite (not one run's heavy suites, then the other's)`, !/^(a{3}b{3}|b{3}a{3})$/.test(tags), tags)
-    ok(`${mode}: the one that waited said who holds the lock`, /gates: waits for the heavy lock, held by run-[ab] pid \d+ since \d{4}-/.test(a.out + b.out), a.out + b.out)
-    const light = Object.values(sp).filter((x) => !isHeavy(x.n))
-    ok(`${mode}: the hermetic suites of both ran side by side regardless`, light.length === 4 && pairsOverlap(light), JSON.stringify(light))
-    ok(`${mode}: nothing left behind (no ticket, no lock dir)`, !fs.existsSync(LOCK + '.d') && (!fs.existsSync(LOCK + '.q') || fs.readdirSync(LOCK + '.q').length === 0) && !fs.existsSync(LOCK + '.break'))
+    ok(`${mode}: all fourteen suites ran`, sp.length === 14 && sp.every((x) => x.end), JSON.stringify(sp))
+    ok(`${mode}: their ports suites never side by side`, !pairsOverlap(sp.filter((x) => /^p\d/.test(x.n))), JSON.stringify(sp))
+    ok(`${mode}: no suite of one beside a suite of the other: one run's suites, then the other's`, apart(sp), JSON.stringify(sp))
+    ok(`${mode}: ...within a run, its hermetic suites still side by side`, ['a', 'b'].every((t) => pairsOverlap(sp.filter((x) => /^h\d/.test(x.n) && runOf(x) === t))), JSON.stringify(sp))
+    ok(`${mode}: the one that waited said once who holds the lock`, (a.out + b.out).match(/gates: waits for the run lock, held by run-[ab] pid \d+ since \d{4}-/g)?.length === 1, a.out + b.out)
+    ok(`${mode}: nothing left behind (no ticket, no lock dir)`, clean())
 
-    // 2. another holder has it for 3s: the light suites run meanwhile, the heavy one after
+    // 1b. two runs at once with a fake ports suite only (it binds nothing; the lock alone keeps them apart)
+    fs.rmSync(SP, { force: true })
+    const [pa, pb] = await Promise.all([
+      runA(['main~2..main~1', '--out', path.join(T, `pa-${mode}.txt`)], env('a')),
+      runA(['main~2..main~1', '--out', path.join(T, `pb-${mode}.txt`)], env('b')),
+    ])
+    const psp = Object.values(readSpans())
+    ok(`${mode}: two ports-only runs: both pass, their ports suites never side by side`, pa.code === 0 && pb.code === 0 && psp.length === 2 && psp.every((x) => /^p1\.sh@/.test(x.n)) && apart(psp), JSON.stringify(psp) + pa.out + pb.out)
+
+    // 1c. a run with nothing to start (its only suite is live, --no-live) takes no lock, even while another holds it
+    if (mode === 'mkdir') {
+      fs.mkdirSync(LOCK + '.d', { recursive: true }); fs.writeFileSync(path.join(LOCK + '.d', 'holder'), JSON.stringify({ label: 'busy-run', pid: process.pid, start: procStart(process.pid), since: '2026-01-02T03:04:05.000Z' }))
+      const n = await runA(['main~3..main~2', '--no-live', '--out', path.join(T, `n-${mode}.txt`)], env('n'))
+      ok('mkdir: a run with nothing to start does not wait (no lock)', n.code === 0 && !/waits for the run lock/.test(n.out) && /skipped/.test(fs.readFileSync(path.join(T, `n-${mode}.txt`), 'utf8')), n.out)
+      ok('mkdir: ...and leaves the holder\'s lock alone', readJson(path.join(LOCK + '.d', 'holder'))?.label === 'busy-run')
+      fs.rmSync(LOCK + '.d', { recursive: true, force: true })
+    }
+
+    // 2. another holder has it for 3s: the run prepares meanwhile, and starts its first suite only after
     fs.rmSync(SP, { force: true })
     const REL = path.join(T, `released-${mode}`)
     if (mode === 'flock') {
@@ -353,10 +377,10 @@ ok('the wait line', waitLine({ label: 'sy-x', pid: 42, since: '2026-01-02T03:04:
     await wait(300)
     const c = await runA(['main~1..main', '--jobs', '2', '--out', path.join(T, `c-${mode}.txt`)], env('c'))
     const rel = Number(fs.existsSync(REL) ? fs.readFileSync(REL, 'utf8') : 0), sp2 = readSpans()
-    ok(`${mode}: a run waits for another holder, and passes`, c.code === 0 && /gates: waits for the heavy lock, held by other-run pid \d+ since 2026-01-02T03:04:05Z/.test(c.out), c.out)
-    ok(`${mode}: ...its light suites ran (and ended) while the other held the lock`, rel && sp2['h1.sh@c']?.end < rel && sp2['h2.sh@c']?.end < rel, JSON.stringify({ rel, sp2 }))
-    ok(`${mode}: ...its heavy suite only after the other gave it back`, rel && sp2['d1.sh@c']?.start >= rel, JSON.stringify({ rel, sp2 }))
-    if (mode === 'mkdir') ok('mkdir: ...and says it took the lock over from the holder that is gone', /takes the heavy lock over from other-run pid \d+ \(no longer running\)/.test(c.out), c.out)
+    ok(`${mode}: a run waits for another holder, and passes`, c.code === 0 && /gates: waits for the run lock, held by other-run pid \d+ since 2026-01-02T03:04:05Z/.test(c.out), c.out)
+    const csp = Object.values(sp2).filter((x) => runOf(x) === 'c')
+    ok(`${mode}: ...each of its suites (hermetic too) only after the other gave it back`, rel && csp.length === 7 && csp.every((x) => x.start >= rel), JSON.stringify({ rel, sp2 }))
+    if (mode === 'mkdir') ok('mkdir: ...and says it took the lock over from the holder that is gone', /takes the run lock over from other-run pid \d+ \(no longer running\)/.test(c.out), c.out)
 
     // 3. a holder that is gone
     if (mode === 'flock') {
@@ -365,15 +389,15 @@ ok('the wait line', waitLine({ label: 'sy-x', pid: 42, since: '2026-01-02T03:04:
       await wait(300)
       process.kill(-h.pid, 'SIGKILL')
       await wait(200)
-      const d = await runA(['main~1..main', '--out', path.join(T, 'd-flock.txt')], env('d'))
-      ok('flock: a holder killed (SIGKILL) holds nothing: no wait', d.code === 0 && !/waits for the heavy lock/.test(d.out) && !!readSpans()['d1.sh@d'], d.out)
+      const d = await runA(['main~2..main~1', '--out', path.join(T, 'd-flock.txt')], env('d'))
+      ok('flock: a holder killed (SIGKILL) holds nothing: no wait', d.code === 0 && !/waits for the run lock/.test(d.out) && !!readSpans()['p1.sh@d'], d.out)
     } else {
       // a dead pid; a live pid with another start time (reused)
       for (const [what, h] of [['dead', { label: 'gone-run', pid: deadPid(), start: '1', since: '2026-01-02T03:04:05.000Z' }], ['reused', { label: 'gone-run', pid: process.pid, start: '1', since: '2026-01-02T03:04:05.000Z' }]]) {
         fs.rmSync(SP, { force: true })
         fs.mkdirSync(LOCK + '.d', { recursive: true }); fs.writeFileSync(path.join(LOCK + '.d', 'holder'), JSON.stringify(h))
-        const d = await runA(['main~1..main', '--out', path.join(T, `d-${what}.txt`)], env('d'))
-        ok(`mkdir: a holder whose pid is ${what} is taken over, without waiting`, d.code === 0 && /takes the heavy lock over from gone-run/.test(d.out) && !/waits for the heavy lock/.test(d.out) && !!readSpans()['d1.sh@d'], d.out)
+        const d = await runA(['main~2..main~1', '--out', path.join(T, `d-${what}.txt`)], env('d'))
+        ok(`mkdir: a holder whose pid is ${what} is taken over, without waiting`, d.code === 0 && /takes the run lock over from gone-run/.test(d.out) && !/waits for the run lock/.test(d.out) && !!readSpans()['p1.sh@d'], d.out)
         ok('mkdir: ...and the lock is given back after', !fs.existsSync(LOCK + '.d'))
       }
     }
