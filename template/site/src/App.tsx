@@ -1,8 +1,8 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUpRightIcon, CaretLeftIcon, CaretRightIcon, ChatCircleIcon, LinkSimpleIcon, PlusIcon } from '@phosphor-icons/react'
 import { toast } from 'sonner'
 import { api, blockers, type BeadEvent, type Issue, type Meta, type WaitingEntry } from '@/lib/api'
-import { COLUMNS, LEAD_DOT, LEAD_READY, ROLES, ROLE_LABEL, ago, byPriority, columnOf, roleOf, setRoleDefs, shipsWith, type ColumnKey } from '@/lib/board'
+import { COLUMNS, LEAD_DOT, LEAD_READY, ROLES, ROLE_LABEL, byPriority, columnOf, roleOf, setRoleDefs, shipsWith, type ColumnKey } from '@/lib/board'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -18,10 +18,12 @@ import { NewItem } from '@/NewItem'
 import { Identify } from '@/Identify'
 import { Avatar, PersonaContext, personaOf } from '@/lib/persona'
 import { CardPresence, NowStrip, PresenceBar, PresenceContext, RowPresence, usePresenceFeed } from '@/Presence'
+import { applyEvents, shareMeta, useStable, useVisiblePoll } from '@/lib/live'
+import { Ago } from '@/Ago'
 
 // Heavy parts load on demand (markdown, diffs, RACI, settings), and are prefetched once the board is idle.
 const loadDetail = () => import('@/Detail'), loadLeads = () => import('@/Leads')
-const Detail = lazy(() => loadDetail().then((m) => ({ default: m.Detail })))
+const Detail = lazy(() => loadDetail().then((m) => ({ default: memo(m.Detail) })))
 const Leads = lazy(() => loadLeads().then((m) => ({ default: m.Leads })))
 const Machine = lazy(() => import('@/Machine').then((m) => ({ default: m.Machine })))
 const Glossary = lazy(() => import('@/Glossary').then((m) => ({ default: m.Glossary })))
@@ -29,6 +31,8 @@ const viewOf = (h: string) => (h === '#leads' ? 'leads' : h === '#machine' ? 'ma
 // a person signed in through the gateway starts on For you (sy-c7mh); the board is behind #board
 const humanViewOf = (h: string): HumanView => (h === '#board' ? 'board' : h === '#leads' ? 'leads' : h === '#machine' ? 'machine' : h === '#glossary' ? 'glossary' : 'foryou')
 if (typeof window !== 'undefined') window.addEventListener('load', () => setTimeout(() => { loadDetail(); loadLeads() }, 1500))
+// the dialogs and For you, memoized: the board's events do not draw them again (sy-jjcx)
+const NewItemM = memo(NewItem), IdentifyM = memo(Identify), ForYouM = memo(ForYou)
 const EMPTY_META: Meta = { project: '', leads: {}, creators: {}, last: {} }
 const SLOW_MIN = 15 // a ready item nobody picked up for this long turns red
 const LONG_PRESS_MS = 450 // a press this long on a phone marks the card's links instead of opening it
@@ -61,7 +65,7 @@ export default function App() {
     const qs = s.toString()
     return window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash
   }
-  const setOpenId = (id: string | null) => {
+  const setOpenId = useCallback((id: string | null) => {
     const cur = itemOfUrl()
     if (id === cur) { setOpenRaw(id); return }
     if (id && cur) window.history.replaceState({ mmItem: true }, '', urlFor(id))
@@ -69,7 +73,7 @@ export default function App() {
     else if (window.history.state?.mmItem) { window.history.back(); return } // popstate sets it
     else window.history.replaceState(null, '', urlFor(null))
     setOpenRaw(id)
-  }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const onPop = () => setOpenRaw(itemOfUrl())
     window.addEventListener('popstate', onPop)
@@ -83,8 +87,10 @@ export default function App() {
   const human = idSource === 'gateway'
   const hview = humanViewOf(hash)
   const view = human ? (hview === 'foryou' ? 'board' : hview) : viewOf(hash)
-  const [, setNow] = useState(0) // re-render each poll so "waiting 3m" ages
-  const [tick, setTick] = useState(0) // bumps when anything changes, so an open detail reloads
+  // bumps when the board changed: For you reads its lists again (at most every 2 s under load)
+  const [tick, setTick] = useState(0)
+  // bumps when the open item changed (or after a full load): the open item reloads
+  const [itemTick, setItemTick] = useState(0)
   const search = useRef<HTMLInputElement>(null)
   // Phones (sy-81dm): one column at a time, its tabs on top; Now and Activity cover the board behind one tap.
   const phone = usePhone()
@@ -129,22 +135,33 @@ export default function App() {
     document.addEventListener('pointerdown', onDown)
     return () => { window.removeEventListener('keydown', onKey); document.removeEventListener('pointerdown', onDown) }
   }, [desk, side, openId, closeSide])
-  const openFromSide = (id: string) => { if (!desk) closeSide(false); setOpenId(id) }
+  const openFromSide = useCallback((id: string) => { if (!desk) closeSide(false); setOpenId(id) }, [desk, closeSide, setOpenId])
 
+  // the list as last set (the stream patches it between renders)
+  const list = useRef<Issue[]>([])
+  const putIssues = useCallback((next: Issue[]) => { list.current = next; setIssues(next) }, [])
+  const setMetaShared = useCallback((m: Meta) => { setRoleDefs(m.roles, !!m.setup, m.lead); setMeta((p) => shareMeta(p, m)) }, [])
+  // the whole list: the first load, after the board's own changes, and when the live stream cannot be applied
   const load = useCallback(async () => {
     try {
       // items first: never hold the board back for agents/personas (meta fills in when it arrives)
-      api.meta().then((m) => { setRoleDefs(m.roles, !!m.setup, m.lead); setMeta(m) }).catch(() => {})
+      api.meta().then(setMetaShared).catch(() => {})
       const [open, closed, rdy] = await Promise.all([api.open(), api.closed(), api.ready()])
-      setIssues([...open, ...closed])
-      setReady(new Set(rdy.map((i) => i.id)))
-      setTick((t) => t + 1)
+      // an item that did not change keeps its object, so its card does not re-render
+      const old = new Map(list.current.map((i) => [i.id, i]))
+      putIssues([...open, ...closed].map((i) => { const o = old.get(i.id); return o && JSON.stringify(o) === JSON.stringify(i) ? o : i }))
+      setReady((prev) => { const next = new Set(rdy.map((i) => i.id)); return sameSet(prev, next) ? prev : next })
+      setTick((t) => t + 1); setItemTick((t) => t + 1)
     } catch (e) {
       toast.error(`Load failed: ${(e as Error).message}`)
     }
-  }, [])
+  }, [setMetaShared, putIssues])
+  const openRef = useRef(openId)
+  useEffect(() => { openRef.current = openId }, [openId])
 
-  // Initial load, recent activity, then the live event stream.
+  // Initial load, recent activity, then the live event stream. An event patches the list in place (sy-jjcx): events
+  // are batched (150 ms), the items they carry replace theirs, the ready list is read again only when a status or a
+  // link changed, an item the list cannot be patched for is read alone; the open item reloads only when it changed.
   useEffect(() => {
     load()
     fetch('/api/links').then((r) => r.json()).then((d) => setLinks(d.links || [])).catch(() => {})
@@ -152,26 +169,53 @@ export default function App() {
     let es: EventSource | undefined
     let timer: number | undefined
     let stopped = false
+    let opened = false
     const seen = new Set<number>()
+    let queue: BeadEvent[] = []
+    const flush = () => {
+      timer = undefined
+      const batch = queue
+      queue = []
+      if (!batch.length || stopped) return
+      setEvents((prev) => [...[...batch].reverse(), ...prev].slice(0, 60))
+      const a = applyEvents(list.current, batch)
+      putIssues(a.issues)
+      if (Object.keys(a.last).length) setMeta((m) => ({ ...m, last: { ...m.last, ...a.last } }))
+      if (a.readyStale) api.ready().then((rdy) => setReady((prev) => { const next = new Set(rdy.map((i) => i.id)); return sameSet(prev, next) ? prev : next })).catch(() => {})
+      for (const id of a.fetch) {
+        api.get(id).then(({ comments: _c, ...i }) => {
+          const l = list.current
+          putIssues(l.some((x) => x.id === id) ? l.map((x) => (x.id === id ? i as Issue : x)) : [i as Issue, ...l])
+        }).catch(() => load())
+      }
+      if (openRef.current && a.touched.has(openRef.current)) setItemTick((t) => t + 1)
+      bumpSlow()
+    }
+    // For you's lists (what waits on you, to review) are the server's: read again at most every 2 s under load
+    let slowTimer: number | undefined, slowAt = 0
+    const bumpSlow = () => {
+      if (slowTimer !== undefined) return
+      slowTimer = window.setTimeout(() => { slowTimer = undefined; slowAt = Date.now(); setTick((t) => t + 1) }, Math.max(150, 2000 - (Date.now() - slowAt)))
+    }
     api.events(0, 1).then(async ({ head }) => {
       const recent = await api.events(Math.max(0, head - 40), 40)
       if (stopped) return
       recent.records.forEach((r) => seen.add(r.seq))
       setEvents([...recent.records].reverse())
       es = new EventSource(`/api/v0/beads/events:watch?since=${head}`)
-      es.onopen = () => setLive(true)
+      // a reconnect may have missed events: read the whole list again
+      es.onopen = () => { setLive(true); if (opened) load(); opened = true }
       es.onerror = () => setLive(false)
       es.onmessage = (m) => {
         const ev = JSON.parse(m.data) as BeadEvent
         if (seen.has(ev.seq)) return
         seen.add(ev.seq)
-        setEvents((list) => [ev, ...list].slice(0, 60))
-        window.clearTimeout(timer)
-        timer = window.setTimeout(load, 150)
+        queue.push(ev)
+        if (timer === undefined) timer = window.setTimeout(flush, 150)
       }
     }).catch((e) => toast.error(`Events: ${(e as Error).message}`))
-    return () => { stopped = true; es?.close(); window.clearTimeout(timer) }
-  }, [load])
+    return () => { stopped = true; es?.close(); window.clearTimeout(timer); window.clearTimeout(slowTimer) }
+  }, [load, putIssues])
 
   useEffect(() => {
     const onHash = () => setHash(window.location.hash)
@@ -185,15 +229,13 @@ export default function App() {
   useEffect(() => {
     if (!human) return
     let gone = false
-    api.waiting().then((d) => !gone && setWaiting(d.items)).catch(() => !gone && setWaiting((w) => w ?? []))
+    api.waiting().then((d) => !gone && setWaiting((w) => (w && JSON.stringify(w) === JSON.stringify(d.items) ? w : d.items))).catch(() => !gone && setWaiting((w) => w ?? []))
     return () => { gone = true }
   }, [human, tick])
 
   // Lead status changes in Paseo, not in Beads, so poll it.
-  useEffect(() => {
-    const t = window.setInterval(() => { api.meta().then((m) => { setRoleDefs(m.roles, !!m.setup, m.lead); setMeta(m) }).catch(() => {}); setNow(Date.now()) }, 5000)
-    return () => window.clearInterval(t)
-  }, [])
+  // (only while the tab is shown; a poll that brings the same meta changes nothing)
+  useVisiblePoll(() => { api.meta().then(setMetaShared).catch(() => {}) }, 5000)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -207,6 +249,19 @@ export default function App() {
   }, [])
 
   const byId = useMemo(() => new Map(issues.map((i) => [i.id, i])), [issues])
+  // what the open item unblocks and its children, from the list: the same value while they do not change, so the open
+  // item does not re-render for an event on another item (sy-jjcx)
+  const related = useStable(useMemo(() => {
+    if (!openId) return null
+    const pick = (x: Issue) => ({ id: x.id, title: x.title, status: x.status })
+    return {
+      unblocks: issues.filter((x) => (x.dependencies || []).some((d) => d.type === 'blocks' && d.depends_on_id === openId)).map(pick),
+      children: issues.filter((x) => x.parent === openId).map(pick),
+    }
+  }, [issues, openId]))
+  const closeOpen = useCallback(() => setOpenId(null), [setOpenId])
+  const onCreated = useCallback((i: Issue) => { load(); toast.success(`Created ${i.id}`) }, [load])
+  const onIdentified = useCallback((n: string) => { setActor(n); setIdSource('self'); toast.success(`You are ${n}`) }, [])
   // the links a hovered (or long-pressed) card marks come from this list: no fetch per hover (sy-x7kh)
   useEffect(() => setLinkGraph(issues), [issues])
   // a long press marks until the next tap anywhere, Escape, or another view
@@ -217,7 +272,7 @@ export default function App() {
     return () => { document.removeEventListener('pointerdown', off); document.removeEventListener('keydown', esc) }
   }, [])
   useEffect(() => clearLinks(), [view, col, openId])
-  const epics = useMemo(() => issues.filter((i) => i.issue_type === 'epic' && i.status !== 'closed'), [issues])
+  const epics = useStable(useMemo(() => issues.filter((i) => i.issue_type === 'epic' && i.status !== 'closed'), [issues]))
   const work = useMemo(() => {
     const needle = q.trim().toLowerCase()
     return issues.filter((i) => i.issue_type !== 'epic' && i.assignee !== 'setup' && !(i.labels || []).includes('governance') && (!needle ||
@@ -316,7 +371,7 @@ export default function App() {
       {human && hview === 'foryou' ? (
         <main className="min-h-0 flex-1 overflow-auto">
           {/* keyed by its marks' key: For you may mount before /api/meta names the project; it reads its marks again then */}
-          <ForYou key={`${meta.project || 'board'}:${actor}`} waiting={waiting} owner={me.role === 'owner'} approval={me.approval} storeKey={`${meta.project || 'board'}:${actor}`} tick={tick}
+          <ForYouM key={`${meta.project || 'board'}:${actor}`} waiting={waiting} owner={me.role === 'owner'} approval={me.approval} storeKey={`${meta.project || 'board'}:${actor}`} tick={tick}
             onOpen={setOpenId} onChanged={load} />
         </main>
       ) : view === 'glossary' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Glossary /></Suspense> : view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
@@ -394,33 +449,38 @@ export default function App() {
           <h2 className="shrink-0 border-b border-foreground px-4 py-2 text-[11px] font-bold tracking-[0.1em] uppercase">Activity</h2>
           <ol className="min-h-0 flex-1 overflow-y-auto">
             {events.length === 0 && <li className="px-4 py-3 text-xs text-muted-foreground">No events yet.</li>}
-            {events.map((ev) => (
-              <li key={ev.seq}>
-                <button onClick={() => openFromSide(ev.issue_id)} className="grid w-full grid-cols-[2.5rem_minmax(0,1fr)] gap-x-2 border-b px-4 py-2 text-left hover:bg-muted max-md:py-3">
-                  <span className="text-[11px] text-muted-foreground tabular-nums">{ago(ev.ts)}</span>
-                  <span className="min-w-0 text-xs leading-snug">
-                    <ActorName actor={ev.actor || 'beads'} personas={meta.personas ?? null} /> {verb(ev)} <span className="font-mono text-[11px]">{ev.issue_id}</span>
-                    <span className="block truncate text-muted-foreground">{ev.comment ? `“${ev.comment.text}”` : ev.issue?.title}</span>
-                  </span>
-                </button>
-              </li>
-            ))}
+            {events.map((ev) => <ActivityRow key={ev.seq} ev={ev} personas={meta.personas ?? null} onOpen={openFromSide} />)}
           </ol>
         </aside>
       </div>
       </>)}
 
-      {openId && <Suspense fallback={null}><Detail id={openId} tick={tick} byId={byId} creator={meta.creators[openId]} onClose={() => setOpenId(null)} onOpen={setOpenId} onChanged={load} /></Suspense>}
-      <NewItem open={creating} onOpenChange={setCreating} epics={epics} defaultRole={role === 'all' ? '' : role}
-        onCreated={(i) => { load(); toast.success(`Created ${i.id}`) }} />
-      <Identify open={identifying} current={idSource === 'self' ? actor : ''} onOpenChange={setIdentifying}
-        onDone={(n) => { setActor(n); setIdSource('self'); toast.success(`You are ${n}`) }} />
+      {openId && <Suspense fallback={null}><Detail id={openId} tick={itemTick} related={related} creator={meta.creators[openId]} onClose={closeOpen} onOpen={setOpenId} onChanged={load} /></Suspense>}
+      <NewItemM open={creating} onOpenChange={setCreating} epics={epics} defaultRole={role === 'all' ? '' : role}
+        onCreated={onCreated} />
+      <IdentifyM open={identifying} current={idSource === 'self' ? actor : ''} onOpenChange={setIdentifying}
+        onDone={onIdentified} />
       <Toaster position="bottom-left" />
     </div>
     </PresenceContext.Provider>
     </PersonaContext.Provider>
   )
 }
+
+// one line of the Activity feed: drawn once (sy-jjcx); its "ago" ticks on its own
+const ActivityRow = memo(function ActivityRow({ ev, personas, onOpen }: { ev: BeadEvent; personas: import('@/lib/persona').Personas | null; onOpen: (id: string) => void }) {
+  return (
+    <li>
+      <button onClick={() => onOpen(ev.issue_id)} className="grid w-full grid-cols-[2.5rem_minmax(0,1fr)] gap-x-2 border-b px-4 py-2 text-left hover:bg-muted max-md:py-3">
+        <Ago ts={ev.ts} className="text-[11px] text-muted-foreground tabular-nums" />
+        <span className="min-w-0 text-xs leading-snug">
+          <ActorName actor={ev.actor || 'beads'} personas={personas} /> {verb(ev)} <span className="font-mono text-[11px]">{ev.issue_id}</span>
+          <span className="block truncate text-muted-foreground">{ev.comment ? `“${ev.comment.text}”` : ev.issue?.title}</span>
+        </span>
+      </button>
+    </li>
+  )
+})
 
 function verb(ev: BeadEvent) {
   switch (ev.op) {
@@ -467,8 +527,7 @@ function PhoneBoard({ top, rows, work, ready, byId, meta, col, onOpen }: {
               )}
             </h2>
             <div className="grid gap-2 p-2">
-              {g.items.map((i) => <Card key={i.id} issue={i} col={col} waitsOn={blockers(i, byId)} ships={shipsWith(i, byId)} last={meta.last[i.id]} onOpen={onOpen}
-                worker={meta.leads._workers?.find((w) => w.item === i.id)} />)}
+              {g.items.map((i) => <Card key={i.id} {...cardProps(i, col, byId, meta)} onOpen={onOpen} />)}
             </div>
           </section>
         )
@@ -552,25 +611,31 @@ function Cell({ col, role, items, byId, meta, onOpen, onMove }: {
       onDrop={(e) => { e.preventDefault(); setOver(false); onMove(e.dataTransfer.getData('text/plain'), role, col) }}
       className={cn('flex min-h-16 flex-col gap-1.5 border-b border-l p-1.5', over && 'bg-muted outline-2 -outline-offset-2 outline-foreground')}
     >
-      {items.map((i) => <Card key={i.id} issue={i} col={col} waitsOn={blockers(i, byId)} ships={shipsWith(i, byId)} last={meta.last[i.id]} onOpen={onOpen}
-        worker={meta.leads._workers?.find((w) => w.item === i.id)} />)}
+      {items.map((i) => <Card key={i.id} {...cardProps(i, col, byId, meta)} onOpen={onOpen} />)}
     </div>
   )
 }
 
-function Card({ issue: i, col, waitsOn, ships = null, last, onOpen, worker }: {
-  issue: Issue; col: ColumnKey; waitsOn: string[]; ships?: string[] | null; last?: Meta['last'][string]; onOpen: (id: string) => void
-  worker?: { id: string; status: string }
+/** A card's props, all plain values or the item itself (which keeps its object while it does not change): the card is
+ *  memoized, so an event re-renders only the card of the item it changed (sy-jjcx). */
+function cardProps(i: Issue, col: ColumnKey, byId: Map<string, Issue>, meta: Meta) {
+  const last = meta.last[i.id], worker = meta.leads._workers?.find((w) => w.item === i.id)
+  return { issue: i, col, waitsOn: blockers(i, byId).join(', '), ships: shipsWith(i, byId)?.join(' ') ?? '',
+    lastAuthor: last?.author, lastAt: last?.at, workerId: worker?.id, workerStatus: worker?.status }
+}
+
+const Card = memo(function Card({ issue: i, col, waitsOn, ships, lastAuthor, lastAt, onOpen, workerId, workerStatus }: {
+  issue: Issue; col: ColumnKey; waitsOn: string; ships: string; lastAuthor?: string; lastAt?: string; onOpen: (id: string) => void
+  workerId?: string; workerStatus?: string
 }) {
   const closed = i.status === 'closed'
   const role = roleOf(i)
-  const fromLead = !!last && (ROLES as readonly string[]).includes(last.author)
+  const fromLead = !!lastAuthor && (ROLES as readonly string[]).includes(lastAuthor)
   // Who owes the next move on the thread.
-  const awaitingLead = !closed && !!role && !!last && !fromLead
+  const awaitingLead = !closed && !!role && !!lastAuthor && !fromLead
   // waiting only for its rollout (ships) is not a block: it shows "Ships with <id>", never "blocked" (sy-7n3c)
   const blocked = i.status === 'blocked' && !ships
   const needsYou = !closed && fromLead && (blocked || (i.labels || []).includes('needs-you'))
-  const waitedMin = (Date.now() - new Date(i.updated_at).getTime()) / 60000
   // its links (sy-x7kh): the mouse over it, or a long press on a phone (a tap still opens it)
   const phone = usePhone()
   const rel = useLinkRel(i.id), marked = useMarked()
@@ -612,44 +677,48 @@ function Card({ issue: i, col, waitsOn, ships = null, last, onOpen, worker }: {
         <span className="font-mono text-muted-foreground">{i.id}</span>
         <span className={cn('font-bold tabular-nums', i.priority === 0 && 'text-swiss')}>P{i.priority}</span>
         <span className="text-muted-foreground">{i.issue_type}</span>
-        {worker && <span className="ml-auto flex items-center gap-1 font-semibold text-swiss" title={`Worker ${worker.id}: ${worker.status}`}>
-          <span className={cn('size-1.5 bg-swiss', worker.status === 'running' && 'animate-pulse')} />worker</span>}
-        {blocked && <span className={cn('font-semibold uppercase', !worker && 'ml-auto')}>blocked</span>}
+        {workerId && <span className="ml-auto flex items-center gap-1 font-semibold text-swiss" title={`Worker ${workerId}: ${workerStatus}`}>
+          <span className={cn('size-1.5 bg-swiss', workerStatus === 'running' && 'animate-pulse')} />worker</span>}
+        {blocked && <span className={cn('font-semibold uppercase', !workerId && 'ml-auto')}>blocked</span>}
         {i.status === 'deferred' && <span className="ml-auto font-semibold uppercase">deferred</span>}
       </span>
       <span className={cn('text-[13px] leading-snug font-medium [overflow-wrap:anywhere] max-md:text-[15px]', closed && 'line-through')}>{i.title}</span>
       {ships && (
-        <span data-ships={ships.join(' ')} title="Landed: waits only for its rollout"
+        <span data-ships={ships} title="Landed: waits only for its rollout"
           className="justify-self-start border border-foreground/40 px-1.5 py-0.5 text-[11px] leading-none font-semibold [overflow-wrap:anywhere]">
-          Ships with <span className="font-mono">{ships.join(', ')}</span>
+          Ships with <span className="font-mono">{ships.split(' ').join(', ')}</span>
         </span>
       )}
-      {((waitsOn.length > 0 && !ships) || !!i.comment_count || col === 'ready') && (
+      {((!!waitsOn && !ships) || !!i.comment_count || col === 'ready') && (
         <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
           {col === 'ready' && (
-            <span className={cn(waitedMin > SLOW_MIN && 'font-semibold text-swiss')} title="Waiting for pickup">
-              waiting {ago(i.updated_at)}
-            </span>
+            <Ago ts={i.updated_at} slowMin={SLOW_MIN} prefix="waiting " title="Waiting for pickup" />
           )}
-          {waitsOn.length > 0 && !ships && <span className="flex items-center gap-1"><LinkSimpleIcon />waits on {waitsOn.join(', ')}</span>}
+          {!!waitsOn && !ships && <span className="flex items-center gap-1"><LinkSimpleIcon />waits on {waitsOn}</span>}
           {!!i.comment_count && <span className="flex items-center gap-1"><ChatCircleIcon />{i.comment_count}</span>}
         </span>
       )}
       <CardPresence item={i.id} />
       {awaitingLead && (
         <span className="border-l-2 border-swiss pl-1.5 text-[11px] font-semibold">
-          reply due · {ago(last!.at)}
+          <Ago ts={lastAt!} prefix="reply due · " />
         </span>
       )}
       {needsYou && (
-        <span className="bg-swiss px-1.5 py-0.5 text-[11px] font-semibold text-white">Needs you · {ago(last!.at)}</span>
+        <span className="bg-swiss px-1.5 py-0.5 text-[11px] font-semibold text-white"><Ago ts={lastAt!} prefix="Needs you · " /></span>
       )}
     </button>
   )
-}
+})
 
 function ActorName({ actor, personas }: { actor: string; personas: import('@/lib/persona').Personas | null }) {
   const p = personaOf(personas, actor)
   if (!p) return <b>{actor}</b>
   return <span className="inline-flex items-baseline gap-1"><Avatar actor={actor} size="xs" className="self-center" /><b style={{ color: p.color }}>{p.worker ? p.label : p.name}</b></span>
+}
+
+function sameSet(a: Set<string>, b: Set<string>) {
+  if (a.size !== b.size) return false
+  for (const x of a) if (!b.has(x)) return false
+  return true
 }

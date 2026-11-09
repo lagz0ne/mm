@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createContext, memo, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowsOutIcon, ArrowSquareOutIcon, ChatTeardropTextIcon, XIcon } from '@phosphor-icons/react'
@@ -69,7 +69,9 @@ export function Fold({ children, max = 260, kind }: { children: React.ReactNode;
   )
 }
 
-export function Markdown({ children: raw, embeds = true, className, onRef, breaks = false, fold = false }: {
+// Rendered once per text (sy-jjcx): memoized on its props, so a thread that gets a new comment does not parse the others
+// again (callers pass a stable onRef).
+export const Markdown = memo(function Markdown({ children: raw, embeds = true, className, onRef, breaks = false, fold = false }: {
   children: string; embeds?: boolean; className?: string; onRef?: (n: number) => void
   /** keep single line breaks (a comment as its writer typed it) */ breaks?: boolean
   /** fold long code blocks and tables */ fold?: boolean
@@ -110,7 +112,7 @@ export function Markdown({ children: raw, embeds = true, className, onRef, break
       <Viewer path={open} onClose={() => setOpen(null)} />
     </div>
   )
-}
+})
 
 /** Inline preview of a file: HTML/images rendered at desktop width and scaled to fit; markdown rendered. */
 export function Embed({ path, rev, className, height = 340 }: { path: string; rev?: string; className?: string; height?: number }) {
@@ -159,7 +161,14 @@ function notesFor(path: string, comments: AnnotateTarget['comments']): Note[] {
   return out
 }
 
-export function Viewer({ path, rev, onClose }: { path: string | null; rev?: string; onClose: () => void }) {
+export function Viewer(props: { path: string | null; rev?: string; onClose: () => void }) {
+  // every Markdown has one, mostly never opened: it mounts the dialog (and reads the thread's context) only once opened,
+  // and stays so its closing animation plays (sy-jjcx: a closed Dialog draws nothing, so the page is the same)
+  const [used, setUsed] = useState(false)
+  if (props.path && !used) setUsed(true)
+  return used || props.path ? <ViewerDialog {...props} /> : null
+}
+function ViewerDialog({ path, rev, onClose }: { path: string | null; rev?: string; onClose: () => void }) {
   const target = useContext(AnnotateContext)
   const canNote = !!target && !!path && path.endsWith('.html') && !rev
   const [noting, setNoting] = useState(false)
