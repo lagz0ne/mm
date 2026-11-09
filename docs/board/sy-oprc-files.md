@@ -45,7 +45,12 @@ Web UI (the bundled Expo app):
   `?download=1`: as an attachment. The path form lets an HTML page's relative images load through the same checks.
 - Every refused path (`..`, a dotfile, a forbidden name, a link that leaves its folder, a folder not on the list, a
   bad encoding) answers **404**, the same as a missing file: the answer never says whether something exists.
-- **Who**: the same read rights as the rest of the board. The local side reads; on the public side every signed-in
-  role reads (a viewer included: GET only), and without the gateway's assertion the answer is 401.
+- **Who**: the local side reads every folder. On the public side every signed-in role reads `artifacts/`, `docs/`
+  and `code/docs/`; `plans/` and `memory/` only an owner, member or designer: a viewer (a client) gets 404 for them
+  and their files, and they are not in its list. Without the gateway's assertion the answer is 401.
+- **Keys**: every file listed or served (read, download, HEAD) passes the key scan (`bin/lib/secret-scan.mjs`, the
+  same shapes as the artifacts' pre-commit check). A file that looks like it holds one is a 404 for everyone and is
+  left out of its folder's list, with nothing that says why. The answer is cached by real path + mtime + size + inode,
+  so a list stays fast and an edit is scanned again. Over 64 MB a file is not scanned, so it is not served.
 - **UI**: the `#files` tab (`#files/<path>` for a folder or a file, so Back works). A breadcrumb and an "Up" link; on a
   phone (360–430 px) one column, no sideways scroll.
