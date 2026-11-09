@@ -190,7 +190,8 @@ check "a box: the run starts (over docker exec -i, stdin, no TTY), with no token
 check "...mm.ai keeps its key (sha256 only): kind person, alice, acme-shop, ending by the host's clock (as the run's label says)" bash -c "keyof | jq -e '.kind == \"person\" and .person == \"alice\" and .project == \"acme-shop\" and .revoked == 0' && e=\$(keyof | jq .expires) && last | jq -e --arg e \"run-expires=\$(( e / 1000 ))\" '.labels | index(\$e)' && [ \$(( e - \$(date +%s%3N) )) -gt \$(( 3 * 3600000 )) ]"
 check "...the box's egress never gets the model's host (no proxy restart), and no token went into docker's command line" bash -c "! grep -qF 'anthropic' '$ALLOW' 2>/dev/null && [ \$(restarts) = 0 ] && ! grep -q 'sk-ant' '$T/dock.log'"
 check "...the host's record has her run (its agent id, when its key ends), no token or key in it, 0600" bash -c "jq -e '.runs | length == 1 and .[0].person == \"alice\" and .[0].agent == \"agent-1\" and .[0].role == \"qa\" and (.[0].expires > 0)' '$REC' && ! grep -q 'sk-ant\|mmk_' '$REC' && [ \$(stat -c %a '$REC') = 600 ]"
-check "the sweep before the key ends: the run stays (the box is not asked)" bash -c "bun '$T/sweep.ts' | jq -e '.dropped == 0 and .left == 1' && ! grep -qs -- '--label project=acme-shop' '$ST/ls.log'"
+# the box is not asked: only what the sweep itself lists counts (bin/lead's start-up lists the role's leads in ls.log too)
+check "the sweep before the key ends: the run stays (the box is not asked)" bash -c ": >'$ST/ls.log' && bun '$T/sweep.ts' | jq -e '.dropped == 0 and .left == 1' && ! grep -qs -- '--label project=acme-shop' '$ST/ls.log'"
 jq '.runs[0].expires = 1000' "$REC" >"$REC.x" && mv "$REC.x" "$REC"
 check "the sweep once its key has ended (the host's clock): the record goes, no proxy restart" bash -c "bun '$T/sweep.ts' | jq -e '.dropped == 1 and .left == 0' && [ ! -e '$REC' ] && [ \$(restarts) = 0 ]"
 mv "$ST/worker.pid" "$ST/worker.off"
