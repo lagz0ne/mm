@@ -289,7 +289,7 @@ rule template/bin/lib/schemas/**  test/schema.mjs test/structured.sh test/messag
 rule template/bin/lib/placements.mjs test/placements.mjs test/supervisor.mjs
 rule template/bin/lib/raci.mjs    test/raci.mjs test/supervisor-raci.mjs test/message.mjs test/task.mjs test/bd-actor.sh test/owner-card-bd.sh test/wake-hops.mjs
 rule template/bin/lib/to.mjs      test/wake-person-to.mjs test/board-thread.mjs test/message.mjs
-rule template/bin/lib/gates-file.mjs test/owner-card-bd.sh test/bd-actor.sh
+rule template/bin/lib/gates-file.mjs test/owner-card-bd.sh test/bd-actor.sh test/gates.mjs
 rule template/bin/lib/paseo.mjs   test/paseo-refuse.mjs test/lead.sh test/lead-workspace.sh test/npm-lock.sh test/wake-start.mjs test/wake-twoleads.mjs test/wake-ondemand.mjs test/supervisor-workers.mjs test/paseo-lib.mjs
 rule template/bin/lib/run-as.mjs  test/wake-person-runs.mjs test/wake-box-person-runs.mjs test/person-run.sh test/box-person-runs.sh test/paseo-refuse.mjs
 rule template/bin/lib/claude.mjs  test/memory-links.sh test/lead.sh test/person-run.sh test/box-person-runs.sh test/assist.sh test/config-review.mjs
