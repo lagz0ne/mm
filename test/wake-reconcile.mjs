@@ -136,7 +136,7 @@ const start = () => { w = spawn('node', [path.join(PROJ, 'bin', 'wake')], { env,
 const sent = () => read(SENT), bdlog = () => read(BDLOG), log = () => read(path.join(PROJ, '.run', 'logs', 'ops.log'))
 const to = (role) => sent().split('----\n').filter((b) => b.startsWith(`TO agent-${role}\n`)).join('\n')
 const starts = (r) => read(STARTED).split('--\n').filter((b) => b.startsWith(`START ${r}\n`))
-const wstate = () => { try { return JSON.parse(read(path.join(PROJ, '.wake-state.json'))) } catch { return {} } }
+const wstate = () => { try { return JSON.parse(read(path.join(PROJ, '.run', 'wake-state.json'))) } catch { return {} } }
 const I = (id) => items.get(id)
 
 try {

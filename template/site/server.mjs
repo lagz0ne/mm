@@ -452,12 +452,20 @@ async function refreshMeta() {
 }
 // Each lead's state for the board (site/lead-state.mjs): ready / working on <item> / waiting for you / blocked / start
 // failed; never "offline" (leads are on demand: wake starts them when a request waits). Kept for 3 s.
+// wake's state (sy-965o): .run/wake-state.json (a box may write .run/, not the root); the root's old file until wake
+// has saved the new one
+const readWakeState = () => {
+  for (const f of [path.join(ROOT, '.run', 'wake-state.json'), path.join(ROOT, '.wake-state.json')]) {
+    try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch (e) { if (e.code !== 'ENOENT') return {} }
+  }
+  return {}
+}
 let statesCache = { at: 0, data: null }
 async function leadStates(l) {
   if (statesCache.data && Date.now() - statesCache.at < 3000) return statesCache.data
   let items = [], wake = {}
   try { items = (await fetch(new URL('/v0/beads/issues?limit=500', BD), { minMs: 1000 }).then((x) => x.json())).items || [] } catch {}
-  try { wake = JSON.parse(fs.readFileSync(path.join(ROOT, '.wake-state.json'), 'utf8')) } catch {}
+  wake = readWakeState()
   const data = Object.fromEntries([...ROLES, 'setup'].map((role) => [role, leadState({ role, agent: l[role], wake: wake[role], items, lastAct: meta.lastAct[role] })]))
   statesCache = { at: Date.now(), data }
   return data
@@ -880,7 +888,7 @@ async function pollPresence() {
     if (l) {
       await refreshMeta().catch(() => {})
       let wakeState = {}
-      try { wakeState = JSON.parse(fs.readFileSync(path.join(ROOT, '.wake-state.json'), 'utf8')) } catch {}
+      wakeState = readWakeState()
       const running = [
         ...Object.entries(l).filter(([k, a]) => k !== '_workers' && a && a.status === 'running').map(([role, a]) => ({ actor: role, kind: 'lead', id: a.id })),
         ...(l._workers || []).filter((w) => w.status === 'running').map((w) => ({ actor: `${w.role}/worker`, kind: 'worker', id: w.id, item: w.item })),

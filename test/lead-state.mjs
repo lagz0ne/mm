@@ -42,7 +42,7 @@ fs.cpSync(path.join(SRC, 'template', 'bin'), path.join(B, 'bin'), { recursive: t
 for (const r of ['qa', 'dev', 'ops', 'arch']) fs.mkdirSync(path.join(B, 'leads', r), { recursive: true })
 fs.mkdirSync(path.join(B, 'setup'), { recursive: true })
 fs.writeFileSync(path.join(B, 'leads', 'roles.json'), JSON.stringify({ roles: ['qa', 'dev', 'ops', 'arch'].map((id) => ({ id, title: id, initial: 'X', color: '#000000' })) }))
-fs.writeFileSync(path.join(B, '.wake-state.json'), JSON.stringify({ ops: { startError: { error: 'paseo refused', items: ['i-4'], at: '2026-01-01T00:00:00Z' } }, dev: { items: ['i-2'], at: '2026-01-01T00:00:00Z' } }))
+fs.mkdirSync(path.join(B, '.run'), { recursive: true }); fs.writeFileSync(path.join(B, '.run', 'wake-state.json'), JSON.stringify({ ops: { startError: { error: 'paseo refused', items: ['i-4'], at: '2026-01-01T00:00:00Z' } }, dev: { items: ['i-2'], at: '2026-01-01T00:00:00Z' } }))
 // stub paseo: dev in a turn (in leads/dev), qa idle; ops, arch and setup have no agent
 fs.writeFileSync(path.join(T, 'paseo'), `#!/bin/sh
 case "$1" in
