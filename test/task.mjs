@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { parseTask } from '../template/bin/lib/task.mjs'
+import { formatTask, parseTask } from '../template/bin/lib/task.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 let pass = 0, fail = 0
@@ -20,6 +20,21 @@ const ACTS = ['t2-change', 'mm-template']
 const TASK = '## Task\n- **Task:** Add V to the RACI and route messages by it.\n- **Act:** mm-template\n- **Done when:** bin/raci shows V for review in t2-change.\n- **Verify:** bin/raci → t2-change row, review column: V\n\nThe rest.'
 const CARD = '## Owner\n- **What:** Open the mail port.\n- **Why:** Alerts cannot leave.\n- **You:** Nothing\n'
 const errs = (d) => parseTask(d, { acts: ACTS }).errors.join(' | ')
+
+console.log('== formatTask (sy-n3r5: the items the watchdog makes)')
+{
+  const t = formatTask({ task: 'Find the cause of this alert.', act: 'incident', done: 'it clears', verify: ['bd show x --json', 'status closed'] })
+  const p = parseTask(`${t}\n\nThe body.`, { acts: ['incident'] })
+  ok('its block parses: Task, Act, Done when, Verify', p.ok && p.task.Act === 'incident' && p.task.Verify === 'bd show x --json → status closed')
+  ok('...newlines in a value become spaces (one line per key)', parseTask(formatTask({ task: 'A\nB', act: 'incident', done: 'c', verify: ['d', 'e'] }), { acts: ['incident'] }).task.Task === 'A B')
+  ok('...a Head when given', parseTask(formatTask({ task: 'a', act: 'incident', done: 'b', verify: ['c', 'd'], head: 'mm@0a1b2c3' }), { acts: ['incident'] }).task.Head === 'mm@0a1b2c3')
+  // each maker puts one at the top of what it opens, and its Task is one instruction of at most 20 words
+  for (const [f, re] of [['template/profiles/system/bin/sentinel', /description: `\$\{TASK\}\\n\\n/], ['template/profiles/system/bin/supervisor', /desc = `\$\{task\}\\n\\n/], ['template/bin/health', /description: `\$\{formatTask\(/]]) {
+    const src = fs.readFileSync(path.join(SRC, f), 'utf8')
+    const tasks = [...src.matchAll(/task: (?:p\.parts \? )?'([^']+)'(?: : '([^']+)')?/g)].flatMap((m) => [m[1], m[2]]).filter(Boolean)
+    ok(`${path.basename(f)}: its items start with formatTask's block`, /formatTask/.test(src) && re.test(src) && tasks.length > 0 && tasks.every((x) => x.split(/\s+/).length <= 20))
+  }
+}
 
 console.log('== parseTask')
 let r = parseTask(TASK, { acts: ACTS })

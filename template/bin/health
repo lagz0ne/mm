@@ -13,7 +13,15 @@ const STATE = process.env.HEALTH_STATE || path.join(P, '.health.json')
 const FORCE = process.env.HEALTH_FORCE_FAIL || '' // test only: treat this check as failing, without restarting anything
 import { endpoints, restartService, servicesDef, svcUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
+import { formatTask } from './lib/task.mjs'
 cli('health')
+// the item's Act (sy-n3r5): the first of `prefer` that this board's RACI has (a project board has no incident row),
+// else its first activity
+function actHere(...prefer) {
+  let ids = []
+  try { ids = (JSON.parse(fs.readFileSync(path.join(P, 'leads', 'raci.json'), 'utf8')).activities || []).map((a) => a.id) } catch {}
+  return prefer.find((a) => ids.includes(a)) || ids[0] || prefer[0]
+}
 // Checks come from services.json (each service's `ready` probe) and where the manager put them (.run/endpoints.json).
 const SVC = servicesDef()
 async function ok(url) { try { const r = await fetch(url, { signal: AbortSignal.timeout(5000) }); return r.status < 500 } catch { return false } }
@@ -57,7 +65,9 @@ for (const c of checks) {
   if (c.service && c.id !== FORCE && (selfHealing ? s.fails === 3 : s.fails <= 3)) { try { restartService(c.service); console.log(`${c.id}: restarted`) } catch (e) { console.log(`${c.id}: restart failed: ${e.message}`) } }
   if (s.fails >= 3 && !s.incident) {
     const r = await bd('POST', '/v0/beads/issues', { title: `Incident: ${c.title}`, issue_type: 'bug', priority: 0, labels: ['incident', 'needs-you'], actor: 'watchdog', owner: 'watchdog',
-      description: `The watchdog found **${c.title}** on ${s.fails} checks in a row (one per minute) and could not fix it by restarting${c.service ? ` \`${c.service}\`` : ''}.\n\nCheck the process manager's log for ${c.service || 'it'}. This item closes itself when the check passes again.` }).catch(() => ({}))
+      description: `${formatTask({ task: 'Find why the check fails, and make it pass again.', act: actHere('incident', 'release'),
+        done: 'the check passes again, and this item closes itself', verify: [`bin/health`, `no "${c.id}: FAILED" line`] })}\n\n` +
+        `The watchdog found **${c.title}** on ${s.fails} checks in a row (one per minute) and could not fix it by restarting${c.service ? ` \`${c.service}\`` : ''}.\n\nCheck the process manager's log for ${c.service || 'it'}. This item closes itself when the check passes again.` }).catch(() => ({}))
     if (r.id) { s.incident = r.id; console.log(`${c.id}: opened incident ${r.id}`) }
   }
 }
@@ -74,7 +84,9 @@ const listed = stale.map((f) => `- \`memory/${f}\``).join('\n')
 try {
   if (stale.length && !mem.item) {
     const r = await bd('POST', '/v0/beads/issues', { title: `Stale memories: ${stale.length} past their ttl_days`, issue_type: 'task', priority: 3, labels: ['memory'], assignee: 'setup', actor: 'watchdog', owner: 'watchdog',
-      description: `These project memories are older than their \`verified\` date plus \`ttl_days\`:\n\n${listed}\n\nFor each: check the fact again and set a new \`verified\`, fix it, or delete the file (and its line in \`memory/MEMORY.md\`). This item closes itself when none is left.` })
+      description: `${formatTask({ task: 'Check each stale memory again: set a new verified, fix it, or delete it.', act: actHere('project-governance', 'incident', 'release'),
+        done: 'no memory is past verified plus ttl_days, and this item closes itself', verify: ['bin/config-check', 'config-check: ok'] })}\n\n` +
+        `These project memories are older than their \`verified\` date plus \`ttl_days\`:\n\n${listed}\n\nFor each: check the fact again and set a new \`verified\`, fix it, or delete the file (and its line in \`memory/MEMORY.md\`). This item closes itself when none is left.` })
     if (r.id) { mem.item = r.id; mem.list = stale; console.log(`memory: ${stale.length} stale; opened ${r.id}`) }
   } else if (stale.length && mem.list.join() !== stale.join()) {
     await bd('POST', `/v0/beads/issues/${mem.item}/comments`, { author: 'watchdog', text: `Now ${stale.length} stale:\n\n${listed}` }); mem.list = stale

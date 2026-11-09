@@ -24,6 +24,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { ROOT, dirs, projectName, requireUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
+import { formatTask } from './lib/task.mjs'
+// every item it opens starts with its Task (sy-n3r5; bin/bd's gate and the Supervisor's digest read it)
+const TASK = formatTask({ task: 'Find the cause of this alert, fix it or file it, so that it clears.', act: 'incident',
+  done: 'the condition is gone, and the sentinel closes this item', verify: ['bd show <this item> --json', 'status closed, by watchdog'] })
 
 cli('sentinel')
 const E = process.env
@@ -196,7 +200,7 @@ for (const src of results) {
       if (state.notes[p.key] !== undefined) { state.muted[p.key] = now; console.log(`${p.key}: closed by someone while still there; quiet until it clears`); continue }
     }
     const r = await bd('POST', '/v0/beads/issues', { title: p.title, issue_type: 'bug', priority: p.priority, assignee: ASSIGNEE, labels: ['incident', 'act:incident', 'sentinel'],
-      actor: ACTOR, owner: ACTOR, description: `${p.body}\n\nsentinel key: \`${p.key}\`` })
+      actor: ACTOR, owner: ACTOR, description: `${TASK}\n\n${p.body}\n\nsentinel key: \`${p.key}\`` })
     if (r.id) { state.notes[p.key] = p.note; state.said[p.key] = NOW; opened++; console.log(`${p.key}: opened ${r.id}`) }
   }
   // gone, from a source that read fine: close (conditions) or forget (events, once closed)
