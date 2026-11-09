@@ -573,7 +573,8 @@ const ID = /\b[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*\b/g
  * main (moved only by bin/brain promote). A branch, a worktree or a brain run branch is not read here.
  * { id: [{ repo, hash, subject, at }] } */
 /** A path that does not run (sy-donx): mm's tests, docs and README.md (a brief is not one: leads act on it), the brain's plans, journal and memory. */
-const notLive = (f) => /^(?:test|docs|plans|journal|memory)\//.test(f) || f === 'README.md'
+// test/gates, its map and test/lib/ choose and run the tests a sign-off needs (review sy-xpkc #2): they count as live
+const notLive = (f) => !/^test\/(?:gates(?:\.map)?$|lib\/)/.test(f) && (/^(?:test|docs|plans|journal|memory)\//.test(f) || f === 'README.md')
 const mainCommits = once(async () => {
   const out = {}, since = Math.floor((NOW - LOOKBACK) / 1000)
   for (const d of [path.join(HOME, 'mm'), dirs().brain]) {
