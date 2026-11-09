@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // health — the project's watchdog (run every minute by the machine's scheduler). Checks every service and endpoint; restarts
 // what is down; after 3 failed checks in a row opens a P0 incident on the board (label incident, for the board's Lead; sy-48bt) and closes
-// it when the check passes again. State: .health.json. Prints one line per problem (its log: the scheduler's).
+// it when the check passes again. State: .health.json (in a box: .run/health.json). Prints one line per problem (its log: the scheduler's).
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -10,6 +10,29 @@ import { fileURLToPath } from 'node:url'
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const NAME = path.basename(P) // folder (for paths); the project id comes from projectName()
 const STATE = process.env.HEALTH_STATE || path.join(P, '.health.json')
+// a box keeps its state under .run (mm cron sets HEALTH_STATE: the box can't write the top level). A project that moved
+// in or out of a box keeps its open incidents (sy-6n9w): a run starts from the newer of the two files (a regular file,
+// never a link), so the incidents the other side opened are checked and closed here
+const STATES = [...new Set([STATE, path.join(P, '.health.json'), path.join(P, '.run', 'health.json')])]
+const ISSUE = /^[\w.-]{1,64}$/
+function loadState() {
+  const files = STATES.map((f) => { try { const st = fs.lstatSync(f); return st.isFile() ? { f, t: st.mtimeMs } : null } catch { return null } })
+    .filter(Boolean).sort((a, b) => b.t - a.t)
+  for (const { f } of files) {
+    let v; try { v = JSON.parse(fs.readFileSync(f, 'utf8')) } catch { continue }
+    if (!v || typeof v !== 'object' || Array.isArray(v)) continue
+    // only what this script writes: a count and an item id (the other file may be the box's)
+    for (const [k, s] of Object.entries(v)) {
+      if (!s || typeof s !== 'object') { delete v[k]; continue }
+      if (s.incident != null && !(typeof s.incident === 'string' && ISSUE.test(s.incident))) s.incident = null
+      if (s.item != null && !(typeof s.item === 'string' && ISSUE.test(s.item))) s.item = null
+      if (s.fails !== undefined && !Number.isInteger(s.fails)) s.fails = 0
+      if (s.list != null && !Array.isArray(s.list)) s.list = []
+    }
+    return v
+  }
+  return {}
+}
 const FORCE = process.env.HEALTH_FORCE_FAIL || '' // test only: treat this check as failing, without restarting anything
 import { endpoints, restartService, servicesDef, svcUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
@@ -46,7 +69,7 @@ const checks = [
 ]
 const BD = svcUrl('bd-serve')
 
-const state = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } })()
+const state = loadState()
 async function bd(method, p, body) {
   const r = await fetch(`${BD}${p}`, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(8000) })
   return r.json().catch(() => ({}))
