@@ -60,6 +60,11 @@
 //                        history (sy-sbjh.4: MM_GATES_HISTORY, else ~/.cache/mm-gates/history.jsonl; none: no
 //                        finding). One item per suite ("Flaky suite: <suite>", "Slow suite: <suite> (<secs> s)"), to
 //                        platform; a comment when its runs change                                                 P1
+//     nightly:gates      the last nightly run of every gates suite on mm's main failed (sy-sbjh.5: bin/nightly-gates
+//                        writes MM_GATES_NIGHTLY, else ~/.cache/mm-gates/nightly, last.json; none: no finding). ONE
+//                        item to platform, "Nightly gates failed on main@<sha7>: <suites>", retitled and commented when
+//                        another night fails otherwise; its result file and failed logs attached (bin/artifact, once
+//                        per night); closed when a night passes                                                    P1
 //     supervisor:<check> the supervisor could not read a source (that check's items are left as they are)     P2
 // Sources, all read-only: the board (bd serve: items, ready, the event journal), Paseo (leads by label project/role),
 // `mm ls` (project roots), git (log, status, worktree list). A reply, a comment or a change means one by a lead, its
@@ -82,7 +87,7 @@
 //   { "assignee": "ops", "ignore": ["<regex on a key>"], "minutes": { "stall": 60, "handoff": 30, "idle": 10, "blocked": 10, "dirty": 30, "answer": 60 },
 //     "repos": ["<more git repos to watch; the mm repo is ~/mm, the template's place for it>"] }
 // Env (tests): SUPERVISOR_STATE, SUPERVISOR_CONFIG, SUPERVISOR_NOW (ms), SUPERVISOR_APPROVERS, BRAIN_STATE, MM_BIN,
-// SVC_URL_BD_SERVE, PASEO_BIN, PASEO_NO_SDK.
+// SVC_URL_BD_SERVE, PASEO_BIN, PASEO_NO_SDK, SUPERVISOR_ARTIFACT (the artifact command), MM_GATES_NIGHTLY.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -119,7 +124,7 @@ const APPROVERS = new Set((E.SUPERVISOR_APPROVERS !== undefined ? E.SUPERVISOR_A
 const APPROVE = approveConf(), LEDGER = APPROVE.verifier === 'ledger'
 const BRAIN_STATE = E.BRAIN_STATE || path.join(E.XDG_STATE_HOME || path.join(HOME, '.local', 'state'), 'brain')
 
-const run = (cmd, args, t = 60000) => execFileSync(cmd, args, { encoding: 'utf8', timeout: t, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 << 20 })
+const run = (cmd, args, t = 60000, env) => execFileSync(cmd, args, { encoding: 'utf8', timeout: t, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 << 20, ...(env ? { env: { ...E, ...env } } : {}) })
 // host git, never steered by what a repo's own config or a box chose (review sy-futg): no fsmonitor command, no hooks,
 // no replace objects, and no index lock
 const GIT_ENV = { ...E, GIT_NO_REPLACE_OBJECTS: '1', GIT_TERMINAL_PROMPT: '0' }
@@ -138,7 +143,7 @@ async function bd(method, p, body) {
 }
 
 const state = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } })()
-for (const k of ['muted', 'notes', 'items', 'running', 'idle']) state[k] ||= {}
+for (const k of ['muted', 'notes', 'items', 'running', 'idle', 'art']) state[k] ||= {}
 state.seq ||= 0
 // the summary's version: when what is folded from the journal changes (approvals and t2 labels per item, sy-7xq0; closed
 // items kept), a summary from an older Supervisor misses what happened before the upgrade (sy-m5qr: an approval by the
@@ -810,6 +815,33 @@ async function suites() {
   return { prefix: 'suite:', problems }
 }
 
+// The nightly run (sy-sbjh.5): bin/nightly-gates runs every suite of mm's gates on mm's main once a night and writes
+// last.json { head, sha7, date, code, failed: [suites], result, failedLogs, error }. A failed one is ONE item (its
+// title follows the last failed night); a passed one clears it. Its files, only from the nightly folder, are attached.
+const NIGHTLY = E.MM_GATES_NIGHTLY || path.join(HOME, '.cache', 'mm-gates', 'nightly')
+async function nightly() {
+  let last
+  try { last = JSON.parse(fs.readFileSync(path.join(NIGHTLY, 'last.json'), 'utf8')) } catch (e) { if (e.code === 'ENOENT') return { prefix: 'nightly:', problems: [] }; throw e }
+  if (!last || typeof last !== 'object' || !Number(last.code)) return { prefix: 'nightly:', problems: [] }
+  const sha7 = /^[0-9a-f]{7}$/.test(String(last.sha7)) ? last.sha7 : '?'
+  const failed = (Array.isArray(last.failed) ? last.failed : []).filter((x) => SUITE.test(String(x)))
+  const what = failed.length ? failed.map((x) => x.replace(/^test\//, '')).join(', ') : `the run itself (exit ${Number(last.code)})`
+  const files = [last.result, last.failedLogs].filter((f) => typeof f === 'string' && path.dirname(path.resolve(f)) === path.resolve(NIGHTLY) && fs.existsSync(f))
+  const lines = [`main@${sha7} on ${at(ms(last.date))}: exit ${Number(last.code)}`, ...(failed.length ? failed.map((x) => `failed: ${x}`) : [`error: ${String(last.error || '?').slice(0, 800)}`])]
+  return { prefix: 'nightly:', problems: [{ key: 'nightly:gates', priority: 1, assignee: ROLES.includes('platform') ? 'platform' : ASSIGNEE, labels: ['act:mm-template'],
+    title: `Nightly gates failed on main@${sha7}: ${what}`, retitle: true, note: lines.join('\n'), artifacts: files, artKey: `${sha7} ${last.date}`,
+    body: `The nightly run of every gates suite (test/gates --all main, bin/nightly-gates) failed:\n\n${fence(lines.join('\n'))}\n\n` +
+      `The result file and the last lines of each failed suite's log are this item's artifacts. Fix main, or the suite; a night that passes closes this item.` }] }
+}
+// a problem's files on its item (bin/artifact, as the watchdog), once per artKey; a failed attach is tried again next run
+function attach(p, id) {
+  if (!p.artifacts?.length || state.art[p.key] === p.artKey) return
+  try {
+    run(E.SUPERVISOR_ARTIFACT || path.join(ROOT, 'bin', 'artifact'), [id, ...p.artifacts].map(String), 120000, { BEADS_ACTOR: ACTOR })
+    state.art[p.key] = p.artKey; console.log(`${p.key}: ${p.artifacts.length} artifact(s) on ${id}`)
+  } catch (e) { console.error(`${p.key}: could not attach its files to ${id} (tried again next run): ${String(e.stderr || e.message).trim().slice(0, 300)}`) }
+}
+
 // Two leads of one role (sy-p8pc): wake archives an older lead on each of its passes (one in a turn when the turn
 // ends), so two seen on two passes in a row mean that is not happening. A line in the role's digest. A worker
 // (role=<role>-worker) is not listed here, and a person's run (label person, or its title "(for <person>)") is not a
@@ -836,7 +868,7 @@ for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')
 }
 const results = [], failed = []
 const failure = (name, e) => ({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) })
-for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card, signoff, tasks, placements, suites })) {
+for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card, signoff, tasks, placements, suites, nightly })) {
   try { results.push(...[await fn()].flat()) } catch (e) { failed.push(failure(name, e)) }
 }
 await paseo.close()
@@ -859,11 +891,14 @@ for (const src of results) {
       state.notes[p.key] = p.note; continue
     }
     if (it) { // open: comment when the finding changed
-      if (state.notes[p.key] === undefined) { state.notes[p.key] = p.note; continue } // state lost: adopt, say nothing
+      if (state.notes[p.key] === undefined) { state.notes[p.key] = p.note; attach(p, it.id); continue } // state lost: adopt, say nothing
       if (state.notes[p.key] !== p.note) {
+        // a finding whose title follows it (nightly:gates): the title too
+        if (p.retitle && it.title !== p.title.slice(0, 200)) await bd('PATCH', `/v0/beads/issues/${it.id}`, { patch: { title: p.title.slice(0, 200) }, actor: ACTOR })
         await bd('POST', `/v0/beads/issues/${it.id}/comments`, { author: ACTOR, text: `Changed at ${now}:\n\n${fence(String(p.note).slice(0, 1500))}` })
         state.notes[p.key] = p.note; updated++
       }
+      attach(p, it.id)
       continue
     }
     // closed by someone while still there: quiet until it clears; but never an unapproved t2 change (sy-7xq0): only an
@@ -877,7 +912,7 @@ for (const src of results) {
     const r = await bd('POST', '/v0/beads/issues', { title: p.title.slice(0, 200), issue_type: 'task', priority: p.priority, assignee: p.assignee || ASSIGNEE, labels: ['supervisor', ...(p.labels || [])],
       actor: ACTOR, owner: ACTOR, description: p.parts || !again ? desc : `${task}\n\n${p.body}\n\nIts earlier item was closed while the finding was still there; a closed item does not end this finding.\n\nsupervisor key: \`${p.key}\`` })
     if (again && r.id) console.log(`${p.key}: closed by someone while still there; opened again`)
-    if (r.id) { state.notes[p.key] = p.note; opened++; console.log(`${p.key}: opened ${r.id}`) }
+    if (r.id) { state.notes[p.key] = p.note; opened++; console.log(`${p.key}: opened ${r.id}`); delete state.art[p.key]; attach(p, r.id) }
   } catch (e) { keyFailed++; console.error(`${p.key}: its item could not be opened or updated (tried again next run): ${e.message}`) }
   // gone, from a check that ran fine: close it
   for (const k of new Set([...Object.keys(open), ...Object.keys(state.notes), ...Object.keys(state.muted)])) {
@@ -893,7 +928,7 @@ for (const src of results) {
         closed++; console.log(`${k}: cleared; closed ${open[k].id}`)
       } catch (e) { keyFailed++; console.error(`${k}: clearing ${open[k].id} failed (tried again next run): ${e.message}`); continue }
     }
-    delete state.notes[k]; delete state.muted[k]
+    delete state.notes[k]; delete state.muted[k]; delete state.art[k]
   }
 }
 

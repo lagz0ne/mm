@@ -41,3 +41,6 @@ schedules:
   supervisor: { every: 5m, command: "node {root}/bin/supervisor" }   # stalls, waiting handoffs, idle leads (one digest per role), stale worktrees -> items for ops
   upstream: { every: 2m, command: "node {root}/bin/upstream" }   # project items labelled upstream:engine|machine -> items here; answers go back
   flow: { every: 5m, command: "node {root}/bin/flow" }   # the board's events -> one trace per item + flow metrics (mm obs flow)
+  # every suite of mm's gates on mm's main, once a night (detached; the Supervisor reports a failed night: nightly:gates).
+  # Its settings: mm config gates.repo (mm's repo; unset: nothing runs), gates.nightly (HH:MM local, default 03:00; off)
+  nightly-gates: { every: 10m, command: "node {root}/bin/nightly-gates" }
