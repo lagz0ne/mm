@@ -2,9 +2,10 @@
 // card (Message.tsx), any other text as Markdown with its line breaks kept and long logs and tables folded. And the
 // comment box, with whom it goes to ("To"): the board's Lead by default (it routes it on), or a role the person picks;
 // the pick is the comment's first line `→ <role>` (lib/to.mjs), which bin/wake reads.
-import { useContext } from 'react'
+import { memo, useContext } from 'react'
+import { Ago } from '@/Ago'
 import { toast } from 'sonner'
-import { BOARD_LEAD, ROLES, ROLE_LABEL, ago } from '@/lib/board'
+import { BOARD_LEAD, ROLES, ROLE_LABEL } from '@/lib/board'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Markdown } from '@/Markdown'
@@ -35,45 +36,48 @@ const when = (ts: string) => {
 
 /** One comment: who (name and role), whom it went to (a person's pick), when, #n; then its card or its text. */
 export function ThreadList({ itemId, comments, flash, onRef }: { itemId: string; comments: C[]; flash: number | null; onRef: (n: number) => void }) {
-  const personas = useContext(PersonaContext)
   return (
     <ol className="grid gap-3">
-      {comments.map((c, k) => {
-        const n = k + 1, kind = authorKind(c.author)
-        const per = kind === 'lead' ? personaOf(personas, c.author) : null
-        const picked = kind === 'human' ? splitPick(c.text, ROLES) : { to: null, body: c.text }
-        const side = kind === 'human' ? SIDE.exec(picked.body) : null
-        const body = side ? picked.body.slice(side[0].length) : picked.body
-        const role = kind === 'lead' ? leadLabel(c.author) : kind === 'human' ? (side ? side[1] : 'person') : 'system'
-        return (
-          <li key={c.id} id={`c-${itemId}-${n}`} data-comment={n} data-kind={kind}
-            className={cn('grid min-w-0 grid-cols-[minmax(0,1fr)] scroll-mt-4 gap-1',
-              kind === 'human' && 'ml-8 border-l-4 border-foreground bg-muted px-3 py-2 md:ml-16',
-              kind === 'lead' && 'mr-4 border-l-2 pl-3 md:mr-16',
-              kind === 'system' && 'mx-4 border-l border-dashed border-muted-foreground pl-3 text-muted-foreground md:mx-16',
-              flash === n && 'bg-swiss/10')}
-            style={per ? { borderLeftColor: per.color } : undefined}>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs" data-head>
-              {kind === 'lead' && <Avatar actor={c.author} size="sm" />}
-              <b className={cn('text-[12px]', kind === 'system' && 'font-normal italic')} style={per ? { color: per.color } : undefined} data-author>
-                {kind === 'lead' ? (per?.worker ? per.label : per?.name) || c.author : c.author}</b>
-              <span className="text-[11px] tracking-[0.08em] text-muted-foreground uppercase" data-role>{role}</span>
-              {picked.to && <span className="text-[11px] text-muted-foreground" data-to={picked.to}>→ <b className="text-foreground">{ROLE_LABEL[picked.to] || picked.to}</b></span>}
-              <span className="ml-auto flex items-center gap-2">
-                <time className="text-[11px] text-muted-foreground" dateTime={c.created_at} title={c.created_at}>{when(c.created_at)} · {ago(c.created_at)} ago</time>
-                <a href={`#c-${n}`} onClick={(e) => { e.preventDefault(); navigator.clipboard?.writeText(`#${n}`); toast.success(`Copied #${n}: use it to refer to this comment`) }}
-                  title="Copy reference" className="font-mono text-[11px] text-muted-foreground hover:text-swiss" data-n>#{n}</a>
-              </span>
-            </div>
-            {kind === 'system'
-              ? <Markdown className="text-xs" onRef={onRef} breaks fold>{body}</Markdown>
-              : <CommentBody text={body} author={c.author} onRef={onRef} />}
-          </li>
-        )
-      })}
+      {comments.map((c, k) => <CommentItem key={c.id} c={c} n={k + 1} itemId={itemId} flashed={flash === k + 1} onRef={onRef} />)}
     </ol>
   )
 }
+
+// one comment, drawn again only when it (or its flash) changes (sy-jjcx)
+const CommentItem = memo(function CommentItem({ c, n, itemId, flashed, onRef }: { c: C; n: number; itemId: string; flashed: boolean; onRef: (n: number) => void }) {
+  const personas = useContext(PersonaContext)
+  const kind = authorKind(c.author)
+  const per = kind === 'lead' ? personaOf(personas, c.author) : null
+  const picked = kind === 'human' ? splitPick(c.text, ROLES) : { to: null, body: c.text }
+  const side = kind === 'human' ? SIDE.exec(picked.body) : null
+  const body = side ? picked.body.slice(side[0].length) : picked.body
+  const role = kind === 'lead' ? leadLabel(c.author) : kind === 'human' ? (side ? side[1] : 'person') : 'system'
+  return (
+    <li key={c.id} id={`c-${itemId}-${n}`} data-comment={n} data-kind={kind}
+      className={cn('grid min-w-0 grid-cols-[minmax(0,1fr)] scroll-mt-4 gap-1',
+        kind === 'human' && 'ml-8 border-l-4 border-foreground bg-muted px-3 py-2 md:ml-16',
+        kind === 'lead' && 'mr-4 border-l-2 pl-3 md:mr-16',
+        kind === 'system' && 'mx-4 border-l border-dashed border-muted-foreground pl-3 text-muted-foreground md:mx-16',
+        flashed && 'bg-swiss/10')}
+      style={per ? { borderLeftColor: per.color } : undefined}>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs" data-head>
+        {kind === 'lead' && <Avatar actor={c.author} size="sm" />}
+        <b className={cn('text-[12px]', kind === 'system' && 'font-normal italic')} style={per ? { color: per.color } : undefined} data-author>
+          {kind === 'lead' ? (per?.worker ? per.label : per?.name) || c.author : c.author}</b>
+        <span className="text-[11px] tracking-[0.08em] text-muted-foreground uppercase" data-role>{role}</span>
+        {picked.to && <span className="text-[11px] text-muted-foreground" data-to={picked.to}>→ <b className="text-foreground">{ROLE_LABEL[picked.to] || picked.to}</b></span>}
+        <span className="ml-auto flex items-center gap-2">
+          <time className="text-[11px] text-muted-foreground" dateTime={c.created_at} title={c.created_at}>{when(c.created_at)} · <Ago ts={c.created_at} /> ago</time>
+          <a href={`#c-${n}`} onClick={(e) => { e.preventDefault(); navigator.clipboard?.writeText(`#${n}`); toast.success(`Copied #${n}: use it to refer to this comment`) }}
+            title="Copy reference" className="font-mono text-[11px] text-muted-foreground hover:text-swiss" data-n>#{n}</a>
+        </span>
+      </div>
+      {kind === 'system'
+        ? <Markdown className="text-xs" onRef={onRef} breaks fold>{body}</Markdown>
+        : <CommentBody text={body} author={c.author} onRef={onRef} />}
+    </li>
+  )
+})
 
 const LEAD = '_lead'
 /** Whom the comment box can send to: the board's Lead (the default; on a board with none, the assignee), the assignee,

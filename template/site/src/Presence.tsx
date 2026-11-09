@@ -1,23 +1,35 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createContext, memo, useContext, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useVisiblePoll } from '@/lib/live'
 import { Avatar, PersonaContext, personaOf } from '@/lib/persona'
 import { cn } from '@/lib/utils'
 
 export interface Busy { actor: string; kind: 'lead' | 'worker'; id: string; item: string | null; doing: string }
 export const PresenceContext = createContext<Busy[]>([])
 
-/** Poll who is working right now (every 3 s). */
-export function usePresenceFeed() {
-  const [agents, setAgents] = useState<Busy[]>([])
-  useEffect(() => {
-    let gone = false
-    const load = () => fetch('/api/presence').then((r) => r.json()).then((d) => !gone && setAgents(d.agents || [])).catch(() => {})
-    load()
-    const t = window.setInterval(load, 3000)
-    return () => { gone = true; window.clearInterval(t) }
-  }, [])
-  return agents
+// Who is working right now: one store the 3 s poll fills (sy-jjcx). A poll that brings the same answer changes nothing;
+// a card's own line (CardPresence) reads only its item's agents, so a change elsewhere does not re-render it.
+let agentsNow: Busy[] = []
+let byItem = new Map<string, Busy[]>()
+const EMPTY: Busy[] = []
+const subs = new Set<() => void>()
+const subscribe = (f: () => void) => { subs.add(f); return () => { subs.delete(f) } }
+function setPresence(next: Busy[]) {
+  if (JSON.stringify(next) === JSON.stringify(agentsNow)) return
+  agentsNow = next
+  const m = new Map<string, Busy[]>()
+  for (const b of next) if (b.item) m.set(b.item, [...(m.get(b.item) || []), b])
+  // an item whose agents are the same keeps its array: its card's line does not re-render
+  for (const [k, v] of m) { const old = byItem.get(k); if (old && JSON.stringify(old) === JSON.stringify(v)) m.set(k, old) }
+  byItem = m
+  subs.forEach((f) => f())
 }
-export const useBusyOn = (item: string) => useContext(PresenceContext).filter((b) => b.item === item)
+
+/** Poll who is working right now (every 3 s, while the tab is shown). */
+export function usePresenceFeed() {
+  useVisiblePoll(() => { fetch('/api/presence').then((r) => r.json()).then((d) => setPresence(d.agents || [])).catch(() => {}) }, 3000)
+  return useSyncExternalStore(subscribe, () => agentsNow, () => agentsNow)
+}
+export const useBusyOn = (item: string) => useSyncExternalStore(subscribe, () => byItem.get(item) ?? EMPTY, () => EMPTY)
 
 /** Three dots that bounce like a chat "typing…" indicator, in the agent's color. */
 export function TypingDots({ color, className }: { color?: string; className?: string }) {
@@ -140,11 +152,11 @@ function PresenceAvatar({ b, probe }: { b: Busy; probe?: boolean }) {
 }
 
 /** On a card: who is on this item right now. */
-export function CardPresence({ item }: { item: string }) {
+export const CardPresence = memo(function CardPresence({ item }: { item: string }) {
   const busy = useBusyOn(item)
   if (!busy.length) return null
   return <div className="grid min-w-0 gap-0.5">{busy.map((b) => <CardLine key={b.id} b={b} />)}</div>
-}
+})
 function CardLine({ b }: { b: Busy }) {
   const { p, name } = useLabel(b)
   return (
@@ -195,7 +207,7 @@ export function RowPresence({ role }: { role: string }) {
 }
 
 /** Top of the activity feed: everyone working right now, live. */
-export function NowStrip({ onOpen }: { onOpen: (id: string) => void }) {
+export const NowStrip = memo(function NowStrip({ onOpen }: { onOpen: (id: string) => void }) {
   const busy = useContext(PresenceContext)
   if (!busy.length) return null
   return (
@@ -204,7 +216,7 @@ export function NowStrip({ onOpen }: { onOpen: (id: string) => void }) {
       <ul className="grid">{busy.map((b) => <NowLine key={b.id} b={b} onOpen={onOpen} />)}</ul>
     </div>
   )
-}
+})
 function NowLine({ b, onOpen }: { b: Busy; onOpen: (id: string) => void }) {
   const { p, name } = useLabel(b)
   return (

@@ -55,7 +55,7 @@ export function ForYou({ waiting, owner, approval, storeKey, tick, onOpen, onCha
   const [more, setMore] = useState(0)
   useEffect(() => {
     let gone = false
-    api.toReview(since).then((d) => { if (!gone) { setReview(d.items); setMore(d.more) } }).catch(() => !gone && setReview((r) => r ?? []))
+    api.toReview(since).then((d) => { if (!gone) { setReview((r) => (r && JSON.stringify(r) === JSON.stringify(d.items) ? r : d.items)); setMore(d.more) } }).catch(() => !gone && setReview((r) => r ?? []))
     return () => { gone = true }
   }, [since, tick])
   // the bar's Needs you button (#needs-you): this list at the top, also on a first load with that address

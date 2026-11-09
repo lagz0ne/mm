@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { api, type Issue } from '@/lib/api'
 import { PRIORITIES, ROLES, ROLE_LABEL, ago } from '@/lib/board'
@@ -21,8 +21,10 @@ import { CommentBox, ThreadList } from '@/Thread'
 const STATUSES = ['open', 'in_progress', 'blocked', 'deferred'] as const
 const NONE = '_none'
 
-export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: {
-  id: string | null; tick: number; byId: Map<string, Issue>; creator?: string
+type Linked = { id: string; title?: string; status?: string }
+/** `related`: what the item unblocks and its children (the board's list has them); `tick` bumps when the item changed. */
+export function Detail({ id, tick, related, creator, onClose, onOpen, onChanged }: {
+  id: string | null; tick: number; related: { unblocks: Linked[]; children: Linked[] } | null; creator?: string
   onClose: () => void; onOpen: (id: string) => void; onChanged: () => void
 }) {
   const phone = usePhone()
@@ -35,10 +37,11 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   const [editing, setEditing] = useState(false)
   const [flash, setFlash] = useState<number | null>(null)
   // "#5" in any comment jumps to comment 5 of this item.
-  const jump = (n: number) => {
+  // (one function per item: the comments' Markdown is memoized on it, sy-jjcx)
+  const jump = useCallback((n: number) => {
     document.getElementById(`c-${id}-${n}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
     setFlash(n); window.setTimeout(() => setFlash(null), 1600)
-  }
+  }, [id])
   const [wide, setWide] = useState(() => localStorage.getItem('detail-wide') === '1')
   const toggleWide = () => setWide((w) => { localStorage.setItem('detail-wide', w ? '0' : '1'); return !w })
   const [content, setContent] = useState<ContentFile[]>([])
@@ -62,6 +65,11 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
       if (!same || draft.current.title === prev.title) setTitle(i.title)
       if (!same || draft.current.desc === (prev.description || '')) setDesc(i.description || '')
       if (!same) { setComment(''); setTo(''); setEditing(false) }
+      // a comment that did not change keeps its object: the thread draws only the new ones (sy-jjcx)
+      if (same && prev.comments && i.comments) {
+        const old = new Map(prev.comments.map((c) => [c.id, c]))
+        i.comments = i.comments.map((c) => { const o = old.get(c.id); return o && o.text === c.text && o.author === c.author && o.created_at === c.created_at ? o : c })
+      }
       loaded.current = i
       setIssue(i)
     }).catch((e) => toast.error(`${id}: ${(e as Error).message}`))
@@ -71,7 +79,7 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   useEffect(() => {
     if (!id) { setContent([]); return }
     let gone = false
-    fetch(`/api/content/${id}`).then((r) => r.json()).then((d) => !gone && setContent(d.files || [])).catch(() => {})
+    fetch(`/api/content/${id}`).then((r) => r.json()).then((d) => !gone && setContent((c) => (JSON.stringify(c) === JSON.stringify(d.files || []) ? c : d.files || []))).catch(() => {})
     return () => { gone = true }
   }, [id, tick])
 
@@ -83,9 +91,8 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   const i = issue && issue.id === id ? issue : null
   const waitsOn = (i?.dependencies || []).filter((d) => d.dependency_type === 'blocks')
   const parent = (i?.dependencies || []).find((d) => d.dependency_type === 'parent-child')
-  const unblocks = i ? [...byId.values()].filter((x) =>
-    (x.dependencies || []).some((d) => d.type === 'blocks' && d.depends_on_id === i.id)) : []
-  const children = i ? [...byId.values()].filter((x) => x.parent === i.id) : []
+  const unblocks = (i && related?.unblocks) || []
+  const children = (i && related?.children) || []
   const closed = i?.status === 'closed'
   // the T2 go, for the owner on the public side: a signed-off t2 without approved
   // the owner card (sy-z5lz): read first, in its own box; the description below it without the card
@@ -100,15 +107,17 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   const staleGo = t2go && !!i?.labels?.includes('approved') ? approvalRefusal(i!.description, i!.labels || []) : null
   // the owner's answer the card asks for (sy-t9tg), on the public side: a Reply box or Done
   const answer = youKind(card.card?.You ?? '')
+  // the same object while the item and its content do not change (its readers are memoized)
+  const annotate = useMemo(() => (i ? { itemId: i.id, comments: i.comments || [],
+    post: async (text: string) => { await api.comment(i.id, text); onChanged() },
+    revOf: (p: string) => content.find((f) => f.path === p)?.commits[0]?.short } : null), [i, content, onChanged])
 
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className={cn('gap-0 overflow-x-hidden overflow-y-auto p-0 data-[side=right]:sm:max-w-none',
         wide ? 'data-[side=right]:w-screen' : 'data-[side=right]:w-[min(1200px,94vw)]', 'max-md:data-[side=right]:w-screen max-md:data-[side=right]:border-l-0')}>
         {!i ? <div className="p-6 text-xs text-muted-foreground">Loading…</div> : (
-          <AnnotateContext.Provider value={{ itemId: i.id, comments: i.comments || [],
-            post: async (text) => { await api.comment(i.id, text); onChanged() },
-            revOf: (p) => content.find((f) => f.path === p)?.commits[0]?.short }}>
+          <AnnotateContext.Provider value={annotate}>
             <div className="relative border-t-4 border-b border-foreground px-4 pt-3 pr-14 pb-3 md:px-5 md:pt-4 md:pr-24">
               <button type="button" onClick={toggleWide} title={wide ? 'Narrower' : 'Full width'}
                 className="absolute top-3 right-11 flex size-7 items-center justify-center hover:bg-muted max-md:hidden">
