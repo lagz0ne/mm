@@ -6,7 +6,8 @@
 # permissions with the worker denies (asserted, and a lost one is refused); wt refuses the brain (or a repo holding it)
 # and config-check refuses such a spec, and a write repo outside the role's write roots; a lead's allow rules name only
 # its own workers; lead worker start needs the item claimed, counts each worker as a place within the role's capacity
-# and the project's cap, and starts the agent with its labels, mode and actor; report, stop, wt rm.
+# and the project's cap, and starts the agent with its labels, mode and actor; report, stop, wt rm; wt rm deletes the
+# folder's Paseo project, never one with a live agent, never another's, and still succeeds when Paseo fails (sy-oxwh).
 #   test/sysworkers.sh
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -155,8 +156,18 @@ let st = []; try { st = JSON.parse(fs.readFileSync(S, 'utf8')) } catch {}
 fs.appendFileSync(S + '.log', JSON.stringify(a) + '\n')
 const save = () => fs.writeFileSync(S, JSON.stringify(st)), lab = {}
 for (let i = 0; i < a.length; i++) if (a[i] === '--label') { const [k, v] = a[i + 1].split('='); lab[k] = v }
+// projects as Paseo keeps them: one per folder an agent ran in (sy-oxwh); STUB_PASEO_FAIL: Paseo does not answer
+const PJ = S + '.projects'; let pj = []; try { pj = JSON.parse(fs.readFileSync(PJ, 'utf8')) } catch {}
+const savePj = () => fs.writeFileSync(PJ, JSON.stringify(pj))
+if (process.env.STUB_PASEO_FAIL && ['project', 'ls'].includes(a[0])) { console.error('connect ECONNREFUSED'); process.exit(1) }
 if (a[0] === 'ls') console.log(JSON.stringify(st.filter((x) => (a.includes('-a') || !x.archived) && Object.entries(lab).every(([k, v]) => x.labels[k] === v)).map(({ labels, ...x }) => x)))
-else if (a[0] === 'run') { const id = `ag${st.length + 1}`; st.push({ id, shortId: id, title: a[a.indexOf('--title') + 1], status: 'running', labels: lab }); save(); console.log(id) }
+else if (a[0] === 'run') { const id = `ag${st.length + 1}`, cwd = a[a.indexOf('--cwd') + 1]; st.push({ id, shortId: id, title: a[a.indexOf('--title') + 1], status: 'running', cwd, labels: lab }); save(); console.log(id)
+  if (!pj.some((p) => p.path === cwd)) { pj.push({ projectId: `pj${pj.length + 1}`, path: cwd }); savePj() } }
+else if (a[0] === 'project' && a[1] === 'ls') console.log(JSON.stringify(pj))
+else if (a[0] === 'project' && a[1] === 'delete') { // archives every agent in it, as Paseo does
+  const p = pj.find((x) => x.projectId === a[2]); if (!p) { console.error('Project not found'); process.exit(1) }
+  for (const x of st) if (x.cwd === p.path || String(x.cwd).startsWith(p.path + '/')) x.archived = true
+  pj = pj.filter((x) => x !== p); save(); savePj() }
 else if (a[0] === 'archive') { for (const x of st) if (x.id === a[a.length - 1]) x.archived = true; save() }
 else if (a[0] === 'logs') console.log('RESULT: done\nITEM: ab-1')
 EOF
@@ -205,6 +216,30 @@ check "...and the others' permissions no longer name it" bash -c "! jq -r '.perm
 "$SYS/bin/wt" rm review-r1 >/dev/null 2>&1; "$SYS/bin/wt" rm ops-o1 >/dev/null 2>&1
 check "wt rm removes a read checkout and a board folder" bash -c "[ ! -e '$W/review-r1' ] && [ ! -e '$W/ops-o1' ]"
 out=$("$SYS/bin/wt" ls 2>&1); check "wt ls lists what is left" wtlsok "$out"
+
+echo "== wt rm deletes the folder's Paseo project, never a live agent's (sy-oxwh)"
+PJ="$STUB_PASEO.projects"
+pjat() { jq -e --arg p "$1" 'any(.[]; .path == $p)' "$PJ" >/dev/null; } # pjat <path>: Paseo has a project there
+# others: a sibling whose name starts the same, and a folder elsewhere
+jq --arg a "$W/platform-w2x" --arg b "$T/elsewhere" '. + [{projectId: "pjx", path: $a}, {projectId: "pjy", path: $b}]' "$PJ" >"$T/pj" && cp "$T/pj" "$PJ"
+check "wt rm platform-w2 (its agent archived by stop) deleted its project" bash -c "! jq -e --arg p '$W/platform-w2' 'any(.[]; .path == \$p)' '$PJ' >/dev/null && grep -qF '\"project\",\"delete\",\"pj1\"' '$STUB_PASEO.log'"
+check "...and left the others' (platform-w3, review-r2, a sibling platform-w2x, a folder elsewhere)" bash -c "for p in '$W/platform-w3' '$W/review-r2' '$W/platform-w2x' '$T/elsewhere'; do jq -e --arg p \"\$p\" 'any(.[]; .path == \$p)' '$PJ' >/dev/null || exit 1; done"
+check "...the archived agent stays (its report is still there)" bash -c "jq -e '.[] | select(.id == \"ag1\") | .archived' '$STUB_PASEO' >/dev/null"
+out=$("$SYS/bin/wt" rm platform-w3 2>&1); rc=$?
+check "wt rm platform-w3, its agent live: the folder goes (exit $rc), the project is left, said in one line" bash -c "[ $rc = 0 ] && [ ! -e '$W/platform-w3' ] && grep -q 'was left: a live agent is in it (ag' <<<'$out'"
+check "...its project is there and its agent still runs" bash -c "jq -e --arg p '$W/platform-w3' 'any(.[]; .path == \$p)' '$PJ' >/dev/null && jq -e '[.[] | select(.cwd == \"$W/platform-w3\") | .archived] | all | not' '$STUB_PASEO' >/dev/null"
+LW stop platform w3 >/dev/null
+out=$("$SYS/bin/wt" rm platform-w3 2>&1); rc=$?
+check "stopped, wt rm platform-w3 again (folder gone) deletes only its project (exit $rc)" bash -c "[ $rc = 0 ] && grep -q 'deleted its Paseo project' <<<'$out' && ! jq -e --arg p '$W/platform-w3' 'any(.[]; .path == \$p)' '$PJ' >/dev/null"
+LW stop review r2 >/dev/null
+out=$(STUB_PASEO_FAIL=1 "$SYS/bin/wt" rm review-r2 2>&1); rc=$?
+check "Paseo not answering: wt rm review-r2 still succeeds (exit $rc), says the project was left" bash -c "[ $rc = 0 ] && [ ! -e '$W/review-r2' ] && grep -q 'removed review-r2' <<<'$out' && [ \$(grep -c 'its Paseo project was left: Paseo did not answer' <<<'$out') = 1 ]"
+check "...and it is there" pjat "$W/review-r2"
+out=$("$SYS/bin/wt" rm review-r2 2>&1); rc=$?
+check "...wt rm review-r2 again deletes it (exit $rc)" bash -c "[ $rc = 0 ] && ! jq -e --arg p '$W/review-r2' 'any(.[]; .path == \$p)' '$PJ' >/dev/null"
+out=$("$SYS/bin/wt" rm review-r2 2>&1); rc=$?
+check "...and a third time there is nothing: 'no worker folder' (exit $rc)" refused $rc "$out" 'no worker folder'
+check "the others' projects are still there" bash -c "pj() { jq -e --arg p \"\$1\" 'any(.[]; .path == \$p)' '$PJ' >/dev/null; }; pj '$W/platform-w2x' && pj '$T/elsewhere'"
 
 echo
 echo "$pass passed, $fail failed"
