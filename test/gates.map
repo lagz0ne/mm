@@ -32,6 +32,7 @@ suite test/backup-data.sh         hermetic
 suite test/bd-actor.sh            hermetic
 suite test/bd-proxy-stop.sh       hermetic
 suite test/box-boot.sh            hermetic
+suite test/box-cron.sh            hermetic
 suite test/box-doop.sh            hermetic
 suite test/box-pc.sh              hermetic
 suite test/boxreg.sh              hermetic
@@ -43,6 +44,7 @@ suite test/denies.sh              hermetic
 suite test/dolt-run.sh            hermetic
 suite test/engine-drift.sh        hermetic
 suite test/guard.sh               hermetic
+suite test/health-incident.sh     hermetic
 suite test/init-retry.sh          hermetic
 suite test/lead.sh                hermetic
 suite test/lead-workspace.sh      hermetic
@@ -219,7 +221,7 @@ rule src/sync.ts                  test/sync.sh test/restore.sh test/restore-dril
 rule src/vault.ts                 test/vault.sh test/paseo-token.sh test/in-box.sh
 rule src/onboard.ts               test/outside.sh test/clean-box.sh test/auth-e2e.sh
 rule src/install.ts               test/outside.sh test/npm-lock.sh test/clean-box.sh
-rule src/cron.ts                  test/sentinel.sh
+rule src/cron.ts                  test/sentinel.sh test/box-cron.sh
 rule src/portless-claim.mjs       test/portless-claim.sh test/pc-skipped.sh
 rule scripts/pack-template.ts     @cli test/clean-box.sh
 rule package.json                 @cli test/ba-spike.ts @site test/clean-box.sh
@@ -281,7 +283,7 @@ rule template/bin/dolt-run        test/dolt-run.sh test/bd-autostart.sh test/bd-
 rule template/bin/doop-mcp-headers test/denies.sh test/doop.sh
 rule template/bin/doop-run        test/box-doop.sh test/mm-docker.sh test/auth.sh test/names.sh test/sync.sh test/backup-data.sh test/doop-container.sh test/doop-designs.sh test/doop-gateway.sh test/doop.sh
 rule template/bin/guard           test/guard.sh test/sysworkers.sh
-rule template/bin/health          test/engine-drift.sh test/template-base.sh
+rule template/bin/health          test/engine-drift.sh test/template-base.sh test/health-incident.sh
 rule template/bin/init            test/init-retry.sh test/bd-autostart.sh test/bd-home.sh test/clean-box.sh
 rule template/bin/land            test/trace-refused.sh test/box.sh
 rule template/ops/land-check      test/trace-refused.sh
@@ -298,7 +300,7 @@ rule template/bin/skill           @engine
 rule template/bin/smoke-beads     @engine
 rule template/bin/purge           @engine
 rule template/bin/deploy          @engine
-rule template/services.yaml       @cli test/bd-autostart.sh test/box.sh test/doop.sh test/clean-box.sh
+rule template/services.yaml       @cli test/bd-autostart.sh test/box.sh test/doop.sh test/clean-box.sh test/box-cron.sh
 rule template/tools.json          test/bd-autostart.sh test/bd-home.sh test/init-retry.sh test/clean-box.sh test/restore-drill.sh test/box.sh
 rule template/secrets.json        test/needs-fill.sh test/vault.sh test/sync.sh test/restore.sh test/api.sh test/board-artifacts.mjs
 rule template/.gitignore          test/artifact.sh test/board-artifacts.mjs test/restore.sh test/sync.sh test/supervisor.mjs

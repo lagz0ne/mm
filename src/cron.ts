@@ -28,7 +28,7 @@ export function due(every: string, last: number | undefined, now = Date.now()): 
   return now >= slot.getTime() && (last ?? now) < slot.getTime()
 }
 
-function jobs(): Job[] {
+export function jobs(): Job[] {
   const out: Job[] = []
   for (const [pdir, box] of [[join(DIRS.pc, 'projects'), false], [join(DIRS.pc, 'boxes'), true]] as const) for (const f of existsSync(pdir) ? readdirSync(pdir).filter((x) => x.endsWith('.yaml')) : []) {
     const m = /from (.+)\/services\.yaml/.exec(readFileSync(join(pdir, f), 'utf8'))
