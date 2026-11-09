@@ -17,6 +17,18 @@ export const REQUIRED = ['Task', 'Act', 'Done when', 'Verify']
 export const MAX_TASK_WORDS = 20
 const MAX_LINE = 300
 export const FORMAT = 'the description starts (after the owner card, when there is one) with "## Task", then one line per key: "- **Task:** <one instruction, at most 20 words>", "- **Act:** <activity id from leads/raci.json>", "- **Done when:** <the visible result>", "- **Verify:** <the exact check> → <the expected output>", and "- **Head:** <repo>@<sha>" when it exists; a blank line ends it (the leads\' brief, "The Task")'
+/**
+ * The Task block for an item a program makes (sy-n3r5: the sentinel, the Supervisor, health), so it passes parseTask:
+ * `formatTask({ task, act, done, verify: [check, expected] })` + "\n\n" + the rest of the description. One line each
+ * (newlines become spaces); the caller keeps Task to one instruction of at most 20 words.
+ */
+export function formatTask({ task, act, done, verify, head }) {
+  const one = (s) => String(s ?? '').replace(/\s+/g, ' ').trim()
+  const [check, want] = Array.isArray(verify) ? verify : [verify, 'done']
+  return ['## Task', `- **Task:** ${one(task)}`, `- **Act:** ${one(act)}`, `- **Done when:** ${one(done)}`,
+    `- **Verify:** ${one(check)} → ${one(want)}`, ...(head ? [`- **Head:** ${one(head)}`] : [])].join('\n')
+}
+
 const HEADING = /^##[ \t]+Task[ \t]*$/
 const LINE = /^[-*][ \t]+\*\*([^*]+?):\*\*[ \t]*(.*?)[ \t]*$/
 const ARROW = /^(.*\S)[ \t]*(?:→|->)[ \t]*(\S.*)$/

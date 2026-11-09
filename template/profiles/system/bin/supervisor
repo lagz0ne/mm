@@ -83,7 +83,7 @@ import { places, projectCap, total, workersOf } from './lib/places.mjs'
 import { SIGNED_HEAD, parseCard } from './lib/owner-card.mjs'
 import { dueAt, openWaits, parseMessage } from './lib/message.mjs'
 import { actOf, lettersOf, mayAsk, noInputOk, rowOf } from './lib/raci.mjs'
-import { parseTask } from './lib/task.mjs'
+import { formatTask, parseTask } from './lib/task.mjs'
 
 cli('supervisor')
 const E = process.env
@@ -738,7 +738,10 @@ let opened = 0, updated = 0, closed = 0, keyFailed = 0
 for (const src of results) {
   const present = new Map(src.problems.filter((p) => p.key.startsWith('t2-unapproved:') || !IGNORE.some((re) => re.test(p.key))).map((p) => [p.key, p]))
   for (const p of present.values()) try { // one key's failed call never ends the run (sy-pp2a)
-    const it = open[p.key], desc = `${p.body}\n\nsupervisor key: \`${p.key}\``
+    // its Task first (sy-n3r5): the act of its labels, else incident; a digest gets it on its next edit in place
+    const task = formatTask({ task: p.parts ? 'Clear each line of this digest: act on it, or answer why not.' : 'Settle this finding: fix its cause, or record why it stands.',
+      act: actOf(p.labels) || 'incident', done: 'the finding is gone, and the Supervisor closes this item', verify: ['bd show <this item> --json', 'status closed, by watchdog'] })
+    const it = open[p.key], desc = `${task}\n\n${p.body}\n\nsupervisor key: \`${p.key}\``
     if (it && p.parts) { // a digest: edited in place (title, text, priority), never commented
       if (it.description !== desc || it.title !== p.title.slice(0, 200) || it.priority !== p.priority) {
         await bd('PATCH', `/v0/beads/issues/${it.id}`, { patch: { title: p.title.slice(0, 200), description: desc, priority: p.priority }, actor: ACTOR })
@@ -763,7 +766,7 @@ for (const src of results) {
     else if (state.muted[p.key]) continue
     else if (again) { state.muted[p.key] = p.parts ? { at: now, parts: p.parts } : now; console.log(`${p.key}: closed by someone while still there; quiet until it clears`); continue }
     const r = await bd('POST', '/v0/beads/issues', { title: p.title.slice(0, 200), issue_type: 'task', priority: p.priority, assignee: p.assignee || ASSIGNEE, labels: ['supervisor', ...(p.labels || [])],
-      actor: ACTOR, owner: ACTOR, description: p.parts || !again ? desc : `${p.body}\n\nIts earlier item was closed while the finding was still there; a closed item does not end this finding.\n\nsupervisor key: \`${p.key}\`` })
+      actor: ACTOR, owner: ACTOR, description: p.parts || !again ? desc : `${task}\n\n${p.body}\n\nIts earlier item was closed while the finding was still there; a closed item does not end this finding.\n\nsupervisor key: \`${p.key}\`` })
     if (again && r.id) console.log(`${p.key}: closed by someone while still there; opened again`)
     if (r.id) { state.notes[p.key] = p.note; opened++; console.log(`${p.key}: opened ${r.id}`) }
   } catch (e) { keyFailed++; console.error(`${p.key}: its item could not be opened or updated (tried again next run): ${e.message}`) }
