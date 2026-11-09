@@ -85,6 +85,10 @@
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
     --swiss: oklch(0.58 0.235 27);
+    /* an item's links on hover (sy-x7kh): two hues near --swiss, a little apart, and a quiet grey for family */
+    --link-blocker: oklch(0.55 0.16 55);
+    --link-dependent: oklch(0.52 0.2 355);
+    --link-family: oklch(0.48 0 0);
 }
 
 .dark {
@@ -120,6 +124,9 @@
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
     --swiss: oklch(0.66 0.22 27);
+    --link-blocker: oklch(0.72 0.15 60);
+    --link-dependent: oklch(0.7 0.17 355);
+    --link-family: oklch(0.708 0 0);
 }
 
 @layer base {
@@ -162,6 +169,19 @@
   .md input[type=checkbox] { @apply mr-1 align-middle accent-foreground; }
   .md img { @apply max-w-full; }
 }
+
+/* An item's links (sy-x7kh): the hovered or long-pressed card, what it waits on (blocker: solid), what waits on it
+   (dependent: dashed), its parent, children and other links (family: dotted, grey). The rest dims a little. Each mark
+   also has its tag in words (.link-tag), so color is never the only signal. */
+[data-card] { transition: opacity .12s ease-out, outline-color .12s ease-out; }
+[data-link=self] { outline: 2px solid var(--foreground); outline-offset: -1px; }
+[data-link=blocker] { --link: var(--link-blocker); outline: 2px solid var(--link); outline-offset: -1px; background: color-mix(in oklab, var(--link) 8%, var(--card)); opacity: 1; }
+[data-link=dependent] { --link: var(--link-dependent); outline: 2px dashed var(--link); outline-offset: -1px; background: color-mix(in oklab, var(--link) 8%, var(--card)); opacity: 1; }
+[data-link=parent], [data-link=child], [data-link=related] { --link: var(--link-family); outline: 1px dotted var(--link); outline-offset: -1px; opacity: 1; }
+[data-link=dim] { opacity: .45; }
+.link-tag { background: var(--link); color: var(--card); }
+[data-link=parent] .link-tag, [data-link=child] .link-tag, [data-link=related] .link-tag { background: transparent; color: var(--link); border: 1px dotted var(--link); }
+@media (prefers-reduced-motion: reduce) { [data-card] { transition: none } }
 
 /* Presence: "typing…" dots, a soft ring pulse on busy avatars, and a gentle entrance for typing bubbles. */
 @keyframes typing { 0%, 60%, 100% { transform: translateY(0); opacity: .35 } 30% { transform: translateY(-3px); opacity: 1 } }
