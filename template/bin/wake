@@ -1357,7 +1357,11 @@ async function watch() {
 
 since = await catchUp()
 // events after the last one this wake delivered before it stopped (a restart, a crash): replay them, so none is lost
-const saved = Number(readState()._seq) || 0
+// the old root file's _seq is not replayed (sy-965o): it stopped days before (no save since), so a replay would fire old
+// blocks and handovers again; wake starts at the head, as on a first start, and the lead check reads the queues
+const fromOld = !fs.existsSync(STATE_FILE) && fs.existsSync(OLD_STATE)
+const saved = fromOld ? 0 : Number(readState()._seq) || 0
+if (fromOld) log(`state: the old ${path.basename(OLD_STATE)} is carried over without its _seq (${readState()._seq}); no replay`)
 if (saved && saved < since) {
   const head = since; since = saved
   try {
