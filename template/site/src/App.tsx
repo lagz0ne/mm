@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { ArrowUpRightIcon, CaretLeftIcon, CaretRightIcon, ChatCircleIcon, LinkSimpleIcon, PlusIcon } from '@phosphor-icons/react'
 import { toast } from 'sonner'
 import { api, blockers, type BeadEvent, type Issue, type Meta, type WaitingEntry } from '@/lib/api'
-import { COLUMNS, LEAD_DOT, LEAD_READY, ROLES, ROLE_LABEL, ago, byPriority, columnOf, roleOf, setRoleDefs, type ColumnKey } from '@/lib/board'
+import { COLUMNS, LEAD_DOT, LEAD_READY, ROLES, ROLE_LABEL, ago, byPriority, columnOf, roleOf, setRoleDefs, shipsWith, type ColumnKey } from '@/lib/board'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -224,11 +224,17 @@ export default function App() {
       i.id.toLowerCase().includes(needle) || i.title.toLowerCase().includes(needle)))
   }, [issues, q])
 
-  const counts = useMemo(() => {
+  // Waiting counts only the real waits: an item that waits only for its rollout ships with it (sy-7n3c), counted apart
+  const [counts, shipping] = useMemo(() => {
     const c: Record<ColumnKey, number> = { ready: 0, waiting: 0, progress: 0, done: 0 }
-    work.filter((i) => role === 'all' || roleOf(i) === role).forEach((i) => c[columnOf(i, ready)]++)
-    return c
-  }, [work, ready, role])
+    let s = 0
+    work.filter((i) => role === 'all' || roleOf(i) === role).forEach((i) => {
+      const k = columnOf(i, ready)
+      if (k === 'waiting' && shipsWith(i, byId)) s++
+      else c[k]++
+    })
+    return [c, s] as const
+  }, [work, ready, role, byId])
 
   const rows = role === 'all' ? [...ROLES, ''] : [role]
 
@@ -291,6 +297,7 @@ export default function App() {
                 <div key={c.key} title={c.hint} className="flex items-baseline gap-1.5">
                   <dt className="text-muted-foreground">{c.label}</dt>
                   <dd className="font-bold tabular-nums">{counts[c.key]}</dd>
+                  {c.key === 'waiting' && shipping > 0 && <dd className="text-muted-foreground tabular-nums" title="Landed, waits only for its rollout">+{shipping} ship</dd>}
                 </div>
               ))}
             </dl>
@@ -359,7 +366,9 @@ export default function App() {
             {COLUMNS.map((c) => (
               <div key={c.key} className="sticky top-0 z-10 flex items-baseline justify-between border-b border-l border-b-foreground bg-background px-3 py-2">
                 <span className="text-[11px] font-bold tracking-[0.1em] uppercase">{c.label}</span>
-                <span className="text-xs text-muted-foreground tabular-nums">{counts[c.key]}</span>
+                <span className="text-xs text-muted-foreground tabular-nums" data-count={c.key}>
+                  {counts[c.key]}{c.key === 'waiting' && shipping > 0 && <span data-ships-count={shipping} title="Landed, waits only for its rollout"> · {shipping} ship next</span>}
+                </span>
               </div>
             ))}
             {rows.map((r) => (
@@ -425,6 +434,8 @@ function verb(ev: BeadEvent) {
 }
 
 type MoveFn = (id: string, role: string, col: ColumnKey) => void
+// in a column, the real waits before what only waits for its rollout (sy-7n3c); each by priority
+const waitsFirst = (byId: Map<string, Issue>) => (a: Issue, b: Issue) => Number(!!shipsWith(a, byId)) - Number(!!shipsWith(b, byId)) || byPriority(a, b)
 
 /** The board on a phone: one column at a time (the bar's picker chooses it, sy-hrsm), as a list grouped by role (each
  *  with its lead's state). It starts under the bar (48px), which lies over it. */
@@ -434,7 +445,7 @@ function PhoneBoard({ top, rows, work, ready, byId, meta, col, onOpen }: {
   const inCol = work.filter((i) => columnOf(i, ready) === col)
   const groups = rows.map((r) => {
     const items = inCol.filter((i) => roleOf(i) === r)
-    return { role: r, items: col === 'done' ? items.sort((a, b) => (b.closed_at || '').localeCompare(a.closed_at || '')).slice(0, 8) : items.sort(byPriority) }
+    return { role: r, items: col === 'done' ? items.sort((a, b) => (b.closed_at || '').localeCompare(a.closed_at || '')).slice(0, 8) : items.sort(waitsFirst(byId)) }
   }).filter((g) => g.items.length)
   return (
     <div className={cn('min-w-0', top && 'pt-12')}>
@@ -455,7 +466,7 @@ function PhoneBoard({ top, rows, work, ready, byId, meta, col, onOpen }: {
               )}
             </h2>
             <div className="grid gap-2 p-2">
-              {g.items.map((i) => <Card key={i.id} issue={i} col={col} waitsOn={blockers(i, byId)} last={meta.last[i.id]} onOpen={onOpen}
+              {g.items.map((i) => <Card key={i.id} issue={i} col={col} waitsOn={blockers(i, byId)} ships={shipsWith(i, byId)} last={meta.last[i.id]} onOpen={onOpen}
                 worker={meta.leads._workers?.find((w) => w.item === i.id)} />)}
             </div>
           </section>
@@ -476,7 +487,7 @@ function Row({ role, folded, items, ready, byId, meta, onOpen, onMove }: {
     let cell = items.filter((i) => columnOf(i, ready) === c.key)
     cell = c.key === 'done'
       ? cell.sort((a, b) => (b.closed_at || '').localeCompare(a.closed_at || '')).slice(0, 8)
-      : cell.sort(byPriority)
+      : cell.sort(waitsFirst(byId))
     return <Cell key={c.key} col={c.key} role={role} items={cell} byId={byId} meta={meta} onOpen={onOpen} onMove={onMove} />
   })
   // Folded (sy-p88g): the avatar and the lead's state dot; the name and the state in its tooltip.
@@ -540,14 +551,14 @@ function Cell({ col, role, items, byId, meta, onOpen, onMove }: {
       onDrop={(e) => { e.preventDefault(); setOver(false); onMove(e.dataTransfer.getData('text/plain'), role, col) }}
       className={cn('flex min-h-16 flex-col gap-1.5 border-b border-l p-1.5', over && 'bg-muted outline-2 -outline-offset-2 outline-foreground')}
     >
-      {items.map((i) => <Card key={i.id} issue={i} col={col} waitsOn={blockers(i, byId)} last={meta.last[i.id]} onOpen={onOpen}
+      {items.map((i) => <Card key={i.id} issue={i} col={col} waitsOn={blockers(i, byId)} ships={shipsWith(i, byId)} last={meta.last[i.id]} onOpen={onOpen}
         worker={meta.leads._workers?.find((w) => w.item === i.id)} />)}
     </div>
   )
 }
 
-function Card({ issue: i, col, waitsOn, last, onOpen, worker }: {
-  issue: Issue; col: ColumnKey; waitsOn: string[]; last?: Meta['last'][string]; onOpen: (id: string) => void
+function Card({ issue: i, col, waitsOn, ships = null, last, onOpen, worker }: {
+  issue: Issue; col: ColumnKey; waitsOn: string[]; ships?: string[] | null; last?: Meta['last'][string]; onOpen: (id: string) => void
   worker?: { id: string; status: string }
 }) {
   const closed = i.status === 'closed'
@@ -555,7 +566,9 @@ function Card({ issue: i, col, waitsOn, last, onOpen, worker }: {
   const fromLead = !!last && (ROLES as readonly string[]).includes(last.author)
   // Who owes the next move on the thread.
   const awaitingLead = !closed && !!role && !!last && !fromLead
-  const needsYou = !closed && fromLead && (i.status === 'blocked' || (i.labels || []).includes('needs-you'))
+  // waiting only for its rollout (ships) is not a block: it shows "Ships with <id>", never "blocked" (sy-7n3c)
+  const blocked = i.status === 'blocked' && !ships
+  const needsYou = !closed && fromLead && (blocked || (i.labels || []).includes('needs-you'))
   const waitedMin = (Date.now() - new Date(i.updated_at).getTime()) / 60000
   // its links (sy-x7kh): the mouse over it, or a long press on a phone (a tap still opens it)
   const phone = usePhone()
@@ -600,18 +613,24 @@ function Card({ issue: i, col, waitsOn, last, onOpen, worker }: {
         <span className="text-muted-foreground">{i.issue_type}</span>
         {worker && <span className="ml-auto flex items-center gap-1 font-semibold text-swiss" title={`Worker ${worker.id}: ${worker.status}`}>
           <span className={cn('size-1.5 bg-swiss', worker.status === 'running' && 'animate-pulse')} />worker</span>}
-        {i.status === 'blocked' && <span className={cn('font-semibold uppercase', !worker && 'ml-auto')}>blocked</span>}
+        {blocked && <span className={cn('font-semibold uppercase', !worker && 'ml-auto')}>blocked</span>}
         {i.status === 'deferred' && <span className="ml-auto font-semibold uppercase">deferred</span>}
       </span>
       <span className={cn('text-[13px] leading-snug font-medium [overflow-wrap:anywhere] max-md:text-[15px]', closed && 'line-through')}>{i.title}</span>
-      {(waitsOn.length > 0 || !!i.comment_count || col === 'ready') && (
+      {ships && (
+        <span data-ships={ships.join(' ')} title="Landed: waits only for its rollout"
+          className="justify-self-start border border-foreground/40 px-1.5 py-0.5 text-[11px] leading-none font-semibold [overflow-wrap:anywhere]">
+          Ships with <span className="font-mono">{ships.join(', ')}</span>
+        </span>
+      )}
+      {((waitsOn.length > 0 && !ships) || !!i.comment_count || col === 'ready') && (
         <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
           {col === 'ready' && (
             <span className={cn(waitedMin > SLOW_MIN && 'font-semibold text-swiss')} title="Waiting for pickup">
               waiting {ago(i.updated_at)}
             </span>
           )}
-          {waitsOn.length > 0 && <span className="flex items-center gap-1"><LinkSimpleIcon />waits on {waitsOn.join(', ')}</span>}
+          {waitsOn.length > 0 && !ships && <span className="flex items-center gap-1"><LinkSimpleIcon />waits on {waitsOn.join(', ')}</span>}
           {!!i.comment_count && <span className="flex items-center gap-1"><ChatCircleIcon />{i.comment_count}</span>}
         </span>
       )}
