@@ -19,7 +19,9 @@
 # hermetic, ports and docker run at the same time as three lanes; within ports and within docker, one after another.
 #
 # Arguments may name what test/gates makes: {mm} (an mm built from the head, or --bin), {bd} {dolt} (the releases
-# template/tools.json pins, checksums checked; or GATES_BD / GATES_DOLT), {old-template} (the base's template/).
+# template/tools.json pins, checksums checked; or GATES_BD / GATES_DOLT), {old-template} (the base's template/; when the base's
+# template/site/package.json is the head's, the template of the commit before the head's last change of it, since
+# lifecycle's conflict step needs that file to differ).
 # needs: mm (MM_BIN_DIR: a folder whose mm is that binary, first on PATH for a live suite), site (template/site's
 # packages and one build before the suites start; they get BOARD_PHONE_NOBUILD=1, so no two build the site at once).
 
