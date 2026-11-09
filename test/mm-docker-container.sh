@@ -58,6 +58,13 @@ w exec "$BOX" sh -c "umask 002 && echo from-box >$PR/made && chmod 600 $PR/made 
 w cp "$BOX:/etc/hostname" - >/dev/null 2>"$T/err"
 [ $? = 125 ] && ok "cp with a container that has mounts is refused: $(cut -c1-80 "$T/err")" || bad "cp with the box (mounts) ran"
 w rm -f "$BOX" >/dev/null 2>&1 && ok "rm -f the box" || bad "rm"
+# sy-gld3: mm's ports out of the box's random ports (the box's own network namespace), as src/box.ts runs it; a port-0
+# listener in it gets none of them
+rp=$(w run --rm --network none --user "$BUID:$G" --cap-drop ALL --sysctl net.ipv4.ip_local_reserved_ports=38000-38999 "$IMG" \
+  sh -c 'cat /proc/sys/net/ipv4/ip_local_reserved_ports' 2>"$T/err")
+[ "$rp" = 38000-38999 ] && ok "--sysctl: the box's kernel reserves mm's ports ($rp)" || { bad "--sysctl: '$rp'"; cat "$T/err"; }
+w run --rm --network none --user "$BUID:$G" --cap-drop ALL --sysctl net.ipv4.ip_forward=1 "$IMG" true >/dev/null 2>"$T/err"
+[ $? = 125 ] && ok "--sysctl another key is refused: $(cut -c1-80 "$T/err")" || bad "--sysctl ip_forward ran"
 
 echo "== giving the box's files back, with no root container (sy-58fo; root_containers = no)"
 # mm's own code (src/box.ts giveBack, take), through the wrapper; a throwaway MM_HOME

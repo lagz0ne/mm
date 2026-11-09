@@ -15,7 +15,7 @@ import { getPath, held, loadConfig } from './config'
 import { DIRS, HOME, run, servicePath, which, within } from './env'
 import { MM_LOG_CONFIG } from './obs'
 import { personRunsOn } from './personruns'
-import { BOX_READONLY, BOXES, boxHook, containersCfg, dependsOn, engineRefusal, gitRefusal, hashPort, hostGitEnv, leaveHost, loadAll, processes as pcProcesses, PROJECT_LOG_CONFIG, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, serviceRoutes, startSkipped, up as projectUp, writePortlessClaim, writeRunFiles } from './project'
+import { BOX_READONLY, BOXES, boxHook, containersCfg, dependsOn, engineRefusal, gitRefusal, hashPort, hostGitEnv, leaveHost, loadAll, MM_PORTS, processes as pcProcesses, PROJECT_LOG_CONFIG, readAnswers, recordedTemplate, recordTemplate, resolve, routeUp, sealEngine, serviceProcess, serviceRoutes, startSkipped, up as projectUp, writePortlessClaim, writeRunFiles } from './project'
 import boxDockerfile from '../box/Dockerfile' with { type: 'text' }
 import egressDockerfile from '../box/egress.Dockerfile' with { type: 'text' }
 import egressMain from '../box/egress/main.go' with { type: 'text' }
@@ -583,7 +583,10 @@ function upUnder022(root: string): Step[] {
     // no DNS out (review sy-b15.7: lookups are a way out): Docker's own resolver still answers the names on the box's
     // network (its proxy), and forwards everything else to 127.0.0.1, where nothing answers
     '--dns', '127.0.0.1',
-    '--user', `${id.uid}:${gid}`, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    // mm's ports out of the box's random ones (sy-gld3: a port-0 listener took the board's fixed port); the box has its
+    // own network namespace, so this is the box's kernel setting, not the host's
+    '--sysctl', `net.ipv4.ip_local_reserved_ports=${MM_PORTS.lo}-${MM_PORTS.hi}`,
+    '--user',`${id.uid}:${gid}`, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--pids-limit', lim('pids', '2048'), '--memory', lim('memory', '4g'), '--cpus', lim('cpus', '2'),
     '--tmpfs', `/tmp:rw,nosuid,nodev,size=1g,mode=1777`, '--tmpfs', `${HOME}:rw,nosuid,nodev,size=512m,uid=${id.uid},gid=${gid},mode=0700`, '-e', `HOME=${HOME}`,
     '-v', `${join(acct, 'passwd')}:/etc/passwd:ro`, '-v', `${join(acct, 'group')}:/etc/group:ro`,

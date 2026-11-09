@@ -75,7 +75,8 @@ no() {
 
 IMG=mm-box:0.1.1; EG=mm-egress:0.1.1; DIG=sha256:$(printf 'a%.0s' $(seq 64))
 BOXRUN=(run -d --name mm-box-acme-shop --hostname acme-shop --label mm.project=acme-shop --network mm-net-acme-shop --ip 10.231.40.10 --restart unless-stopped
-  --dns 127.0.0.1 --user 200040:"$G" --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 2048 --memory 4g --cpus 2
+  --dns 127.0.0.1 --sysctl net.ipv4.ip_local_reserved_ports=38000-38999
+  --user 200040:"$G" --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 2048 --memory 4g --cpus 2
   --tmpfs /tmp:rw,nosuid,nodev,size=1g,mode=1777 --tmpfs "$H:rw,nosuid,nodev,size=512m,uid=200040,gid=$G,mode=0700" -e "HOME=$H"
   -v "$MM/box/acme-shop/passwd:/etc/passwd:ro" -v "$MM/box/acme-shop/group:/etc/group:ro" -v "$PR:$PR"
   -v "$PR/bin:$PR/bin:ro" -v "$PR/.git/config:$PR/.git/config:ro" -v "$MM/box/acme-shop/cfg:/run/mm/cfg:ro" -v "$MM/box/acme-shop/sock:/run/mm/sock"
@@ -109,6 +110,7 @@ printf 'mm-box-acme-shop %s acme-shop 14\nmm-doop-acme-shop %s acme-shop 2\nmm-b
 echo "== mm's own calls pass (as the wrapper's own command line)"
 yes "box: run" "--volume=$PR:$PR" "${BOXRUN[@]}"
 yes "box: no-new-privileges and never a pull, always" "run --pull=never --security-opt=no-new-privileges" "${BOXRUN[@]}"
+yes "box: mm's ports out of its random ports (sy-gld3), as --sysctl=..." "--sysctl=net.ipv4.ip_local_reserved_ports=38000-38999" "${BOXRUN[@]}"
 yes "egress proxy: run (its own uid, no capabilities)" "--user=190040:$G --cap-drop=ALL" "${EGRUN[@]}"
 yes "giveBack: the regroup as the box's uid (no root)" "--user=200040:$G" "${GIVEBACK[@]}"
 yes "doop: run (env file passed as an open file)" "--env-file=/dev/fd/" "${DOOP[@]}"
@@ -194,6 +196,30 @@ no "--cap-add NET_ADMIN on the egress proxy" run --cap-add NET_ADMIN "${EGRUN[@]
 no "egress caps on a box" run --cap-add SETUID "${BOXRUN[@]:1}"
 no "no --cap-drop ALL" run --rm --network none --user 200040:"$G" "$IMG"
 no "--cap-drop NET_RAW only" run --rm --network none --user 200040:"$G" --cap-drop NET_RAW "$IMG"
+# sysctls (sy-gld3): only net.ipv4.ip_local_reserved_ports, once, one range inside mm's ports
+SC=(run --rm --network none --user 200040:"$G" --cap-drop ALL)
+yes "--sysctl: the one key on a plain run passes" "--sysctl=net.ipv4.ip_local_reserved_ports=38000-38999" "${SC[@]}" --sysctl net.ipv4.ip_local_reserved_ports=38000-38999 "$IMG"
+yes "...a narrower range inside mm's, glued" "--sysctl=net.ipv4.ip_local_reserved_ports=38100-38200" "${SC[@]}" --sysctl=net.ipv4.ip_local_reserved_ports=38100-38200 "$IMG"
+no "--sysctl another key (ip_forward)" "${SC[@]}" --sysctl net.ipv4.ip_forward=1 "$IMG"
+no "--sysctl kernel.* key" "${SC[@]}" --sysctl kernel.shmmax=1 "$IMG"
+no "--sysctl ip_local_port_range (not reserved)" "${SC[@]}" --sysctl "net.ipv4.ip_local_port_range=38000 38999" "$IMG"
+no "--sysctl a range below mm's" "${SC[@]}" --sysctl net.ipv4.ip_local_reserved_ports=32768-38999 "$IMG"
+no "--sysctl a range above mm's" "${SC[@]}" --sysctl net.ipv4.ip_local_reserved_ports=38000-39000 "$IMG"
+no "--sysctl a range turned round" "${SC[@]}" --sysctl net.ipv4.ip_local_reserved_ports=38999-38000 "$IMG"
+no "--sysctl a list of ranges" "${SC[@]}" --sysctl net.ipv4.ip_local_reserved_ports=38000-38100,38200-38300 "$IMG"
+no "--sysctl one port, not a range" "${SC[@]}" --sysctl net.ipv4.ip_local_reserved_ports=38235 "$IMG"
+no "--sysctl an empty value" "${SC[@]}" --sysctl net.ipv4.ip_local_reserved_ports= "$IMG"
+no "--sysctl a newline in the value" "${SC[@]}" --sysctl $'net.ipv4.ip_local_reserved_ports=38000-38999\n' "$IMG"
+no "--sysctl twice (the same key)" "${SC[@]}" --sysctl net.ipv4.ip_local_reserved_ports=38000-38100 --sysctl net.ipv4.ip_local_reserved_ports=38200-38300 "$IMG"
+no "--sysctl a second one beside mm's (the box)" run --sysctl net.ipv4.ip_forward=1 "${BOXRUN[@]:1}"
+check "...each refusal says why (key, range, twice)" bash -c "
+  '$W' ${SC[*]} --sysctl net.ipv4.ip_forward=1 $IMG 2>&1 | grep -qF 'only net.ipv4.ip_local_reserved_ports=<a-b>' &&
+  '$W' ${SC[*]} --sysctl net.ipv4.ip_local_reserved_ports=1-2 $IMG 2>&1 | grep -qF 'only one range a-b inside 38000-38999' &&
+  '$W' ${SC[*]} --sysctl net.ipv4.ip_local_reserved_ports=38000-38001 --sysctl net.ipv4.ip_local_reserved_ports=38000-38001 $IMG 2>&1 | grep -qF -- '--sysctl given twice'"
+check "...the wrapper's range is mm's own (src/project.ts MM_PORTS)" bash -c "
+  r=\$(cd '$HERE' && bun -e \"import { MM_PORTS } from './src/project'; console.log(MM_PORTS.lo + ', ' + MM_PORTS.hi)\") &&
+  grep -qx \"MM_PORTS = (\$r)\" '$W'"
+no "--sysctl on exec (not an option there)" exec --sysctl net.ipv4.ip_local_reserved_ports=38000-38999 mm-box-acme-shop true
 no "--device /dev/sda" run --device /dev/sda "${BOXRUN[@]:1}"
 no "--device=/dev/kmsg" run --device=/dev/kmsg "${BOXRUN[@]:1}"
 no "--security-opt seccomp=unconfined" run --security-opt seccomp=unconfined "${BOXRUN[@]:1}"
@@ -260,7 +286,7 @@ sed -i 's/^root_containers = yes/root_containers = no/' "$T/conf"
 echo "== refused: other ways out"
 no "-p 0.0.0.0:80:80 (publish)" run -p 0.0.0.0:80:80 "${BOXRUN[@]:1}"
 no "--publish-all" run -P "${BOXRUN[@]:1}"
-no "--sysctl" run --sysctl net.ipv4.ip_forward=1 "${BOXRUN[@]:1}"
+no "--sysctl ip_forward on a plain run" "${SC[@]}" --sysctl net.ipv4.ip_forward=1 "$IMG"
 no "--runtime" run --runtime runc-evil "${BOXRUN[@]:1}"
 no "--cgroup-parent" run --cgroup-parent / "${BOXRUN[@]:1}"
 no "--log-driver" run --log-driver syslog "${BOXRUN[@]:1}"

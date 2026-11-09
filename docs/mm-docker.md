@@ -63,12 +63,18 @@ nowhere else.
 variable (docker gets a clean environment); `--privileged`; `--pid`, `--ipc`, `--uts`, `--userns`, `--cgroupns`;
 `--network host`, `--net`, `container:`; root and every `--cap-add` (with `root_containers = yes`: beyond its two old shapes); `--device`; `--mount`,
 `--volumes-from`, named volumes, `:shared` and `:z`; `--security-opt` other than `no-new-privileges`; `-p`/`-P`;
-`--sysctl`, `--runtime`, `--cgroup-parent`, `--log-driver`; `--env-file` that is not a plain file of the owner's in the
+every `--sysctl` but one (below), `--runtime`, `--cgroup-parent`, `--log-driver`; `--env-file` that is not a plain file of the owner's in the
 project (it is opened by the wrapper and handed to docker as `/dev/fd/<n>`); images that are not mm's (or pinned by
 digest); build `-o`/`--output`, `--iidfile`, `--secret`, `--ssh`, `--build-context`, `--cache-from`/`--cache-to`,
 `--allow`, `--network`; `cp` with a container that has mounts, or a host path outside its project; and every other docker
 subcommand (`commit`, `tag`, `load`, `save`, `volume`, `service`, `plugin`, `compose`, `buildx`, `update`, `start`,
 `attach`, `export`, `import`, `system`, ...).
+
+**The one sysctl (sy-gld3):** `run` (and `create`) takes `--sysctl net.ipv4.ip_local_reserved_ports=<a>-<b>`, once,
+with one range inside mm's ports (38000-38999). A box has its own network namespace, so the setting is the box's: its
+kernel then never hands one of mm's ports to a process that asks for a free one (port 0), so a helper in a box can't
+take a board's fixed port. mm's box passes the whole range. Any other key, a second `--sysctl`, a list or a range
+outside 38000-38999 is refused. The host's own setting is not the wrapper's (a root change on the host).
 
 ## The config: `/etc/mm-docker.conf`
 

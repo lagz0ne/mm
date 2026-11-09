@@ -85,12 +85,15 @@ export function readAnswers(root: string): Answers {
   return Bun.YAML.parse(readFileSync(join(root, '.mm-answers.yaml'), 'utf8')) as Answers
 }
 const portlessPort = () => Number(getPath(loadConfig(), 'portless_port') ?? 1355)
+/** mm's own ports (38000-38999): its stable ports are given out from here (hashPort, from lo+100), and a box keeps
+ *  the whole range out of its kernel's random ports (sy-gld3; the wrapper box/mm-docker checks the same range). */
+export const MM_PORTS = { lo: 38000, hi: 38999 } as const
 /** A stable port for <key>: hash in 38100-38999, stepping past ports already in use (Dolt's TCP, public services). */
 export function hashPort(key: string, taken: Set<number> = new Set()): number {
   let p = 38100 + (parseInt(createHash('sha256').update(key).digest('hex').slice(0, 8), 16) % 900)
   const used = run(['ss', '-Hltn']).out
   // also past ports given out but not listening now (`taken`: this project's, and what other projects' route files hold)
-  for (let i = 0; i < 900 && (new RegExp(`:${p}\\b`).test(used) || taken.has(p)); i++) p = p === 38999 ? 38100 : p + 1
+  for (let i = 0; i < 900 && (new RegExp(`:${p}\\b`).test(used) || taken.has(p)); i++) p = p === MM_PORTS.hi ? 38100 : p + 1
   return p
 }
 
