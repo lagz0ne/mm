@@ -168,7 +168,7 @@ try {
 
   console.log('== the RACI drives the messages (sy-lusk): C on an ASK, V on a new head, I once at close')
   const ASK = (to) => `ASK → ${to}\nExpect: ${to}: say if port 8080 is free on the machine.\nDone when: an ANSWER names the port's state.\nVerify: ss -ltn → no line with :8080\nBy: next wake · Else: platform picks another port\nWhy: the new service needs a port`
-  const HO = (head) => `HANDOFF → review\nHead: mm@${head}\nExpect: review: sign off or block this head.\nDone when: a VERDICT on mm@${head}.\nVerify: bd show r-3 → labels include signed-head:mm@${head}\nBy: next wake · Else: nothing rolls out\nReady: the gate and its tests`
+  const HO = (head) => `HANDOFF → review\nHead: mm@${head}\nExpect: review: sign off or block this head.\nDone when: a VERDICT on mm@${head}.\nVerify: bd show r-3 → labels include signed-head:mm@${head}\nBy: next wake · Else: nothing rolls out\nReady: the gate and its tests\nSurfaces: none`
   const q0 = sent()
   add('r-7', { status: 'open', labels: ['act:chg'], assignee: 'platform' }); emit({ op: 'create', issue_id: 'r-7', actor: 'platform', issue: { ...items.get('r-7') } })
   comment('r-1', 'platform', ASK('ops'))
