@@ -2,7 +2,9 @@
 // bin/supervisor (profile system) and a lead's workers (sy-asaw): a running worker on an item is an agent turn (no
 // stall line in the role's digest); a role with workers over its capacity (each live worker one place, each item in progress no worker works
 // on one) opens overcap:<role>, which clears when a worker goes; while any role has workers, the board over its cap
-// (wake.cap) opens overcap:board; a role without workers holding more items than its capacity is left to wake (no item).
+// (wake.cap) opens overcap:board; a role without workers holding more items than its capacity is left to wake (no item);
+// Paseo workspaces and projects of a role's worker folders with no live agent and no item in progress are one line in
+// its digest, which drops off once they are swept (sy-7f7i).
 // Hermetic: temp folder, a fake bd-serve, a stub paseo (leads and workers from files), a stub mm; a fake clock.
 //   node test/supervisor-workers.mjs            exit 0 = every check passed
 import { spawn } from 'node:child_process'
@@ -29,10 +31,12 @@ fs.writeFileSync(path.join(MMH, 'config.yaml'), 'wake:\n  cap: "3"\n')
 
 // stub paseo: agents/<label value>.json (leads by role=<role>, workers by role=<role>-worker; the CLI's shape, no labels)
 const AG = path.join(T, 'agents'); fs.mkdirSync(AG)
+// (sy-7f7i) project ls / workspace ls from agents/projects.json and agents/workspaces.json; ls with no role: agents/all.json
 fs.writeFileSync(path.join(T, 'paseo'), `#!/bin/sh
+case "$1 $2" in "project ls"|"workspace ls") f="${AG}/$1s.json"; [ -f "$f" ] && cat "$f" || echo '[]'; exit 0 ;; esac
 [ "$1" = ls ] || exit 9
 for a in "$@"; do case "$a" in role=*) f="${AG}/\${a#role=}.json"; [ -f "$f" ] && cat "$f" || echo '[]'; exit 0 ;; esac; done
-echo '[]'
+[ -f "${AG}/all.json" ] && cat "${AG}/all.json" || echo '[]'
 `, { mode: 0o755 })
 const put = (k, v) => fs.writeFileSync(path.join(AG, `${k}.json`), JSON.stringify(v))
 const lead = (role, status) => put(role, [{ id: `agent-${role}`, shortId: role, status }])
@@ -58,6 +62,7 @@ const srv = http.createServer(async (req, res) => {
   if (req.method === 'GET' && u.pathname === '/v0/beads/events') { const since = Number(u.searchParams.get('since') || 0); return json({ head: seq, records: events.filter((e) => e.seq > since) }) }
   if (req.method === 'POST' && u.pathname === '/v0/beads/issues') return json({ id: item(`sy-s${nextId++}`, b, b.actor).id })
   if (req.method === 'POST' && (m = /^\/v0\/beads\/issues\/([\w.-]+)\/comments$/.exec(u.pathname))) { items.get(m[1]).comments.push({ author: b.author, text: b.text }); return json({}) }
+  if (req.method === 'PATCH' && (m = /^\/v0\/beads\/issues\/([\w.-]+)$/.exec(u.pathname))) { Object.assign(items.get(m[1]), b.patch || {}); return json({ issue: snap(items.get(m[1])) }) }
   if (req.method === 'POST' && (m = /^\/v0\/beads\/issues\/([\w.-]+):close$/.exec(u.pathname))) { Object.assign(items.get(m[1]), { status: 'closed' }); return json({}) }
   json({ error: 'no route' }, 404)
 })
@@ -101,6 +106,28 @@ try {
   ok('overcap:platform cleared and closed', !openOf('overcap:platform'))
   ok('overcap:board cleared (3 places, cap 3)', !openOf('overcap:board'))
   ok('open now: only digest:platform', openKeys().join(' ') === 'digest:platform')
+
+  console.log('== Paseo leftovers of a role\'s workers: one line in its digest (sy-7f7i)')
+  const WT = path.join(SYS, 'worktrees')
+  put('workspaces', [
+    { workspaceId: 'ws1', project: 'sys', cwd: path.join(WT, 'platform-sy-9') },   // a leftover: no agent, sy-9 not in progress
+    { workspaceId: 'ws2', project: 'sys', cwd: path.join(WT, 'platform-sy-1') },   // its item sy-1 is in progress
+    { workspaceId: 'ws3', project: 'sys', cwd: path.join(WT, 'platform-w5') },     // a live agent in it
+    { workspaceId: 'ws4', project: 'sys', cwd: path.join(WT, 'review-r1') },       // review has no workers
+    { workspaceId: 'ws5', project: 'sys', cwd: path.join(SYS, 'leads', 'platform') }, // the lead's own
+  ])
+  put('projects', [{ projectId: 'pj1', name: 'sys', path: SYS }, { projectId: 'pj2', name: 'platform-old', path: path.join(WT, 'platform-old') }])
+  put('all', [{ id: 'w-w5', shortId: 'w5', status: 'running', cwd: path.join(WT, 'platform-w5') }])
+  clock += 5 * MIN
+  await supervise()
+  const d = openOf('digest:platform')?.description || ''
+  ok('digest:platform has one Paseo leftovers line: 1 workspace and 1 project (platform-old, platform-sy-9)',
+    /^- Paseo leftovers: 1 workspace\(s\) and 1 project\(s\) of platform workers with no live agent and no item in progress \(platform-old, platform-sy-9\)$/m.test(d))
+  ok('...and says how to clear it (lead worker sweep)', /lead worker sweep <role>/.test(d))
+  ok('...no line for review (no workers), no supervisor:digest failure', !openOf('digest:review') && !openKeys().some((k) => k.startsWith('supervisor:')))
+  put('workspaces', []); put('projects', [{ projectId: 'pj1', name: 'sys', path: SYS }]); clock += 5 * MIN
+  await supervise()
+  ok('swept: the line drops off (the stall line stays)', !/Paseo leftovers/.test(openOf('digest:platform')?.description || '') && /^- stalled: sy-1 /m.test(openOf('digest:platform')?.description || ''))
 } finally {
   srv.close()
   if (fail) console.log(out.slice(-3000))

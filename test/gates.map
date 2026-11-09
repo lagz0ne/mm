@@ -80,6 +80,7 @@ suite test/sysworkers.sh          hermetic
 suite test/template-base.sh       hermetic
 suite test/trace-refused.sh       hermetic
 suite test/update-lock.sh         hermetic
+suite test/worker-cleanup.sh      hermetic
 suite test/vault.sh               hermetic
 suite test/writing-rule.sh        hermetic
 
@@ -298,7 +299,7 @@ rule template/bin/lib/run-as.mjs  test/wake-person-runs.mjs test/wake-box-person
 rule template/bin/lib/claude.mjs  test/memory-links.sh test/lead.sh test/person-run.sh test/box-person-runs.sh test/assist.sh test/config-review.mjs
 rule template/bin/lib/lead-workspace.mjs test/lead-workspace.sh test/lead.sh test/person-run.sh test/box-person-runs.sh
 rule template/bin/lib/places.mjs  test/wake-workers.mjs test/supervisor-workers.mjs test/sysworkers.sh
-rule template/bin/lib/workers.mjs test/wake-workers.mjs test/supervisor-workers.mjs test/sysworkers.sh test/lead.sh
+rule template/bin/lib/workers.mjs test/wake-workers.mjs test/supervisor-workers.mjs test/sysworkers.sh test/lead.sh test/worker-cleanup.sh
 rule template/bin/lib/allow-only.mjs test/allow-only.mjs test/sysworkers.sh
 rule template/bin/lib/assist.mjs  test/assist.sh test/sentinel-assist.mjs
 rule template/bin/lib/guard-rules.mjs test/guard.sh test/sysworkers.sh
@@ -325,7 +326,7 @@ rule template/bin/guard           test/guard.sh test/sysworkers.sh
 rule template/bin/health          test/engine-drift.sh test/template-base.sh test/task.mjs
 rule template/bin/init            test/init-retry.sh test/bd-autostart.sh test/bd-home.sh test/clean-box.sh
 rule template/bin/land            test/trace-refused.sh test/box.sh
-rule template/bin/lead            test/lead.sh test/lead-workspace.sh test/memory-links.sh test/paseo-refuse.mjs test/person-run.sh test/box-person-runs.sh test/wake-start.mjs test/wake-twoleads.mjs test/wake-ondemand.mjs test/wake-stale-lead.mjs test/sysworkers.sh
+rule template/bin/lead            test/lead.sh test/worker-cleanup.sh test/lead-workspace.sh test/memory-links.sh test/paseo-refuse.mjs test/person-run.sh test/box-person-runs.sh test/wake-start.mjs test/wake-twoleads.mjs test/wake-ondemand.mjs test/wake-stale-lead.mjs test/sysworkers.sh
 rule template/bin/svc             test/upstream.mjs test/sockets.sh test/engine-drift.sh
 rule template/bin/trace           test/trace-refused.sh test/bd-actor.sh test/owner-card-bd.sh test/span-answers.sh test/bd-home.sh test/task.mjs
 rule template/bin/wake            test/wake-*.mjs test/paseo-refuse.mjs
@@ -432,7 +433,7 @@ rule template/profiles/system/bin/sentinel test/sentinel-assist.mjs test/sentine
 rule template/profiles/system/bin/supervisor test/supervisor*.mjs
 rule template/profiles/system/bin/upstream test/upstream.mjs
 rule template/profiles/system/bin/nightly-gates test/nightly-gates.mjs test/supervisor.mjs
-rule template/profiles/system/bin/wt test/sysworkers.sh test/memory-links.sh test/lead.sh
+rule template/profiles/system/bin/wt test/sysworkers.sh test/memory-links.sh test/lead.sh test/worker-cleanup.sh
 rule template/profiles/system/assistants/** test/assist.sh test/sentinel-assist.mjs
 rule template/profiles/system/leads/roles.json test/supervisor*.mjs test/upstream.mjs test/sysworkers.sh test/brain-deny.sh
 rule template/profiles/system/leads/raci.json test/supervisor-raci.mjs test/raci.mjs
