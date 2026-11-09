@@ -25,6 +25,8 @@
 // (sy-9618): wake asks on the box's own mm.api socket (WAKE_DISPATCH_SOCK, default /run/mm/api/api.sock).
 import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/obs.mjs'
 import * as P_ from './lib/paseo.mjs'
+import { parseMessage } from './lib/message.mjs'
+import { actOf, lettersOf, mayAsk, rowOf, withLetter } from './lib/raci.mjs'
 import { places, total as placesTotal, workersOf } from './lib/places.mjs'
 import http from 'node:http'
 import path from 'node:path'
@@ -112,22 +114,53 @@ function stopLoop(id) {
     { cwd: path.join(P, 'control'), timeout: 20000 }, () => {})
 }
 
-// RACI routing: an item labelled act:<activity> asks its Consulted roles for input when created, and tells its
-// Informed roles when closed. The doer (assignee) and the actor's own role are skipped.
+// RACI routing (sy-lusk; the letters: bin/lib/raci.mjs): an item labelled act:<activity> tells its Informed roles once,
+// when it is closed (its DONE). The doer (assignee) and the actor's own role are skipped. A Consulted role is no longer
+// woken when the item is created: only by an ASK to it (messageRoute()).
 function raciRoute(e, byLead = false) {
-  const act = (e.issue?.labels || []).find((l) => l.startsWith('act:'))?.slice(4)
-  if (!act || !['create', 'close'].includes(e.op)) return
-  const a = raci().find((x) => x.id === act)
+  if (e.op !== 'close') return
+  const a = rowOf(raci(), actOf(e.issue?.labels))
   if (!a) return
-  const letter = e.op === 'create' ? 'C' : 'I'
   const who = actorName(e.actor || 'beads'), text = [boardLine(e.issue_id, e.issue?.title)]
-  if (letter === 'I' && e.issue?.close_reason) text.push(boardLine(`${e.issue_id} close reason`, e.issue.close_reason, 200))
-  for (const [role, l] of Object.entries(a.raci || {})) {
-    if (!l.includes(letter) || !ROLES.includes(role) || role === e.issue?.assignee || role === leadOf(e.actor)) continue
-    note(role, e.issue_id, (letter === 'C'
-      ? `consult: ${who} opened ${e.issue_id} (${a.title}). You are Consulted: comment your input on it, or "no input".`
-      : `FYI: ${who} closed ${e.issue_id} (${a.title})${e.issue?.close_reason ? ', with a close reason' : ''}. You are Informed; act only if it affects your work.`), byLead, 'talk', text)
+  if (e.issue?.close_reason) text.push(boardLine(`${e.issue_id} close reason`, e.issue.close_reason, 200))
+  for (const role of withLetter(a, 'I')) {
+    if (!ROLES.includes(role) || role === e.issue?.assignee || role === leadOf(e.actor)) continue
+    note(role, e.issue_id, `FYI: ${who} closed ${e.issue_id} (${a.title})${e.issue?.close_reason ? ', with a close reason' : ''}. You are Informed; act only if it affects your work.`, byLead, 'talk', text)
   }
+}
+
+// Messages that involve a role (sy-lusk): a comment that is a valid message (bin/lib/message.mjs) wakes the role it
+// expects to act, when the item's RACI row says so:
+//   ASK → <role>      the role is C (its consult cases), V, R or A in the row; an ASK to an I or to a role with no
+//                     letter wakes nobody (the Supervisor flags it). An item with no activity: the role is woken.
+//   HANDOFF → <role>  the role is V in the row, and the Head is new: not one V signed (signed-head:<head>), not one
+//                     wake already gave it on this item (a HANDOFF with no Head always wakes)
+// Any other message, and words that are no message, wake only the assignee (as any comment does). Returns the roles woken.
+const handedHeads = new Map() // item id -> the heads a HANDOFF → V already woke V for
+function messageRoute(e, byLead = false) {
+  const woke = new Set(), c = e.comment
+  if (e.op !== 'comment' || !c || SYSTEM.includes(c.author)) return woke
+  const m = parseMessage(c.text, { roles: ROLES, author: String(c.author ?? '') })
+  if (!m.ok || !['ASK', 'HANDOFF'].includes(m.intent)) return woke
+  const role = m.expect?.role || m.to.split('/')[0], self = leadOf(c.author), id = e.issue_id, labels = e.issue?.labels || []
+  if (!ROLES.includes(role) || role === self) return woke
+  const row = rowOf(raci(), actOf(labels)), l = lettersOf(row, role), author = actorName(c.author)
+  const text = [boardLine(id, e.issue?.title), boardLine(`${id} ${m.intent} by ${author}`, c.text, 400)]
+  if (m.intent === 'ASK') {
+    if (!mayAsk(row, role)) { log(`ASK on ${id} by ${c.author} to ${role}: not C, V, R or A in act:${actOf(labels)}; nobody woken`); return woke }
+    const as = row ? ` (you are ${[...l].join('·')} in ${row.id})` : ''
+    note(role, id, `ASK to you from ${author} on ${id}${as} (quoted below). Answer it with an ANSWER (re #n) by its By${/C/.test(l) && !/[RAV]/.test(l) ? ', or "no input"' : ''}.`, byLead, 'talk', text)
+  } else {
+    if (!/V/.test(l)) return woke
+    const head = m.keys.Head, had = handedHeads.get(id) || new Set()
+    if (head && (labels.includes(`signed-head:${head}`) || had.has(head))) { log(`HANDOFF on ${id} by ${c.author} to ${role}: ${head} already ${had.has(head) ? 'handed' : 'signed'}; not woken again`); return woke }
+    if (head) handedHeads.set(id, had.add(head))
+    note(role, id, `HANDOFF to you (V in ${row.id}) from ${author} on ${id}${head ? `, head ${head}` : ''} (quoted below). Verify it: a VERDICT on that head (re #n) by its By.`, byLead, 'talk', text)
+  }
+  count('mm_wake_signals_total', { kind: `${m.intent}_MESSAGE` })
+  log(`${m.intent} on ${id} by ${c.author}: waking ${role}`)
+  woke.add(role)
+  return woke
 }
 
 // The end of a unit of work is a plain bd state change (plans/slp, "All of it is plain bd"), never a word in a comment:
@@ -139,7 +172,8 @@ function raciRoute(e, byLead = false) {
 //                                             no answer for 24 h: needs-you (upstreamWaits())
 //   dependency  bd dep add <id> <other>       wakes <other>'s assignee
 //   reopen      bd reopen <id>                wakes <id>'s assignee (the board's Lead when that is the writer itself)
-//   done        bd close <id>                 wakes nobody (closing tells the RACI's Informed roles)
+//   done        bd close <id>                 wakes nobody (closing tells the RACI's Informed roles, once)
+// A valid ASK or HANDOFF message wakes the role the RACI row says (messageRoute()); other words are not signals.
 // A change is read against what wake last saw of the item (`seen`: its assignee and status). A change by a lead is a
 // lead-to-lead wake: the hop limit counts it. A role is never woken by its own change; the board's own actors (wake's
 // requeue, bd's recompute, the Supervisor) are never a signal.
@@ -240,9 +274,10 @@ function onEvent1(e) {
     return
   }
   raciRoute(e, byLead)
+  const asked = messageRoute(e, byLead)
   const signalled = transition(e, byLead)
   const role = e.issue?.assignee
-  if (!ROLES.includes(role) || leadOf(e.actor) === role || signalled.has(role)) return
+  if (!ROLES.includes(role) || leadOf(e.actor) === role || signalled.has(role) || asked.has(role)) return
   const who = actorName(e.actor || 'beads')
   const title = boardLine(e.issue_id, e.issue?.title)
   if (e.op === 'comment' && e.comment) {
