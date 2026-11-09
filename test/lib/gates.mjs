@@ -8,7 +8,8 @@
 //     --item <id>    then `artifact <id> <file>` when artifact is on PATH (else it says so)
 //     --no-live      skip the live group; the result says "skipped (--no-live)" for each, never "passed"
 //     --bin <mm>     the mm the suites get ({mm}, MM_BIN_DIR) instead of one built from the head
-//     --jobs <n>     hermetic suites at once (default: half the CPUs, 2 to 6)
+//     --jobs <n>     hermetic suites at once (default: half the CPUs, 2 to 6; under load at most the idle CPUs,
+//                    max(1, CPUs - 1-minute load average); see defaultJobs)
 //     --keep         keep the throwaway worktree and the built mm (their folder is printed)
 //     --map <file>   another map (default: the head's test/gates.map, else this checkout's)
 // The range: <base>..<head> or <base>...<head>; the files are what <head> changed since its merge base with <base>.
@@ -16,6 +17,14 @@
 // removed after; never the caller's checkout. An mm, when a suite needs one, is built from that worktree into the
 // same throwaway folder (never dist/mm). Exit: 0 when every suite that ran passed; 1 when one failed (or could not be
 // prepared); 2 on a usage or map error.
+// The heavy lock: the heavy groups (docker, live) run one suite at a time across every gates run of the user on the
+// machine. Each heavy suite takes the lock right before it starts and gives it back right after, so two runs take
+// turns suite by suite; hermetic and ports suites never wait for it. The lock: $MM_GATES_LOCK, else
+// ~/.cache/mm-gates/heavy.lock. It is flock(2) (through the flock command) when flock is on PATH, else a directory
+// <lock>.d made by an atomic rename with the holder in it (MM_GATES_LOCK_MODE=flock|mkdir forces one). A run that
+// waits says once: "gates: waits for the heavy lock, held by <item or range> pid <n> since <time>". A holder that no
+// longer runs (its pid is gone, or reused: another start time) holds nothing: flock's lock dies with it, and a <lock>.d
+// whose holder is gone is taken over.
 import { spawn, spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -219,6 +228,124 @@ function runTo(cmd, args, { cwd, env, log, timeout }) {
   })
 }
 
+// --- the heavy lock ------------------------------------------------------------------------------------------------
+
+export const defaultLock = () => process.env.MM_GATES_LOCK || path.join(os.homedir(), '.cache', 'mm-gates', 'heavy.lock')
+
+// a process's start (field 22 of /proc/<pid>/stat, clock ticks since boot) and state; '' where not known
+function procStat(pid) {
+  try { const s = fs.readFileSync(`/proc/${pid}/stat`, 'utf8'), f = s.slice(s.lastIndexOf(')') + 2).split(' '); return { state: f[0] || '', start: f[19] || '' } } catch { return { state: '', start: '' } }
+}
+export const procStart = (pid) => procStat(pid).start
+// the holder still runs: its pid is there (not a zombie) and started when the holder wrote it
+export function holderAlive(h) {
+  const pid = Number(h?.pid)
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try { process.kill(pid, 0) } catch (e) { if (e.code !== 'EPERM') return false }
+  const now = procStat(pid)
+  return now.state !== 'Z' && (!h.start || !now.start || String(h.start) === now.start)
+}
+const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return null } }
+const fmtTime = (iso) => { const d = new Date(iso); return isNaN(d) ? '?' : d.toISOString().replace(/\.\d+Z$/, 'Z') }
+export const waitLine = (h) => h ? `gates: waits for the heavy lock, held by ${h.label || '?'} pid ${h.pid ?? '?'} since ${fmtTime(h.since)}` : 'gates: waits for the heavy lock, held by an unknown holder'
+
+// heavyLock({file, mode, label, say, poll}) -> { mode, acquire(): Promise<release()> }. One acquire at a time per lock
+// object (the heavy lanes of a run already run one suite at a time).
+export function heavyLock({ file = defaultLock(), mode = process.env.MM_GATES_LOCK_MODE, label = '?', say = () => {}, poll = 250 } = {}) {
+  if (!mode) mode = spawnSync('sh', ['-c', 'command -v flock'], { encoding: 'utf8' }).status === 0 ? 'flock' : 'mkdir'
+  if (mode !== 'flock' && mode !== 'mkdir') throw new Error(`MM_GATES_LOCK_MODE: flock or mkdir, not "${mode}"`)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const me = () => ({ label, pid: process.pid, start: procStart(process.pid), since: new Date().toISOString() })
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+  if (mode === 'flock') {
+    // a helper holds the lock: flock runs `cat` on our stdin pipe; closing it (or our death) releases the lock
+    const hold = (wait) => new Promise((done, fail) => {
+      const c = spawn('flock', ['-x', ...(wait ? [] : ['-n']), file, 'sh', '-c', 'echo held; exec cat'], { stdio: ['pipe', 'pipe', 'ignore'] })
+      let held = false
+      c.stdout.on('data', (d) => { if (!held && String(d).includes('held')) { held = true; done(c) } })
+      c.on('error', fail)
+      c.on('close', (code) => { if (!held) wait ? fail(new Error(`flock ${file}: exit ${code}`)) : done(null) })
+    })
+    return {
+      mode, file,
+      async acquire() {
+        let c = await hold(false)
+        if (!c) { say(waitLine(readJson(file))); c = await hold(true) }
+        fs.writeFileSync(file, JSON.stringify(me()) + '\n') // the inode stays: the lock is on it, not on its content
+        return async () => { const gone = new Promise((r) => c.once('close', r)); c.stdin.end(); await gone }
+      },
+    }
+  }
+
+  // mkdir: <file>.d, made whole (with its holder file) under another name and renamed into place
+  const dir = file + '.d', brk = file + '.break'
+  const tryTake = () => {
+    const tmp = `${dir}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`
+    fs.mkdirSync(tmp); fs.writeFileSync(path.join(tmp, 'holder'), JSON.stringify(me()) + '\n')
+    try { fs.renameSync(tmp, dir); return true } catch (e) {
+      fs.rmSync(tmp, { recursive: true, force: true })
+      if (['EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EISDIR'].includes(e.code)) return false
+      throw e
+    }
+  }
+  const age = (p) => { try { return Date.now() - fs.statSync(p).mtimeMs } catch { return 0 } }
+  const remove = (p) => { const t = `${p}.gone-${process.pid}-${crypto.randomBytes(4).toString('hex')}`; try { fs.renameSync(p, t) } catch { return false } fs.rmSync(t, { recursive: true, force: true }); return true }
+  // a holder that is gone: take it away, under <file>.break so that two runs never both break (and one the new lock)
+  const breakStale = (h) => {
+    try { fs.mkdirSync(brk) } catch (e) { if (e.code === 'EEXIST' && age(brk) > 30_000) fs.rmSync(brk, { recursive: true, force: true }); return false }
+    try {
+      const now = readJson(path.join(dir, 'holder'))
+      if (JSON.stringify(now) !== JSON.stringify(h)) return false // it changed hands meanwhile
+      if (now ? holderAlive(now) : age(dir) < 30_000) return false
+      say(`gates: takes the heavy lock over from ${now?.label || 'an unknown holder'} pid ${now?.pid ?? '?'} (no longer running)`)
+      return remove(dir)
+    } finally { fs.rmSync(brk, { recursive: true, force: true }) }
+  }
+  // the waiters queue in <file>.q (one ticket each, oldest first), so a run that gives the lock back and wants it
+  // again for its next suite goes behind the run that waited; a ticket whose run is gone is dropped
+  const q = file + '.q'
+  let mine = null, ticket = null
+  process.on('exit', () => {
+    if (ticket) fs.rmSync(ticket, { force: true })
+    if (mine && JSON.stringify(readJson(path.join(dir, 'holder'))) === mine) remove(dir)
+  })
+  const first = () => {
+    for (const e of fs.readdirSync(q).sort()) {
+      const t = path.join(q, e), h = readJson(t)
+      if (h ? holderAlive(h) : age(t) < 30_000) return t
+      fs.rmSync(t, { force: true })
+    }
+    return null
+  }
+  return {
+    mode, file: dir,
+    async acquire() {
+      fs.mkdirSync(q, { recursive: true })
+      ticket = path.join(q, `${String(Date.now()).padStart(15, '0')}-${String(process.pid).padStart(8, '0')}-${crypto.randomBytes(4).toString('hex')}`)
+      fs.writeFileSync(ticket, JSON.stringify(me()) + '\n')
+      let said = false
+      try {
+        for (;;) {
+          if (first() === ticket && tryTake()) break
+          const h = readJson(path.join(dir, 'holder'))
+          if (fs.existsSync(dir) && !(h ? holderAlive(h) : age(dir) < 30_000) && breakStale(h)) continue
+          if (!said && h) { say(waitLine(h)); said = true }
+          await sleep(poll)
+        }
+      } finally { fs.rmSync(ticket, { force: true }); ticket = null }
+      mine = JSON.stringify(readJson(path.join(dir, 'holder')))
+      return async () => { if (JSON.stringify(readJson(path.join(dir, 'holder'))) === mine) remove(dir); mine = null }
+    },
+  }
+}
+
+// the hermetic suites at once by default: half the CPUs (2 to 6), and no more than the idle CPUs when the machine is
+// busy: max(1, CPUs - the 1-minute load average)
+export function defaultJobs(cpus = os.cpus().length, load = os.loadavg()[0]) {
+  return Math.max(1, Math.min(Math.max(2, Math.min(6, Math.floor(cpus / 2))), Math.floor(cpus - load)))
+}
+
 // a pool of n workers over the items, in order
 async function pool(items, n, fn) {
   let i = 0
@@ -226,7 +353,7 @@ async function pool(items, n, fn) {
 }
 
 function parseArgs(argv) {
-  const o = { list: false, noLive: false, keep: false, jobs: Math.max(2, Math.min(6, Math.floor(os.cpus().length / 2))), timeout: 1800 }
+  const o = { list: false, noLive: false, keep: false, jobs: defaultJobs(), timeout: 1800 }
   const rest = []
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -411,8 +538,16 @@ export async function main(argv, { stdout = process.stdout, stderr = process.std
       say(`  ${r.status.padEnd(6)}  ${s.group.padEnd(8)}  ${s.path}  (${x.secs.toFixed(0)}s)`)
     }
     const lane = (g) => toRun.filter((s) => s.group === g)
-    await Promise.all([pool(lane('hermetic'), o.jobs, runOne), pool(lane('ports'), 1, runOne), pool(lane('docker'), 1, runOne)])
-    await pool(lane('live'), 1, runOne)
+    // the heavy groups: one suite at a time across every gates run (the heavy lock), taken per suite
+    let lock = null
+    const heavy = async (s) => {
+      if (failedPrep.has(s.path) || !fs.existsSync(path.join(wt, s.path))) return runOne(s) // nothing to run: no lock
+      lock ||= heavyLock({ label: o.item || o.range, say })
+      const release = await lock.acquire()
+      try { await runOne(s) } finally { await release() }
+    }
+    await Promise.all([pool(lane('hermetic'), o.jobs, runOne), pool(lane('ports'), 1, runOne), pool(lane('docker'), 1, heavy)])
+    await pool(lane('live'), 1, heavy)
   } catch (e) {
     warn(e.message)
     for (const s of sel.suites) if (!results.some((r) => r.suite === s.path)) results.push({ suite: s.path, group: s.group, status: 'failed', note: 'not run: ' + e.message, secs: 0, log: prepLog })
