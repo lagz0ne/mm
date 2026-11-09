@@ -19,7 +19,7 @@ is() { jq -e "$1" <<<"$out" >/dev/null 2>&1; }   # the last output, through jq (
 export MM_OBS_TRACES="" MM_OBS_METRICS="" MM_PROJECT=sysqa MM_HOME="$T/mm" CLAUDE_MANAGED_DIR="$T/no-managed"
 B="$T/sys"; mkdir -p "$B"
 # a system-like board: the base template's bin + the system profile's bin, leads, setup, assistants, governance
-(cd "$SRC/template" && tar -cf - bin leads/START.md) | tar -xf - -C "$B"
+(cd "$SRC/template" && tar -cf - bin leads/START.md glossary.yaml) | tar -xf - -C "$B"
 (cd "$SRC/template/profiles/system" && tar -cf - bin leads setup assistants governance.json) | tar -xf - -C "$B"
 printf 'project: sysqa\nclient: system\nname: qa\nprofile: system\n' >"$B/.mm-answers.yaml"; touch "$B/CLAUDE.md"
 for f in $(find "$B" -name '*.md' -o -name '*.tmpl.json'); do sed -i "s|{{root}}|$B|g; s|{{project}}|sysqa|g; s|{{home}}|$HOME|g; s|{{brain}}|$HOME/brain|g; s|{{projects}}|$HOME/projects|g; s|{{mm}}|$HOME/.mm|g" "$f"; done
