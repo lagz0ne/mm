@@ -15,6 +15,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+const { parseCard } = await import(path.join(SRC, 'template', 'bin', 'lib', 'owner-card.mjs'))
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'wake-kept-'))
 let pass = 0, fail = 0
 const ok = (d, c) => { c ? pass++ : fail++; console.log(`  ${c ? '\x1b[32mok\x1b[0m  ' : '\x1b[31mFAIL\x1b[0m'} ${d}`) }
@@ -44,7 +45,10 @@ const label = (id, actor, l, on = true) => change(id, actor, { labels: on ? [...
 async function bdCli(args) {
   const actor = args[args.indexOf('--actor') + 1] || 'nobody', flag = (f) => { const k = args.indexOf(f); return k >= 0 ? args[k + 1] : undefined }
   const [cmd, a1, a2, a3] = args
+  // bd's gate (sy-z5lz, sy-0omb): needs-you only with a valid owner card at the top of the description
+  const noCard = (d, ls) => !parseCard(d || '', ls).ok
   if (cmd === 'create') {
+    if ((flag('-l') || '').split(',').includes('needs-you') && noCard(flag('-d'), [])) return { code: 1, err: 'bd: refused: needs-you only with a valid owner card; (the new item): it has no owner card' }
     const id = `n-${nextId++}`
     items.set(id, { id, title: a1, description: flag('-d'), status: 'open', priority: Number(flag('-p')), assignee: flag('-a'), labels: (flag('-l') || '').split(',').filter(Boolean), created_by: actor, updated_at: new Date().toISOString() })
     emit('create', id, actor); return { code: 0, out: JSON.stringify({ id }) }
@@ -56,9 +60,10 @@ async function bdCli(args) {
     await sleep(30)
     labelsNow--
     if (busyOnce) { busyOnce = false; return { code: 1, err: 'Error 1213 (40001): serialization failure: this transaction conflicts with a committed transaction from another client, try restarting transaction' } }
+    if (a1 === 'add' && a3 === 'needs-you' && noCard(i.description, i.labels)) return { code: 1, err: `bd: refused: needs-you only with a valid owner card; ${i.id}: it has no owner card` }
     label(i.id, actor, a3, a1 === 'add'); return { code: 0 }
   }
-  if (cmd === 'update') { const f = {}; if (flag('--title')) f.title = flag('--title'); if (flag('-d')) f.description = flag('-d'); if (flag('-s')) f.status = flag('-s'); change(i.id, actor, f); return { code: 0 } }
+  if (cmd === 'update') { const f = {}; if (flag('--title')) f.title = flag('--title'); if (flag('-d')) f.description = flag('-d'); if (flag('--body-file')) f.description = fs.readFileSync(flag('--body-file'), 'utf8'); if (flag('-s')) f.status = flag('-s'); change(i.id, actor, f); return { code: 0 } }
   if (cmd === 'close') {
     // bd's guard: an item assigned to someone else closes only with --force; a 'locked' one never (a stand-in for any refusal)
     if (i.locked) { closeRefused++; return { code: 1, err: `cannot close ${i.id}: it is locked` } }
@@ -127,6 +132,8 @@ try {
   ok('...its title counts what waits (60 items)', /^The ops lead's agent can't be found: 60 item\(s\) wait for it$/.test(n.title || ''))
   ok('...its text says why wake starts none, and what to do', /kept role/.test(n.description || '') && /role=ops/.test(n.description || ''))
   ok('all 51 P0/P1 items are labelled needs-you, with no failure', await until(() => P01.every(has)) && !/label \S+ failed/.test(log()))
+  ok('...each with an owner card wake wrote first (sy-0omb: the fake board refuses needs-you without one)', P01.every((id) => parseCard(I(id).description, I(id).labels, id).ok) && !/refused/.test(log()))
+  ok('...the note starts with one too', parseCard(n.description || '').ok)
   ok('...the 1213 was tried again (logged)', /label p-\d+: the board was busy \(Error 1213/.test(log()))
   ok('...one at a time (never two label writes at once)', labelsMax === 1)
   ok('...51 writes and the one retry, no more', adds() === 52)

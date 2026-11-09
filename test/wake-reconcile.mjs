@@ -16,6 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+const { parseCard } = await import(path.join(SRC, 'template', 'bin', 'lib', 'owner-card.mjs'))
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'wake-reconcile-'))
 let pass = 0, fail = 0
 const ok = (d, c) => { c ? pass++ : fail++; console.log(`  ${c ? '\x1b[32mok\x1b[0m  ' : '\x1b[31mFAIL\x1b[0m'} ${d}`) }
@@ -66,9 +67,11 @@ function bdCli(args) {
       if (i.assignee && i.assignee !== actor) return { code: 1, err: `issue already claimed: already assigned to "${i.assignee}"` }
       change(i.id, actor, { assignee: actor, status: 'in_progress' }); return { code: 0 }
     }
-    const f = {}; if (flag('-s')) f.status = flag('-s'); if (flag('-a')) f.assignee = flag('-a')
+    const f = {}; if (flag('-s')) f.status = flag('-s'); if (flag('-a')) f.assignee = flag('-a'); if (flag('--body-file')) f.description = fs.readFileSync(flag('--body-file'), 'utf8')
     change(i.id, actor, f); return { code: 0 }
   }
+  // bd's gate (sy-z5lz, sy-0omb): needs-you only on an item whose description starts with a valid owner card
+  if (cmd === 'label' && a1 === 'add' && a3 === 'needs-you' && !parseCard(i.description || '', i.labels, i.id).ok) return { code: 1, err: `bd: refused: needs-you only with a valid owner card; ${i.id}: it has no owner card` }
   if (cmd === 'label') { if (a1 === 'add' && !i.labels.includes(a3)) i.labels.push(a3); if (a1 === 'remove') i.labels = i.labels.filter((l) => l !== a3); emit('update', i.id, actor); return { code: 0 } }
   if (cmd === 'comments' && a1 === 'add') { (i.comments ||= []).push({ author: actor, text: a3 }); i.updated_at = new Date().toISOString(); emit('comment', i.id, actor, { comment: { id: `c${seq + 1}`, author: actor, text: a3 } }); return { code: 0 } }
   if (cmd === 'close') { change(i.id, actor, { status: 'closed' }, 'close'); return { code: 0 } }
@@ -172,6 +175,7 @@ try {
   ok('...and it is in qa\'s queue: handed to qa', await until(() => /q-1 \(P2\) is next in your queue/.test(to('qa'))))
   ok('the guard says 13 (q-2 moved first): left as it is, not counted', await until(() => /lease of q-2 expired, but it changed first \(the guard\): left as it is/.test(log())) && I('q-2').status === 'in_progress' && !wstate()._expiries?.['q-2'] && !(I('q-2').comments || []).length)
   ok('the 3rd expiry of one item (q-3): needs-you', await until(() => I('q-3').labels.includes('needs-you') && wstate()._expiries?.['q-3'] === 3))
+  ok('...with an owner card wake wrote (sy-0omb; the fake board refuses needs-you without one)', parseCard(I('q-3').description, I('q-3').labels, 'q-3').ok && /claim on q-3 expired 3 times/.test(I('q-3').description))
   ok('a lead in a turn keeps its claim (r-1, arch running)', I('r-1').status === 'in_progress' && !/update r-1/.test(bdlog()))
 
   console.log('== a reassign lands in review\'s queue')
@@ -193,7 +197,8 @@ try {
 
   console.log('== a failed start: retried with backoff; after 3 tries, needs-you')
   ok('sec\'s start failed 3 times, each later than the one before', /start of sec failed \(reasons kept\): paseo refused \(try 1; the next in 1 s\)/.test(log()) && /\(try 2; the next in 1 s\)|\(try 2; the next in 2 s\)/.test(log()) && /\(try 3; the next in 3 s\)/.test(log()))
-  ok('...said once on the item, then needs-you with an error', /comments add s-1 Error: wake could not start the sec lead for this item: paseo refused/.test(bdlog()) && I('s-1').labels.includes('needs-you') && (I('s-1').comments || []).some((c) => /could not start the sec lead 3 times in a row/.test(c.text)))
+  ok('...said once on the item, then needs-you with an error', /comments add s-1 Error: wake could not start the sec lead for this item: paseo refused/.test(bdlog()) && I('s-1').labels.includes('needs-you') && (I('s-1').comments || []).some((c) => /could not start the sec lead 3 times in a row/.test(c.text)) && parseCard(I('s-1').description, I('s-1').labels, 's-1').ok)
+  ok('...and no refused or failed label in wake\'s log', !/label s-1 (refused|failed)/.test(log()))
 
   console.log('== the project cap')
   config(2) // in progress now: q-2 (qa), r-1 (arch): 2 of 2

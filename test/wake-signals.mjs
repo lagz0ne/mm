@@ -104,6 +104,7 @@ try {
   ok('...the writer (platform) is not woken by its own change', !/s-1/.test(to('platform')))
   change('s-2', 'platform', { assignee: 'alex' })
   ok('a reassign to a person (the owner, a human): the item is labelled needs-you', await until(() => /label add s-2 needs-you --actor wake/.test(bdlog())))
+  ok('...after wake wrote its owner card (sy-0omb)', /^update s-2 --body-file \S+ --actor wake\nlabel add s-2 needs-you/m.test(bdlog()))
   change('s-3', 'alex', { assignee: 'review', status: 'open' })
   ok('a human reassigns to review: review is woken', await until(() => /HANDOFF to you from alex on s-3/.test(to('review'))))
   const quiet0 = sent()
@@ -212,7 +213,8 @@ try {
   const had = times('review', /on s-15/g)
   change('s-15', 'platform', { assignee: 'review', status: 'open' })
   ok('the 4th lead-to-lead reassign on one item is not sent', !(await until(() => times('review', /on s-15/g) > had, 2000)))
-  ok('...the item is paused visibly (needs-you)', /label add s-15 needs-you/.test(bdlog()))
+  ok('...the item is paused visibly (paused, not needs-you; sy-0omb)', await until(() => /label add s-15 paused/.test(bdlog())) && !/s-15 needs-you/.test(bdlog()))
+  ok('...and the board\'s Lead (ops) gets it', await until(() => /PAUSED: s-15 had 3 lead-to-lead wakes/.test(to('ops'))))
 
   console.log('== an upstream:* item blocked with no answer from the system side for a day (5 s here): needs-you (sy-mkva)')
   const tick = () => change('i-dep', 'beads', {}) // any event: a reconcile pass soon after

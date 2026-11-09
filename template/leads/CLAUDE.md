@@ -93,7 +93,12 @@ you did and where (as in step 6), then make one of these changes:
 - **Done**: `bd close ID --reason "..."`, with the proof (tests, commit, URL) in your last comment. It wakes nobody;
   closing unblocks what waits on it.
 A message (even a `HANDOFF`) changes nothing by itself: the board change does. A role is never woken by its own change, and lead-to-lead
-wakes on one item stop after a few rounds without a human.
+wakes on one item stop after a few rounds without a human: wake labels it `paused` (never `needs-you`) and wakes the
+board's Lead with it. While `paused` is on, no lead is woken for it. **The Lead** resumes it with a clear next owner
+(`bd label remove ID paused`), or, when a person must decide, writes the owner card and adds `needs-you`. A human
+comment or change resumes it too.
+Where wake asks the owner itself (`needs-you`), it writes a minimal owner card first when the item has none, above the
+description; it never writes over a card someone wrote: an invalid one goes to the Lead to fix.
 
 ## Upstream: what only the machine can change
 Some fixes are not yours to make: anything under `bin/` or `site/` (the engine, from mm's template), mm itself, and

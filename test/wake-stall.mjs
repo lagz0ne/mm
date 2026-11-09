@@ -2,7 +2,7 @@
 // bin/wake against a fake bd-serve: (1) its event stream hangs (open, a keepalive, then nothing) while the board keeps
 // changing: wake must notice (poll), deliver the missed event, log the stall, reconnect, and wake the lead; an event
 // the stream does deliver must not be delivered twice or count as a stall. (2) No reason is ever dropped silently:
-// the hop limit pauses visibly (needs-you + a note) instead of dropping; a burst of events from one lead action is one
+// the hop limit pauses visibly (the label `paused`, a note, the board's Lead woken; sy-0omb) instead of dropping; a burst of events from one lead action is one
 // hop; a human resumes a paused item; a failed send keeps its reasons; events while wake is stopped are replayed.
 // Hermetic: temp folder, stub paseo and bd, no obs.
 //   node test/wake-stall.mjs            exit 0 = every check passed
@@ -22,7 +22,7 @@ async function until(fn, ms = 15000) { const t = Date.now(); while (Date.now() -
 // the project folder wake runs from: its bin/ + one role
 fs.cpSync(path.join(SRC, 'template', 'bin'), path.join(T, 'proj', 'bin'), { recursive: true })
 fs.mkdirSync(path.join(T, 'proj', 'leads'), { recursive: true })
-fs.writeFileSync(path.join(T, 'proj', 'leads', 'roles.json'), JSON.stringify({ roles: [{ id: 'qa' }, { id: 'ops' }] }))
+fs.writeFileSync(path.join(T, 'proj', 'leads', 'roles.json'), JSON.stringify({ lead: 'ops', roles: [{ id: 'qa' }, { id: 'ops' }] }))
 fs.mkdirSync(path.join(T, 'proj', 'control'), { recursive: true })
 const BDLOG = path.join(T, 'bd.log') // stub bin/bd: what wake asks the board to do (label, comment)
 fs.writeFileSync(path.join(T, 'proj', 'bin', 'bd'), `#!/bin/sh\nprintf '%s\\n' "$*" >>"${BDLOG}"\n`, { mode: 0o755 })
@@ -30,9 +30,9 @@ fs.writeFileSync(path.join(T, 'proj', 'bin', 'bd'), `#!/bin/sh\nprintf '%s\\n' "
 const SENT = path.join(T, 'sent.txt')
 fs.writeFileSync(path.join(T, 'paseo'), `#!/bin/sh
 case "$1" in
-  ls) case "$*" in *role=qa*) echo '[{"id":"agent-qa","shortId":"agentqa","status":"idle"}]' ;; *) echo '[]' ;; esac ;;
+  ls) case "$*" in *role=qa*) echo '[{"id":"agent-qa","shortId":"agentqa","status":"idle"}]' ;; *role=ops*) echo '[{"id":"agent-ops","shortId":"agentops","status":"idle"}]' ;; *) echo '[]' ;; esac ;;
   send) [ -f "${T}/failsend" ] && { rm -f "${T}/failsend"; echo "send failed" >&2; exit 1; }
-        shift; while [ $# -gt 0 ]; do [ "$1" = --prompt ] && { printf '%s\\n----\\n' "$2" >>"${SENT}"; }; shift; done ;;
+        id=$2; shift; while [ $# -gt 0 ]; do [ "$1" = --prompt ] && { printf 'TO %s\\n%s\\n----\\n' "$id" "$2" >>"${SENT}"; }; shift; done ;;
 esac
 `, { mode: 0o755 })
 
@@ -95,11 +95,13 @@ try {
   console.log('== the hop limit pauses visibly, never drops silently')
   for (let i = 1; i <= 3; i++) { emit(byOps('h-1', `hop item ${i}`)); ok(`lead-to-lead wake ${i} of 3 is sent`, await until(() => times(/h-1: hop item/g) === i)) }
   emit(byOps('h-1', 'hop item 4'))
-  ok('the 4th is not sent', !(await until(() => times(/h-1: hop item/g) > 3, 2500)))
-  ok('...the item is labelled needs-you (pause visible)', await until(() => /label add h-1 needs-you/.test(bdlog())))
-  ok('...with a Paused note on it', /comments add h-1 Paused:/.test(bdlog()))
+  const toQa = () => sent().split('\n----\n').filter((m) => m.startsWith('TO agent-qa\n')).join('\n')
+  ok('the 4th is not sent (to qa: no lead wake while paused)', !(await until(() => (toQa().match(/h-1: hop item/g) || []).length > 3, 2500)))
+  ok('...the item is labelled paused, not needs-you (sy-0omb: no person gets an agent loop)', await until(() => /label add h-1 paused/.test(bdlog())) && !/h-1 needs-you/.test(bdlog()))
+  ok('...with a Paused note on it, naming the Lead', await until(() => /comments add h-1 Paused: .*The Lead \(ops\) resumes it/.test(bdlog())))
+  ok('...and the board\'s Lead (ops) is woken with it', await until(() => sent().split('\n----\n').some((m) => m.startsWith('TO agent-ops\n') && /PAUSED: h-1 had 3 lead-to-lead wakes/.test(m))))
   emit(byOps('h-1', 'hop item 5')); await sleep(1500)
-  ok('paused once, not on every later event', (bdlog().match(/label add h-1 needs-you/g) || []).length === 1)
+  ok('paused once, not on every later event', (bdlog().match(/label add h-1 paused/g) || []).length === 1 && (sent().match(/PAUSED: h-1/g) || []).length === 1)
   emit(byHuman('h-1', 'human resumes'))
   ok('a human event resumes it (the lead is woken)', await until(() => /h-1: human resumes/.test(sent())))
 
