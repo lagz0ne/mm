@@ -23,6 +23,8 @@
 //                        answer by By = "no input"
 //       no VERDICT after By   a HANDOFF to the row's V with no VERDICT after it (re #<n>, or on its Head); to V
 //       ASK outside the RACI  an ASK to a role that is not C, V, R or A in the row; to its writer. Low, as blocked
+//       Paseo leftovers  Paseo workspaces or projects of a role's worker folders with no live agent and no item
+//                        in progress (sy-7f7i; bin/lib/workers.mjs leftovers); one line per role. Low, as blocked
 //                        (stall:<item>, handoff:<item>, idle:<role>: the keys of earlier Supervisors, closed as cleared)
 //     task:open          one list: open items whose description has no valid Task (sy-lusk; bin/lib/task.mjs, Act an
 //                        activity of leads/raci.json), edited in place; to ops                                     P3
@@ -87,6 +89,7 @@ import { cli } from './lib/obs.mjs'
 import * as paseo from './lib/paseo.mjs'
 import { loadConf as approveConf, migrationSubject, readLedger } from './lib/ledger.mjs'
 import { places, projectCap, total, workersOf } from './lib/places.mjs'
+import { leftovers as paseoLeftovers, paseoState } from './lib/workers.mjs'
 import { APPROVED_HEAD, SIGNED_HEAD, approvalRefusal, parseCard } from './lib/owner-card.mjs'
 import { dueAt, openWaits, parseMessage } from './lib/message.mjs'
 import { actOf, lettersOf, mayAsk, noInputOk, rowOf } from './lib/raci.mjs'
@@ -458,11 +461,12 @@ const HOW = {
   idle: 'idle: check wake (it should have woken the lead) and the lead itself (`bin/lead`, Paseo)',
   twoleads: 'two leads: wake keeps the newest lead of a role and archives each older one when it is not in a turn; check wake (its log says which it left and why) and the agents (`bin/lead ls`)',
   blocked: 'blocked with nothing it waits on: name what it waits on (`bd dep add <item> <blocker>`), label it needs-you if a person must act, or set it back to open',
+  leftovers: 'Paseo leftovers: `lead worker sweep <role>` lists them, `--apply` removes them (and the folders whose branch is all on main); stop each worker when it has reported (`lead worker stop` archives its workspace)',
 }
 /** One "Supervisor digest" per role from the flow checks' lines. A check that fails keeps its lines from the last run
  * (its part of each digest is left as it is), and is reported as supervisor:<check>. */
 async function digest() {
-  const checks = { stall, handoff, idle, blocked, twoleads, wordy, unanswered }, byRole = {}, prev = state.lines || {}
+  const checks = { stall, handoff, idle, blocked, twoleads, wordy, unanswered, leftovers }, byRole = {}, prev = state.lines || {}
   state.lines = {}
   for (const [name, fn] of Object.entries(checks)) {
     let got
@@ -780,6 +784,23 @@ async function twoleads() {
   }
   for (const r of Object.keys(seen)) if (!ROLES.includes(r)) delete seen[r]
   return lines
+}
+
+// Paseo leftovers of a role's workers (sy-7f7i): workspaces and projects of its worker folders (worktrees/<role>-<name>)
+// with no live agent in the folder and no item <name> in progress. One line in the role's digest, low; the lead's
+// `lead worker sweep <role> --apply` removes them (lead worker stop and wt rm should have). Only roles with workers.
+async function leftovers() {
+  const roles = DEFS.filter((r) => r.workers === true).map((r) => r.id)
+  if (!roles.length) return []
+  const busy = new Set((await issues()).filter((i) => i.status === 'in_progress').map((i) => i.id))
+  const by = {}
+  for (const x of paseoLeftovers(ROOT, paseoState())) if (roles.includes(x.role) && !busy.has(x.name)) (by[x.role] ||= []).push(x)
+  return Object.keys(by).sort().map((role) => {
+    const xs = by[role], n = (k) => xs.filter((x) => x.kind === k).length, ds = [...new Set(xs.map((x) => x.dir))].sort()
+    return { role, k: `leftovers:${role}`, low: true,
+      line: `Paseo leftovers: ${n('workspace')} workspace(s) and ${n('project')} project(s) of ${role} workers with no live agent and no item in progress ` +
+        `(${ds.slice(0, 8).join(', ')}${ds.length > 8 ? `, ... ${ds.length - 8} more` : ''})` }
+  })
 }
 
 // ---------- reconcile with the board (as the sentinel does) ----------

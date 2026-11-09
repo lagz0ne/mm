@@ -50,6 +50,8 @@
       "Bash(lead worker stop review *)",
       "Bash(lead worker report review *)",
       "Bash(lead worker ls*)",
+      "Bash(lead worker sweep review)",
+      "Bash(lead worker sweep review --apply)",
       "Bash(wt ls)",
       "Bash(wt rm review-*)"
     ],
