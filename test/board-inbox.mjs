@@ -6,6 +6,10 @@
 // upload is refused with its reason and nothing written (a ".." path, an absolute path, a link, a device, 51 MB, a zip
 // bomb (declared and lying), too many files, a secret, another site, not the bytes, an unknown item); the local side
 // and a viewer get 403; the uploader or the owner removes an upload, nobody else; an inbox that is a link is refused.
+// A second board with small limits proves: a 50 MB + 1 body with no length is cut while it streams and the server's
+// peak memory does not take it; the inbox's total cap (BOARD_INBOX_MAX_MB) refuses a file, a streamed file and a zip
+// with 413, nothing written; one upload at a time (a second waits for the first; past BOARD_UPLOAD_WAIT_S it gets 429
+// and lands when tried again); a stalled body (BOARD_UPLOAD_IDLE_S) gets 408 and gives the turn back.
 // At 390x844 (Playwright): the item's detail has the "Upload a file" control, an upload through it lands, and there is
 // no sideways scroll; the screenshot is board-inbox-390.png.
 //   node test/board-inbox.mjs        exit 0 = every check passed
@@ -87,7 +91,7 @@ fs.mkdirSync(path.join(B, 'leads'), { recursive: true })
 fs.writeFileSync(path.join(B, 'leads', 'roles.json'), JSON.stringify({ roles: [{ id: 'code' }, { id: 'design' }] }))
 const env = { ...process.env, HOME: path.join(T, 'home'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', MM_OBS_TRACES: '', MM_OBS_METRICS: '' }
 for (const k of ['BEADS_ACTOR', 'BD_ACTOR', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'MM_SERVICE', 'MM_BIND',
-  'BOARD_UPLOAD_MAX_MB', 'BOARD_UPLOAD_MAX_FILES', 'BOARD_UPLOAD_MAX_UNPACKED_MB']) delete env[k]
+  'BOARD_UPLOAD_MAX_MB', 'BOARD_UPLOAD_MAX_FILES', 'BOARD_UPLOAD_MAX_UNPACKED_MB', 'BOARD_INBOX_MAX_MB', 'BOARD_UPLOAD_WAIT_S', 'BOARD_UPLOAD_IDLE_S']) delete env[k]
 fs.mkdirSync(env.HOME)
 const git = (cwd, ...args) => spawnSync('git', args, { cwd, encoding: 'utf8', env })
 git(B, 'init', '-q', '-b', 'main'); git(B, 'add', '-A'); git(B, '-c', 'user.name=t', '-c', 'user.email=t@x', 'commit', '-qm', 'init')
@@ -126,15 +130,25 @@ const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519')
 const HOST = 'board-ab.example.org', ORIGIN = `https://${HOST}`
 const sign = (u, r) => { const b = Buffer.from(JSON.stringify({ u, r, h: HOST, exp: Date.now() + 120000, n: crypto.randomUUID() })).toString('base64url'); return `${b}.${crypto.sign(null, Buffer.from(b), privateKey).toString('base64url')}` }
 const freePort = async () => { const p = http.createServer(); await new Promise((r) => p.listen(0, '127.0.0.1', r)); const n = p.address().port; p.close(); return n }
-const PORT = await freePort(), PPORT = await freePort()
-let out = ''
-const srv = spawn('node', [path.join(B, 'site', 'server.mjs')], { cwd: B, stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, PORT: String(PORT), HOST: '127.0.0.1',
-  BD_SERVE: `http://127.0.0.1:${bdSrv.address().port}`, PASEO_BIN: path.join(T, 'paseo'), PASEO_NO_SDK: '1', BOARD_PROJECT: 'ab', MM_PROJECT: 'ab',
-  BOARD_PUBLIC_PORT: String(PPORT), MM_AUTH_PUBLIC_KEY: publicKey.export({ type: 'spki', format: 'pem' }) } })
-srv.stdout.on('data', (d) => (out += d)); srv.stderr.on('data', (d) => (out += d))
-let up = false
-for (let i = 0; i < 80 && !up; i++) { try { await fetch(`http://127.0.0.1:${PORT}/api/whoami`); up = true } catch { await sleep(100) } }
-if (!up) { console.log(out.slice(-1500)); die('the board did not start') }
+/** A board's server (the real server.mjs) on a board folder, with more env: { proc, port, pport, log() }. */
+async function startBoard(root, more = {}) {
+  const port = await freePort(), pport = await freePort()
+  let log = ''
+  const proc = spawn('node', [path.join(root, 'site', 'server.mjs')], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, PORT: String(port), HOST: '127.0.0.1',
+    BD_SERVE: `http://127.0.0.1:${bdSrv.address().port}`, PASEO_BIN: path.join(T, 'paseo'), PASEO_NO_SDK: '1', BOARD_PROJECT: 'ab', MM_PROJECT: 'ab',
+    BOARD_PUBLIC_PORT: String(pport), MM_AUTH_PUBLIC_KEY: publicKey.export({ type: 'spki', format: 'pem' }), ...more } })
+  proc.stdout.on('data', (d) => (log += d)); proc.stderr.on('data', (d) => (log += d))
+  let up = false
+  for (let i = 0; i < 80 && !up; i++) { try { await fetch(`http://127.0.0.1:${port}/api/whoami`); up = true } catch { await sleep(100) } }
+  if (!up) { console.log(log.slice(-1500)); die('the board did not start') }
+  return { proc, port, pport, log: () => log }
+}
+// a second board, the same files, with small limits: the inbox's cap (1 MB), the wait for a turn (1 s), a stall (2 s)
+const B2 = path.join(T, 'board2')
+fs.cpSync(B, B2, { recursive: true })
+const main = await startBoard(B), small = await startBoard(B2, { BOARD_INBOX_MAX_MB: '1', BOARD_UPLOAD_WAIT_S: '1', BOARD_UPLOAD_IDLE_S: '2' })
+const srv = main.proc, PORT = main.port, PPORT = main.pport
+const out = { get length() { return main.log().length }, includes: (x) => main.log().includes(x), slice: (...a) => main.log().slice(...a) }
 
 /** A raw request (no fetch rules on the headers): { status, body (parsed JSON or text) }. */
 const req = (method, p, { port = PPORT, who, role, body, headers = {} } = {}) => new Promise((ok_, no) => {
@@ -148,6 +162,26 @@ const req = (method, p, { port = PPORT, who, role, body, headers = {} } = {}) =>
     })
   })
   r.on('error', no); if (body) r.write(body); r.end()
+})
+/** A POST whose body goes in parts: a Buffer is written (with backpressure), a number pauses that many ms. No
+ *  content-length (chunked), so the server counts as it reads. { status, body, at: when the answer came }. */
+const stream = (p, parts, { port = PPORT, who = 'olga', role = 'owner' } = {}) => new Promise((ok_) => {
+  const r = http.request({ host: '127.0.0.1', port, path: p, method: 'POST', headers: { host: HOST, 'x-mm-assertion': sign(who, role),
+    'content-type': 'application/octet-stream', origin: ORIGIN, 'sec-fetch-site': 'same-origin' } }, (res) => {
+    const chunks = []; res.on('data', (c) => chunks.push(c)); res.on('end', () => {
+      const t = Buffer.concat(chunks).toString(); let j = t; try { j = JSON.parse(t) } catch {}
+      ok_({ status: res.statusCode, body: j, at: Date.now() })
+    })
+  })
+  r.on('error', (e) => ok_({ status: 0, body: e.code, at: Date.now() }))
+  ;(async () => {
+    for (const x of parts) {
+      if (r.destroyed) return
+      if (typeof x === 'number') await sleep(x)
+      else if (!r.write(x)) await new Promise((d) => { const go = () => { r.off('drain', go); r.off('close', go); d() }; r.on('drain', go); r.on('close', go) })
+    }
+    r.end()
+  })().catch(() => {})
 })
 const upload = (name, body, o = {}) => req('POST', `/api/inbox/${o.item || 'ab-7'}?name=${encodeURIComponent(name)}`, { who: 'olga', role: 'owner', body, ...o })
 const INBOX = path.join(B, 'inbox')
@@ -233,6 +267,67 @@ try {
   r = await upload('many.zip', zip(Array.from({ length: 1001 }, (_, k) => ({ name: `f${k}.txt`, data: 'x' }))))
   ok(`1001 files: 413, "${r.body?.title}"`, r.status === 413 && /1000 files/.test(r.body?.title || ''), JSON.stringify(r.body))
   ok('  … nothing written', JSON.stringify(tree()) === JSON.stringify(before))
+
+  step('a 50 MB + 1 body with no length is cut while it streams (the second board; its memory does not take the body)')
+  const SP = small.pport, INBOX2 = path.join(B2, 'inbox')
+  const mem = () => { const s = fs.readFileSync(`/proc/${small.proc.pid}/status`, 'utf8'), kb = (k) => Number(new RegExp(`^${k}:\\s+(\\d+)`, 'm').exec(s)?.[1] || 0) * 1024; return { rss: kb('VmRSS'), peak: kb('VmHWM') } }
+  const mb1 = Buffer.alloc(1 << 20, 0x61)
+  let before2 = tree(INBOX2)
+  const m0 = mem()
+  r = await stream('/api/inbox/ab-7?name=huge.bin', [...Array(50).fill(mb1), Buffer.from('b')], { port: SP })
+  const m1 = mem()
+  ok(`413, "${r.body?.title}"`, r.status === 413 && /^50\.0 MB: more than the 50\.0 MB/.test(r.body?.title || ''), `${r.status} ${JSON.stringify(r.body)}`)
+  ok(`the server's peak memory grew ${((m1.peak - m0.peak) / (1 << 20)).toFixed(1)} MB (< 20 MB) for a 50 MB body`, m1.peak - m0.peak < 20 << 20, JSON.stringify({ m0, m1 }))
+  ok('  … nothing written (no spool, no temp folder)', JSON.stringify(tree(INBOX2)) === JSON.stringify(before2), tree(INBOX2).join(', '))
+
+  step('the inbox\'s total cap (the second board: BOARD_INBOX_MAX_MB=1)')
+  const k600 = Buffer.alloc(600 << 10, 0x62)
+  r = await upload('a.bin', k600, { port: SP })
+  ok('600 KB into an empty inbox: 200', r.status === 200, JSON.stringify(r.body))
+  r = await req('GET', '/api/inbox/ab-7', { port: SP, who: 'vic', role: 'viewer' })
+  ok('the cap it says: 1 MB', r.body.limits?.inbox === 1 << 20)
+  before2 = tree(INBOX2)
+  const full = /^The inbox is full: it holds \d+ KB of its 1\.0 MB and this upload needs \d+ KB/
+  r = await upload('b.bin', k600, { port: SP })
+  ok(`600 KB more (its length said): 413, "${r.body?.title}"`, r.status === 413 && full.test(r.body?.title || ''), `${r.status} ${JSON.stringify(r.body)}`)
+  r = await stream('/api/inbox/ab-7?name=c.bin', [k600], { port: SP })
+  ok(`600 KB more, no length (measured after it streams): 413, "${String(r.body?.title).slice(0, 60)}"`, r.status === 413 && full.test(r.body?.title || ''), `${r.status} ${JSON.stringify(r.body)}`)
+  r = await upload('d.zip', zip([{ name: 'zeros.bin', data: Buffer.alloc(600 << 10) }]), { port: SP })
+  ok(`a 1 KB zip that unpacks to 600 KB: 413, "${String(r.body?.title).slice(0, 60)}"`, r.status === 413 && full.test(r.body?.title || ''), `${r.status} ${JSON.stringify(r.body)}`)
+  ok('  … nothing written', JSON.stringify(tree(INBOX2)) === JSON.stringify(before2), tree(INBOX2).filter((x) => !before2.includes(x)).join(', '))
+  r = await upload('note.txt', Buffer.from('still room for this\n'), { port: SP })
+  ok('a small file still fits: 200', r.status === 200)
+  r = await req('DELETE', '/api/inbox/ab-7/a', { port: SP, who: 'olga', role: 'owner' })
+  r = await upload('b.bin', k600, { port: SP })
+  ok('after the owner removes the first, the 600 KB fits: 200', r.status === 200 && fs.statSync(path.join(INBOX2, 'ab-7', 'b', 'b.bin')).size === 600 << 10, JSON.stringify(r.body))
+
+  step('one upload at a time: a second waits for the first (the first board: it waits up to 120 s)')
+  const first = stream('/api/inbox/ab-7?name=first.txt', [Buffer.from('one\n'), 800, Buffer.from('two\n')])
+  await sleep(150)
+  const t0 = Date.now(), second = stream('/api/inbox/ab-7?name=second.txt', [Buffer.from('the second\n')])
+  const [a1, a2] = await Promise.all([first, second])
+  ok('both 200', a1.status === 200 && a2.status === 200, `${a1.status} ${JSON.stringify(a1.body)} / ${a2.status} ${JSON.stringify(a2.body)}`)
+  ok(`the second answered after the first (it waited ${a2.at - t0} ms)`, a2.at >= a1.at && a2.at - t0 >= 500)
+  ok('both land whole', fs.readFileSync(path.join(INBOX, 'ab-7', 'first', 'first.txt'), 'utf8') === 'one\ntwo\n' && fs.readFileSync(path.join(INBOX, 'ab-7', 'second', 'second.txt'), 'utf8') === 'the second\n')
+  ok('no spool or temp left', !fs.readdirSync(path.join(INBOX, 'ab-7')).some((n) => /^\.(incoming|spool)-/.test(n)))
+
+  step('waiting too long: 429, "try again" (the second board: it waits 1 s); a stalled body: 408')
+  const slow = stream('/api/inbox/ab-7?name=slow.txt', [Buffer.from('slow, '), 1500, Buffer.from('but whole\n')], { port: SP })
+  await sleep(150)
+  before2 = tree(INBOX2)
+  const t1 = Date.now(), quick = await upload('quick.txt', Buffer.from('quick\n'), { port: SP })
+  ok(`the second: 429 after about 1 s (${Date.now() - t1} ms), "${quick.body?.title}"`, quick.status === 429 && /try again/.test(quick.body?.title || '') && Date.now() - t1 >= 900)
+  const s1 = await slow
+  ok('the first lands whole: 200', s1.status === 200 && fs.readFileSync(path.join(INBOX2, 'ab-7', 'slow', 'slow.txt'), 'utf8') === 'slow, but whole\n', JSON.stringify(s1.body))
+  ok('  … nothing of the second', !fs.existsSync(path.join(INBOX2, 'ab-7', 'quick')))
+  r = await upload('quick.txt', Buffer.from('quick\n'), { port: SP })
+  ok('tried again: 200', r.status === 200 && fs.readFileSync(path.join(INBOX2, 'ab-7', 'quick', 'quick.txt'), 'utf8') === 'quick\n')
+  before2 = tree(INBOX2)
+  r = await stream('/api/inbox/ab-7?name=stall.txt', [Buffer.from('a'), 3000, Buffer.from('b')], { port: SP })
+  ok(`a body that stalls 3 s (BOARD_UPLOAD_IDLE_S=2): 408, "${r.body?.title}"`, r.status === 408 && /stalled/.test(r.body?.title || ''), `${r.status} ${JSON.stringify(r.body)}`)
+  ok('  … nothing written', JSON.stringify(tree(INBOX2)) === JSON.stringify(before2))
+  r = await upload('after.txt', Buffer.from('after the stall\n'), { port: SP })
+  ok('the turn was given back: the next upload lands', r.status === 200)
 
   step('who may upload')
   before = tree()
@@ -339,7 +434,7 @@ try {
   ok(`refused (${r.status}), nothing in the link's target`, r.status >= 400 && fs.readdirSync(away).length === 0, JSON.stringify(r.body))
 } finally {
   await browser.close().catch(() => {})
-  srv.kill(); bdSrv.close()
+  srv.kill(); small.proc.kill(); bdSrv.close()
 }
 console.log(`\nboard-inbox: ${pass} passed, ${fail} failed (screenshots: ${SHOTS})`)
 if (fail) { console.log(out.slice(-2000)); process.exit(1) }
