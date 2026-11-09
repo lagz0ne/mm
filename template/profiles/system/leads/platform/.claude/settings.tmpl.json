@@ -49,6 +49,8 @@
       "Bash(lead worker stop platform *)",
       "Bash(lead worker report platform *)",
       "Bash(lead worker ls*)",
+      "Bash(lead worker sweep platform)",
+      "Bash(lead worker sweep platform --apply)",
       "Bash(artifact *)",
       "Bash(owner-card check *)",
       "Bash(wt ls)",

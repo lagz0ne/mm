@@ -71,6 +71,8 @@
       "Bash(lead worker stop ops *)",
       "Bash(lead worker report ops *)",
       "Bash(lead worker ls*)",
+      "Bash(lead worker sweep ops)",
+      "Bash(lead worker sweep ops --apply)",
       "Bash(artifact *)",
       "Bash(owner-card check *)",
       "Bash(wt ls)",

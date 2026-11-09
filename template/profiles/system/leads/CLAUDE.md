@@ -97,10 +97,13 @@ and writes only comments, as `ops/<name>`. Never a worktree of the brain.
 - **Integrate and give the verdict yourself:** check the report against the item, re-run what matters, then do your
   own end of the unit of work (platform lands the branch; review signs off or not; ops posts the plan or finding as
   `ops`). A worker never claims, hands over, closes or signs off.
-- **Stop:** `lead worker stop <role> <name>` (archives the agent), then `wt rm <role>-<name>` (it refuses a branch
-  with commits not on main; `--force` drops them). `wt rm` also deletes the folder's Paseo project, unless a live
-  agent is in it; when it says the project was left, `wt rm <role>-<name>` again later. `lead worker ls` lists your
-  workers, `wt ls` the folders.
+- **Stop, every run:** `lead worker stop <role> <name>` when the worker has reported: it archives the agent and its
+  Paseo workspace (a worker's workspace sits in this board's one Paseo project). Once the branch is landed,
+  `wt rm <role>-<name>` (it refuses a branch with commits not on main; `--force` drops them); a branch that waits for
+  its rollout keeps its folder, with nothing left in Paseo. `wt rm` also drops what is left in Paseo for the folder,
+  unless a live agent is in it; when it says something was left, `wt rm <role>-<name>` again later. Leftovers (the
+  Supervisor's digest says so): `lead worker sweep <role>` lists them, `--apply` removes them. `lead worker ls` lists
+  your workers, `wt ls` the folders.
 
 ## End a unit of work with a board change
 `wake` reads the board's state, not the words in a comment: the change itself says who acts next. First comment what

@@ -7,8 +7,8 @@
 //                              board: a plain folder (no repo)
 //   wt sync <role>-<name>      rebase a write worker's branch onto main (needs a clean tree); prints the new HEAD
 //   wt rm <role>-<name> [--force]   remove it (a write worker's branch too: refused while it has commits not on main),
-//                              then its Paseo project, unless a live agent is in it (lead worker stop first); the folder
-//                              gone, wt rm <role>-<name> again deletes only a project that was left
+//                              then its Paseo workspace and project, unless a live agent is in it (lead worker stop
+//                              first); the folder gone, wt rm <role>-<name> again drops only what was left
 //   wt ls                     list them
 // Refused: a role whose workers are not switched on (roles.json "workers": true: setup, after the owner's yes), and
 // any repo that is the brain or holds it (only ops writes the brain, one run branch at a time), this board, or (to
@@ -19,7 +19,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cli } from './lib/obs.mjs'
 import { projectName } from './lib/svc.mjs'
-import { dropProjects, folders, spec, specProblem, validName } from './lib/workers.mjs'
+import { dropProjects, folders, sayDropped, spec, specProblem, validName } from './lib/workers.mjs'
 
 cli('wt')
 const P = path.resolve(path.dirname(fs.realpathSync(fileURLToPath(import.meta.url))), '..')
@@ -70,12 +70,8 @@ function make(role, name, ref) {
   console.log(W)
 }
 
-/** One line on the folder's Paseo project (sy-oxwh); a project left never fails wt rm. */
-function project(dir, r) {
-  if (r.deleted.length) console.log(`deleted its Paseo project ${r.deleted.join(', ')}`)
-  if (r.live.length) console.log(`its Paseo project ${(r.projects || []).join(', ')} was left: a live agent is in it (${r.live.join(', ')}); lead worker stop it, then wt rm ${dir} again`)
-  if (r.error) console.log(`its Paseo project was left: Paseo did not answer (${r.error}); wt rm ${dir} again later`)
-}
+/** One line per Paseo workspace or project of the folder (sy-oxwh, sy-7f7i); one left never fails wt rm. */
+const project = (dir, r) => { for (const l of sayDropped(r, `wt rm ${dir}`)) console.log(l) }
 
 const [a, b, c] = process.argv.slice(2)
 switch (a) {
@@ -98,7 +94,7 @@ switch (a) {
     // its folder gone already: only the Paseo project a first wt rm left (Paseo was down, or an agent was live)
     if (!folders(P).some((x) => x.dir === b) && /^[a-z0-9][a-z0-9.-]*-[a-z0-9][a-z0-9.-]*$/.test(b || '') && !b.includes('..')) {
       const r = dropProjects([path.join(P, 'worktrees', b)])
-      if (r.deleted.length || r.live.length || r.error) { project(b, r); break }
+      if (r.deleted.length || r.archived.length || r.live.length || r.error) { project(b, r); break }
     }
     const f = folder(b), force = c === '--force'
     const where = [f.path, (() => { try { return fs.realpathSync(f.path) } catch { return null } })()]
