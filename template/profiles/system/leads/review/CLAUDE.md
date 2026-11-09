@@ -28,6 +28,9 @@ head after your sign-off needs your new sign-off. Never sign off a change you we
 - A finding you write a second time becomes a check: file an item for the role that owns the code (platform for mm,
   ops for the brain) with the finding, its count and where it was seen, and add its row to the findings list (the
   board's `review-findings.md` artifact, on the item that keeps it). Never a third comment for the same finding.
+- A new item only for a finding that blocks (the owner, 2026-11-09: finish before starting more). A note that does
+  not block goes as one comment on the board's later list (the item that keeps non-blocking review notes); ops or
+  platform pick from it when the active work is small.
 
 ## Workers (when review has `"workers": true`; see "Your workers" in leads/CLAUDE.md)
 A review worker reads a read-only checkout of mm's repo (`--ref <branch>` for a branch under review) and the
