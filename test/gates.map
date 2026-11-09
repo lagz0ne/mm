@@ -105,6 +105,7 @@ suite test/supervisor.mjs         hermetic
 suite test/supervisor-digest.mjs  hermetic
 suite test/supervisor-workers.mjs hermetic
 suite test/upstream.mjs           hermetic
+suite test/nightly-gates.mjs      hermetic
 suite test/waiting-phone.mjs      hermetic
 suite test/wake-box-person-runs.mjs hermetic
 suite test/wake-kept.mjs          hermetic
@@ -426,6 +427,7 @@ rule template/profiles/system/bin/project-item test/project-item.mjs test/machin
 rule template/profiles/system/bin/sentinel test/sentinel-assist.mjs test/sentinel.sh test/task.mjs
 rule template/profiles/system/bin/supervisor test/supervisor*.mjs
 rule template/profiles/system/bin/upstream test/upstream.mjs
+rule template/profiles/system/bin/nightly-gates test/nightly-gates.mjs test/supervisor.mjs
 rule template/profiles/system/bin/wt test/sysworkers.sh test/memory-links.sh test/lead.sh
 rule template/profiles/system/assistants/** test/assist.sh test/sentinel-assist.mjs
 rule template/profiles/system/leads/roles.json test/supervisor*.mjs test/upstream.mjs test/sysworkers.sh test/brain-deny.sh
