@@ -462,6 +462,49 @@ clock = T0 + 451 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('approved by the bridge: cleared', openKeys() === DIRTY)
 
+step('run 9j2 (+452..455 min): an mm.api request the owner approved counts by mm.api\'s own record, not its labels; its step is its own item\'s only (sy-q2sd)')
+// mm.api's store as src/api.ts makes it: <mm>/api (0700), api.db (0600), its request table
+const APID = path.join(HOME, '.mm', 'api'); fs.mkdirSync(APID, { recursive: true, mode: 0o700 }); fs.chmodSync(APID, 0o700)
+const { DatabaseSync } = await import('node:sqlite')
+const APIDB = new DatabaseSync(path.join(APID, 'api.db')); fs.chmodSync(path.join(APID, 'api.db'), 0o600)
+APIDB.exec(`CREATE TABLE request (id TEXT PRIMARY KEY, project TEXT NOT NULL, call TEXT NOT NULL, value TEXT NOT NULL, hash TEXT NOT NULL,
+  status TEXT NOT NULL, item TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, decided INTEGER, by TEXT, detail TEXT, open INTEGER NOT NULL DEFAULT 0,
+  code TEXT, code_exp INTEGER, code_tries INTEGER NOT NULL DEFAULT 0, codes INTEGER NOT NULL DEFAULT 0)`)
+const { createHash } = await import('node:crypto')
+const apiReq = (id, item, { status = 'done', by = 'cli', hash } = {}) => APIDB.prepare('INSERT INTO request (id, project, call, value, hash, status, item, created, decided, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+  .run(id, 'p9', 'egress', `${id}.example.org`, hash || createHash('sha256').update(JSON.stringify(['p9', 'egress', `${id}.example.org`])).digest('hex'), status, item, clock, status === 'pending' ? null : clock, status === 'pending' ? null : by)
+// how mm.api leaves an item it applied: approved and mm-api, written by its system actor (not an approver)
+const apiItem = (id) => { item(id, { title: `mm.api: egress for p9 (${id})`, priority: 2, assignee: 'ops', labels: ['t2', 'mm-api'] }, 'watchdog'); update(id, { status: 'in_progress' }, 'ops'); update(id, { labels: ['t2', 'mm-api', 'approved'] }, 'watchdog') }
+clock = T0 + 452 * MIN
+item('sy-a4', { title: 't2, nothing to do with mm.api', priority: 2, assignee: 'platform', labels: ['t2'] }); update('sy-a4', { status: 'in_progress' }, 'platform')
+apiItem('sy-a1'); apiReq('r-a1', 'sy-a1'); apiReq('r-a5', 'sy-a1', { by: 'bridge' })
+mmLine('mm api approve', 'r-a1', clock)
+svcLine('api.log', 'mm.api', { msg: 'request applied', service: 'api', box: 'p9', call: 'egress', value: 'r-a5.example.org', id: 'r-a5', by: 'bridge' }, clock)
+clock = T0 + 453 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('the owner\'s approval in mm.api\'s record: no finding on sy-a1; its steps are not sy-a4\'s (an unrelated t2 item in progress)', openKeys() === DIRTY)
+go('sy-a4', ['t2', 'approved'], 'bridge')
+apiItem('sy-a2'); mmLine('mm api approve', 'r-a2', clock) // the same labels, and no record of it
+clock = T0 + 454 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('the same labels with no record: a finding on sy-a2, which says the record has no approval of it', openKeys() === `${DIRTY} ${T2('sy-a2')}` &&
+  /mm\.api's record has no owner approval/.test(openOf(T2('sy-a2'))?.description || '') && /added by watchdog/.test(openOf(T2('sy-a2'))?.description || ''))
+const regoApi = (id) => { update(id, { labels: ['t2', 'mm-api'] }, 'ops'); go(id, ['t2', 'mm-api', 'approved'], 'bridge') } // the bridge's approved counts once watchdog's is off
+regoApi('sy-a2')
+apiItem('sy-a3'); apiReq('r-a3', 'sy-a9') // a record of another item's request
+apiItem('sy-a6'); apiReq('r-a6', 'sy-a6', { hash: '0'.repeat(64) }) // a record whose hash is not its request's
+apiItem('sy-a7'); apiReq('r-a7', 'sy-a7', { status: 'pending' }) // a request the owner has not approved
+mmLine('mm api approve', 'sy-a3', clock); mmLine('mm api approve', 'r-a6', clock); mmLine('mm api approve', 'r-a7', clock)
+clock = T0 + 455 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('a record for another item (sy-a3), a record with a wrong hash (sy-a6), a pending one (sy-a7): a finding each', openKeys() === `${DIRTY} ${T2('sy-a3')} ${T2('sy-a6')} ${T2('sy-a7')}`)
+for (const id of ['sy-a3', 'sy-a6', 'sy-a7']) regoApi(id)
+for (const id of ['sy-a1', 'sy-a2', 'sy-a3', 'sy-a4', 'sy-a6', 'sy-a7']) update(id, { status: 'closed' }, items.get(id).assignee)
+clock = T0 + 455.5 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('approved by the bridge and closed: cleared', openKeys() === DIRTY)
+APIDB.close()
+
 step('run 9k (+456..461 min): a summary from an older Supervisor is read again from the start (sy-m5qr)')
 item('sy-40', { title: 't2, approved by the bridge before an upgrade', priority: 2, assignee: 'ops', labels: ['t2'] })
 go('sy-40', ['t2', 'approved'], 'bridge')
