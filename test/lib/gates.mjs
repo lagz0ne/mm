@@ -9,17 +9,27 @@
 //     --item <id>    then `artifact <id> <file>` when artifact is on PATH (else it says so); while it runs, a mark on
 //                    the board keeps the item's claim from expiring (markRun)
 //     --no-live      skip the live group; the result says "skipped (--no-live)" for each, never "passed"
-//     --bin <mm>     the mm the suites get ({mm}, MM_BIN_DIR) instead of one built from the head
+//     --bin <mm>     the mm the suites get ({mm}, MM_BIN_DIR) instead of the head's build (the build cache, below)
 //     --jobs <n>     hermetic suites at once (default: half the CPUs, 2 to 6; under load at most the idle CPUs,
 //                    max(1, CPUs - 1-minute load average); see defaultJobs)
-//     --keep         keep the throwaway worktree and the built mm (their folder is printed)
+//     --keep         keep the throwaway worktree (its folder is printed)
 //     --map <file>   another map (default: the head's test/gates.map, else this checkout's)
 //     --no-rerun     a suite that fails is not run again alone (see the rerun, below)
 // The range: <base>..<head> or <base>...<head>; the files are what <head> changed since its merge base with <base>.
 // The run: a throwaway `git worktree` of <head> under $TMPDIR (a shared clone where the repo can't take a worktree),
-// removed after; never the caller's checkout. An mm, when a suite needs one, is built from that worktree into the
-// same throwaway folder (never dist/mm). Exit: 0 when every suite that ran passed; 1 when one failed (or could not be
-// prepared); 2 on a usage or map error.
+// removed after; never the caller's checkout. Exit: 0 when every suite that ran passed; 1 when one failed (or could
+// not be prepared); 2 on a usage or map error.
+// The build cache (sy-sbjh.2): an mm, when a suite needs one and no --bin is given, is the head's build in
+// <builds>/<full head sha>/: mm (bun build --compile of the worktree, after the template is packed), template/ (git
+// archive of the head's template/) and mm.sha256 (the stamp: mm's sha256, `sha256sum -c` form, written at build time).
+// <builds> is $MM_BUILDS, else $MM_HOME/builds, else ~/.mm/builds: the layout of `mm ship`, which rolls out that same
+// binary. A build is made once per head: in <builds>/.tmp-<sha>-<pid>-<rand>, then renamed into place; a later run
+// reuses it when its mm's sha256 is the stamp's (else it is built again). Never dist/. Each suite that needs mm ({mm},
+// MM_BIN_DIR, needs=mm) gets that mm and MM_TEMPLATE_DIR=<its template/>; the result file's mm line names it:
+// `mm: <builds>/<sha7>…/mm (sha256 <first 12>)`. After a build, the cache keeps its newest BUILDS_KEEP builds (by
+// mtime; a reuse touches it) and never removes the one <builds>/current or <builds>/previous names (mm ship's: a link
+// to <sha>, or a folder with its sha in <folder>/sha). MM_GATES_BUILD=<cmd> (tests): `<cmd> <outfile>` in the worktree
+// instead of bun build.
 // The run lock (sy-1nb8): one gates run at a time runs suites, across every gates run of the user on the machine. A
 // run takes the lock right before its first suite starts and gives it back after its last one ended, so a second run
 // waits for the first and never runs a suite beside it, of any group: ports and heavy suites bind fixed ports and
@@ -67,6 +77,100 @@ export function appendHistory(file, entries, max = HISTORY_MAX) {
   fs.renameSync(tmp, file)
 }
 const NEEDS = ['mm', 'site']
+
+// --- the build cache (sy-sbjh.2; see the top) ---------------------------------------------------------------------
+
+export const BUILDS_KEEP = 20
+export const BUILD_STAMP = 'mm.sha256'
+export const buildsRoot = (env = process.env) => env.MM_BUILDS ? path.resolve(env.MM_BUILDS) : path.join(env.MM_HOME || path.join(os.homedir(), '.mm'), 'builds')
+const SHA_DIR = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/
+const sha256 = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex')
+export const tilde = (p) => { const h = os.homedir(); return h && h !== '/' && (p === h || p.startsWith(h + '/')) ? '~' + p.slice(h.length) : p }
+// the result file's name of a build: <builds>/<sha7>…/mm
+export const buildName = (dir) => `${tilde(path.dirname(dir))}/${path.basename(dir).slice(0, 7)}…/mm`
+
+// checkBuild(dir) -> { dir, bin, template, sha256 } when it holds mm, template/ and a stamp that is mm's sha256; else { why }
+export function checkBuild(dir) {
+  const bin = path.join(dir, 'mm'), template = path.join(dir, 'template')
+  try { if (!fs.statSync(bin).isFile()) return { why: 'its mm is not a file' } } catch { return { why: 'no mm' } }
+  try { if (!fs.statSync(template).isDirectory()) return { why: 'no template/' } } catch { return { why: 'no template/' } }
+  let stamp
+  try { stamp = fs.readFileSync(path.join(dir, BUILD_STAMP), 'utf8').trim().split(/\s+/)[0] } catch { return { why: `no ${BUILD_STAMP}` } }
+  const sum = sha256(bin)
+  if (stamp !== sum) return { why: `its mm's sha256 (${sum.slice(0, 12)}) is not the stamp's (${String(stamp).slice(0, 12)})` }
+  return { dir, bin, template, sha256: sum }
+}
+
+// the builds mm ship names: <builds>/current and <builds>/previous, a link to <sha> or a folder with <folder>/sha
+export function shippedBuilds(root) {
+  const out = new Set()
+  for (const l of ['current', 'previous']) {
+    const p = path.join(root, l)
+    try { out.add(path.basename(fs.readlinkSync(p).replace(/\/+$/, ''))) } catch {}
+    try { const s = fs.readFileSync(path.join(p, 'sha'), 'utf8').trim(); if (s) out.add(s) } catch {}
+  }
+  return out
+}
+
+// pruneBuilds(root, keep, also): the newest `keep` builds (<sha> folders, by mtime) stay, and the shipped ones and
+// `also` (this run's) always; the others go (renamed away first, so a reader never sees half of one). Leftovers of an
+// interrupted build (.tmp-, .old-, .gone-) a day old go too. Returns the removed shas.
+export function pruneBuilds(root, keep = BUILDS_KEEP, also = []) {
+  let names
+  try { names = fs.readdirSync(root) } catch { return [] }
+  const prot = new Set([...shippedBuilds(root), ...also])
+  const st = (n) => { try { return fs.lstatSync(path.join(root, n)) } catch { return null } }
+  const builds = names.filter((n) => SHA_DIR.test(n)).map((n) => ({ n, s: st(n) })).filter((b) => b.s?.isDirectory())
+    .sort((a, b) => b.s.mtimeMs - a.s.mtimeMs)
+  const gone = []
+  const rm = (n) => { const t = path.join(root, `.gone-${n.slice(0, 12)}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`); try { fs.renameSync(path.join(root, n), t) } catch { return false } fs.rmSync(t, { recursive: true, force: true }); return true }
+  for (const b of builds.slice(keep)) if (!prot.has(b.n) && rm(b.n)) gone.push(b.n)
+  for (const n of names) if (/^\.(tmp|old|gone)-/.test(n) && Date.now() - (st(n)?.mtimeMs ?? Date.now()) > 86_400_000) fs.rmSync(path.join(root, n), { recursive: true, force: true })
+  return gone
+}
+
+// mmBuild({repo, head, wt, step}) -> { dir, bin, template, sha256, built }: the head's build from the cache, else built
+// once from the worktree (its template already packed) and renamed into place. `step(name, cmd, args, cwd)` runs one
+// command in the worktree (default cwd) and throws when it fails.
+export async function mmBuild({ repo, head, wt, step, root = buildsRoot(), keep = BUILDS_KEEP, env = process.env, say = () => {} }) {
+  const dir = path.join(root, head)
+  const have = checkBuild(dir)
+  if (have.bin) {
+    const now = new Date(); try { fs.utimesSync(dir, now, now) } catch {}
+    say(`gates: mm from the cache: ${buildName(dir)} (sha256 ${have.sha256.slice(0, 12)})`)
+    return { ...have, built: false }
+  }
+  if (fs.existsSync(dir)) say(`gates: ${tilde(dir)} does not count (${have.why}): built again`)
+  fs.mkdirSync(root, { recursive: true })
+  const tmp = path.join(root, `.tmp-${head.slice(0, 12)}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`)
+  fs.mkdirSync(tmp)
+  try {
+    const out = path.join(tmp, 'mm'), tar = path.join(tmp, 'template.tar')
+    if (env.MM_GATES_BUILD) await step('build mm (MM_GATES_BUILD)', env.MM_GATES_BUILD, [out])
+    else await step('build mm', 'bun', ['build', 'src/cli.ts', '--compile', '--outfile', out])
+    await step('the build\'s template', 'git', ['-C', repo, 'archive', '--format=tar', '-o', tar, head, 'template'])
+    await step('the build\'s template (extract)', 'tar', ['-xf', tar, '-C', tmp])
+    fs.rmSync(tar, { force: true })
+    try { if (!fs.statSync(out).isFile()) throw new Error() } catch { throw new Error(`build mm: no mm at ${out}`) }
+    const sum = sha256(out)
+    fs.writeFileSync(path.join(tmp, BUILD_STAMP), `${sum}  mm\n`)
+    if (fs.existsSync(dir)) { // one that does not count: away first
+      const old = path.join(root, `.old-${head.slice(0, 12)}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`)
+      try { fs.renameSync(dir, old); fs.rmSync(old, { recursive: true, force: true }) } catch {}
+    }
+    try { fs.renameSync(tmp, dir) } catch (e) {
+      const other = checkBuild(dir) // another run placed it meanwhile: that one
+      if (!other.bin) throw new Error(`cannot place the build in ${tilde(dir)}: ${e.message}`)
+      fs.rmSync(tmp, { recursive: true, force: true })
+      say(`gates: mm from the cache: ${buildName(dir)} (sha256 ${other.sha256.slice(0, 12)}; another run built it meanwhile)`)
+      return { ...other, built: false }
+    }
+    say(`gates: mm built: ${buildName(dir)} (sha256 ${sum.slice(0, 12)})`)
+    const gone = pruneBuilds(root, keep, [head])
+    if (gone.length) say(`gates: the build cache keeps ${keep}: removed ${gone.map((x) => x.slice(0, 7)).join(' ')}`)
+    return { dir, bin: path.join(dir, 'mm'), template: path.join(dir, 'template'), sha256: sum, built: true }
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }) }
+}
 const PLACEHOLDERS = ['{mm}', '{bd}', '{dolt}', '{old-template}']
 
 // --- the map -------------------------------------------------------------------------------------------------------
@@ -632,13 +736,16 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
       await step('the site\'s packages', 'npm', ['ci', '--prefer-offline', '--no-audit', '--no-fund'], site)
       await step('build the site', 'npm', ['run', 'build'], site)
     })
-    let mmBin = null
+    let mmBin = null, mmTpl = null
     await prep('mm', needMm, async () => {
-      if (o.bin) { mmBin = path.resolve(cwd, o.bin); if (!fs.existsSync(mmBin)) throw new Error(`--bin ${o.bin}: no such file`); mmNote = `--bin ${mmBin}` }
-      else {
-        mmBin = path.join(T, 'bin', 'mm')
-        await step('build mm', 'bun', ['build', 'src/cli.ts', '--compile', '--outfile', mmBin])
-        mmNote = `built from ${short} (${mmBin}${o.keep ? '' : ', removed after'})`
+      if (o.bin) {
+        mmBin = path.resolve(cwd, o.bin); if (!fs.existsSync(mmBin)) throw new Error(`--bin ${o.bin}: no such file`)
+        mmNote = `--bin ${mmBin} (sha256 ${sha256(mmBin).slice(0, 12)})`
+      } else {
+        const b = await mmBuild({ repo, head, wt, step, say })
+        note(`mm: ${b.built ? 'built' : 'from the cache'}: ${b.dir} (sha256 ${b.sha256})`)
+        mmBin = b.bin; mmTpl = b.template
+        mmNote = `${buildName(b.dir)} (sha256 ${b.sha256.slice(0, 12)})`
       }
     })
     const mmDir = path.join(T, 'mmdir')
@@ -657,6 +764,12 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
       if (a.status !== 0) throw new Error(`git archive ${pick.ref.slice(0, 7)} template: ${a.stderr.trim()}`)
       oldTpl = path.join(d, 'template')
     })
+    // a suite's own environment: the site built once (above); the mm and, for the head's build, its template
+    const suiteEnv = (s) => {
+      const extra = s.needs.includes('site') ? { BOARD_PHONE_NOBUILD: '1' } : {}
+      if (mmBin && (s.needs.includes('mm') || uses(s, '{mm}'))) { extra.MM_BIN_DIR = mmDir; if (mmTpl) extra.MM_TEMPLATE_DIR = mmTpl }
+      return extra
+    }
     const fill = (a) => a.replaceAll('{mm}', mmBin || '').replaceAll('{bd}', tools.bd || '').replaceAll('{dolt}', tools.dolt || '').replaceAll('{old-template}', oldTpl || '')
 
     const runOne = async (s) => {
@@ -666,8 +779,7 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
       if (failedPrep.has(s.path)) { fs.writeFileSync(log, `gates: not run: ${failedPrep.get(s.path)}\n`); return Object.assign(r, { status: 'failed', note: 'not prepared', secs: 0 }) }
       if (!fs.existsSync(path.join(wt, s.path))) { fs.writeFileSync(log, `gates: ${s.path} is not in ${short}\n`); return Object.assign(r, { status: 'failed', note: 'not in the head', secs: 0 }) }
       const args = s.args.map(fill)
-      const extra = s.needs.includes('site') ? { BOARD_PHONE_NOBUILD: '1' } : {} // the site is built once, above
-      if (mmBin && (s.needs.includes('mm') || uses(s, '{mm}'))) extra.MM_BIN_DIR = mmDir
+      const extra = suiteEnv(s) // the site is built once, above
       fs.writeFileSync(log, `# gates: ${[...interp(s.path), s.path, ...args].join(' ')}   (in the worktree of ${short}, group ${s.group})\n`)
       const x = await runTo(interp(s.path)[0], [s.path, ...args], { cwd: wt, env: { ...env, ...extra }, log, timeout: o.timeout })
       const c = counts(fs.readFileSync(log, 'utf8'))
@@ -686,8 +798,7 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
       const again = o.rerun ? results.filter((r) => r.status === 'failed' && r.code != null && r.code !== 124) : []
       for (const r of again) {
         const s = toRun.find((x) => x.path === r.suite)
-        const extra = s.needs.includes('site') ? { BOARD_PHONE_NOBUILD: '1' } : {}
-        if (mmBin && (s.needs.includes('mm') || uses(s, '{mm}'))) extra.MM_BIN_DIR = mmDir
+        const extra = suiteEnv(s)
         const from = fs.statSync(r.log).size
         fs.appendFileSync(r.log, `\n# gates: rerun alone (the first run failed with exit ${r.code})\n`)
         const x = await runTo(interp(s.path)[0], [s.path, ...s.args.map(fill)], { cwd: wt, env: { ...env, ...extra }, log: r.log, timeout: o.timeout })
