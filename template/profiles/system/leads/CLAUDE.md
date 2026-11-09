@@ -181,6 +181,7 @@ By: <next wake | today | hh:mm UTC> · Else: <what happens if it is not done>
 - **A HANDOFF names its surfaces:** `Surfaces: <list>`, every place an mm change runs: the boards (template) ·
   the gateway (restart its service) · the bot (its copy of the owner card parser) · boxes (`mm box build`) · Doop ·
   the mm CLI · the brain's tools. `Surfaces: none` when nothing outside the repo changes.
+- **A HANDOFF → review brings its gates file:** run `test/gates <base>..<sha> --item ID` before a HANDOFF to review whose Head is `mm@<sha>`. The check (bd, `message check ID N`) refuses one without a passing `artifacts/ID/gates-<sha7>.txt`, and names the file.
 - **A message changes nothing on the board.** A HANDOFF still needs the handover (`bd update ID -a <role> ...`);
   a DONE still needs `bd close`.
 Example:
