@@ -72,7 +72,7 @@ let w
 try {
   w = start()
   ok('wake starts', await until(() => /watching .* from seq/.test(opsLog())))
-  ok(`it carries the root's old state over: replays from seq ${SAVED}`, new RegExp(`replayed ${records.length - SAVED} event\\(s\\) from seq ${SAVED}`).test(opsLog()))
+  ok(`it carries the root's old state over without its _seq: no replay from seq ${SAVED}`, /carried over without its _seq/.test(opsLog()) && !/replayed \d+ event/.test(opsLog()))
   ok(`its state is saved in .run/wake-state.json while the root refuses new files (_seq ${records.length})`, await until(() => state()._seq === records.length))
   ok('...with what the old state had (a role\'s entry)', state().ops?.items?.[0] === 'f-1')
   push(); push()
