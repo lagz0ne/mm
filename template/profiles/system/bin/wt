@@ -6,8 +6,10 @@
 //                              read:  a detached, read-only checkout of the role's repo at <ref> (default main)
 //                              board: a plain folder (no repo)
 //   wt sync <role>-<name>      rebase a write worker's branch onto main (needs a clean tree); prints the new HEAD
-//   wt rm <role>-<name> [--force]   remove it (a write worker's branch too: refused while it has commits not on main)
-//   wt ls                      list them
+//   wt rm <role>-<name> [--force]   remove it (a write worker's branch too: refused while it has commits not on main),
+//                              then its Paseo project, unless a live agent is in it (lead worker stop first); the folder
+//                              gone, wt rm <role>-<name> again deletes only a project that was left
+//   wt ls                     list them
 // Refused: a role whose workers are not switched on (roles.json "workers": true: setup, after the owner's yes), and
 // any repo that is the brain or holds it (only ops writes the brain, one run branch at a time), this board, or (to
 // write) a project. If its permissions can't be rendered, the folder is removed again: no worker runs unguarded.
@@ -17,7 +19,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cli } from './lib/obs.mjs'
 import { projectName } from './lib/svc.mjs'
-import { folders, spec, specProblem, validName } from './lib/workers.mjs'
+import { dropProjects, folders, spec, specProblem, validName } from './lib/workers.mjs'
 
 cli('wt')
 const P = path.resolve(path.dirname(fs.realpathSync(fileURLToPath(import.meta.url))), '..')
@@ -25,7 +27,7 @@ const die = (m, code = 1) => { console.error(`wt: ${m}`); process.exit(code) }
 const git = (dir, args, o = {}) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...o }).trim()
 const tryGit = (dir, args) => { try { return git(dir, args) } catch { return null } }
 const render = () => spawnSync(path.join(P, 'bin', 'config-check'), ['--render'], { cwd: P, encoding: 'utf8' })
-const usage = () => { console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(3, 11).map((l) => l.replace(/^\/\/ ?/, '')).join('\n')); process.exit(2) }
+const usage = () => { console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(3, 13).map((l) => l.replace(/^\/\/ ?/, '')).join('\n')); process.exit(2) }
 
 /** The worker folder named <role>-<name>, with its spec. */
 function folder(dir) {
@@ -68,6 +70,13 @@ function make(role, name, ref) {
   console.log(W)
 }
 
+/** One line on the folder's Paseo project (sy-oxwh); a project left never fails wt rm. */
+function project(dir, r) {
+  if (r.deleted.length) console.log(`deleted its Paseo project ${r.deleted.join(', ')}`)
+  if (r.live.length) console.log(`its Paseo project ${(r.projects || []).join(', ')} was left: a live agent is in it (${r.live.join(', ')}); lead worker stop it, then wt rm ${dir} again`)
+  if (r.error) console.log(`its Paseo project was left: Paseo did not answer (${r.error}); wt rm ${dir} again later`)
+}
+
 const [a, b, c] = process.argv.slice(2)
 switch (a) {
   case undefined: case '-h': case '--help': usage(); break
@@ -86,7 +95,13 @@ switch (a) {
     break
   }
   case 'rm': {
+    // its folder gone already: only the Paseo project a first wt rm left (Paseo was down, or an agent was live)
+    if (!folders(P).some((x) => x.dir === b) && /^[a-z0-9][a-z0-9.-]*-[a-z0-9][a-z0-9.-]*$/.test(b || '') && !b.includes('..')) {
+      const r = dropProjects([path.join(P, 'worktrees', b)])
+      if (r.deleted.length || r.live.length || r.error) { project(b, r); break }
+    }
     const f = folder(b), force = c === '--force'
+    const where = [f.path, (() => { try { return fs.realpathSync(f.path) } catch { return null } })()]
     if (f.s?.kind === 'write' && f.s.repo) {
       const branch = f.name
       if (!force && tryGit(f.s.repo, ['merge-base', '--is-ancestor', branch, 'main']) === null) die(`branch ${branch} has commits not on main (land it, or: wt rm ${b} --force)`)
@@ -100,6 +115,7 @@ switch (a) {
     // its trust and Claude entry, and any memory link no lead owns (sy-0e5)
     for (const a of [['forget', f.path], ['prune']]) try { execFileSync('node', [path.join(P, 'bin', 'lib', 'claude.mjs'), ...a], { stdio: 'ignore', env: { ...process.env, MM_PROJECT: projectName() } }) } catch {}
     console.log(`removed ${b}`)
+    project(b, dropProjects(where))
     break
   }
   default: make(a, b, c)

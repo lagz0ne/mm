@@ -94,7 +94,9 @@ and writes only comments, as `ops/<name>`. Never a worktree of the brain.
   own end of the unit of work (platform lands the branch; review signs off or not; ops posts the plan or finding as
   `ops`). A worker never claims, hands over, closes or signs off.
 - **Stop:** `lead worker stop <role> <name>` (archives the agent), then `wt rm <role>-<name>` (it refuses a branch
-  with commits not on main; `--force` drops them). `lead worker ls` lists your workers, `wt ls` the folders.
+  with commits not on main; `--force` drops them). `wt rm` also deletes the folder's Paseo project, unless a live
+  agent is in it; when it says the project was left, `wt rm <role>-<name>` again later. `lead worker ls` lists your
+  workers, `wt ls` the folders.
 
 ## End a unit of work with a board change
 `wake` reads the board's state, not the words in a comment: the change itself says who acts next. First comment what

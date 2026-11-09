@@ -85,10 +85,32 @@ export function folders(P = ROOT) {
 const die = (m, code = 1) => { console.error(`lead worker: ${m}`); process.exit(code) }
 const PASEO = E.PASEO_BIN || 'paseo'
 // the CLI only (leads' Paseo use stays the CLI, under their permission rules; bin/lib/paseo.mjs is the engine's)
-const pcli = (args) => execFileSync(PASEO, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60000, env: agentEnv() })
+const pcli = (args, ms = 60000) => execFileSync(PASEO, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: ms, env: agentEnv() })
 function agentEnv() { const e = { ...E }; for (const k of ['PASEO_AGENT_ID', 'PASEO_AGENT_CWD', 'PASEO_WORKSPACE_ID']) delete e[k]; return e }
 const cliPaseo = { list: async (labels = {}, { archived = false } = {}) => JSON.parse(pcli(['ls', '-g', ...(archived ? ['-a'] : []), ...Object.entries(labels).flatMap(([k, v]) => ['--label', `${k}=${v}`]), '--json']) || '[]')
   .map((a) => ({ ...a, name: a.title ?? a.name ?? null, labels: a.labels || { ...labels }, archived: !!(a.archivedAt || a.archived) })) }
+/** A worker folder's Paseo project, after wt rm (sy-oxwh): an agent run in a folder makes Paseo register a project for
+ *  it, which outlives the folder. Deletes the projects whose path is one of `dirs` (or under one), unless a live agent
+ *  (one not archived) has its cwd there: `paseo project delete` archives every agent in the project, and a live worker
+ *  must not go that way (lead worker stop archives it first; an archived agent is left as it is, its report stays).
+ *  Calls: `paseo ls -g --json` (live agents only, no -a), `paseo project ls --json`, `paseo project delete <id>`.
+ *  Returns { deleted: [ids], live: [ids], error } and never throws. */
+export function dropProjects(dirs) {
+  const exp = (p) => String(p || '').replace(/^~(?=\/|$)/, HOME).replace(/\/+$/, '')
+  const ds = [...new Set(dirs.filter(Boolean).map(exp))].filter((d) => d && d !== '/')
+  const inside = (p) => { p = exp(p); return ds.some((d) => p === d || p.startsWith(`${d}/`)) }
+  const deleted = []
+  try {
+    const projects = JSON.parse(pcli(['project', 'ls', '--json'], 20000) || '[]').filter((x) => x && x.projectId && inside(x.path))
+    if (!projects.length) return { deleted: [], live: [], error: '' }
+    const live = JSON.parse(pcli(['ls', '-g', '--json'], 20000) || '[]').filter((a) => a && !(a.archivedAt || a.archived) && inside(a.cwd))
+    if (live.length) return { deleted: [], live: live.map((a) => a.shortId || a.id), projects: projects.map((x) => x.projectId), error: '' }
+    for (const x of projects) { pcli(['project', 'delete', x.projectId], 30000); deleted.push(x.projectId) }
+    return { deleted, live: [], error: '' }
+  } catch (e) {
+    return { deleted, live: [], error: String(e.stderr || e.message || e).trim().split('\n')[0].slice(0, 200) || 'no answer' }
+  }
+}
 const workerRoles = (P) => roleDefs(P).filter((r) => r.workers === true).map((r) => r.id)
 function inProgress(P) {
   const out = execFileSync(path.join(P, 'bin', 'bd'), ['list', '--status', 'in_progress', '--json', '--limit', '0'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000, cwd: P })
