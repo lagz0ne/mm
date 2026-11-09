@@ -13,7 +13,8 @@
 //                                  needs-you is checked the same way. When the card names a Head (sy-hzmu), review's
 //                                  sign-off must name that head too (label signed-head:<repo>@<sha>; headRefusal).
 //                                  A t2 go ask's Task also has a Rollback and a Safeguard line (sy-w5az; task.mjs
-//                                  goTaskRefusal); a non-go ask needs neither.
+//                                  goTaskRefusal); a non-go ask needs neither. A card whose You is "Nothing" asks
+//                                  the owner nothing: needs-you on it is refused (sy-e234).
 //                                  Removing needs-you, or any other call: exit 0.
 //   owner-card signoff -- <bd args> bin/bd runs it when its actor is not review and its arguments name signed-off or
 //                                  signed-head: (or set labels): refuses (exit 1) a call that adds or removes one

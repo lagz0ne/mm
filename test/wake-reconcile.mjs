@@ -4,7 +4,7 @@
 // the project's cap (wake.cap in mm's config.yaml). Proves: a ready item -> the lead is started with the queue head and
 // claims it; two ready items, capacity 1 -> the second waits; closing one releases the capacity; an expired claim is
 // requeued through bd's compare-and-set guard (exit 13: left alone; a lead in a turn keeps its claim; the 3rd expiry ->
-// needs-you); a reassign lands in review's queue; wake killed in the middle of a handoff and started again: the item
+// paused, never needs-you); a reassign lands in review's queue; wake killed in the middle of a handoff and started again: the item
 // lands; a failed start is retried with backoff and after 3 tries -> needs-you; the project cap holds a start.
 // Hermetic: temp folder and MM_HOME, a fake board (bd serve's API, and a stub bin/bd that changes it, with the guards),
 // stub paseo and bin/lead, no obs.

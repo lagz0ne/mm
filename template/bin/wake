@@ -11,8 +11,12 @@
 // `signed-head:` label, a new artifact quoted in a comment (artifacts/<id>/<name>), a child (<id>.<n>) or an item it
 // waits on (bd dep add) closed, a status other than at the last hop, or an assignee who is neither of the last two
 // hops' (a third role; the ping-pong between the same two is no progress). A human resets it too.
-// The owner is asked only through an owner card (sy-0omb): where wake asks the owner itself (needs-you), it writes a
-// minimal card first when the item has none (askOwner()).
+// The owner is asked only through an owner card (sy-0omb): where wake asks the owner itself (needs-you, on a machine
+// failure: askOwner()), it writes a minimal card first when the item has none. A lead's act (a block, a reassign to a
+// person) never makes wake write a card (sy-e234): wake labels needs-you only on the card a lead wrote, and a block with
+// no other lead to route it to wakes nobody. An owner card whose You is "Nothing" asks nothing: never needs-you.
+// One answer path (sy-e234): a person's comment on a needs-you item whose card asks Reply: or Check: is the answer:
+// wake removes needs-you (ownerAnswered()) and the comment wakes the board's Lead as any person's comment (sy-uykv).
 // The pull model (plans/slp shape 5): the board is the queue. A role's queue is `bd ready --assignee <role>`; its lead
 // pulls with `bd update <id> --claim`, up to the role's capacity (roles.json `capacity`, default 1, inside the project's
 // cap). wake is the dispatcher, as a reconcile loop (reconcile()): from the board alone it hands each role its queue
@@ -32,7 +36,7 @@
 // (WAKE_PERSON_RUNS=1|0 overrides; WAKE_MM: the mm to run, default `mm`). In a box, the host decides and starts them
 // (sy-9618): wake asks on the box's own mm.api socket (WAKE_DISPATCH_SOCK, default /run/mm/api/api.sock).
 import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/obs.mjs'
-import { headRefusal, isGoAsk, KEYS as CARD_KEYS, parseCard } from './lib/owner-card.mjs'
+import { headRefusal, isGoAsk, KEYS as CARD_KEYS, parseCard, youKind } from './lib/owner-card.mjs'
 import os from 'node:os'
 import * as P_ from './lib/paseo.mjs'
 import { SETUP, SETUP_BRIEF, messageRoles, parseMessage } from './lib/message.mjs'
@@ -238,9 +242,10 @@ function messageRoute(e, byLead = false) {
 
 // The end of a unit of work is a plain bd state change (plans/slp, "All of it is plain bd"), never a word in a comment:
 //   handoff     bd update <id> -a <role> --if-assignee <me> --if-status <s>   wakes <role> (also when the writer is the
-//               old assignee); a reassign to a person (the owner, a human) labels the item needs-you
+//               old assignee); a reassign to a person (the owner, a human) labels the item needs-you when a lead wrote
+//               its owner card (wake never writes one for it, sy-e234)
 //   blocked     bd update <id> -s blocked     wakes the item's Accountable role (its act: activity), else the board's Lead
-//                                             (roles.json `lead`), else labels needs-you; an item labelled upstream:*
+//                                             (roles.json `lead`), else nobody (sy-e234: never needs-you); an item labelled upstream:*
 //                                             wakes nobody (it waits on the system board's answer, bin/upstream there);
 //                                             no answer for 24 h: needs-you (upstreamWaits()); read on the item as it
 //                                             is WAKE_SETTLE_MS later (bd writes the label after the status, sy-w4te)
@@ -269,10 +274,11 @@ function transition(e, byLead) {
     count('mm_wake_signals_total', { kind: KINDS[kind] })
     note(role, id, reason, byLead, 'talk', [...text, ...more]); woke.add(role); log(`${KINDS[kind]} on ${id} by ${writer}: waking ${role}`); return true
   }
-  const needsYou = (kind, why, card, ls = labels) => {
+  // the owner is asked only on the card a lead wrote (sy-e234): wake labels needs-you on it, never writes one
+  const needsYou = (kind, why) => {
     count('mm_wake_signals_total', { kind: KINDS[kind] })
-    log(`${KINDS[kind]} on ${id} by ${writer}: ${why}; asking the owner (needs-you)`)
-    if (!ls.includes('needs-you')) askOwner(id, card)
+    log(`${KINDS[kind]} on ${id} by ${writer}: ${why}; asking the owner only on a card a lead wrote`)
+    if (!labels.includes('needs-you')) askOwner(id, null)
   }
   if (e.op === 'dep_add') { // `bd dep add <id> <target>`: <id> now waits on <target>
     const ref = e.dep?.target
@@ -287,8 +293,7 @@ function transition(e, byLead) {
   if (!was) return woke // never seen before (created while wake was down): the next lead check covers it
   if (i.assignee && i.assignee !== was.assignee && i.status !== 'closed') {
     if (ROLES.includes(i.assignee)) to('handoff', i.assignee, `HANDOFF to you from ${by} on ${id} (was ${was.assignee ? actorName(was.assignee) : 'unassigned'}, now ${actorName(i.status)}). Read its latest comments, then take it up and answer on the item.`)
-    else if (i.assignee !== writer && !SYSTEM.includes(i.assignee)) needsYou('handoff', `handed to ${i.assignee} (a person)`, { What: `${by} handed ${id} to ${asg}, a person`,
-      Why: 'A lead gave it to a person, not to a role, so a person acts next', You: 'Check: its latest comments, then act on it or hand it back to a role' })
+    else if (i.assignee !== writer && !SYSTEM.includes(i.assignee)) needsYou('handoff', `handed to ${i.assignee} (a person)`)
   }
   const upstream = (ls) => ls.filter((l) => l.startsWith('upstream:'))
   const waitsUp = (ls) => log(`BLOCKED on ${id} by ${writer}: ${upstream(ls).join(', ')}: waits on the system board; nobody woken`)
@@ -308,9 +313,12 @@ function transition(e, byLead) {
       const act = ls.find((l) => l.startsWith('act:'))?.slice(4)
       const acc = Object.entries(raci().find((x) => x.id === act)?.raci || {}).find(([r, l]) => l.includes('A') && ROLES.includes(r) && r !== self)?.[0]
       const target = acc || (BOARD_LEAD !== self ? BOARD_LEAD : null)
-      if (!target || !to('blocked', target, `BLOCKED: ${by} set ${id} to blocked (assignee ${asg}). Read why on the item; help unblock it, or route it to who can.`)) needsYou('blocked', 'no lead to route it to', {
-        What: `${by} set ${id} to blocked, and no other lead can take it`, Why: 'Its activity names no Accountable role, and the board\'s Lead set it or there is none',
-        You: 'Reply: what unblocks it? (Read why on the item; or unblock it yourself.)' }, ls)
+      // no other lead to route it to (the Lead blocked it, or there is none): nobody is woken and the owner is not asked
+      // (sy-e234); the Supervisor's digest shows a block that waits on nothing. A lead that needs the owner writes the card.
+      if (!target || !to('blocked', target, `BLOCKED: ${by} set ${id} to blocked (assignee ${asg}). Read why on the item; help unblock it, or route it to who can.`)) {
+        count('mm_wake_signals_total', { kind: KINDS.blocked })
+        log(`BLOCKED on ${id} by ${writer}: no other lead to route it to; nobody woken, the owner not asked`)
+      }
     }).catch((err) => log(`BLOCKED on ${id}: ${err.message}`))
   }
   if (was.status === 'closed' && i.status !== 'closed') {
@@ -397,9 +405,28 @@ function hopSent(id) {
   lastHop.set(id, { mark: markKey(m), asg: [...(h?.asg || []), m.assignee].slice(-2) })
 }
 
+// One answer path (sy-e234): a person's comment (not a lead's, not the system's) on an item labelled needs-you whose
+// owner card asks Reply: or Check: is the owner's answer: wake removes needs-you (in its label queue, after reading the
+// item again). The comment itself wakes the board's Lead (or the role the person picked), as any person's comment
+// (sy-uykv). The board's Reply box and Done post that same comment. A go ask (Tap Approve) is answered only by
+// Approve or Not now; a card that asks nothing, or none, is left as it is.
+function ownerAnswered(e) {
+  const id = e?.issue_id, c = e?.comment
+  if (e?.op !== 'comment' || !id || !c || !isHuman(c.author)) return
+  if (Array.isArray(e.issue?.labels) && !e.issue.labels.includes('needs-you')) return
+  inLabelQ(async () => {
+    let i = null; try { i = await bd(`/v0/beads/issues/${encodeURIComponent(id)}`) } catch {}
+    if (!i?.id || i.status === 'closed' || !(i.labels || []).includes('needs-you')) return
+    const card = parseCard(typeof i.description === 'string' ? i.description : '', i.labels || [], id).card, kind = card ? youKind(card.You) : null
+    if (kind !== 'reply' && kind !== 'check') { log(`${id}: ${actorName(c.author)} commented; its owner card asks ${kind === 'approve' ? 'for the go (Approve)' : 'no answer'}: needs-you left as it is`); return }
+    const r = await bdStep(['label', 'remove', id, 'needs-you'], `unlabel ${id}`)
+    await labelGap()
+    if (r.ok) { count('mm_wake_signals_total', { kind: 'OWNER_ANSWER' }); log(`${id}: ${actorName(c.author)} answered its owner card (${kind === 'reply' ? 'Reply' : 'Check'}): needs-you removed`) }
+  }).catch((err) => log(`${id}: the answer's unlabel failed:`, err.message))
+}
 function onEvent(e) {
   return span('wake event', { op: e.op, issue: e.issue_id, actor: e.actor }, () => {
-    try { keptSeen(e); upSeen(e); pauseSeen(e); hopSeen(e); onEvent1(e) } finally { if (e.issue) seen.set(e.issue_id, { assignee: e.issue.assignee || '', status: e.issue.status }); soon() }
+    try { keptSeen(e); upSeen(e); pauseSeen(e); hopSeen(e); ownerAnswered(e); onEvent1(e) } finally { if (e.issue) seen.set(e.issue_id, { assignee: e.issue.assignee || '', status: e.issue.status }); soon() }
   }, { minMs: 1000 })
 }
 function onEvent1(e) {
@@ -731,7 +758,8 @@ function labelQ(args, what, skip = () => false) {
 // needs-you on an item with no valid card. askOwner(id, card, comment) asks the owner on an item, in wake's label queue:
 //   - its description starts with a valid card: only the label (and the comment);
 //   - it has none: wake writes a minimal one first (`card`: What, Why, You; never a go ask), the old description below
-//     it unchanged, then the label;
+//     it unchanged, then the label; `card` null (a lead's act, sy-e234): no card, no label (only a lead writes one);
+//   - a card whose You is "Nothing" (it asks the owner nothing, sy-e234): no label;
 //   - a card someone wrote that the gate would refuse (invalid, or a t2 go ask without review's sign-off of its head):
 //     never written over; the item goes to the board's Lead (a reason for it, and the comment), no label.
 // Resolves to { ok, how: 'label' | 'card' | 'already' | 'lead' } or bdStep's failure; `skip()` as in labelQ.
@@ -749,10 +777,12 @@ function askOwner(id, card, comment = '', skip = () => false) {
     if (r.found && (!r.ok || goBlocked)) {
       const why = r.ok ? 'its owner card asks for the t2 go before review signed off its head' : 'its owner card is invalid'
       log(`${id}: the owner must act on it, but ${why}: not written over; handing it to the Lead (${BOARD_LEAD || 'none'})`)
-      if (BOARD_LEAD) note(BOARD_LEAD, id, `OWNER CARD: wake must ask the owner on ${id} (${fit(card.What, 120)}), but ${why}, and wake never writes over a card. You are the board's Lead: fix the card (bin/owner-card check ${id}) and add needs-you, or settle it yourself.`, false, 'talk', [boardLine(id, i.title)])
+      if (BOARD_LEAD) note(BOARD_LEAD, id, `OWNER CARD: wake must ask the owner on ${id} (${fit(card?.What || i.title || id, 120)}), but ${why}, and wake never writes over a card. You are the board's Lead: fix the card (bin/owner-card check ${id}) and add needs-you, or settle it yourself.`, false, 'talk', [boardLine(id, i.title)])
       if (comment) bdRun(['comments', 'add', id, `${comment} (Not labelled needs-you: ${why}; wake leaves the card as it is and asks the Lead${BOARD_LEAD ? ` (${BOARD_LEAD})` : ''} to fix it.)`], `comment ${id}`)
       return { ok: false, how: 'lead' }
     }
+    if (r.ok && youKind(r.card.You) === 'nothing') { log(`${id}: its owner card asks the owner nothing (You: Nothing): not labelled needs-you`); return { ok: false, how: 'nothing' } }
+    if (!r.found && !card) { log(`${id}: no owner card a lead wrote: the owner is not asked (needs-you only on a lead's card)`); return { ok: false, how: 'none' } }
     let how = 'label'
     if (!r.found) {
       const f = path.join(os.tmpdir(), `wake-card-${process.pid}-${String(id).replace(/[^A-Za-z0-9.-]/g, '_')}.md`)
@@ -1152,7 +1182,8 @@ async function closeIdle(role, a, own) {
 //     it (test/gates --item <id> writes .run/gates/<id>.<pid>.pid while it runs; alive = that pid is alive and, where
 //     /proc is, started when the file says). When that work ends, the lease counts again from the last pass that saw it.
 //     The requeue's comment on the item is the only report (the Supervisor raises no finding for it).
-//     The 3rd expiry of one item labels it needs-you (counted in wake's state `_expiries`).
+//     The 3rd expiry of one item pauses it (`paused`, and the board's Lead is woken with it; counted in wake's state
+//     `_expiries`): never needs-you (sy-e234).
 //   - each role's queue head(s), as many as it has free capacity (share()), are handed to it (a reason; again after
 //     WAKE_LEASE_MS while still unclaimed); the items after them wait.
 //   - a role with work it may be sent now, or items of its own in progress or blocked, and no running lead: started.
