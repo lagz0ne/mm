@@ -589,6 +589,8 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
       const args = s.args.map(fill)
       const extra = s.needs.includes('site') ? { BOARD_PHONE_NOBUILD: '1' } : {} // the site is built once, above
       if (mmBin && (s.needs.includes('mm') || uses(s, '{mm}'))) extra.MM_BIN_DIR = mmDir
+      // the Doop image, only for the Doop suites: set for every suite, it wins over box-doop's config case (sy-1nb8)
+      if (process.env.GATES_DOOP_IMAGE && /^test\/doop-/.test(s.path)) extra.MM_DOOP_IMAGE = process.env.GATES_DOOP_IMAGE
       fs.writeFileSync(log, `# gates: ${[...interp(s.path), s.path, ...args].join(' ')}   (in the worktree of ${short}, group ${s.group})\n`)
       const x = await runTo(interp(s.path)[0], [s.path, ...args], { cwd: wt, env: { ...env, ...extra }, log, timeout: o.timeout })
       const c = counts(fs.readFileSync(log, 'utf8'))
