@@ -3,8 +3,9 @@
 // labelled role=<role>-worker) and its items in progress that no worker works on, each once; the project's cap counts
 // the same. Proves: one worker on the one item it holds -> 1 place (the next ready item waits at capacity 1); two
 // workers on it -> 2 places, and the project's cap (2) holds another role's item; a worker that finishes its turn
-// (running, then idle) wakes its lead with "finished its turn"; a stray worker (its item closed) still holds a place;
-// archived, it frees it and the next item is handed. The same rule, on its own (places()).
+// (running, then idle) wakes its lead with "finished its turn"; a worker running on an old claim keeps it, and when it
+// stops the lease counts from then (test/wake-lease-alive.mjs proves the expiry after); a stray worker (its item
+// closed) still holds a place; archived, it frees it and the next item is handed. The same rule, on its own (places()).
 // Hermetic: temp folder and MM_HOME, a fake bd serve, a stub paseo (leads and workers from files), no obs.
 //   node test/wake-workers.mjs            exit 0 = every check passed
 import { spawn } from 'node:child_process'
@@ -115,7 +116,8 @@ try {
   await sleep(1500)
   ok('p-8 (its worker w3 runs on it): kept, not requeued', !/update p-8 /.test(read(BDLOG)))
   setWorkers([['w3', 'p-8', 'idle']])
-  ok('...its worker idle (its turn done): p-8 expires too', await until(() => /update p-8 -s open -a plat --if-assignee plat --if-status in_progress --actor wake/.test(read(BDLOG))))
+  await sleep(1500)
+  ok('...its worker idle (its turn done): the lease counts from then (sy-brny), so p-8 is not requeued at once', !/update p-8 /.test(read(BDLOG)))
 } finally {
   w.kill(); srv.close()
   if (fail && process.env.KEEP) console.log(`kept ${T}`); else fs.rmSync(T, { recursive: true, force: true })

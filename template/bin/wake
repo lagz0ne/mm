@@ -1120,8 +1120,11 @@ async function closeIdle(role, a, own) {
 // make it faster), wake rebuilds what should happen from the board alone, so a restart or a missed event loses nothing:
 //   - an expired claim (in progress, no update for WAKE_LEASE_MS, 30 min; any comment or change renews it) goes back to
 //     its role's queue: status open, assignee the role, through bd's compare-and-set guard. Not while the role's lead is
-//     in a turn (it may be working on it), nor while a worker of the role runs on the item, nor an item waiting for the
-//     human (needs-you). The requeue's comment on the item is the only report (the Supervisor raises no finding for it).
+//     in a turn (it may be working on it), nor an item waiting for the human (needs-you). Work alive for the item renews
+//     its lease, once per pass (sy-brny): a worker running on it (any role's, Paseo label item=<id>), or a gate run for
+//     it (test/gates --item <id> writes .run/gates/<id>.<pid>.pid while it runs; alive = that pid is alive and, where
+//     /proc is, started when the file says). When that work ends, the lease counts again from the last pass that saw it.
+//     The requeue's comment on the item is the only report (the Supervisor raises no finding for it).
 //     The 3rd expiry of one item labels it needs-you (counted in .wake-state.json `_expiries`).
 //   - each role's queue head(s), as many as it has free capacity (share()), are handed to it (a reason; again after
 //     WAKE_LEASE_MS while still unclaimed); the items after them wait.
@@ -1137,15 +1140,41 @@ async function reconcile() {
   checking = true
   try { do { again = false; await span('wake reconcile', {}, () => reconcile1(), { minMs: 2000 }) } while (again) } finally { checking = false }
 }
+// The gate runs alive now: item id -> pid (test/gates --item <id>: .run/gates/<id>.<pid>.pid while it runs, holding
+// {pid, start}; start = field 22 of /proc/<pid>/stat where there is one). A file whose run is gone (killed with
+// SIGKILL) is removed; a pid used again by another program (another start) is not the run.
+const GATES = path.join(P, '.run', 'gates')
+const procStart = (pid) => { try { return fs.readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^.*\) /s, '').split(' ')[19] || '' } catch { return '' } }
+function gateAlive(pid, start) {
+  try { process.kill(pid, 0) } catch (e) { if (e.code !== 'EPERM') return false }
+  return !start || procStart(pid) === String(start)
+}
+function gateRuns() {
+  const out = new Map()
+  let names = []; try { names = fs.readdirSync(GATES) } catch { return out }
+  for (const n of names) {
+    const m = /^([a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*)\.(\d+)\.pid$/.exec(n)
+    if (!m) continue
+    let start = ''; try { start = JSON.parse(fs.readFileSync(path.join(GATES, n), 'utf8')).start || '' } catch {}
+    if (gateAlive(Number(m[2]), start)) out.set(m[1], Number(m[2]))
+    else try { fs.rmSync(path.join(GATES, n), { force: true }) } catch {}
+  }
+  return out
+}
+const aliveAt = {} // item id -> when a pass last saw work alive for it (a worker running on it, a gate run)
 async function expire(b, running) {
   const st = readState(), counts = st._expiries || {}
   let changed = false
-  // a worker of the role running on the item holds its claim too (Paseo labels item=<id>; bin/lib/places.mjs)
-  const worked = new Set((b.workers || []).filter((w) => w.status === 'running' && w.item).map((w) => `${w.role} ${w.item}`))
+  // a worker running on the item (any role's; Paseo labels item=<id>), or a gate run for it, holds its claim: its lease
+  // is renewed, once per pass (sy-brny); when that work ends, the lease counts from the last pass that saw it
+  const now = Date.now(), gates = gateRuns()
+  const worked = new Set((b.workers || []).filter((w) => w.status === 'running' && w.item).map((w) => w.item))
+  for (const id of new Set([...worked, ...gates.keys()])) aliveAt[id] = now
+  const held = new Set(b.all.filter((i) => i.status === 'in_progress').map((i) => i.id))
+  for (const id of Object.keys(aliveAt)) if (!held.has(id)) delete aliveAt[id]
   for (const i of b.all) {
-    const role = leadOf(i.assignee), holder = i.assignee, t = Date.parse(i.updated_at || '')
-    if (i.status !== 'in_progress' || !role || role === 'setup' || !t || Date.now() - t < LEASE || running.has(role) || (i.labels || []).includes('needs-you')) continue
-    if (worked.has(`${role} ${i.id}`)) continue
+    const role = leadOf(i.assignee), holder = i.assignee, t = Math.max(Date.parse(i.updated_at || '') || 0, aliveAt[i.id] || 0)
+    if (i.status !== 'in_progress' || !role || role === 'setup' || !t || now - t < LEASE || running.has(role) || (i.labels || []).includes('needs-you')) continue
     const r = await bdStep(['update', i.id, '-s', 'open', '-a', role, '--if-assignee', i.assignee, '--if-status', 'in_progress'], `requeue ${i.id}`)
     if (r.code === 13) { log(`lease of ${i.id} expired, but it changed first (the guard): left as it is`); continue }
     if (!r.ok) continue // tried again on the next pass
