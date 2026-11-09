@@ -54,7 +54,8 @@
       "Bash(wt ls)",
       "Bash(wt rm platform-*)",
       "Bash(git merge --ff-only *)",
-      "Bash(wt sync platform-*)"
+      "Bash(wt sync platform-*)",
+      "mcp__doop"
     ],
     "deny": [
       "Read({root}/secrets/**)",

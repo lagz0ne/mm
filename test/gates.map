@@ -142,6 +142,7 @@ suite test/box-person-runs.sh     ports
 suite test/person-run.sh          ports
 suite test/sockets.sh             ports
 suite test/front.sh               ports
+suite test/system-doop.sh         ports
 suite test/bd-home.sh             ports -- {bd} {dolt}
 suite test/bd-autostart.sh        ports -- {bd} {dolt}
 
@@ -177,7 +178,7 @@ set cli test/npm-lock.sh test/obs-home.sh test/outside.sh test/paseo-token.sh te
 set cli test/person-run.sh test/portless-claim.sh test/restore.sh test/root-leftover.sh test/routes.sh test/sockets.sh
 set cli test/span-answers.sh test/sync.sh test/sysworkers.sh test/template-base.sh test/update-lock.sh test/vault.sh
 set cli test/writing-rule.sh test/board-pull.mjs test/flow.mjs test/board-phone.mjs test/waiting-phone.mjs
-set cli test/wake-box-person-runs.mjs test/wake-person-runs.mjs
+set cli test/wake-box-person-runs.mjs test/wake-person-runs.mjs test/system-doop.sh
 
 # the suites that render the template as mm new lays it out and run config-check on it (the leads' and setup's files)
 set render test/denies.sh test/guard.sh test/brain-deny.sh test/memory-links.sh test/sysworkers.sh test/writing-rule.sh
@@ -209,7 +210,7 @@ rule src/**                       @cli test/clean-box.sh test/lifecycle.sh
 rule src/box.ts                   test/box-*.sh test/boxreg.sh test/mm-docker-container.sh test/doop-container.sh test/box.sh
 rule src/boxreg.ts                test/boxreg.sh test/api.sh test/ai.sh
 rule src/boxruns.ts               test/wake-box-person-runs.mjs test/box-person-runs.sh
-rule src/auth.ts                  test/auth.sh test/auth-start.sh test/board-approve.sh test/board-owner-card.mjs test/board-phone.mjs test/waiting-phone.mjs test/doop-gateway.sh test/auth-e2e.sh test/box-gateway.sh test/ba-spike.ts
+rule src/auth.ts                  test/auth.sh test/auth-start.sh test/board-approve.sh test/board-owner-card.mjs test/board-phone.mjs test/waiting-phone.mjs test/doop-gateway.sh test/auth-e2e.sh test/box-gateway.sh test/ba-spike.ts test/system-doop.sh
 rule src/flow.ts                  test/flow.mjs test/board-pull.mjs
 rule src/doctor.ts                test/doctor-docker.sh
 rule src/personasks.ts            test/wake-person-runs.mjs test/box-person-runs.sh
@@ -275,11 +276,11 @@ rule template/bin/artifact        test/artifact.sh test/board-artifacts.mjs
 rule template/bin/backup          test/backup-data.sh test/sync.sh test/restore.sh test/engine-drift.sh test/doop-container.sh test/clean-box.sh test/restore-drill.sh
 rule template/bin/bd              test/bd-actor.sh test/owner-card-bd.sh test/trace-refused.sh test/init-retry.sh test/bd-autostart.sh test/bd-home.sh test/wake-*.mjs test/clean-box.sh
 rule template/bin/bd-quiet        test/bd-autostart.sh test/bd-home.sh test/init-retry.sh
-rule template/bin/config-check    @render test/api.sh test/lead.sh test/box.sh
+rule template/bin/config-check    @render test/api.sh test/lead.sh test/box.sh test/system-doop.sh
 rule template/bin/dolt-ready      test/pc-skipped.sh test/bd-autostart.sh
 rule template/bin/dolt-run        test/dolt-run.sh test/bd-autostart.sh test/bd-home.sh
-rule template/bin/doop-mcp-headers test/denies.sh test/doop.sh
-rule template/bin/doop-run        test/box-doop.sh test/mm-docker.sh test/auth.sh test/names.sh test/sync.sh test/backup-data.sh test/doop-container.sh test/doop-designs.sh test/doop-gateway.sh test/doop.sh
+rule template/bin/doop-mcp-headers test/denies.sh test/doop.sh test/system-doop.sh
+rule template/bin/doop-run        test/box-doop.sh test/mm-docker.sh test/auth.sh test/names.sh test/sync.sh test/backup-data.sh test/doop-container.sh test/doop-designs.sh test/doop-gateway.sh test/doop.sh test/system-doop.sh
 rule template/bin/guard           test/guard.sh test/sysworkers.sh
 rule template/bin/health          test/engine-drift.sh test/template-base.sh
 rule template/bin/init            test/init-retry.sh test/bd-autostart.sh test/bd-home.sh test/clean-box.sh
@@ -318,7 +319,7 @@ rule template/profiles/system/bin/upstream test/upstream.mjs
 rule template/profiles/system/bin/wt test/sysworkers.sh test/memory-links.sh test/lead.sh
 rule template/profiles/system/assistants/** test/assist.sh test/sentinel-assist.mjs
 rule template/profiles/system/leads/roles.json test/supervisor*.mjs test/upstream.mjs test/sysworkers.sh
-rule template/profiles/system/**  test/sysworkers.sh test/artifact.sh test/machine-panel.sh test/sentinel.sh
+rule template/profiles/system/**  test/sysworkers.sh test/artifact.sh test/machine-panel.sh test/sentinel.sh test/system-doop.sh
 
 # --- rules: the tests themselves ----------------------------------------------------------------------------------
 
