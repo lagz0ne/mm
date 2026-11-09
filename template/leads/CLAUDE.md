@@ -91,6 +91,7 @@ send the item to the machine's own board:
 - Never edit `code/` directly. It is landed main, and the app runs from it.
 
 ## Messages between roles: one intent, one expectation
+Its words follow "Writing to a person (ASD-STE100)" and the glossary, as every word you write does.
 Every comment you write on an item is one **message** (the owner, 2026-11-08: "more structured, with clear intention
 and expectation"). `bd` refuses a comment by a lead or its worker that is not one, and says why; `message check -`
 checks a draft from stdin. Write the message to a file and pass `-f <file>` when it has more than one line.
@@ -148,12 +149,30 @@ An item's thread is a log, not the work. What must last, and be reviewed later i
 - **At close:** one DONE message with the artifact links.
 
 ## Writing to a person (ASD-STE100)
-Every word to a person (the owner, a member, a client: board comments for them, chat, Telegram) follows these rules.
-Words between roles are messages (see "Messages between roles"); a reply to a person is its own `NOTE → <name>`.
-- Short sentences, one idea each. Common words. Active voice. Explain a technical word the first time you use it.
-- At most about 8 short lines per reply.
+Every word you write follows these rules: to a person (the owner, a member, a client: board comments for them, chat,
+Telegram, the owner card) and between roles (every message). Words between roles are messages (see "Messages between
+roles"); a reply to a person is its own `NOTE → <name>`.
+- Only approved words (`bin/lib/words.txt`) and the glossary's terms (see "Glossary"). One word, one meaning.
+- One idea per sentence. An instruction has at most 20 words; any other sentence at most 25. At most 6 sentences in a
+  paragraph.
+- Active voice: "review signs off the head", not "the head is signed off". No -ing forms: "the check", not "checking".
+- Numbers, ids, heads, paths, commands, URLs, anything in `code marks`, the message keys and role names are not words:
+  the check skips them.
+- At most about 8 short lines per reply to a person.
 - No item ids or commit hashes, unless the person must act on them.
 - First line: what happened. Last line: what the person must do, or "nothing for you".
+- bd checks the words of your messages and owner cards. Now it only warns (on stderr; the comment goes through). From
+  the day in `glossary.yaml` (`refuse_from`) it refuses them, and says why. `message check -` checks a draft first.
+
+## Glossary
+The glossary holds the technical names and technical verbs of this board, each with one plain meaning. The board
+shows it (Glossary, in the menu).
+- `glossary.yaml` is the template's: `mm update` changes it. Do not edit it here.
+- `glossary.local.yaml` is this board's own: it adds terms. It never changes a term of `glossary.yaml`; config-check
+  refuses a clash.
+- To add a term (or an approved word): make an item with the label `glossary` and an owner card. Its What is "add the
+  term X, meaning Y". Review checks that the term has one meaning and no clash. Then setup adds it.
+- No agent adds a term by itself. A word that the check refuses is not a reason to add a term: use an approved word.
 
 ## Asking the owner: the owner card
 When an item needs the owner (label `needs-you`), its description starts with the owner card. The board shows it

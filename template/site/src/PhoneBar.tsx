@@ -9,8 +9,8 @@ import { goalsOf } from '@/Goals'
 import { PresenceBar } from '@/Presence'
 import { cn } from '@/lib/utils'
 
-type View = 'board' | 'leads' | 'machine'
-const VIEW_LABEL: Record<View, string> = { board: 'Board', leads: 'Leads', machine: 'Machine' }
+type View = 'board' | 'leads' | 'machine' | 'glossary'
+const VIEW_LABEL: Record<View, string> = { board: 'Board', leads: 'Leads', machine: 'Machine', glossary: 'Glossary' }
 
 /** The board's controls on a phone (sy-hrsm): one row, 48px. The project, the active filter as a chip (only when one
  *  is set), the column as one picker, and one menu that holds everything else: search, the role filter, the goals,
@@ -32,7 +32,7 @@ export function PhoneBar({ project, view, panels, links, col, counts, onCol, rol
   const filter = board ? [role !== 'all' && ROLE_LABEL[role], q.trim() && `“${q.trim()}”`].filter(Boolean).join(' · ') : ''
   const c = COLUMNS.find((x) => x.key === col)!
   const goals = goalsOf(epics, issues)
-  const views: View[] = ['board', 'leads', ...(panels.includes('machine') ? ['machine' as const] : [])]
+  const views: View[] = ['board', 'leads', ...(panels.includes('machine') ? ['machine' as const] : []), 'glossary']
   const sectionHead = 'px-4 pt-4 pb-1.5 text-[11px] font-bold tracking-[0.1em] text-muted-foreground uppercase'
   const entry = 'flex min-h-11 w-full items-center gap-2.5 px-4 py-1.5 text-left text-[15px] hover:bg-muted'
 

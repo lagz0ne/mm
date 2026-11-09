@@ -20,6 +20,7 @@ import os from 'node:os'
 import { dirs, projectName, svcUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
 import { secretsIn } from './lib/secret-scan.mjs'
+import { FILE as GLOSSARY, WORDS as WORD_LIST, checkWords, readGlossary } from './lib/glossary.mjs'
 cli('config-check')
 const ARTIFACT_MAX = 5 << 20
 const HOME = process.env.HOME || os.homedir()
@@ -394,6 +395,7 @@ for (const f of WF) {
 // the leads' brief says how a message is written (bin/bd refuses a lead's comment that is not one).
 const WRITE_RULE = '## Writing to a person (ASD-STE100)', ARTIFACT_RULE = '## The work in artifacts'
 const MESSAGE_RULE = '## Messages between roles: one intent, one expectation'
+const GLOSSARY_RULE = '## Glossary'
 for (const f of [path.join(P, 'leads', 'CLAUDE.md'), path.join(ASSIST_ROOT, 'CLAUDE.md')]) {
   if (!fs.existsSync(f)) continue
   const brief = fs.readFileSync(f, 'utf8')
@@ -435,6 +437,23 @@ for (const f of fs.existsSync(MEM) ? fs.readdirSync(MEM).filter((x) => x.endsWit
   if (!v || !t) bad(`memory/${f}: needs verified: <YYYY-MM-DD> and ttl_days: <days> under metadata: (when it was last checked, and how long it holds)`)
   if (v && !/^\d{4}-\d\d-\d\d$/.test(v[1])) bad(`memory/${f}: verified must be a date (YYYY-MM-DD)`)
   if (t && !/^\d+$/.test(t[1])) bad(`memory/${f}: ttl_days must be a number of days`)
+}
+// The glossary (sy-ko6r, the owner): the writing check's terms. glossary.yaml (the template's) is valid: its keys, each
+// term's fields and kind, one entry per term, refuse_from a date or empty; glossary.local.yaml (the board's) adds terms
+// only, never one of glossary.yaml, and sets no refuse_from; each term's owner is a role here (or setup); the word list
+// is one word per line, each once. The leads' brief says how a term is added.
+{
+  const rd = (f) => { try { return fs.readFileSync(path.join(P, f), 'utf8') } catch { return null } }
+  if (rd(GLOSSARY) === null) bad(`missing ${GLOSSARY} (the glossary: the writing check's terms)`)
+  else {
+    const g = readGlossary(rd)
+    for (const e of g.errors) bad(`glossary: ${e}`)
+    for (const e of g.entries) if (e.owner && ![...ROLES, 'setup'].includes(e.owner)) bad(`glossary: ${e.source}:${e._line}: ${e.term}: owner ${e.owner} is not a role here (${[...ROLES, 'setup'].join(', ')})`)
+    if (rd(WORD_LIST) === null) bad(`missing ${WORD_LIST} (the approved words)`)
+    else for (const e of checkWords(rd(WORD_LIST))) bad(`glossary: ${e}`)
+  }
+  const f = path.join(P, 'leads', 'CLAUDE.md')
+  if (fs.existsSync(f) && !fs.readFileSync(f, 'utf8').includes(GLOSSARY_RULE)) bad(`leads/CLAUDE.md: lost its "${GLOSSARY_RULE}" section (where the glossary is, and how a term is added)`)
 }
 // Personas: cosmetic, but names must keep their role's initial and colors must be valid.
 const pf = path.join(P, 'leads', 'personas.json')

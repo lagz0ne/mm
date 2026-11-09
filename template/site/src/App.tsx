@@ -21,7 +21,8 @@ const loadDetail = () => import('@/Detail'), loadLeads = () => import('@/Leads')
 const Detail = lazy(() => loadDetail().then((m) => ({ default: m.Detail })))
 const Leads = lazy(() => loadLeads().then((m) => ({ default: m.Leads })))
 const Machine = lazy(() => import('@/Machine').then((m) => ({ default: m.Machine })))
-const viewOf = (h: string) => (h === '#leads' ? 'leads' : h === '#machine' ? 'machine' : 'board') as 'board' | 'leads' | 'machine'
+const Glossary = lazy(() => import('@/Glossary').then((m) => ({ default: m.Glossary })))
+const viewOf = (h: string) => (h === '#leads' ? 'leads' : h === '#machine' ? 'machine' : h === '#glossary' ? 'glossary' : 'board') as 'board' | 'leads' | 'machine' | 'glossary'
 if (typeof window !== 'undefined') window.addEventListener('load', () => setTimeout(() => { loadDetail(); loadLeads() }, 1500))
 const EMPTY_META: Meta = { project: '', leads: {}, creators: {}, last: {} }
 const SLOW_MIN = 15 // a ready item nobody picked up for this long turns red
@@ -213,7 +214,7 @@ export default function App() {
           {meta.project || '…'}
         </h1>
         <nav className="flex shrink-0 flex-wrap gap-x-4 text-[13px] font-semibold">
-          {(['board', 'leads', ...(meta.panels?.includes('machine') ? ['machine' as const] : [])] as const).map((v) => (
+          {(['board', 'leads', ...(meta.panels?.includes('machine') ? ['machine' as const] : []), 'glossary'] as const).map((v) => (
             <a key={v} href={v === 'board' ? '#' : `#${v}`}
               className={cn('border-b-2 pb-0.5 capitalize', view === v ? 'border-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>{v}</a>
           ))}
@@ -247,7 +248,7 @@ export default function App() {
       </header>
       )}
 
-      {view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
+      {view === 'glossary' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Glossary /></Suspense> : view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
       {/* The toolbar from md up; on a phone the bar's menu holds the same controls (sy-hrsm). */}
       {!phone && <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-6 py-1.5">
         <ToggleGroup type="single" value={role} onValueChange={(v) => v && setRole(v)} variant="outline" size="sm" spacing={0}>

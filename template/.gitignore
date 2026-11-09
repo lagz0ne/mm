@@ -18,6 +18,8 @@
 !/tools.json
 !/secrets.json
 !/governance.json
+!/glossary.yaml
+!/glossary.local.yaml
 
 leads/RACI.md
 # Generated from settings.tmpl.json by `bin/config-check --render` (absolute paths for this machine).

@@ -21,13 +21,18 @@
 //                                                ?item=<this item's id>)
 // `## Owner` is the first line of the description (blank lines before it are ok); a Markdown list follows, one line per
 // key; a blank line (or the end) ends it. Lengths count characters (code points), after trimming.
-// Pure, no imports: bin/owner-card, bin/bd (through it), the Supervisor, the board's server (waiting.mjs) and, as an
+// The words follow the writing rules (sy-ko6r, writing.mjs): with o.writing, What, Why, You, If yes, If no and Risk are
+// checked; the problems are .writing (warnings), and from the glossary's refuse_from on also errors.
+// Pure; imports only writing.mjs: bin/owner-card, bin/bd (through it), the Supervisor, the board's server (waiting.mjs) and, as an
 // identical copy, the board's browser code (site/src/lib/owner-card.mjs; test/owner-card.mjs keeps them equal).
+import { writingCheck } from './writing.mjs'
 
 export const FORMAT = 'the description starts with "## Owner", then one line per key: "- **What:** ...", "- **Why:** ...", "- **You:** Tap Approve | Reply: <question> | Check: <what, where> | Nothing", with t2 and You "Tap Approve" (a go ask) also "- **If yes:** ...", "- **If no:** ...", "- **Risk:** low|medium|high, ...", "- **Head:** <repo>@<sha>"; optional "- **Link:** ...", "- **Item:** <URL ending in ?item=<id>>"; a blank line ends it (the leads\' brief, "Asking the owner: the owner card")'
 // key -> its limit in characters; the order is the card's
 export const KEYS = { What: 120, Why: 120, You: 160, 'If yes': 120, 'If no': 120, Risk: 80, Head: 72, Link: 300, Item: 300 }
 export const REQUIRED = ['What', 'Why', 'You']
+/** The keys in words (the writing check reads them; Head, Link and Item are not words). */
+export const PROSE = ['What', 'Why', 'You', 'If yes', 'If no', 'Risk']
 /** Required on a t2 card that is a go ask (isGoAsk; sy-t9tg); optional on a non-go ask. Head: review sy-hzmu #3. */
 export const REQUIRED_T2 = ['If yes', 'If no', 'Risk', 'Head']
 const HEADING = /^##[ \t]+Owner[ \t]*$/
@@ -68,19 +73,21 @@ export const NO_GO = 'this item asks for no go (its owner card\'s You is not "Ta
  * @param {string} description  the item's description (Markdown)
  * @param {string[]} [labels]   the item's labels (t2 makes If yes, If no, Risk and Head required on a go ask)
  * @param {string} [id]         the item's id, when known: an Item line must end in ?item=<id>
- * @returns {{ ok: boolean, found: boolean, card: Record<string,string>|null, errors: string[], rest: string }}
+ * @param {{ writing?: object }} [o]  writing: the writing check's setting (writing.mjs writingCheck); none: no check
+ * @returns {{ ok: boolean, found: boolean, card: Record<string,string>|null, errors: string[], rest: string,
+ *   writing: { rule: string, line: number, text: string }[] }}  writing: line n is the card's nth key in words
  *   found: a `## Owner` heading is at the top (the card's lines are then taken out of `rest`, valid or not);
  *   card: the keys read (by their names: What, Why, You, If yes, If no, Risk, Head, Link, Item), null when not found;
  *   rest: the description without the card (all of it when not found).
  */
-export function parseCard(description, labels = [], id = '') {
+export function parseCard(description, labels = [], id = '', o = {}) {
   const text = String(description ?? '').replace(/\r\n?/g, '\n')
   const lines = text.split('\n')
   let k = 0
   while (k < lines.length && !lines[k].trim()) k++
   if (k >= lines.length || !HEADING.test(lines[k])) {
     const later = lines.some((l) => HEADING.test(l))
-    return { ok: false, found: false, card: null, rest: text,
+    return { ok: false, found: false, card: null, rest: text, writing: [],
       errors: [later ? 'the owner card is not at the top: "## Owner" must be the first line of the description' : 'no owner card: the description does not start with "## Owner"'] }
   }
   k++
@@ -114,7 +121,8 @@ export function parseCard(description, labels = [], id = '') {
   // invalid (it is refused for that anyway)
   const go = t2 && !isNonGoAsk(card)
   for (const r of [...REQUIRED, ...(go ? REQUIRED_T2 : [])]) if (!(r in card)) errors.push(`${r} is missing${REQUIRED_T2.includes(r) ? ' (required with t2) on a go ask (You: Tap Approve)' : ''}`)
-  return { ok: errors.length === 0, found: true, card, errors, rest: lines.slice(k).join('\n').replace(/^\n+/, '') }
+  const writing = writingCheck(PROSE.filter((x) => card[x]).map((x) => `${x}: ${card[x]}`).join('\n'), o.writing, errors)
+  return { ok: errors.length === 0, found: true, card, errors, writing, rest: lines.slice(k).join('\n').replace(/^\n+/, '') }
 }
 
 /**

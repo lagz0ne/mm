@@ -8,11 +8,16 @@
 //                                   comment by a lead that is not a valid message. Any other actor (wake, watchdog,
 //                                   bridge, mm-upstream, a person) and any other call: exit 0. --author does not change
 //                                   who writes. --stdin is refused for a lead: write the text to a file (-f).
+// The words of a message follow the writing rules (sy-ko6r; bin/lib/writing.mjs, the glossary glossary.yaml and
+// glossary.local.yaml, the word list bin/lib/words.txt): before the glossary's refuse_from (or with none) a problem is a
+// warning on stderr and the comment goes through; from that day on the gate refuses it. A person's comment is not read.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readGlossary } from './lib/glossary.mjs'
 import { FORMAT, openWaits, parseMessage } from './lib/message.mjs'
+import { sayWriting } from './lib/writing.mjs'
 
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const die = (m, code = 2) => { console.error(`message: ${m}`); process.exit(code) }
@@ -20,6 +25,16 @@ const die = (m, code = 2) => { console.error(`message: ${m}`); process.exit(code
 function roles() {
   try { const j = JSON.parse(fs.readFileSync(path.join(P, 'leads', 'roles.json'), 'utf8')); return (j.roles || []).map((r) => r?.id).filter((x) => typeof x === 'string') }
   catch { return [] }
+}
+/** The writing check's setting: the board's glossary (both files) and the word list. */
+function writing() {
+  const g = readGlossary((f) => { try { return fs.readFileSync(path.join(P, f), 'utf8') } catch { return null } })
+  return { terms: g.terms, words: g.words, refuseFrom: g.refuseFrom }
+}
+/** The warnings of a message that passed, on stderr (the leads' brief, "Glossary"). */
+function warn(r, w) {
+  if (!r.writing?.length) return
+  console.error(`message: writing (ASD-STE100): ${r.writing.length} warning(s); the comment goes through${w.refuseFrom ? ` (from ${w.refuseFrom} the hard ones are refused)` : ''}:\n${sayWriting(r.writing)}\nOnly approved words (bin/lib/words.txt) and glossary terms (glossary.yaml); to add a term, see the leads' brief, "Glossary".`)
 }
 const say = (r) => r.errors.map((e) => `  - ${e}`).join('\n')
 function comments(id) {
@@ -62,8 +77,10 @@ function gate(actor, argv) {
   let body
   if (file !== null) { try { body = fs.readFileSync(file, 'utf8') } catch { no(`cannot read -f ${file}`) } }
   else body = [...words, ...text].join(' ')
-  const r = parseMessage(body, { roles: RS, author: actor })
+  const w = writing()
+  const r = parseMessage(body, { roles: RS, author: actor, writing: w })
   if (!r.ok) no(`${r.found ? `this ${r.intent} is invalid` : 'it is not a message'}:\n${say(r)}`)
+  warn(r, w)
   process.exit(0)
 }
 
@@ -76,8 +93,9 @@ if (cmd === 'check') {
     if (!c) die(`${rest[0]} has no comment #${rest[1]}`)
     text = c.text; author = String(c.author ?? ''); what = `${rest[0]} #${rest[1]}`
   } else die('usage: message check - | message check <id> <n>')
-  const r = parseMessage(text, { roles: roles(), author })
-  if (r.ok) { console.log(`message ok (${r.intent} → ${r.to})`); process.exit(0) }
+  const w = writing()
+  const r = parseMessage(text, { roles: roles(), author, writing: w })
+  if (r.ok) { console.log(`message ok (${r.intent} → ${r.to})`); warn(r, w); process.exit(0) }
   console.error(`message: ${what} is ${r.found ? `an invalid ${r.intent}` : 'not a message'}:\n${say(r)}\nThe format: ${FORMAT}.`)
   process.exit(1)
 } else if (cmd === 'waits') {
