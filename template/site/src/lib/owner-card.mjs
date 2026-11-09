@@ -23,9 +23,13 @@
 // key; a blank line (or the end) ends it. Lengths count characters (code points), after trimming.
 // The words follow the writing rules (sy-ko6r, writing.mjs): with o.writing, What, Why, You, If yes, If no and Risk are
 // checked; the problems are .writing (warnings), and from the glossary's refuse_from on also errors.
-// Pure; imports only writing.mjs: bin/owner-card, bin/bd (through it), the Supervisor, the board's server (waiting.mjs) and, as an
+// The structured form (sy-rfup, step 1): a description that starts with a ```mm-card v1 block (bin/lib/structured.mjs;
+// bd card builds it) is checked by its schema (bin/lib/schemas/card.v1.json) and the same rules (t2, Item, the writing
+// check on its text parts; a Reply's question is its first text part), and maps to the same keys; .json is its data.
+// Pure; imports only writing.mjs and structured.mjs: bin/owner-card, bin/bd (through it), the Supervisor, the board's server (waiting.mjs) and, as an
 // identical copy, the board's browser code (site/src/lib/owner-card.mjs; test/owner-card.mjs keeps them equal).
 import { writingCheck } from './writing.mjs'
+import { cardKeys, firstText, partsText, readBlock, validate } from './structured.mjs'
 
 export const FORMAT = 'the description starts with "## Owner", then one line per key: "- **What:** ...", "- **Why:** ...", "- **You:** Tap Approve | Reply: <question> | Check: <what, where> | Nothing", with t2 and You "Tap Approve" (a go ask) also "- **If yes:** ...", "- **If no:** ...", "- **Risk:** low|medium|high, ...", "- **Head:** <repo>@<sha>"; optional "- **Link:** ...", "- **Item:** <URL ending in ?item=<id>>"; a blank line ends it (the leads\' brief, "Asking the owner: the owner card")'
 // key -> its limit in characters; the order is the card's
@@ -82,6 +86,8 @@ export const NO_GO = 'this item asks for no go (its owner card\'s You is not "Ta
  */
 export function parseCard(description, labels = [], id = '', o = {}) {
   const text = String(description ?? '').replace(/\r\n?/g, '\n')
+  const b = readBlock(text)
+  if (b?.kind === 'card') return cardBlock(b, labels, id, o)
   const lines = text.split('\n')
   let k = 0
   while (k < lines.length && !lines[k].trim()) k++
@@ -123,6 +129,24 @@ export function parseCard(description, labels = [], id = '', o = {}) {
   for (const r of [...REQUIRED, ...(go ? REQUIRED_T2 : [])]) if (!(r in card)) errors.push(`${r} is missing${REQUIRED_T2.includes(r) ? ' (required with t2) on a go ask (You: Tap Approve)' : ''}`)
   const writing = writingCheck(PROSE.filter((x) => card[x]).map((x) => `${x}: ${card[x]}`).join('\n'), o.writing, errors)
   return { ok: errors.length === 0, found: true, card, errors, writing, rest: lines.slice(k).join('\n').replace(/^\n+/, '') }
+}
+
+/** parseCard for a ```mm-card v1 block: the schema, then the rules a schema cannot say (t2 on a go ask, Item, Reply). */
+function cardBlock(b, labels, id, o) {
+  const errors = [...b.errors]
+  const out = { ok: false, found: true, card: {}, errors, writing: [], rest: b.rest, json: b.data }
+  if (errors.length || !b.data) return out
+  errors.push(...validate('card', b.data))
+  const card = (out.card = cardKeys(b.data))
+  if (b.data.you?.kind === 'reply' && !firstText(b.data.parts)) errors.push('you.kind reply: the question is the first text part, and there is none')
+  const go = Array.isArray(labels) && labels.includes('t2') && !isNonGoAsk(card)
+  const NAME = { 'If yes': 'ifYes', 'If no': 'ifNo', Risk: 'risk', Head: 'head' }
+  if (go) for (const r of REQUIRED_T2) if (!(r in card)) errors.push(`${NAME[r]}: is missing (required with t2 on a go ask: you.kind approve)`)
+  const u = card.Item ? ITEM_URL.exec(card.Item) : null
+  if (u && id && u[1] !== id) errors.push(`item: points to ${u[1]}, not to this item (${id})`)
+  out.writing = writingCheck(partsText(b.data.parts), o.writing, errors)
+  out.ok = errors.length === 0
+  return out
 }
 
 /**

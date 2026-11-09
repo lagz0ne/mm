@@ -2,6 +2,9 @@
 # Project-local bd: finds its project from its own location; nothing outside the project is used.
 [ "${1:-}" = serve ] || [ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" "bd ${1:-}" -- "$0" "$@"  # bd serve is a service: not one span
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+# Structured content (sy-rfup): bd msg, bd task and bd card build a checked block (bin/structured) and post it through
+# this same bd, so every gate below still runs on it.
+case "${1:-}" in msg|task|card) exec "$P/bin/structured" "$@" ;; esac
 # A board write names its writer (sy-28ev): --actor <name>, or BEADS_ACTOR / BD_ACTOR. Without one bd would record the
 # machine user (`mm`), which reads as a person. comment(s add), update, close, create, q, reopen, delete, assign, edit,
 # set-state, label add|remove, dep add|remove|relate|unrelate are refused with no actor; reads (list, show, ready,

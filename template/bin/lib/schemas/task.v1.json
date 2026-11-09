@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mm:schema:task:v1",
+  "title": "An item's Task (v1): the first block of its description after the owner card, stored as a fenced block mm-task v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["act", "do", "done", "verify"],
+  "properties": {
+    "act": { "$comment": "an activity of leads/raci.json (checked at run time)", "$ref": "urn:mm:schema:common:v1#/$defs/activity" },
+    "do": { "$ref": "urn:mm:schema:common:v1#/$defs/action" },
+    "on": { "$ref": "urn:mm:schema:common:v1#/$defs/ref" },
+    "done": { "$ref": "urn:mm:schema:common:v1#/$defs/done" },
+    "verify": { "$ref": "urn:mm:schema:common:v1#/$defs/verify" },
+    "head": { "$ref": "urn:mm:schema:common:v1#/$defs/head" },
+    "rollback": { "$comment": "how to undo it: a command, or a migration's file", "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": { "run": { "$ref": "urn:mm:schema:common:v1#/$defs/command" }, "migration": { "$ref": "urn:mm:schema:common:v1#/$defs/path" } } },
+    "safeguard": { "$comment": "the lockout safeguard: the check that shows access still works", "$ref": "urn:mm:schema:common:v1#/$defs/verify" },
+    "parts": { "$ref": "urn:mm:schema:common:v1#/$defs/parts" }
+  }
+}

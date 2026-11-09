@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mm:schema:common:v1",
+  "title": "mm structured content: the shared types (v1)",
+  "$comment": "Every field is typed. The one free field is parts: an array of typed parts. The run-time checks the schema cannot say (a role of leads/roles.json, an activity of leads/raci.json, a table's row width, the writing check on text parts) are in bin/lib/structured.mjs.",
+  "$defs": {
+    "id": { "description": "an item id (sy-abc1)", "type": "string", "pattern": "^[a-z]+-[a-z0-9]+(\\.[0-9]+)*$", "maxLength": 40 },
+    "role": { "description": "a role id (ops)", "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,30}$" },
+    "actor": { "description": "a role or its worker (ops, ops/name)", "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,30}(/[a-z0-9_-]{1,40})?$" },
+    "activity": { "description": "an activity id (lowercase, -)", "type": "string", "pattern": "^[a-z][a-z0-9-]{0,40}$" },
+    "head": { "description": "<repo>@<sha> (sha: 7 to 40 lowercase hex)", "type": "string", "pattern": "^[a-z][a-z0-9-]{0,30}@[0-9a-f]{7,40}$" },
+    "path": { "description": "a relative path (no leading / or ., no ..)", "type": "string", "pattern": "^(?![/.~])(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9_][A-Za-z0-9_./@+-]{0,199}$" },
+    "url": { "description": "an http(s) URL", "type": "string", "pattern": "^https?://[^\\s<>\"]{1,300}$" },
+    "slug": { "description": "a key: lowercase letters, digits, . _ - (at most 48)", "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,47}$" },
+    "command": { "description": "one line, at most 200 characters", "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[^\\n\\r]+$" },
+    "output": { "description": "one line, at most 160 characters", "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[^\\n\\r]+$" },
+    "ref": {
+      "$comment": "What a step is on: an item, a head, a file, a URL, a branch or a service.",
+      "anyOf": [
+        { "$ref": "#/$defs/id" },
+        { "$ref": "#/$defs/head" },
+        { "$ref": "#/$defs/url" },
+        { "type": "string", "pattern": "^(branch|service|svc|project|role):[a-z0-9][a-z0-9._/-]{0,60}$" },
+        { "$ref": "#/$defs/path" }
+      ]
+    },
+    "action": {
+      "enum": ["answer", "apply", "build", "check", "close", "decide", "deploy", "file", "fix", "integrate", "land", "merge",
+        "plan", "read", "reply", "restart", "review", "rollback", "run", "sign-off", "test", "update", "wait", "write", "nothing"]
+    },
+    "state": {
+      "$comment": "The visible result of a Done when: the item (or one named) is in this state, or has this label.",
+      "enum": ["closed", "open", "blocked", "in_progress", "signed-off", "approved", "merged", "landed", "applied", "answered",
+        "deployed", "green", "running", "gone"]
+    },
+    "verify": {
+      "type": "object", "additionalProperties": false, "required": ["check", "expect"],
+      "properties": { "check": { "$ref": "#/$defs/command" }, "expect": { "$ref": "#/$defs/output" } }
+    },
+    "done": {
+      "$comment": "Done when: an item state ({is, item?}) or a check ({check, expect}).",
+      "anyOf": [
+        { "type": "object", "additionalProperties": false, "required": ["is"],
+          "properties": { "is": { "$ref": "#/$defs/state" }, "item": { "$ref": "#/$defs/id" } } },
+        { "$ref": "#/$defs/verify" }
+      ]
+    },
+    "by": { "description": "next-wake, today, hh:mm (UTC), YYYY-MM-DD or YYYY-MM-DD hh:mm", "type": "string", "pattern": "^(next-wake|today|([01][0-9]|2[0-3]):[0-5][0-9]|[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])( ([01][0-9]|2[0-3]):[0-5][0-9])?)$" },
+    "else": {
+      "$comment": "What happens when it is not done by By.",
+      "type": "object", "additionalProperties": false, "required": ["do"],
+      "properties": { "do": { "enum": ["proceed", "block", "escalate", "ask-again", "reassign", "close"] }, "to": { "$ref": "#/$defs/actor" } }
+    },
+    "step": {
+      "$comment": "One step: who does what on what.",
+      "type": "object", "additionalProperties": false, "required": ["do"],
+      "properties": { "role": { "$ref": "#/$defs/role" }, "do": { "$ref": "#/$defs/action" }, "on": { "$ref": "#/$defs/ref" }, "by": { "$ref": "#/$defs/by" } }
+    },
+    "expect": {
+      "$comment": "Expect: one role, one action, on what; or none.",
+      "anyOf": [
+        { "const": "none" },
+        { "type": "object", "additionalProperties": false, "required": ["role", "do"],
+          "properties": { "role": { "$ref": "#/$defs/role" }, "do": { "$ref": "#/$defs/action" }, "on": { "$ref": "#/$defs/ref" } } }
+      ]
+    },
+    "tests": {
+      "type": "object", "additionalProperties": false, "required": ["artifact", "passed", "failed"],
+      "properties": { "artifact": { "$ref": "#/$defs/path" }, "passed": { "type": "integer", "minimum": 0 }, "failed": { "type": "integer", "minimum": 0 } }
+    },
+    "title": { "description": "one line, at most 80 characters", "type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[^\\n\\r]+$" },
+    "part": {
+      "$comment": "One typed part of the free field. text is checked by the writing rules; the others are not words.",
+      "type": "object", "required": ["type"],
+      "properties": {
+        "type": { "enum": ["text", "markdown", "mermaid", "html", "svg", "image", "table", "log"] },
+        "title": { "$ref": "#/$defs/title" },
+        "text": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "markdown": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "mermaid": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "html": { "type": "string", "minLength": 1, "maxLength": 16000 },
+        "svg": { "type": "string", "minLength": 1, "maxLength": 16000, "pattern": "^\\s*<svg[\\s>]" },
+        "log": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "artifact": { "$ref": "#/$defs/path" },
+        "alt": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "columns": { "type": "array", "minItems": 1, "maxItems": 12, "items": { "type": "string", "minLength": 1, "maxLength": 60 } },
+        "rows": { "type": "array", "maxItems": 50, "items": { "type": "array", "maxItems": 12,
+          "items": { "anyOf": [{ "type": "string", "maxLength": 200 }, { "type": "number" }, { "type": "boolean" }, { "type": "null" }] } } }
+      },
+      "allOf": [
+        { "if": { "required": ["type"], "properties": { "type": { "const": "text" } } },
+          "then": { "required": ["text"], "properties": { "markdown": false, "mermaid": false, "html": false, "svg": false, "log": false, "artifact": false, "alt": false, "columns": false, "rows": false } } },
+        { "if": { "required": ["type"], "properties": { "type": { "const": "markdown" } } },
+          "then": { "required": ["markdown"], "properties": { "text": false, "mermaid": false, "html": false, "svg": false, "log": false, "artifact": false, "alt": false, "columns": false, "rows": false } } },
+        { "if": { "required": ["type"], "properties": { "type": { "const": "mermaid" } } },
+          "then": { "required": ["mermaid"], "properties": { "text": false, "markdown": false, "html": false, "svg": false, "log": false, "artifact": false, "alt": false, "columns": false, "rows": false } } },
+        { "if": { "required": ["type"], "properties": { "type": { "const": "html" } } },
+          "then": { "oneOf": [{ "required": ["artifact"] }, { "required": ["html"] }],
+            "properties": { "artifact": { "pattern": "\\.html?$" }, "text": false, "markdown": false, "mermaid": false, "svg": false, "log": false, "alt": false, "columns": false, "rows": false } } },
+        { "if": { "required": ["type"], "properties": { "type": { "const": "svg" } } },
+          "then": { "oneOf": [{ "required": ["artifact"] }, { "required": ["svg"] }],
+            "properties": { "artifact": { "pattern": "\\.svg$" }, "text": false, "markdown": false, "mermaid": false, "html": false, "log": false, "columns": false, "rows": false } } },
+        { "if": { "required": ["type"], "properties": { "type": { "const": "image" } } },
+          "then": { "required": ["artifact", "alt"],
+            "properties": { "artifact": { "pattern": "\\.(png|jpe?g|webp|gif|svg)$" }, "text": false, "markdown": false, "mermaid": false, "html": false, "svg": false, "log": false, "columns": false, "rows": false } } },
+        { "if": { "required": ["type"], "properties": { "type": { "const": "table" } } },
+          "then": { "required": ["columns", "rows"], "properties": { "text": false, "markdown": false, "mermaid": false, "html": false, "svg": false, "log": false, "artifact": false, "alt": false } } },
+        { "if": { "required": ["type"], "properties": { "type": { "const": "log" } } },
+          "then": { "oneOf": [{ "required": ["artifact"] }, { "required": ["log"] }],
+            "properties": { "text": false, "markdown": false, "mermaid": false, "html": false, "svg": false, "alt": false, "columns": false, "rows": false } } }
+      ],
+      "additionalProperties": false
+    },
+    "parts": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/part" } }
+  }
+}
