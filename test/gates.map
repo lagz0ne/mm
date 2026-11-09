@@ -49,6 +49,7 @@ suite test/box-trust.sh           hermetic
 suite test/brain-deny.sh          hermetic
 suite test/denies.sh              hermetic
 suite test/deploy.sh              hermetic
+suite test/doop-build.sh          hermetic
 suite test/dolt-run.sh            hermetic
 suite test/engine-drift.sh        hermetic
 suite test/guard.sh               hermetic
@@ -271,8 +272,8 @@ rule box/paseo-join.mjs           test/box.sh
 rule box/egress.Dockerfile        test/box-egress.sh test/box.sh
 rule box/egress/**                test/box-egress.sh test/box.sh
 rule box/doop/*.patch             test/doop-gateway.sh test/mm-docker.sh test/doop.sh
-rule box/doop/Dockerfile          test/doop-gateway.sh test/mm-docker.sh test/doop.sh
-rule box/doop/build.sh            test/doop-gateway.sh test/mm-docker.sh test/doop.sh
+rule box/doop/Dockerfile          test/doop-build.sh test/doop-gateway.sh test/mm-docker.sh test/doop.sh
+rule box/doop/build.sh            test/doop-build.sh test/doop-gateway.sh test/mm-docker.sh test/doop.sh
 rule box/doop/README.md           -
 
 # --- rules: the template's engine (bin/) ---------------------------------------------------------------------------
