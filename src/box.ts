@@ -766,6 +766,9 @@ export function landed(root: string): Landed {
   if (!r.ok) throw new Error(`could not take the backup from the box: ${short(r)}`)
   mkdirSync(dest, { recursive: true })
   for (const d of got) {
+    // a folder of the same minute already there (two backups within one minute: a sync after the nightly one, a retry):
+    // the new one replaces it. Renamed or copied over it, it would nest in it and the old one would stay the newest (sy-dex7)
+    rmSync(join(dest, d), { recursive: true, force: true })
     try { renameSync(join(stage, d), join(dest, d)) } catch {   // another file system: copy, then remove
       const c = run(['cp', '-a', join(stage, d), join(dest, d)]); if (!c.ok) throw new Error(`copy ${d}: ${short(c)}`)
       rmSync(join(stage, d), { recursive: true, force: true })
