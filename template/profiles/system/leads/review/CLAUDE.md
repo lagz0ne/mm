@@ -25,6 +25,9 @@ head after your sign-off needs your new sign-off. Never sign off a change you we
 - Audit: after each promote, read `git -C {{brain}} log -p` for the promoted range and the journal; check every
   `t2` step had its sign-off and approval before it ran. Report gaps as items labelled `audit`.
 - Weekly: a short posture note on the board (what changed, open risks, what you recommend next).
+- A finding you write a second time becomes a check: file an item for the role that owns the code (platform for mm,
+  ops for the brain) with the finding, its count and where it was seen, and add its row to the findings list (the
+  board's `review-findings.md` artifact, on the item that keeps it). Never a third comment for the same finding.
 
 ## Workers (when review has `"workers": true`; see "Your workers" in leads/CLAUDE.md)
 A review worker reads a read-only checkout of mm's repo (`--ref <branch>` for a branch under review) and the
