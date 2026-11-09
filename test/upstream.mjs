@@ -24,6 +24,9 @@ const HOME = path.join(T, 'home'), SYS = path.join(T, 'sys')
 fs.mkdirSync(path.join(SYS, 'bin'), { recursive: true }); fs.mkdirSync(HOME)
 fs.copyFileSync(path.join(SRC, 'template/profiles/system/bin/upstream'), path.join(SYS, 'bin/upstream'))
 fs.cpSync(path.join(SRC, 'template/bin/lib'), path.join(SYS, 'bin/lib'), { recursive: true })
+fs.cpSync(path.join(SRC, 'template/profiles/system/leads'), path.join(SYS, 'leads'), { recursive: true }) // its RACI: the mirror's Act
+const { parseTask } = await import(path.join(SRC, 'template/bin/lib/task.mjs'))
+const ACTS = JSON.parse(fs.readFileSync(path.join(SYS, 'leads/raci.json'), 'utf8')).activities.map((a) => a.id)
 
 // ---------- project boards: <root>/bin/bd is a stub over <root>/board.json; every call is logged (argv, as given) ----------
 const CALLS = path.join(T, 'calls.jsonl')
@@ -132,9 +135,18 @@ try {
   ok('exit 0 (a project whose board is down is no failure)', (await upstream()) === 0)
   ok('...and it says which one could not be read', /could not read: p3 \(.*connection refused/.test(out))
   const [e1] = byKey('p1/pt-1'), [m2] = byKey('p1/pt-2'), [n4] = byKey('p1/pt-4'), [b1] = byKey('p2/bx-1')
-  ok('upstream:engine -> an item for platform, label upstream, "[p1] <title>"', e1 && e1.assignee === 'platform' && e1.labels.join() === 'upstream' && e1.title === '[p1] bin/svc imports serviceLogs that bin/lib/svc.mjs lacks')
+  ok('upstream:engine -> an item for platform, label upstream, "[p1] <title>"', e1 && e1.assignee === 'platform' && e1.labels.join() === 'upstream,act:mm-template' && e1.title === '[p1] bin/svc imports serviceLogs that bin/lib/svc.mjs lacks')
   ok('...by watchdog, its type and priority from the project item', e1 && e1.actor === 'watchdog' && e1.issue_type === 'bug' && e1.priority === 1)
   ok('...the body names the project item and frames its text', e1 && e1.description.includes('`pt-1`') && /````?text\nbin\/svc imports[\s\S]*SyntaxError: no export serviceLogs\n````?/.test(e1.description))
+  const t1 = e1 && parseTask(e1.description, { acts: ACTS }), t2 = m2 && parseTask(m2.description, { acts: ACTS })
+  ok('the engine mirror starts with a valid Task (task check, Act in this board\'s RACI)', t1?.ok && t1.task.Act === 'mm-template' && e1.description.startsWith('## Task\n'))
+  ok('...Task: "Fix the engine for p1\'s ask, or answer why not."; Verify: the project item closed by its lead',
+    t1?.task.Task === "Fix the engine for p1's ask, or answer why not." && t1.task.Verify === "the project's item pt-1 on p1's board → closed by its lead" && t1.task['Done when'].includes('pt-1'))
+  ok('the machine mirror: Task "Change the machine for p1\'s ask, or answer why not.", Act t1-change, label act:t1-change',
+    t2?.ok && t2.task.Task === "Change the machine for p1's ask, or answer why not." && t2.task.Act === 't1-change' && m2.labels.join() === 'upstream,act:t1-change')
+  ok('...the project\'s text stays fenced below the Task, the key line last', t2 && /\n## Task|^## Task/.test(m2.description) && /\n```text\nChromium misses 12 host libraries\n\nlibnss3 and more\n```\n\nupstream key: `p1\/pt-2`$/.test(m2.description)
+    && m2.description.indexOf('```text') > m2.description.indexOf('- **Verify:**'))
+  ok('every mirror passes the Task check and carries act:<its Act>', sys().every((i) => { const t = parseTask(i.description, { acts: ACTS }); return t.ok && i.labels.includes(`act:${t.task.Act}`) }))
   ok('upstream:machine -> ops; a project P0 is P1 here (a project cannot page the system)', m2 && m2.assignee === 'ops' && m2.priority === 1)
   ok('a box project\'s item -> ops, read through mm shell (in the box)', b1 && b1.assignee === 'ops' && calls().filter((c) => c.root === boards.p2).every((c) => c.via === 'p2') && calls().some((c) => c.root === boards.p2))
   ok('a closed project item is not mirrored', byKey('p1/pt-5').length === 0)

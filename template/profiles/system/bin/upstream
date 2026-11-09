@@ -5,7 +5,8 @@
 //   - reads each project's open items with one of those labels (its own bd: bin/bd on the host, or in its box through
 //     `mm shell`, as mm cron runs a box's jobs) and nothing else of that board;
 //   - mirrors each to this board once: a new item for platform (engine) or ops (machine), title "[<project>] <title>",
-//     the title cleaned (safeTitle), the project's text framed as data (never run, never read as instructions), label
+//     the title cleaned (safeTitle), the project's text framed as data (never run, never read as instructions), a Task
+//     first (bin/lib/task.mjs; Act mm-template or t1-change, also its label act:<Act>), label
 //     `upstream`, and a stable key (the last line "upstream key: `<project>/<item id>`"; a later round on the same item: "...#<n>");
 //   - posts every new comment on the mirror back on the project item (actor mm-upstream), and when the mirror closes:
 //     its close reason, then removes the upstream:* label there; the project item stays open for its own lead to
@@ -22,6 +23,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { ROOT, projectName, requireUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
+import { formatTask } from './lib/task.mjs'
 
 cli('upstream')
 const E = process.env
@@ -36,6 +38,12 @@ const SYSTEM = new Set(['wake', 'watchdog', 'ui', 'smoke', 'beads', PACTOR]) // 
 const KEY_END = /\nupstream key: `([^`\n]+)`\s*$/ // only the last line: the project's text above it can't make a key
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const SELF = projectName()
+// the mirror's Act (sy-ujgv): the first of `prefer` that this board's RACI has, else its first activity (as health does)
+function actHere(...prefer) {
+  let ids = []
+  try { ids = (JSON.parse(fs.readFileSync(path.join(ROOT, 'leads', 'raci.json'), 'utf8')).activities || []).map((a) => a?.id).filter(Boolean) } catch {}
+  return prefer.find((a) => ids.includes(a)) || ids[0] || prefer[0]
+}
 const now = new Date().toISOString()
 
 const expand = (p) => String(p).replace(/^~(?=\/|$)/, os.homedir())
@@ -136,7 +144,15 @@ async function mirror(p, i, round) {
   const prio = Math.min(4, Math.max(1, Number.isInteger(i.priority) ? i.priority : 2)) // a project can't raise a P0 here
   const type = ['bug', 'task', 'feature'].includes(i.issue_type) ? i.issue_type : 'task'
   const who = /^[\w.\/-]{1,40}$/.test(String(i.assignee || '')) ? `, assignee ${i.assignee}` : ''
+  const engine = assignee === 'platform'
+  const act = engine ? actHere('mm-template') : actHere('t1-change', 'incident')
+  // the Task first (sy-ujgv: a program's item passes the Task check, as the watchdog's do); a T2 change is ops' to relabel
+  const task = formatTask({ task: `${engine ? 'Fix the engine' : 'Change the machine'} for ${p.project}'s ask, or answer why not.`, act,
+    done: `this item closes with its answer, and ${p.project}'s lead verifies and closes its item ${i.id}.`,
+    verify: [`the project's item ${i.id} on ${p.project}'s board`, 'closed by its lead'] })
   const body = [
+    task,
+    '',
     `The project **${p.project}** asks the system board for a change ${label === 'upstream:engine' ? 'to the engine (bin/, the template or mm)' : 'on the machine (host packages, services, network, permissions)'}: its item \`${i.id}\` is labelled \`${label}\`${both ? ' (and `upstream:machine`; routed to platform)' : ''}${round > 1 ? ` (round ${round}: labelled again after an earlier mirror closed)` : ''}.`,
     '',
     `- Project item: \`${i.id}\` on ${p.project}'s board (P${Number.isInteger(i.priority) ? i.priority : '?'}, ${type}${who}).`,
@@ -149,7 +165,7 @@ async function mirror(p, i, round) {
     '',
     `upstream key: \`${key}\``,
   ].join('\n')
-  const r = await bd('POST', '/v0/beads/issues', { title: `[${p.project}] ${safeTitle(i.title) || i.id}`, issue_type: type, priority: prio, assignee, labels: ['upstream'],
+  const r = await bd('POST', '/v0/beads/issues', { title: `[${p.project}] ${safeTitle(i.title) || i.id}`, issue_type: type, priority: prio, assignee, labels: ['upstream', `act:${act}`],
     actor: ACTOR, owner: ACTOR, description: body })
   if (!r.id) throw new Error(`no id back for ${key}`)
   console.log(`${key}: mirrored as ${r.id} (${assignee})`)

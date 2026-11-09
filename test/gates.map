@@ -315,6 +315,7 @@ rule template/profiles/system/bin/upstream test/upstream.mjs
 rule template/profiles/system/bin/wt test/sysworkers.sh test/memory-links.sh test/lead.sh
 rule template/profiles/system/assistants/** test/assist.sh test/sentinel-assist.mjs
 rule template/profiles/system/leads/roles.json test/supervisor*.mjs test/upstream.mjs test/sysworkers.sh
+rule template/profiles/system/leads/raci.json test/upstream.mjs
 rule template/profiles/system/**  test/sysworkers.sh test/artifact.sh test/machine-panel.sh test/sentinel.sh
 
 # --- rules: the tests themselves ----------------------------------------------------------------------------------
