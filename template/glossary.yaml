@@ -122,6 +122,12 @@ terms:
     not: upgrade, sync
     owner: setup
     since: 2026-11-08 sy-ko6r
+  - term: rollout
+    kind: technical name
+    means: The run of mm update on the boards, one board after the other.
+    not: deploy, release
+    owner: setup
+    since: 2026-11-09 sy-ko6r
   - term: migration
     kind: technical name
     means: One change to the machine, written down with its rollback.
