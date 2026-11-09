@@ -1,4 +1,4 @@
-import type { Issue, LeadState } from './api'
+import { blockers, type Issue, type LeadState } from './api'
 
 import { messageRoles } from './message.mjs'
 import { setPersonaRoles } from './persona'
@@ -36,7 +36,7 @@ export const LEAD_READY: LeadState = { state: 'ready', label: 'ready', item: nul
 
 export const COLUMNS = [
   { key: 'ready', label: 'Ready', hint: 'Open, nothing blocking' },
-  { key: 'waiting', label: 'Waiting', hint: 'Blocked or waiting on another item' },
+  { key: 'waiting', label: 'Waiting', hint: 'Blocked or waiting on another item (the count leaves out what only waits for its rollout)' },
   { key: 'progress', label: 'In progress', hint: 'A lead is on it' },
   { key: 'done', label: 'Done', hint: 'Closed' },
 ] as const
@@ -50,6 +50,16 @@ export function columnOf(i: Issue, ready: Set<string>): ColumnKey {
   if (i.status === 'in_progress' || i.status === 'hooked') return 'progress'
   if (i.status === 'open' && ready.has(i.id)) return 'ready'
   return 'waiting'
+}
+
+// A rollout item (its act's label): work that waits only on one is done and ships with it, not blocked (sy-7n3c).
+export const ROLLOUT_LABELS = ['act:project-rollout', 'act:project-rollout-t2']
+/** The rollout items an open item waits on when every open blocker it has is one (it ships with them); else null (no
+ *  blocker, or one that is not a rollout: a real wait). The labels come with the board's list (byId), no fetch. */
+export function shipsWith(i: Issue, byId: Map<string, Issue>): string[] | null {
+  if (i.status === 'closed' || i.status === 'deferred') return null
+  const ids = blockers(i, byId)
+  return ids.length && ids.every((id) => (byId.get(id)!.labels || []).some((l) => ROLLOUT_LABELS.includes(l))) ? ids : null
 }
 
 export function roleOf(i: Issue): string {
