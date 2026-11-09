@@ -245,7 +245,9 @@ const LIST = [
     description: '## Owner\n- **What:** Fix the page.\n- **Why:** It shows a script.\n- **You:** Check: the <i>page</i>, on the board\n\nThe thread.' },
   { id: 'it-2', title: 'b', status: 'blocked', priority: 2, assignee: 'ops', labels: [], updated_at: '2026-11-05T10:00:00Z' },
   { id: 'it-3', title: 'c', status: 'in_progress', priority: 0, assignee: 'alex', labels: ['t2', 'signed-off'], updated_at: '2026-11-04T10:00:00Z' },
-  { id: 'it-4', title: 'd', status: 'open', priority: 3, assignee: 'bob', labels: ['t2', 'signed-off', 'approved'], updated_at: '2026-11-03T10:00:00Z' },
+  // approved for the card's Head (sy-6gz6: approved-head:<repo>@<sha>): no longer waits for the owner
+  { id: 'it-4', title: 'd', status: 'open', priority: 3, assignee: 'bob', labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3', 'approved', 'approved-head:mm@0a1b2c3'], updated_at: '2026-11-03T10:00:00Z',
+    description: '## Owner\n- **What:** Fix the page.\n- **Why:** It shows a script.\n- **You:** Tap Approve\n- **If yes:** Ops fixes it.\n- **If no:** It stays.\n- **Risk:** low, a page looks odd\n- **Head:** mm@0a1b2c3\n\nThe thread.' },
   { id: 'it-5', title: 'e', status: 'closed', priority: 0, assignee: 'alex', labels: ['needs-you'], updated_at: '2026-11-06T10:00:00Z' },
 ]
 // bd ready (the queues, for the worst signal; sy-6h43): ops' head has waited 40 min, a person's item is no role's queue
@@ -301,6 +303,9 @@ check "a member can assign and close (steering)" bash -c "[ \$(w PATCH '$MA' /it
 check "an unknown label field: refused (403)" test "$(w PATCH "$MA" /it-1 '{"patch":{"label_set":["approved"]}}')" = 403
 check "a member can't fake the author role label (403)" test "$(w POST "$MA" '' '{"title":"x","labels":["by:owner"]}')" = 403
 check "the owner gives the T2 go (add approved)" test "$(w PATCH "$OA" /it-1 '{"patch":{"add_labels":["approved"]}}')" = 200
+check "...with the head it is given for: the board adds approved-head:<the card's Head> to the same write (sy-6gz6)" bash -c "tail -1 '$T/bd.jsonl' | jq -e '.m == \"PATCH\" and .b.patch.add_labels == [\"approved\", \"approved-head:mm@0a1b2c3\"]'"
+check "...approved-head:* by hand: refused, to the owner too (403)" test "$(w PATCH "$OA" /it-1 '{"patch":{"add_labels":["approved-head:mm@9f8e7d6"]}}')" = 403
+check "...nor removed by hand (403)" test "$(w PATCH "$MA" /it-1 '{"patch":{"remove_labels":["approved-head:mm@0a1b2c3"]}}')" = 403
 # sy-l9uc (review's sy-16ml #2): the go comes after review's sign-off, on the board as on Telegram
 check "...but not on a t2 item review has not signed off (403, says why)" bash -c "[ \$(w PATCH '$OA' /it-9 '{\"patch\":{\"add_labels\":[\"approved\"]}}') = 403 ] && jq -e '.title | test(\"review has not signed it off yet\")' '$T/wb'"
 check "...nor by adding t2 and approved together to an item with no sign-off (403)" test "$(w PATCH "$OA" /it-10 '{"patch":{"add_labels":["t2","approved"]}}')" = 403
@@ -310,20 +315,21 @@ check "the owner changes a tier" test "$(w PATCH "$OA" /it-1 '{"patch":{"labels"
 check "not even the owner signs off for review (403)" test "$(w PATCH "$OA" /it-1 '{"patch":{"add_labels":["signed-off"]}}')" = 403
 check "a comment carries its author's role" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"looks good\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.text == \"[member] looks good\" and .b.author == \"alex\"'"
 check "...and its author is the signed-in person, whatever the body says" bash -c "[ \$(w POST '$MA' /it-1/comments '{\"text\":\"x\",\"author\":\"owner\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.author == \"alex\"'"
-check "the owner's approved on the public side goes to the board as the owner's signed name (what the Supervisor counts)" bash -c "[ \$(w PATCH '$OA' /it-1 '{\"patch\":{\"add_labels\":[\"approved\"]},\"actor\":\"bridge\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.actor == \"boss\" and .b.patch.add_labels == [\"approved\"]'"
+check "the owner's approved on the public side goes to the board as the owner's signed name (what the Supervisor counts)" bash -c "[ \$(w PATCH '$OA' /it-1 '{\"patch\":{\"add_labels\":[\"approved\"]},\"actor\":\"bridge\"}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.actor == \"boss\" and .b.patch.add_labels == [\"approved\", \"approved-head:mm@0a1b2c3\"]'"
 
 echo "== the local side never changes approved (sy-h2yt: a self-chosen name says nothing signed)"
 lw() { curl -s -o "$T/wb" -w '%{http_code}' -X "$1" -H 'content-type: application/json' -H "cookie: board_user=${4:-boss}" -d "$3" "http://127.0.0.1:$BL/api/v0/beads/issues$2"; }
 export -f lw; export BL T
 n0=$(wc -l <"$T/bd.jsonl")
 check "local side: adding approved is refused (403), even under the owner's name" test "$(lw PATCH /it-1 '{"patch":{"add_labels":["approved"]}}')" = 403
+check "...an approved-head:* too (403; sy-6gz6)" test "$(lw PATCH /it-1 '{"patch":{"add_labels":["approved-head:mm@9f8e7d6"]}}')" = 403
 check "...and it says where the owner approves" grep -q 'public address, or with the bridge' "$T/wb"
 check "...by a full label set (403)" test "$(lw PATCH /it-1 '{"patch":{"labels":["t2","bug","approved"]}}')" = 403
 check "...removing it (403)" test "$(lw PATCH /it-1 '{"patch":{"remove_labels":["approved"]}}')" = 403
 check "...on a new item (403)" test "$(lw POST '' '{"title":"x","labels":["t2","approved"]}')" = 403
 check "...through a label field it does not know (403)" test "$(lw PATCH /it-1 '{"patch":{"set_labels":["approved"]}}')" = 403
 check "...nothing of it reached bd (only reads)" bash -c "tail -n +$((n0 + 1)) '$T/bd.jsonl' | jq -e -s 'length > 0 and all(.m == \"GET\")'"
-check "...each refusal is logged" bash -c "grep -c 'refused on the local side' '$T/board/.run/logs/ops.log' | grep -qx 5"
+check "...each refusal is logged" bash -c "grep -c 'refused on the local side' '$T/board/.run/logs/ops.log' | grep -qx 6"
 check "local side: other labels as before (200, no author role label)" bash -c "[ \$(lw PATCH /it-1 '{\"patch\":{\"add_labels\":[\"urgent\"]}}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.patch.add_labels == [\"urgent\"] and .b.actor == \"boss\"'"
 check "...a new item with a tier, a full label set without approved that keeps the sign-off (200)" bash -c "[ \$(lw POST '' '{\"title\":\"x\",\"labels\":[\"t2\"]}') = 200 ] && [ \$(lw PATCH /it-1 '{\"patch\":{\"labels\":[\"t2\",\"bug\",\"urgent\",\"signed-off\",\"signed-head:mm@0a1b2c3\"]}}') = 200 ]"
 # sy-9bss: only review signs off; a self-chosen name is never a role's, so the local side refuses it to every visitor
@@ -413,7 +419,7 @@ check "the bridge not running (its socket left behind): 502, nothing approved" b
 check "ledger on, the whole time: no write reached bd" nowrites "$n1"
 aconf actor "$SOCK"
 check "verifier actor (today): the owner's whoami says approval label" bash -c "lwho '$OA' | jq -e '.approval == \"label\"'"
-check "...the owner's approved on the public side goes to bd as before (200, as boss)" bash -c "[ \$(lpw '$OA' '{\"patch\":{\"add_labels\":[\"approved\"]}}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.actor == \"boss\" and .b.patch.add_labels == [\"approved\"]'"
+check "...the owner's approved on the public side goes to bd as before (200, as boss)" bash -c "[ \$(lpw '$OA' '{\"patch\":{\"add_labels\":[\"approved\"]}}') = 200 ] && tail -1 '$T/bd.jsonl' | jq -e '.b.actor == \"boss\" and .b.patch.add_labels == [\"approved\", \"approved-head:mm@0a1b2c3\"]'"
 b4=$(brn)
 check "...and /api/approve adds approved as the owner itself (200, as boss; sy-92sg), nothing to the bridge" bash -c "[ \$(ap '$OA' '{\"item\":\"it-3\"}') = 200 ] && jq -e '.approved' '$T/ab' && grep '\"PATCH\"' '$T/bd.jsonl' | tail -1 | jq -e '.p == \"/v0/beads/issues/it-3\" and .b.actor == \"boss\" and .b.patch.add_labels == [\"approved\"]' && [ \$(brn) = $b4 ]"
 aconf ledger "$SOCK"

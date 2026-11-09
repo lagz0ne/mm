@@ -78,7 +78,7 @@ const items = [
   I('ap-3', ['needs-you'], { description: card('Nothing') }),
   I('ap-4', ['t2', 'signed-off']),
   I('ap-5', ['t2', 'signed-off', 'needs-you', SH], { description: card('Tap Approve') }),
-  I('ap-6', ['t2', 'signed-off']),
+  I('ap-6', ['t2', 'signed-off', SH], { description: card('Tap Approve') }),
   I('ap-7', ['t2', 'signed-off'], { status: 'closed' }),
   I('ap-10', ['t2', 'signed-off', 'needs-you', SH], { description: card('Tap Approve here or in Telegram') }),
   I('ap-11', ['needs-you'], { assignee: 'alex', description: card('Reply: which name do we use?') }),
@@ -97,6 +97,12 @@ const items = [
   // sy-w5az: the signed head, but the Task has no Rollback / no Safeguard
   I('ap-26', ['t2', 'signed-off', 'needs-you', SH], { description: card('Tap Approve', HEAD, '') }),
   I('ap-27', ['t2', 'signed-off', SH], { description: card('Tap Approve', HEAD, TASK.replace(/- \*\*Safeguard:\*\*.*\n/, '')) }),
+  // sy-6gz6: approved counts only for the head it was given for (approved-head:<repo>@<sha>)
+  I('ap-36', ['t2', 'signed-off', 'signed-head:mm@9f8e7d6', 'approved', 'approved-head:mm@0a1b2c3'], { description: card('Tap Approve', 'mm@9f8e7d6') }),
+  I('ap-37', ['t2', 'signed-off', SH, 'approved'], { description: card('Tap Approve') }),
+  I('ap-38', ['t2', 'signed-off', 'signed-head:mm@9f8e7d6', 'approved', 'approved-head:mm@0a1b2c3'], { description: card('Tap Approve', 'mm@9f8e7d6') }),
+  I('ap-39', ['t2', 'signed-off', SH, 'approved', `approved-head:${HEAD}`], { description: card('Tap Approve') }),
+  I('ap-44', ['t2', 'signed-off', 'signed-head:mm@9f8e7d6', 'approved', 'approved-head:mm@0a1b2c3'], { description: card('Tap Approve', 'mm@9f8e7d6') }),
   // sy-t9tg: t2 cards that ask something other than the go (no Head needed; never an Approve)
   I('ap-30', ['t2', 'signed-off', 'needs-you', SH], { description: card('Check: run ssh admin@host, then sudo -v, and say if it worked') }),
   I('ap-31', ['t2', 'needs-you'], { description: card('Reply: which account do we use?', '') }),
@@ -167,14 +173,15 @@ says() { title | grep -qF "$1"; }
 if [ "$MODE" = actor ]; then
 echo "== the owner's Approve on the board (verifier actor): approved as the owner, said on the item"
 check "a signed-off t2 without approved: 200, \"Approved on the board by boss.\"" eval '[ "$(act approve "$OA" "{\"item\":\"ap-1\"}")" = 200 ] && says "Approved on the board by boss."'
-check "...approved written as the owner's signed name (the journal's actor, what the Supervisor counts)" eval 'jq -s -e "[.[] | select(.m == \"PATCH\" and (.p | test(\"/ap-1\$\")) and .b.patch == {add_labels: [\"approved\"]})] | length == 1 and (.[0].b.actor == \"boss\")" "$T/bd.jsonl" && has ap-1 approved'
+check "...approved-head:<the card's Head> written with it, in the same write (sy-6gz6)" eval 'has ap-1 approved-head:mm@0a1b2c3'
+check "...approved written as the owner's signed name (the journal's actor, what the Supervisor counts)" eval 'jq -s -e "[.[] | select(.m == \"PATCH\" and (.p | test(\"/ap-1\$\")) and .b.patch == {add_labels: [\"approved\", \"approved-head:mm@0a1b2c3\"]})] | length == 1 and (.[0].b.actor == \"boss\")" "$T/bd.jsonl" && has ap-1 approved'
 check "...and needs-you removed, as the owner: the item no longer waits on them" eval 'lastw ap-1 PATCH | jq -e ".b.actor == \"boss\" and .b.patch == {remove_labels: [\"needs-you\"]}" && ! has ap-1 needs-you'
 check "...and a comment by boss: \"[owner] Approved on the board by boss.\" (no address in it)" eval 'lastw ap-1/comments POST | jq -e ".b.author == \"boss\" and .b.text == \"[owner] Approved on the board by boss.\""'
 check "...the board's log says who, what, which item (and from where)" eval 'grep "\"op\":\"owner-action\"" "$BLOG" | grep "\"action\":\"approve\"" | grep "\"item\":\"ap-1\"" | grep -q "\"actor\":\"boss\""'
 n=$(writes ap-1)
 check "twice: 409 \"already approved\", no second comment, nothing written" eval '[ "$(act approve "$OA" "{\"item\":\"ap-1\"}")" = 409 ] && says "already approved" && [ "$(writes ap-1)" = "$n" ]'
 # whichever comes first counts: the bridge's tap adds approved as bridge (ops' bridge); then the board's says so
-curl -s -o /dev/null -X PATCH -H 'content-type: application/json' -d '{"patch":{"add_labels":["approved"]},"actor":"bridge"}' "http://127.0.0.1:$BDP/v0/beads/issues/ap-6"
+curl -s -o /dev/null -X PATCH -H 'content-type: application/json' -d '{"patch":{"add_labels":["approved","approved-head:mm@0a1b2c3"]},"actor":"bridge"}' "http://127.0.0.1:$BDP/v0/beads/issues/ap-6"
 n=$(writes ap-6)
 check "the Telegram tap first (approved by bridge), the board's Approve second: 409 already approved, nothing written" eval '[ "$(act approve "$OA" "{\"item\":\"ap-6\"}")" = 409 ] && says "already approved" && [ "$(writes ap-6)" = "$n" ]'
 fi
@@ -219,6 +226,19 @@ check "Approve, the card's head is the signed head: 200, approved" eval '[ "$(ac
 else
 check "the label rail: approved is refused (the ledger's tap), nothing written" eval '[ "$(lab "$OA" ap-23 approved)" = 403 ] && [ "$(writes ap-23)" = 0 ]'
 fi
+echo "== approved counts only for the head it was given for (sy-6gz6)"
+if [ "$MODE" = actor ]; then
+check "approved for mm@0a1b2c3, the Head now mm@9f8e7d6 (signed): Approve is a new go: 200, not \"already approved\"" eval '[ "$(act approve "$OA" "{\"item\":\"ap-36\"}")" = 200 ] && says "Approved on the board by boss."'
+check "...approved-head:mm@9f8e7d6 written with approved, then the old approved-head:mm@0a1b2c3 removed" eval 'jq -s -e "[.[] | select(.m == \"PATCH\" and (.p | test(\"/ap-36\$\")))] | map(.b.patch) == [{add_labels: [\"approved\", \"approved-head:mm@9f8e7d6\"]}, {remove_labels: [\"approved-head:mm@0a1b2c3\"]}]" "$T/bd.jsonl" && has ap-36 approved-head:mm@9f8e7d6 && ! has ap-36 approved-head:mm@0a1b2c3'
+check "...then twice: 409 already approved (for this head)" eval '[ "$(act approve "$OA" "{\"item\":\"ap-36\"}")" = 409 ] && says "already approved"'
+check "an approved from before the head was recorded (no approved-head:): Approve is a new go, approved-head:mm@0a1b2c3 written" eval '[ "$(act approve "$OA" "{\"item\":\"ap-37\"}")" = 200 ] && has ap-37 approved-head:mm@0a1b2c3 && has ap-37 approved'
+check "approved for the card's Head: 409 already approved, nothing written" eval '[ "$(act approve "$OA" "{\"item\":\"ap-39\"}")" = 409 ] && says "already approved" && [ "$(writes ap-39)" = 0 ]'
+check "the label rail: the owner's approved gets approved-head:<the Head> added by the board" eval 'has ap-21 approved-head:mm@0a1b2c3 && lastw ap-21 PATCH | jq -e ".b.actor == \"boss\" and .b.patch.add_labels == [\"approved\", \"approved-head:mm@0a1b2c3\"]"'
+check "...an approved for an old head, the owner's approved label again: the new head in, the old one out" eval '[ "$(lab "$OA" ap-44 approved)" = 200 ] && has ap-44 approved-head:mm@9f8e7d6 && ! has ap-44 approved-head:mm@0a1b2c3'
+fi
+check "approved-head:* is the go's: the owner may not add it by hand (403), nothing written" eval '[ "$(lab "$OA" ap-25 approved-head:mm@0a1b2c3)" = 403 ] && says "only the owner'"'"'s go writes" && [ "$(writes ap-25)" = 0 ]'
+check "...nor a member" eval '[ "$(lab "$MA" ap-25 approved-head:mm@0a1b2c3)" = 403 ] && [ "$(writes ap-25)" = 0 ]'
+check "...nor the local side (even as review)" eval '[ "$(curl -s -o "$T/ab" -w "%{http_code}" -X PATCH -H "content-type: application/json" -d "{\"patch\":{\"add_labels\":[\"approved-head:mm@0a1b2c3\"]}}" http://127.0.0.1:$BL/api/v0/beads/issues/ap-25)" = 403 ] && [ "$(writes ap-25)" = 0 ]'
 check "signed-head:* is the leads': a member may not add it (403), nothing written" eval '[ "$(lab "$MA" ap-22 signed-head:mm@0a1b2c3)" = 403 ] && says "only the leads change \"signed-head:mm@0a1b2c3\"" && [ "$(writes ap-22)" = 0 ]'
 check "...nor the owner" eval '[ "$(lab "$OA" ap-22 signed-head:mm@0a1b2c3)" = 403 ] && says "only the leads change" && [ "$(writes ap-22)" = 0 ]'
 check "...nor remove it" eval 'curl -s -o "$T/ab" -X PATCH -H "content-type: application/json" -H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $OA" -H "origin: https://$BOARD" -H "sec-fetch-site: same-origin" -d "{\"patch\":{\"remove_labels\":[\"signed-head:mm@0a1b2c3\"]}}" "http://127.0.0.1:$BP/api/v0/beads/issues/ap-20" && says "only the leads change" && has ap-20 signed-head:mm@0a1b2c3'
@@ -266,6 +286,8 @@ check "...a moved head: the board's reason instead of Approve and Not now" eval 
 check "...no signed-head: the reason too" eval 'row ap-22 | grep -qF "No go yet: review&#39;s sign-off names no head (card: mm@0a1b2c3)." && ! row ap-22 | grep -q "value=\"approve\""'
 check "...the signed head, no Rollback or Safeguard (sy-w5az): the board's reason instead of Approve and Not now" eval 'row ap-26 | grep -qF "No go yet: the item&#39;s Task has no Rollback and no Safeguard line: a t2 go needs both" && ! row ap-26 | grep -q -e "value=\"approve\"" -e "value=\"not-now\""'
 check "...no Safeguard only: the reason names it" eval 'row ap-27 | grep -qF "No go yet: the item&#39;s Task has no Safeguard line" && ! row ap-27 | grep -q "value=\"approve\""'
+check "approved for an old head (sy-6gz6): on the list again, with Approve (a new go)" eval 'row ap-38 | grep -q "value=\"approve\"" && ! row ap-38 | grep -q "w-refused"'
+check "...approved for the card's Head: not on the list" eval '[ -z "$(row ap-39)" ]'
 check "...the signed head: Head and Approve, no reason" eval 'row ap-25 | grep -qF "<dt>Head</dt><dd>mm@0a1b2c3</dd>" && row ap-25 | grep -q "value=\"approve\"" && ! row ap-25 | grep -q "w-refused"'
 check "a signed-off t2 Reply: ask (sy-t9tg): \"needs you\", the reply box, no Approve, no Not now, no refusal note" eval 'row ap-32 | grep -q "needs you" && ! row ap-32 | grep -q "approve (t2" && row ap-32 | grep -q "<textarea id=\"r-acme-shop-ap-32\"" && ! row ap-32 | grep -q -e "value=\"approve\"" -e "value=\"not-now\"" -e "w-refused"'
 check "...a signed-off t2 Check: ask: Done, no Approve" eval 'row ap-33 | grep -qF "<input type=\"hidden\" name=\"a\" value=\"done\"><button type=\"submit\">Done</button>" && ! row ap-33 | grep -q -e "value=\"approve\"" -e "approve (t2"'

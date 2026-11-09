@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils'
 import { ThreadPresence } from '@/Presence'
 import { Designs } from '@/Designs'
 import { usePhone } from '@/lib/phone'
-import { headRefusal, isNonGoAsk, parseCard, youKind } from '@/lib/owner-card.mjs'
+import { approvalRefusal, headRefusal, isApproved, isNonGoAsk, parseCard, youKind } from '@/lib/owner-card.mjs'
 import { OwnerCard } from '@/OwnerCard'
 import { WaitsOn } from '@/Message'
 import { CommentBox, ThreadList } from '@/Thread'
@@ -91,11 +91,13 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
   // the owner card (sy-z5lz): read first, in its own box; the description below it without the card
   const card = parseCard(i?.description, i?.labels || [], i?.id)
   // sy-t9tg: a non-go ask (You: Reply:/Check:/Nothing) never gets Approve or Not now, only its own action (Reply, Done)
-  const t2go = !!i && !!approval && !!i.labels?.includes('t2') && !!i.labels?.includes('signed-off') && !i.labels?.includes('approved') && !isNonGoAsk(card.card)
+  const t2go = !!i && !!approval && !!i.labels?.includes('t2') && !!i.labels?.includes('signed-off') && !isApproved(i.description, i.labels || []) && !isNonGoAsk(card.card)
   // sy-hzmu: the card names a head review did not sign off, or (sy-w5az) the Task has no Rollback or Safeguard (the
   // server refuses the go anyway): the reason, no Approve
   const headWhy = t2go ? headRefusal(i!.description, i!.labels || []) : null
   const approvable = t2go && !headWhy
+  // sy-6gz6: an approved given for another head (or none) is no go: the owner sees why, and Approve gives a new one
+  const staleGo = t2go && !!i?.labels?.includes('approved') ? approvalRefusal(i!.description, i!.labels || []) : null
   // the owner's answer the card asks for (sy-t9tg), on the public side: a Reply box or Done
   const answer = youKind(card.card?.You ?? '')
 
@@ -182,6 +184,11 @@ export function Detail({ id, tick, byId, creator, onClose, onOpen, onChanged }: 
                 </>
               )}
             </div>
+            {staleGo && (
+              <p className="border-b border-l-4 border-l-swiss px-5 py-2 text-[11px] font-semibold text-swiss [overflow-wrap:anywhere]" data-go-stale="">
+                The old go does not count: {staleGo}.
+              </p>
+            )}
             {headWhy && (
               <p className="border-b border-l-4 border-l-swiss px-5 py-2 text-[11px] font-semibold text-swiss [overflow-wrap:anywhere]" data-head-refused="">
                 No go yet: {headWhy}. Review signs off the head the card names.

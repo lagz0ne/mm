@@ -16,7 +16,7 @@ import { exportQuery, flowRows, parseExport, PAIRS } from './flow-rows.mjs'
 import { waitingFor } from './waiting.mjs'
 import { toReview } from './review.mjs'
 import { designsApi } from './designs.mjs'
-import { headRefusal, isNonGoAsk, parseCard, SIGNED_HEAD } from '../bin/lib/owner-card.mjs'
+import { APPROVED_HEAD, goLabels, headRefusal, isApproved, isNonGoAsk, parseCard, SIGNED_HEAD } from '../bin/lib/owner-card.mjs'
 import { readGlossary } from '../bin/lib/glossary.mjs'
 import { SETUP_BRIEF } from '../bin/lib/message.mjs'
 import * as P_ from '../bin/lib/paseo.mjs'
@@ -108,8 +108,15 @@ async function readBody(req) {
 const OWNER_ONLY = new Set(['approved', 't1', 't2', 't3']), LEADS_ONLY = new Set(['signed-off', 'audit'])
 const LEADS_ONLY_PREFIX = [SIGNED_HEAD]
 const SIGNED_ONLY = new Set(['approved'])
+// `approved-head:<repo>@<sha>` (sy-6gz6: the head the go was given for) is written only by the board, next to the
+// owner's `approved` (the card's Head at that moment), and by the bridge: nobody adds or removes it by hand.
+const isApprovedHead = (l) => String(l).startsWith(APPROVED_HEAD)
 function railRefusal(role, added, removed) {
   for (const l of [...added, ...removed]) {
+    // ...but a full label set that gives or takes back the owner's go may leave out the old head (rails puts the new one)
+    const goWrite = role === 'owner' && (added.includes('approved') || removed.includes('approved'))
+    if (isApprovedHead(l) && goWrite && removed.includes(l) && !added.includes(l)) continue
+    if (isApprovedHead(l)) return `only the owner's go writes "${l}" (the board adds it with approved)`
     if (LEADS_ONLY.has(l) || LEADS_ONLY_PREFIX.some((p) => String(l).startsWith(p))) return `only the leads change "${l}"`
     if (OWNER_ONLY.has(l) && role !== 'owner') return `only the owner changes "${l}" (the T2 go and the risk tiers are the owner's)`
     if (/^by:/.test(l)) return 'the author role label is set by the board'
@@ -123,7 +130,7 @@ function railRefusal(role, added, removed) {
 const isReviewActor = (a) => a === 'review' || String(a || '').startsWith('review/')
 function localRefusal(actor, added, removed) {
   for (const l of [...added, ...removed]) {
-    if (SIGNED_ONLY.has(l)) return `"${l}" is not changed on the local side (the owner gives the T2 go signed in on the board's public address, or with the bridge's Approve button)`
+    if (SIGNED_ONLY.has(l) || isApprovedHead(l)) return `"${l}" is not changed on the local side (the owner gives the T2 go signed in on the board's public address, or with the bridge's Approve button)`
     if ((LEADS_ONLY_PREFIX.some((p) => String(l).startsWith(p)) || l === 'signed-off') && !isReviewActor(actor)) return `only review signs off (signed-off, signed-head:): ask review on the item ("${l}")`
   }
   return null
@@ -210,7 +217,8 @@ const NOT_A_GO = 'Not allowed: this item asks you something else; there is no go
  *  ask is answered with Reply or Done, never Approve or Not now), review's sign-off, not approved yet. The card is read
  *  here, at the go: nothing caches it. */
 function goState(item, labels, description) {
-  if (labels.has('approved')) return { code: 409, title: `${item} is already approved.`, already: true }
+  // already approved: for the card's Head now (sy-6gz6); an approved for another head is no go, and a new one may be given
+  if (isApproved(description, labels)) return { code: 409, title: `${item} is already approved.`, already: true }
   if (!labels.has('t2')) return { code: 403, title: 'Not allowed: not a t2 item, there is no T2 go to give.' }
   if (isNonGoAsk(parseCard(description, [...labels]).card)) return { code: 403, title: NOT_A_GO }
   const why = goRefusal(labels, description); if (why) return { code: 403, title: `Not allowed: ${why}.` }
@@ -235,7 +243,12 @@ async function webApprove(req, res) {
   const c = loadConf()
   if (c.verifier !== 'ledger') {
     // verifier actor: the owner's go, written as the owner (what the Supervisor counts), then said on the item
-    if (!(await bdLabels(item, g.u, { add_labels: ['approved'] }))) return send(res, 502, { title: 'The board could not write it: nothing was approved.' })
+    // with the head it is given for (sy-6gz6): approved-head:<the card's Head now>, in the same write; then any other
+    // approved-head:* goes (until then the item names two heads, and approved counts for neither)
+    const go = goLabels(a.description, a.labels)
+    if (!go) return send(res, 403, { title: 'Not allowed: the card names no Head to approve.' })
+    if (!(await bdLabels(item, g.u, { add_labels: go.add }))) return send(res, 502, { title: 'The board could not write it: nothing was approved.' })
+    if (go.remove.length && !(await bdLabels(item, g.u, { remove_labels: go.remove }))) log('warn', `approve of ${item}: an old ${APPROVED_HEAD}* stays (${go.remove.join(', ')}): approved counts for no head until it goes`, { op: 'approve', actor: g.u, item })
     const said = await bdComment(item, g.u, `Approved on the board by ${g.u}.`)
     // the owner has done what was asked: the item no longer waits on them
     const dropped = a.labels.has('needs-you') ? await bdLabels(item, g.u, { remove_labels: ['needs-you'] }) : null
@@ -314,7 +327,26 @@ async function rails(req, apiPath, data) {
     const after = new Set([...it.labels, ...ch.added].filter((l) => !ch.removed.includes(l)))
     // the description after the write: the one it sets, else the item's own (sy-hzmu: the card's Head)
     const set = create ? data.description : data.patch?.description
-    const why = goRefusal(after, typeof set === 'string' ? set : it.description); if (why) return why
+    const desc = typeof set === 'string' ? set : it.description
+    const why = goRefusal(after, desc); if (why) return why
+    // the head the go is given for (sy-6gz6), in the same write: approved-head:<the card's Head after it>, and no other
+    const go = after.has('t2') ? goLabels(desc, [...after]) : null
+    if (go) {
+      if (create) data.labels = [...new Set([...(data.labels || []), ...go.add])]
+      else if (Array.isArray(data.patch.labels)) data.patch.labels = [...new Set([...data.patch.labels.filter((l) => !isApprovedHead(l)), ...go.add])]
+      else {
+        data.patch.add_labels = [...new Set([...(data.patch.add_labels || []), ...go.add])]
+        if (go.remove.length) data.patch.remove_labels = [...new Set([...(data.patch.remove_labels || []), ...go.remove])]
+      }
+    }
+  } else if (ch.removed.includes('approved') && !(req.method === 'POST' && apiPath === '/v0/beads/issues')) {
+    // the go taken back: its head goes with it
+    const it = await currentItem(apiPath.split('/').pop())
+    const heads = (it?.labels || []).filter(isApprovedHead)
+    if (heads.length) {
+      if (Array.isArray(data.patch.labels)) data.patch.labels = data.patch.labels.filter((l) => !isApprovedHead(l))
+      else data.patch.remove_labels = [...new Set([...(data.patch.remove_labels || []), ...heads])]
+    }
   }
   if (req.method === 'POST' && apiPath === '/v0/beads/issues') data.labels = [...new Set([...(data.labels || []), `by:${g.r}`])]
   else if (apiPath.endsWith('/comments')) data.text = `[${g.r}] ${String(data.text || '')}`
@@ -513,7 +545,7 @@ async function sendSummary(req, res, signal = false) {
   for (const i of open) { const t = Date.parse(i.updated_at); if (t > last) last = t }
   const now = Date.now(), min = (i) => Math.max(0, Math.floor((now - (Date.parse(i.updated_at) || now)) / 60000))
   // an approval: not a non-go ask (sy-t9tg: it waits on the owner only with needs-you); no card counts (refused at the go)
-  const approval = (i) => owner && labels(i).includes('t2') && labels(i).includes('signed-off') && !labels(i).includes('approved')
+  const approval = (i) => owner && labels(i).includes('t2') && labels(i).includes('signed-off') && !isApproved(i.description, labels(i))
     && !isNonGoAsk(parseCard(i.description, labels(i)).card)
   const waits = open.filter((i) => labels(i).includes('needs-you') || approval(i))
   let worst = null
