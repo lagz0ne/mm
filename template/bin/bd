@@ -60,6 +60,14 @@ case "$cmd" in
   update|edit)
     for a in "$@"; do case "$a" in --) break ;; -d|--description|--description=*|--body-file|--body-file=*|--stdin) "$P/bin/task" gate "$actor" -- "$@" || exit 1; break ;; esac; done ;;
 esac
+# Closing an item removes needs-you (sy-e234): a closed item waits on nobody. After bd close, or update/edit that names
+# the status closed, bin/owner-card closed reads each named item and removes needs-you from those closed now (wake's
+# closes run through here too). bd's exit status is kept; nothing is added to its stdout.
+closes=''
+case "$cmd" in
+  close) closes=1 ;;
+  update|edit) for a in "$@"; do case "$a" in --) break ;; closed|--status=closed) closes=1; break ;; esac; done ;;
+esac
 unset actor cmd sub next
 export BEADS_DIR="$P/control/.beads" XDG_CONFIG_HOME="$P/.config" DOLT_ROOT_PATH="$P/.dolt-root" PATH="$P/tools:$PATH"
 # Talk to Dolt through its Unix socket when it runs with one (services.json); otherwise the TCP port in metadata.
@@ -75,4 +83,7 @@ export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=beads.role GIT_CONFIG_VALUE_0=maintai
 # prefers that path to $XDG_CONFIG_HOME/bd). The env turns them off without a config write; metrics.* in `bd config`
 # are user-global keys, so setting them would write ~/.config/bd too.
 export BD_DISABLE_METRICS=1 BD_DISABLE_EVENT_FLUSH=1
-exec "$P/tools/bd" "$@"
+[ -n "$closes" ] || exec "$P/tools/bd" "$@"
+"$P/tools/bd" "$@"; rc=$?
+"$P/bin/owner-card" closed -- "$@" >&2 || :
+exit $rc

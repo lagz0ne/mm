@@ -15,7 +15,12 @@
 //                                  A t2 go ask's Task also has a Rollback and a Safeguard line (sy-w5az; task.mjs
 //                                  goTaskRefusal); a non-go ask needs neither. A card whose You is "Nothing" asks
 //                                  the owner nothing: needs-you on it is refused (sy-e234).
-//                                  Removing needs-you, or any other call: exit 0.
+//                                  A closed item waits on nobody: needs-you on it is refused, unless the same call
+//                                  reopens it (sy-e234). Removing needs-you, or any other call: exit 0.
+//   owner-card closed -- <bd args> bin/bd runs it after a call that closes items (close, update/edit --status closed):
+//                                  each named item that is closed now and still has needs-you loses it (bd label
+//                                  remove, as the same actor), so a closed item never waits on the owner (sy-e234).
+//                                  Prints nothing on stdout (bd's own --json output stays whole); exit 0.
 //   owner-card signoff -- <bd args> bin/bd runs it when its actor is not review and its arguments name signed-off or
 //                                  signed-head: (or set labels): refuses (exit 1) a call that adds or removes one
 //                                  (sy-9bss: only review signs off). For review it runs when an argument names
@@ -48,7 +53,7 @@ function show(id) {
   let j; try { j = JSON.parse(out) } catch { throw new Error(`cannot read ${id} (bd show gave no JSON)`) }
   const i = Array.isArray(j) ? j[0] : j
   if (!i || typeof i !== 'object') throw new Error(`no item ${id}`)
-  return { description: typeof i.description === 'string' ? i.description : '', labels: Array.isArray(i.labels) ? i.labels : [] }
+  return { description: typeof i.description === 'string' ? i.description : '', labels: Array.isArray(i.labels) ? i.labels : [], status: typeof i.status === 'string' ? i.status : '' }
 }
 /** The writing check's setting: the board's glossary (both files), the word list and the role ids. */
 function writing() {
@@ -201,9 +206,31 @@ function gate(argv) {
   }
   if (creating) { check('the new item', desc ?? '', adding); process.exit(0) }
   if (!ids.length) refuse(['(the call)'], `${addsNY ? LABEL : T2} is added to no item I can name`)
+  const status = values('-s', '--status').pop()
   for (const id of ids) {
     let it; try { it = show(id) } catch (e) { refuse([id], e.message) }
+    // sy-e234: a closed item waits on nobody (unless this call reopens it); closing one removes needs-you (closed())
+    if (addsNY && (status ?? it.status) === 'closed') refuse([id], `it is closed: a closed item waits on nobody. Reopen it first (bd reopen ${id}), or leave ${LABEL} off.`)
     check(id, desc ?? it.description, set ?? [...new Set([...it.labels, ...adding])], id)
+  }
+  process.exit(0)
+}
+
+// Closing an item removes needs-you (sy-e234): bin/bd runs this after bd close (and update/edit --status closed), done
+// or not; each item it names that bd shows as closed now and still labelled needs-you loses the label, written by the
+// same actor through this bin/bd. An item it cannot read, or still open, is left as it is.
+function closed(argv) {
+  const { cmd, args, values } = parse(argv)
+  if (cmd === 'update' || cmd === 'edit') { if (values('-s', '--status').pop() !== 'closed') process.exit(0) }
+  else if (cmd !== 'close') process.exit(0)
+  const actor = values('--actor').pop()
+  for (const id of new Set(args)) {
+    let it; try { it = show(id) } catch { continue }
+    if (it.status !== 'closed' || !it.labels.includes(LABEL)) continue
+    try {
+      execFileSync(path.join(P, 'bin', 'bd'), ['label', 'remove', id, LABEL, ...(actor ? ['--actor', actor] : [])], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 30000 })
+      console.error(`bd: ${id} is closed: ${LABEL} removed (a closed item waits on nobody)`)
+    } catch (e) { console.error(`bd: ${id} is closed but its ${LABEL} could not be removed: ${String(e.stderr || e.message).trim().split('\n').pop().slice(0, 200)}`) }
   }
   process.exit(0)
 }
@@ -230,6 +257,8 @@ if (cmd === 'check') {
   process.exit(1)
 } else if (cmd === 'gate') {
   gate(rest[0] === '--' ? rest.slice(1) : rest)
+} else if (cmd === 'closed') {
+  closed(rest[0] === '--' ? rest.slice(1) : rest)
 } else if (cmd === 'signoff') {
   signoff(rest[0] === '--' ? rest.slice(1) : rest)
-} else die('usage: owner-card check <id> | owner-card check - [--t2] | owner-card gate -- <bd args> | owner-card signoff -- <bd args>')
+} else die('usage: owner-card check <id> | owner-card check - [--t2] | owner-card gate -- <bd args> | owner-card closed -- <bd args> | owner-card signoff -- <bd args>')
