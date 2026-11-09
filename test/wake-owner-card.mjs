@@ -58,6 +58,7 @@ add('b-1', { assignee: 'ops' }) // blocked by the Lead itself: nobody else to ta
 add('u-1', { labels: ['upstream:engine'] }) // waits on the system board
 add('r-1', { description: CARD }) // bd show answers with no card (it changed under wake): the gate refuses
 add('h-5', { description: CARD.replace('Reply: which name?', 'Nothing') }) // a card that asks nothing: never needs-you
+add('h-6', { description: CARD, status: 'closed' }) // a closed item waits on nobody (sy-e234): never needs-you
 // the owner's answer (sy-e234): a person's comment on a needs-you item with a Reply/Check card removes needs-you
 const CHECK = CARD.replace('Reply: which name?', 'Check: the page at 390 px')
 add('a-1', { description: CARD, labels: ['needs-you'] })
@@ -174,6 +175,8 @@ try {
     && !has('h-1', 'needs-you') && I('h-1').description === 'Old text.\n\nSecond paragraph, `as is`.' && !/h-1/.test(bdlog()))
   change('h-5', 'platform', { assignee: 'alex' })
   ok('a card whose You is Nothing: no needs-you (it asks nothing)', await until(() => /h-5: its owner card asks the owner nothing/.test(opsLog())) && !has('h-5', 'needs-you') && !/h-5/.test(bdlog()))
+  change('h-6', 'platform', { assignee: 'alex' })
+  ok('a closed item handed to a person: no needs-you, no bd call (a closed item waits on nobody)', !(await until(() => has('h-6', 'needs-you') || /h-6/.test(bdlog()), 1500)))
   change('h-2', 'platform', { assignee: 'alex' })
   ok('a valid card already there: only the label', await until(() => has('h-2', 'needs-you')) && I('h-2').description === CARD && !/update h-2 /.test(bdlog()))
   change('h-3', 'platform', { assignee: 'alex' })
