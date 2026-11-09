@@ -55,6 +55,11 @@
 //                        changed in the last 24 h: per kind and part type the count, the size (median, max), the most
 //                        common leading words of text parts; per typed field, the misc text it could hold and its
 //                        items. Data only; edited in place; none on a day with no block                         P4
+//     suite:<suite>      a test suite of mm's gates that is flaky (failed, then passed alone) twice in 7 days, or slower
+//                        than 300 s in each of its last 3 runs outside the docker and live groups; read from the gates'
+//                        history (sy-sbjh.4: MM_GATES_HISTORY, else ~/.cache/mm-gates/history.jsonl; none: no
+//                        finding). One item per suite ("Flaky suite: <suite>", "Slow suite: <suite> (<secs> s)"), to
+//                        platform; a comment when its runs change                                                 P1
 //     supervisor:<check> the supervisor could not read a source (that check's items are left as they are)     P2
 // Sources, all read-only: the board (bd serve: items, ready, the event journal), Paseo (leads by label project/role),
 // `mm ls` (project roots), git (log, status, worktree list). A reply, a comment or a change means one by a lead, its
@@ -764,6 +769,47 @@ async function overcap() {
   return { prefix: 'overcap:', problems }
 }
 
+// A slow or flaky suite (sy-sbjh.4): mm's test/gates appends one line per suite per run to its history ({suite, head,
+// group, status: passed|failed|flaky|skipped, secs, date}, oldest first). A flaky one (it failed, then passed alone)
+// twice in 7 days, or one slower than SLOW_SECS in each of its last 3 runs (outside docker and live, the slow groups by
+// design), is one item per suite to platform. No history file: nothing to see. A line that is not one is skipped.
+const GATES_HISTORY = E.MM_GATES_HISTORY || path.join(HOME, '.cache', 'mm-gates', 'history.jsonl')
+const FLAKY = { n: 2, days: 7 }, SLOW_SECS = 300, SLOW_RUNS = 3
+const SUITE = /^[\w.\/-]{1,200}$/
+async function suites() {
+  let text
+  try { text = fs.readFileSync(GATES_HISTORY, 'utf8') } catch (e) { if (e.code === 'ENOENT') return { prefix: 'suite:', problems: [] }; throw e }
+  const by = new Map()
+  for (const l of text.split('\n')) {
+    let e; try { e = JSON.parse(l) } catch { continue }
+    if (!e || typeof e !== 'object' || !SUITE.test(String(e.suite)) || typeof e.status !== 'string') continue
+    if (!by.has(e.suite)) by.set(e.suite, [])
+    by.get(e.suite).push(e)
+  }
+  const problems = [], short = (h) => String(h || '?').slice(0, 7), secs = (e) => Math.round(Number(e.secs) || 0)
+  const run = (e) => `${at(ms(e.date))} ${short(e.head)} ${e.status} ${secs(e)} s`
+  for (const [suite, es] of [...by].sort(([a], [b]) => a.localeCompare(b))) {
+    const flaky = es.filter((e) => e.status === 'flaky' && ms(e.date) > NOW - FLAKY.days * 24 * 3600e3 && ms(e.date) <= NOW + 3600e3)
+    const ran = es.filter((e) => ['passed', 'failed', 'flaky'].includes(e.status)), last = ran.slice(-SLOW_RUNS)
+    const group = String(es.at(-1).group || '')
+    const slow = !['docker', 'live'].includes(group) && last.length === SLOW_RUNS && last.every((e) => Number(e.secs) > SLOW_SECS)
+    const isFlaky = flaky.length >= FLAKY.n
+    if (!isFlaky && !slow) continue
+    const s = slow ? secs(last.at(-1)) : 0
+    const title = isFlaky && slow ? `Flaky and slow suite: ${suite} (${s} s)` : isFlaky ? `Flaky suite: ${suite}` : `Slow suite: ${suite} (${s} s)`
+    const lines = [...(isFlaky ? [`flaky ${flaky.length} times in ${FLAKY.days} days:`, ...flaky.map(run)] : []),
+      ...(slow ? [`its last ${SLOW_RUNS} runs over ${SLOW_SECS} s (group ${group}):`, ...last.map(run)] : [])]
+    problems.push({ key: `suite:${suite}`, priority: 1, assignee: ROLES.includes('platform') ? 'platform' : ASSIGNEE, labels: ['act:mm-template'], title,
+      note: lines.join('\n'),
+      body: `The gates suite \`${suite}\` (group ${group || '?'}) ${isFlaky ? `was flaky ${flaky.length} times in ${FLAKY.days} days (it failed, then passed when run alone: test/gates' rerun)` : ''}` +
+        `${isFlaky && slow ? ', and ' : ''}${slow ? `took over ${SLOW_SECS} s in each of its last ${SLOW_RUNS} runs` : ''}, from the gates' history:\n\n${fence(lines.join('\n'))}\n\n` +
+        `${isFlaky ? 'A flaky suite passes the gates but hides real failures: find what it shares under load (a port, a fixed name, a timing) and make it hermetic. ' : ''}` +
+        `${slow ? 'A slow suite holds every gates run: split it, or move its slow part to the docker or live group. ' : ''}` +
+        'This item closes itself when the history no longer shows it.' })
+  }
+  return { prefix: 'suite:', problems }
+}
+
 // Two leads of one role (sy-p8pc): wake archives an older lead on each of its passes (one in a turn when the turn
 // ends), so two seen on two passes in a row mean that is not happening. A line in the role's digest. A worker
 // (role=<role>-worker) is not listed here, and a person's run (label person, or its title "(for <person>)") is not a
@@ -790,7 +836,7 @@ for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')
 }
 const results = [], failed = []
 const failure = (name, e) => ({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) })
-for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card, signoff, tasks, placements })) {
+for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card, signoff, tasks, placements, suites })) {
   try { results.push(...[await fn()].flat()) } catch (e) { failed.push(failure(name, e)) }
 }
 await paseo.close()
