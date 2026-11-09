@@ -148,6 +148,7 @@ suite test/bd-autostart.sh        ports -- {bd} {dolt}
 # docker: throwaway containers, one at a time
 suite test/mm-docker-container.sh docker
 suite test/box-egress.sh          docker
+suite test/box-tools.sh           docker
 suite test/front-container.sh     docker
 suite test/doop-container.sh      docker
 suite test/doop-designs.sh        docker
@@ -200,7 +201,7 @@ set engine test/schema.mjs test/placements.mjs test/structured.sh
 set engine test/span-answers.sh test/init-retry.sh test/dolt-run.sh test/backup-data.sh test/pc-skipped.sh @site @render
 
 # the containers built from box/ and the Docker wrapper
-set containers test/mm-docker-container.sh test/box-egress.sh test/front-container.sh test/doop-container.sh
+set containers test/mm-docker-container.sh test/box-egress.sh test/front-container.sh test/doop-container.sh test/box-tools.sh
 set containers test/doop-designs.sh test/doop-gateway.sh test/box.sh test/doop.sh
 
 # --- rules: mm's CLI ----------------------------------------------------------------------------------------------
@@ -233,7 +234,7 @@ rule deps/**                      test/npm-lock.sh test/mm-paseo.sh test/clean-b
 
 rule box/mm-docker                test/mm-docker.sh test/mm-docker-container.sh @containers
 rule box/mm-approve               test/mm-approve.sh test/flow.mjs test/supervisor.mjs test/board-approve.sh
-rule box/Dockerfile               test/front-container.sh test/box-egress.sh test/box.sh
+rule box/Dockerfile               test/box-tools.sh test/front-container.sh test/box-egress.sh test/box.sh
 rule box/npm/**                   test/front-container.sh test/box.sh
 rule box/paseo-join.mjs           test/box.sh
 rule box/egress.Dockerfile        test/box-egress.sh test/box.sh
