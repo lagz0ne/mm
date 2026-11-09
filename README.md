@@ -130,6 +130,9 @@ More on the inside of a project: [docs/project-model.md](docs/project-model.md).
 ```sh
 bun install
 bun run build                # packs template/ into the binary: dist/mm
+test/gates main..HEAD --list # which suites a change needs, and why (the rules: test/gates.map)
+test/gates main..HEAD --no-live   # runs them on HEAD's content in a throwaway worktree (its own mm build, never
+                             # dist/mm); docker and ports suites one at a time; gates-<head>.txt + each suite's log
 test/lifecycle.sh <old-template-dir>   # on a real machine: new -> update -> restart -> crash -> archive -> restore
 test/needs-fill.sh           # mm needs / mm fill, hermetic (throwaway HOME)
 test/obs-home.sh             # a throwaway MM_HOME ships no spans or endpoints: only the home whose stores keep data there does

@@ -12,6 +12,8 @@ OLD=${1:?old template dir}; REF=${2:-qa/life}
 CLIENT=${REF%/*}; NAME=${REF#*/}; PROJECT="$CLIENT-$NAME"; ROOT="$PROJECTS_DIR/$REF"
 PC="process-compose -U -u $HOME/.mm/pc.sock"
 export PATH="$HOME/.mm/bin:$HOME/.mm/npm/bin:$HOME/.local/bin:$PATH:/usr/sbin:/sbin"   # ss is in /usr/sbin
+# MM_BIN_DIR=<folder>: its mm instead of the installed one (test/gates: one built from the head); unset: as before
+[ -z "${MM_BIN_DIR:-}" ] || export PATH="$MM_BIN_DIR:$PATH"
 . "$(dirname "$0")/lib/routes.sh"   # this run's routes in its own folder, never in the live web proxy (review sy-uzh)
 . "$(dirname "$0")/lib/paseo.sh"    # at the end: the Paseo workspaces and projects this run made are archived and removed
 unset PASEO_AGENT_ID PASEO_AGENT_CWD   # run from inside an agent: these would override `paseo run --cwd` (the probe must live in the project)
