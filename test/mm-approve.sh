@@ -46,6 +46,8 @@ nodev() { js 'import(process.argv[1]).then((m) => { const l = m.readLedger(); co
 verify_yes() { [ $ETC = no ] && "$A" verify "$1" "$2" | grep -q '^yes' && [ "$(nodev "$1" "$2")" = yes ]; }
 verify_no() { ! "$A" verify "$1" "$2" >/dev/null 2>&1 && [ "$(nodev "$1" "$2")" = no ]; }
 vyes() { if [ $ETC = yes ]; then skip=$((skip+1)); echo "  skip $1 (this machine has /etc/mm-approve.conf)"; else check "$1" verify_yes "$2" "$3"; fi; }
+# vcheck: a check of the verifier side (`check` reads /etc's config too when there is one)
+vcheck() { if [ $ETC = yes ]; then skip=$((skip+1)); echo "  skip $1 (this machine has /etc/mm-approve.conf)"; else check "$@"; fi; }
 vno() { if [ $ETC = yes ]; then skip=$((skip+1)); echo "  skip $1 (this machine has /etc/mm-approve.conf)"; else check "$1" verify_no "$2" "$3"; fi; }
 refused() { local want=$1; shift; out=$("$@" 2>&1); rc=$?; [ $rc -ne 0 ] && grep -q 'refused' <<<"$out" && { [ "$want" = - ] || [ $rc = "$want" ]; }; }
 lines() { grep -c . "$D/ledger.jsonl"; }
@@ -58,7 +60,7 @@ check 'the private folder is 0700, the key 0600' bash -c "[ $(mode "$D/private")
 check 'the public key and the ledger are 0644' bash -c "[ \$(stat -c %a '$D/key.pub') = 644 ] && [ \$(stat -c %a '$D/ledger.jsonl') = 644 ]"
 check 'a second keygen is refused (one key)' refused - "$A" keygen
 install -m 0644 "$D/key.pub" "$P/key.pub" # ops' step: the public key where the config says (root's on the machine)
-check 'check: no problems' "$A" check
+vcheck 'check: no problems' "$A" check
 
 step 'the good path: offer, the owner taps, a signed line, both verifiers say yes'
 plan sy-a $'Plan for sy-a: open port 8443.\nRollback: close it.\n' "$T/b1" "$T/bh"
@@ -123,7 +125,7 @@ vyes 'the good lines still count around them' sy-a "$S1"
 
 step 'the ledger\x27s owner and mode (condition 8): with any wrong, nothing counts'
 chmod 666 "$D/ledger.jsonl"; vno 'the ledger world-writable: no' sy-a "$S1"; chmod 664 "$D/ledger.jsonl"; vno 'the ledger group-writable: no' sy-a "$S1"; chmod 644 "$D/ledger.jsonl"
-check 'check names the problem' bash -c "chmod 666 '$D/ledger.jsonl'; '$A' check | grep -q writable; r=\$?; chmod 644 '$D/ledger.jsonl'; exit \$r"
+vcheck 'check names the problem' bash -c "chmod 666 '$D/ledger.jsonl'; '$A' check | grep -q writable; r=\$?; chmod 644 '$D/ledger.jsonl'; exit \$r"
 chmod 775 "$D"; vno 'its folder group-writable: no' sy-a "$S1"; chmod 755 "$D"
 chmod 664 "$P/key.pub"; vno 'the public key group-writable: no' sy-a "$S1"; chmod 644 "$P/key.pub"
 ln "$D/ledger.jsonl" "$T/hardlink"; vno 'the ledger with a second link: no' sy-a "$S1"; rm "$T/hardlink"
