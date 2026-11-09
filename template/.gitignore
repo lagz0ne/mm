@@ -41,3 +41,5 @@ secrets/
 .wake-state.json
 .wake-state.json.tmp
 .deploy.lock
+# What people upload to an item (sy-seqz, the board's inbox): the leads read it there; it is never committed.
+inbox/

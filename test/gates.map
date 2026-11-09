@@ -122,6 +122,7 @@ suite test/board-thread.mjs       hermetic needs=site
 suite test/board-structured.mjs   hermetic needs=site
 suite test/board-for-you.mjs      hermetic needs=site
 suite test/board-ships.mjs        hermetic needs=site
+suite test/board-inbox.mjs        hermetic needs=site
 suite test/wake-person-to.mjs     hermetic
 suite test/schema.mjs             hermetic
 suite test/placements.mjs         hermetic
@@ -186,7 +187,7 @@ set render test/engine-drift.sh test/template-base.sh test/update-lock.sh test/a
 # the built site in a browser (Playwright)
 set browser test/board-artifacts.mjs test/board-message.mjs test/board-owner-card.mjs test/board-phone.mjs
 set browser test/board-phone-space.mjs test/board-space.mjs
-set browser test/board-ships.mjs
+set browser test/board-ships.mjs test/board-inbox.mjs
 
 # the board's site and its server
 set site test/board-*.mjs test/lead-state.mjs test/config-review.mjs test/project-item.mjs test/waiting-phone.mjs
@@ -267,7 +268,7 @@ rule template/bin/lib/allow-only.mjs test/allow-only.mjs test/sysworkers.sh
 rule template/bin/lib/assist.mjs  test/assist.sh test/sentinel-assist.mjs
 rule template/bin/lib/guard-rules.mjs test/guard.sh test/sysworkers.sh
 rule template/bin/lib/ledger.mjs  test/mm-approve.sh test/guard.sh test/board-approve.sh
-rule template/bin/lib/secret-scan.mjs test/artifact.sh test/board-artifacts.mjs test/guard.sh
+rule template/bin/lib/secret-scan.mjs test/artifact.sh test/board-artifacts.mjs test/guard.sh test/board-inbox.mjs
 rule template/bin/lib/doop-init.mjs test/box-doop.sh test/doop-container.sh test/doop-gateway.sh test/doop.sh
 rule template/bin/lib/flow.mjs    test/flow.mjs test/board-pull.mjs
 rule template/bin/flow            test/flow.mjs test/board-pull.mjs
@@ -301,7 +302,7 @@ rule template/bin/deploy          @engine
 rule template/services.yaml       @cli test/bd-autostart.sh test/box.sh test/doop.sh test/clean-box.sh
 rule template/tools.json          test/bd-autostart.sh test/bd-home.sh test/init-retry.sh test/clean-box.sh test/restore-drill.sh test/box.sh
 rule template/secrets.json        test/needs-fill.sh test/vault.sh test/sync.sh test/restore.sh test/api.sh test/board-artifacts.mjs
-rule template/.gitignore          test/artifact.sh test/board-artifacts.mjs test/restore.sh test/sync.sh test/supervisor.mjs
+rule template/.gitignore          test/artifact.sh test/board-artifacts.mjs test/board-inbox.mjs test/restore.sh test/sync.sh test/supervisor.mjs
 rule template/leads/roles.json    test/wake-*.mjs test/supervisor*.mjs test/flow.mjs test/message.mjs test/lead.sh test/bd-actor.sh test/auth.sh test/board-approve.sh test/person-run.sh test/box-person-runs.sh test/doop-designs.sh
 rule template/leads/raci.json     test/wake-*.mjs test/lead.sh
 rule template/leads/design/**     test/doop.sh test/doop-designs.sh

@@ -542,6 +542,9 @@ function upUnder022(root: string): Step[] {
   // is never a live box daemon's (that one writes it as the box user); left there, the box's Paseo can't take it over
   // (EPERM on utime: only a file's owner may set its times). Removed; a link there is removed, never followed.
   try { const pf = join(paseoHome, 'paseo.pid'); if (lstatSync(pf).uid === process.getuid?.()) rmSync(pf, { force: true }) } catch {}
+  // the items' inbox (sy-seqz): the board in the box writes there, and the top level is not the box's to write (below),
+  // so mm makes it: a real folder (the board refuses a link there), group-writable as the rest
+  try { lstatSync(join(root, 'inbox')) } catch { mkdirSync(join(root, 'inbox'), { mode: 0o2770 }) }
   // what the box writes: group-writable (setgid folders keep the group), so the box's uid and the host's owner share it
   for (const d of [root, paseoHome, claude]) {
     mkdirSync(d, { recursive: true, mode: 0o2770 })
