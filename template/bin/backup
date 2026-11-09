@@ -9,6 +9,7 @@
 #     doop.tar.gz        the project's Doop: canvases and assets (data/doop/), when it has one (not when its container
 #                        stays away ~30 s: "doop skipped" in the summary, exit 0)
 #     data/              the app's data (release/data/: what the app slot keeps, e.g. accounts and sessions), when it has one
+#     app/               the app's DATA_DIR (data/app/, outside release/), when it has one
 # Everything is user-only (dirs 0700, files 0600): data/ can hold password and session hashes.
 # Keeps the newest 14. Same disk (RAID1): protects against mistakes and corruption, not disk loss; off-site is separate.
 [ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" backup -- "$0" "$@"
@@ -35,10 +36,13 @@ git -C "$P" bundle create -q "$D/config.bundle" --all
 [ -f "$P/.releases" ] && cp "$P/.releases" "$D/releases"
 # the app's data, copied file by file while it runs: it replaces each file by atomic rename, so every copy is whole.
 # Skips its *.tmp write files and files that vanish mid-copy; umask 077 makes the copies 0600 whatever the source modes.
-if [ -d "$P/release/data" ]; then
-  (cd "$P/release/data" && find . -type f ! -name '*.tmp' -exec sh -c '
-    for f; do mkdir -p "$0/${f%/*}"; cp --preserve=timestamps "$f" "$0/$f" 2>/dev/null || [ ! -e "$f" ]; done' "$D/data" {} +)
-fi
+copydata() { [ -d "$1" ] || return 0
+  (cd "$1" && find . -type f ! -name '*.tmp' -exec sh -c '
+    for f; do mkdir -p "$0/${f%/*}"; cp --preserve=timestamps "$f" "$0/$f" 2>/dev/null || [ ! -e "$f" ]; done' "$2" {} +); }
+copydata "$P/release/data" "$D/data"
+# the app's DATA_DIR (data/app/, outside release/: services.yaml), the same way. (A live SQLite database copied file by
+# file can be torn: an app that keeps one there should also write a snapshot of it, e.g. VACUUM INTO, for this copy.)
+copydata "$P/data/app" "$D/app"
 # the project's Doop (plans/doop.md): its canvases and assets. Its secrets stay out (they are re-made at the next start).
 # (bin/doop-run backup: Doop runs as its own uid, and its database files are 0600, so while it runs its own tar reads them)
 # A Doop that stays away (restarting, docker failing; doop-run waits ~30 s, then exits 75 with "skipped: <why>"): the
@@ -53,4 +57,4 @@ if [ -d "$P/data/doop" ]; then
   esac
 fi
 ls -1d "$ROOT"/20*/ 2>/dev/null | head -n -14 | xargs -r rm -rf
-echo "backup $D: $(du -sh "$D" | cut -f1), $(wc -l < "$D/board.jsonl") items, $(find "$D/data" -type f 2>/dev/null | wc -l) data files$SKIP"
+echo "backup $D: $(du -sh "$D" | cut -f1), $(wc -l < "$D/board.jsonl") items, $(find "$D/data" "$D/app" -type f 2>/dev/null | wc -l) data files$SKIP"

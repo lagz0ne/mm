@@ -6,19 +6,40 @@
 # The app runs from release/ (a detached worktree of code/), so main can move without touching production.
 # The app slot is the `app` service in services.json; where it runs and how to restart it come from the process
 # manager (.run/endpoints.json, via bin/svc).
+# A release with bun.lock (or bun.lockb) is built with Bun: `bun install --frozen-lockfile` (dev deps too: the build
+# needs them), then `bun run build` when package.json has a build script. It is built first in .deploy-build/ (a
+# worktree of its own), so a failing install or build never touches release/: production stays as it was, and deploy
+# says why. Then release/ moves and is installed and built the same way. Other releases: `npm ci --omit=dev` when
+# package.json has dependencies, as before.
+# How the app starts and its health path are the release's own settings (package.json "mm": {"app": {...}}; see
+# bin/app-run); DEPLOY_HEALTH_PATH still wins. The app's data outside release/ (DATA_DIR: data/app) is made when missing.
 [ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" deploy -- "$0" "$@"
 set -eu
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 { grep -q '"app"' "$P/.run/services.json" 2>/dev/null || grep -q '"app"' "$P/services.json" 2>/dev/null; } || { echo "deploy: this project has no app slot (services.json: app)" >&2; exit 2; }
-HEALTH=${DEPLOY_HEALTH_PATH:-/}
-REL=$P/release LOG=$P/.releases
+REL=$P/release LOG=$P/.releases B=$P/.deploy-build BLOG=$P/.deploy-build.log DATA=$P/data/app
 G="git -C $P/code"
 
-healthy() { i=0; while [ $i -lt 20 ]; do
+# the health path: DEPLOY_HEALTH_PATH, else the live release's own (app-run conf health), else /
+health_path() { h=${DEPLOY_HEALTH_PATH:-}; [ -n "$h" ] || h=$("$P/bin/app-run" conf health "$REL" 2>/dev/null) || true; echo "${h:-/}"; }
+healthy() { HEALTH=$(health_path); i=0; while [ $i -lt 20 ]; do
   c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$("$P/bin/svc" url app)$HEALTH" || true)
   [ "$c" = 200 ] && return 0; i=$((i + 1)); sleep 1; done; return 1; }
-switch() { git -C "$REL" checkout -q --detach "$1"
-  if [ -f "$REL/package.json" ] && grep -q '"dependencies"' "$REL/package.json"; then (cd "$REL" && npm ci --omit=dev --silent --no-audit --no-fund); fi
+isbun() { [ -f "$1/bun.lock" ] || [ -f "$1/bun.lockb" ]; }
+hasbuild() { node -e 'try { process.exit(typeof JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))?.scripts?.build === "string" ? 0 : 1) } catch { process.exit(1) }' "$1/package.json"; }
+# bunbuild <dir>: install (dev deps included) and build; the output in .deploy-build.log, its last lines on a failure
+bunbuild() { command -v bun >/dev/null 2>&1 || { echo "deploy: the release has bun.lock, but there is no bun on PATH" >&2; return 1; }
+  if (cd "$1" && bun install --frozen-lockfile && if hasbuild "$1"; then bun run build; fi) >"$BLOG" 2>&1; then return 0; fi
+  echo "deploy: bun install or build failed in $(basename "$1")/; the last lines of $(basename "$BLOG"):" >&2; tail -20 "$BLOG" >&2; return 1; }
+# trybuild <rev>: a Bun release is built apart first (.deploy-build/, kept between deploys: its node_modules stay warm)
+trybuild() { $G cat-file -e "$1:bun.lock" 2>/dev/null || $G cat-file -e "$1:bun.lockb" 2>/dev/null || return 0
+  [ -e "$B/.git" ] || { rm -rf "$B"; $G worktree prune; $G worktree add -q --detach "$B" "$1" || return 1; }
+  git -C "$B" checkout -q --detach --force "$1" && git -C "$B" clean -qfd && bunbuild "$B"; }
+# switch <rev>: release/ to rev, installed (and built), the app restarted (each step: a failure returns 1)
+switch() { git -C "$REL" checkout -q --detach "$1" || return 1
+  [ -d "$DATA" ] || { mkdir -p "$DATA" && chmod 700 "$DATA"; } || echo "deploy: warn: could not make $DATA (the app's DATA_DIR)" >&2
+  if isbun "$REL"; then bunbuild "$REL" || return 1
+  elif [ -f "$REL/package.json" ] && grep -q '"dependencies"' "$REL/package.json"; then (cd "$REL" && npm ci --omit=dev --silent --no-audit --no-fund) || return 1; fi
   "$P/bin/svc" restart app; }
 
 [ $# -gt 0 ] || set -- main
@@ -35,15 +56,18 @@ want=$($G rev-parse --verify --quiet "${1}^{commit}") || { echo "deploy: unknown
 $G merge-base --is-ancestor "$want" main || { echo "deploy: $1 is not on main; land it first" >&2; exit 1; }
 cur=$(git -C "$REL" rev-parse HEAD)
 short=$(git -C "$P/code" rev-parse --short "$want")
-switch "$want"
-if healthy; then
+if ! trybuild "$want"; then
+  echo "$(date -u +%FT%TZ) $short build-failed ${BEADS_ACTOR:-${USER:-?}}" >> "$LOG"
+  echo "deploy: $short not deployed: its build failed; production stays on $(git -C "$P/code" rev-parse --short "$cur")" >&2
+  exit 1
+fi
+if switch "$want" && healthy; then
   echo "$(date -u +%FT%TZ) $short ok ${BEADS_ACTOR:-${USER:-?}}" >> "$LOG"
   echo "deployed $short: $(git -C "$REL" log -1 --format=%s) (healthy at $("$P/bin/svc" url app)$HEALTH)"
 else
   echo "$(date -u +%FT%TZ) $short failed ${BEADS_ACTOR:-${USER:-?}}" >> "$LOG"
-  echo "deploy: $short did not come up healthy in 20s; rolling back to $(git -C "$P/code" rev-parse --short "$cur")" >&2
-  switch "$cur"
-  if healthy; then echo "rolled back; production is on $(git -C "$P/code" rev-parse --short "$cur")" >&2
+  echo "deploy: $short did not come up healthy in 20s at $(health_path) (or its install failed); rolling back to $(git -C "$P/code" rev-parse --short "$cur")" >&2
+  if switch "$cur" && healthy; then echo "rolled back; production is on $(git -C "$P/code" rev-parse --short "$cur")" >&2
   else echo "deploy: ROLLBACK ALSO UNHEALTHY: check the app's log in the process manager" >&2; fi
   exit 1
 fi

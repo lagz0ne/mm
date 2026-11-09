@@ -48,6 +48,7 @@ suite test/box-stamp.sh           hermetic
 suite test/box-trust.sh           hermetic
 suite test/brain-deny.sh          hermetic
 suite test/denies.sh              hermetic
+suite test/deploy.sh              hermetic
 suite test/dolt-run.sh            hermetic
 suite test/engine-drift.sh        hermetic
 suite test/guard.sh               hermetic
@@ -335,7 +336,8 @@ rule template/bin/persona         test/raci.mjs test/person-run.sh
 rule template/bin/skill           test/raci.mjs test/lead.sh
 rule template/bin/smoke-beads     test/bd-autostart.sh
 rule template/bin/purge           test/engine-drift.sh test/template-base.sh
-rule template/bin/deploy          test/trace-refused.sh
+rule template/bin/deploy          test/trace-refused.sh test/deploy.sh
+rule template/bin/app-run         test/deploy.sh
 rule template/ops/land-check      test/trace-refused.sh
 rule template/ops/githooks/**     test/artifact.sh test/sync.sh test/template-base.sh
 
@@ -412,7 +414,7 @@ rule template/**/*.tmpl.json      @settings
 rule template/**/.keep            -
 rule template/memory/**           test/memory-links.sh test/template-base.sh
 rule template/glossary.yaml       test/glossary.mjs test/writing.mjs test/writing-rule.sh test/assist.sh
-rule template/services.yaml       test/bd-autostart.sh test/pc-skipped.sh test/engine-drift.sh test/template-base.sh test/sockets.sh test/clean-box.sh test/lifecycle.sh
+rule template/services.yaml       test/bd-autostart.sh test/pc-skipped.sh test/engine-drift.sh test/template-base.sh test/sockets.sh test/clean-box.sh test/lifecycle.sh test/deploy.sh
 rule template/tools.json          test/bd-autostart.sh test/bd-home.sh test/init-retry.sh test/clean-box.sh test/restore-drill.sh test/box.sh
 rule template/secrets.json        test/needs-fill.sh test/vault.sh test/sync.sh test/restore.sh test/api.sh test/board-artifacts.mjs
 rule template/.gitignore          test/artifact.sh test/board-artifacts.mjs test/restore.sh test/sync.sh test/supervisor.mjs test/template-base.sh
