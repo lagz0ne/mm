@@ -40,6 +40,7 @@ suite test/box-stamp.sh           hermetic
 suite test/box-trust.sh           hermetic
 suite test/brain-deny.sh          hermetic
 suite test/denies.sh              hermetic
+suite test/deploy.sh              hermetic
 suite test/dolt-run.sh            hermetic
 suite test/engine-drift.sh        hermetic
 suite test/guard.sh               hermetic
@@ -297,8 +298,9 @@ rule template/bin/role            @engine
 rule template/bin/skill           @engine
 rule template/bin/smoke-beads     @engine
 rule template/bin/purge           @engine
-rule template/bin/deploy          @engine
-rule template/services.yaml       @cli test/bd-autostart.sh test/box.sh test/doop.sh test/clean-box.sh
+rule template/bin/deploy          @engine test/deploy.sh
+rule template/bin/app-run         test/deploy.sh
+rule template/services.yaml       @cli test/deploy.sh test/bd-autostart.sh test/box.sh test/doop.sh test/clean-box.sh
 rule template/tools.json          test/bd-autostart.sh test/bd-home.sh test/init-retry.sh test/clean-box.sh test/restore-drill.sh test/box.sh
 rule template/secrets.json        test/needs-fill.sh test/vault.sh test/sync.sh test/restore.sh test/api.sh test/board-artifacts.mjs
 rule template/.gitignore          test/artifact.sh test/board-artifacts.mjs test/restore.sh test/sync.sh test/supervisor.mjs
