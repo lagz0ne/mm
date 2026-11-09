@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # mm sync, hermetic: a throwaway HOME / MM_HOME on the one-root layout, a stub brain, system board and project (each
 # with a stub bin/backup), a test recovery key standing in for the human's offline one, and a bare repo standing in
-# for mastermind (with some old history, for the fresh start). Needs age, age-keygen, git and jq.
+# for mastermind (with some old history, for the fresh start). Needs age, age-keygen, git, jq and python3 (a socket).
 #   test/sync.sh [mm command]       default: bun <repo>/src/cli.ts
 set -uo pipefail
 # the test plays the owner in a throwaway HOME: vault init and run refuse in an agent's shell (sy-uvgq), so not one here

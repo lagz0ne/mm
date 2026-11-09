@@ -11,6 +11,10 @@ pass=0; fail=0
 ok()   { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }
 bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
 check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
+# a check that imports mm's source (bun + src/): skipped where there is none (test/in-box.sh runs a build in a container
+# with neither); the hermetic run on the host makes them
+SRCOK=""; command -v bun >/dev/null && [ -f "$SRC/src/vault.ts" ] && SRCOK=1
+scheck() { if [ -n "$SRCOK" ]; then check "$@"; else ok "(skipped: no bun and source here) $1"; fi; }
 T=$(mktemp -d); SHM=$(mktemp -d /dev/shm/mmv.XXXX); trap 'rm -rf "$T" "$SHM"' EXIT
 export HOME="$T/home" MM_HOME="$T/home/.mm" MM_OBS_TRACES="" XDG_RUNTIME_DIR="$SHM"
 # this machine's swap is not this test's: a stand-in /proc/swaps with none on (vault: opened secrets only where swap cannot reach, sy-rjwg 6)
@@ -50,7 +54,7 @@ check "...and it is refused there too when that isn't tmpfs" bash -c "! MM_SECRE
 printf 'Filename\tType\tSize\tUsed\tPriority\n/dev/mm-test-noswap-dev partition 524284 0 -2\n' >"$T/swaps-on"
 if findmnt -no OPTIONS -T "$SHM" | grep -qE '(^|,)noswap(,|$)'; then ok "(skipped: this machine's /dev/shm is noswap)"; ok "(skipped)"; else
 check "swap on (plain) and the tmpfs not noswap: refused, it says why, nothing opened" bash -c "! MM_PROC_SWAPS='$T/swaps-on' mm vault run acme-shop API_KEY -- true 2>'$T/sw.err' && grep -q 'not mounted noswap' '$T/sw.err'"
-check "...a person's run file too (openForRun): refused, no file in _run/" bash -c "! MM_PROC_SWAPS='$T/swaps-on' bun -e \"import { openForRun } from '$SRC/src/vault'; openForRun('acme-shop.api_key')\" 2>'$T/sw2.err' && grep -q 'not mounted noswap' '$T/sw2.err' && [ -z \"\$(ls -A '$SHM/mm/secrets/_run' 2>/dev/null)\" ]"
+scheck "...a person's run file too (openForRun): refused, no file in _run/" bash -c "! MM_PROC_SWAPS='$T/swaps-on' bun -e \"import { openForRun } from '$SRC/src/vault'; openForRun('acme-shop.api_key')\" 2>'$T/sw2.err' && grep -q 'not mounted noswap' '$T/sw2.err' && [ -z \"\$(ls -A '$SHM/mm/secrets/_run' 2>/dev/null)\" ]"
 fi
 check "no swap on: it opens (as above)" bash -c "mm vault run acme-shop API_KEY -- true"
 check "mm doctor reports the vault: modes and digests ok, the secrets folder memory-backed" bash -c "mm doctor -o json 2>/dev/null | jq -e '[.[] | select(.layer==\"vault\")] | (map(select(.item==\"vault\")) | length > 0 and all(.status==\"ok\")) and (map(select(.item==\"secrets folder\" and .status==\"ok\")) | length == 1)'"
@@ -72,14 +76,14 @@ CALLERS="bun '$T/callers.ts' 2>>'$LOG'"
 dr() { { mm doctor -o json 2>/dev/null || true; } | jq -e "[.[] | select(.item==\"secrets folder callers\")] | length == 1 and ($1)"; }
 export MM_DOCKER_CONF="$T/mm-docker.conf"   # doctor reads the wrapper's config from here, never the machine's /etc one
 KEYED="$SHM/kp/keyed"; mkdir -p "$SHM/kp" "$MM_HOME/bin"; chmod 755 "$SHM/kp"
-check "no key: the default (the user's runtime folder)" bash -c "$CALLERS | jq -e '.from==\"default\" and .base==\"$SHM/mm/secrets\"'"
+scheck "no key: the default (the user's runtime folder)" bash -c "$CALLERS | jq -e '.from==\"default\" and .base==\"$SHM/mm/secrets\"'"
 check "...doctor: the callers agree" dr '.[0].status=="ok"'
 mm config set vault.secrets_dir "$KEYED" >>"$LOG" 2>&1
 check "the key wins over the default" bash -c "mm vault run acme-shop API_KEY -- sh -c 'case \"\$API_KEY_FILE\" in $KEYED/acme-shop/*) exit 0;; *) exit 1;; esac'"
-check "...every caller gets the key's folder (vault, outside list, config-check's list)" bash -c "$CALLERS | jq -e '.from==\"config\" and .base==\"$KEYED\" and .outside==\"$KEYED\" and .run==\"$KEYED/acme-shop\" and .listed'"
+scheck "...every caller gets the key's folder (vault, outside list, config-check's list)" bash -c "$CALLERS | jq -e '.from==\"config\" and .base==\"$KEYED\" and .outside==\"$KEYED\" and .run==\"$KEYED/acme-shop\" and .listed'"
 check "...0700; its parent, the machine's, keeps its mode (only the default's mm/ is narrowed)" bash -c "[ \$(stat -c %a '$KEYED') = 700 ] && [ \$(stat -c %a '$SHM/kp') = 755 ]"
 check "MM_SECRETS_DIR wins over the key" bash -c "MM_SECRETS_DIR='$SHM/noswap' mm vault run acme-shop API_KEY -- sh -c 'case \"\$API_KEY_FILE\" in '$SHM'/noswap/acme-shop/*) exit 0;; *) exit 1;; esac'"
-check "...every caller gets it" bash -c "MM_SECRETS_DIR='$SHM/noswap' $CALLERS | jq -e '.from==\"env\" and .base==\"$SHM/noswap\" and .outside==\"$SHM/noswap\" and .listed'"
+scheck "...every caller gets it" bash -c "MM_SECRETS_DIR='$SHM/noswap' $CALLERS | jq -e '.from==\"env\" and .base==\"$SHM/noswap\" and .outside==\"$SHM/noswap\" and .listed'"
 check "doctor: the key alone, callers agree" dr '.[0].status=="ok" and (.[0].detail | test("vault.secrets_dir"))'
 check "doctor: this call's MM_SECRETS_DIR differs from the key: a warning" bash -c "MM_SECRETS_DIR='$SHM/noswap' mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item==\"secrets folder callers\") | .status==\"warn\" and (.detail | test(\"this call\"))'"
 printf '#!/bin/sh\nexport MM_SECRETS_DIR="%s"\nexec true\n' "$SHM/pcdir" >"$MM_HOME/bin/mm-pc-up"
@@ -99,7 +103,8 @@ check "...the same folder: they agree" bash -c "MM_DOCKER_CONF='$T/mm-docker.con
 printf 'user = someone-else\nsecrets = %s\n' "$SHM/other" >"$T/mm-docker.conf"
 check "...a wrapper config for another user is not this one's" bash -c "MM_DOCKER_CONF='$T/mm-docker.conf' mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item==\"secrets folder callers\") | .status==\"ok\"'"
 mm config set vault.secrets_dir relative/dir >>"$LOG" 2>&1
-check "a key that isn't an absolute path is ignored (the default), and doctor names it" bash -c "$CALLERS | jq -e '.from==\"default\"' && mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item==\"secrets folder key\") | .status==\"warn\"'"
+scheck "a key that isn't an absolute path is ignored (the default)" bash -c "$CALLERS | jq -e '.from==\"default\"'"
+check "...and doctor names it" bash -c "mm doctor -o json 2>/dev/null | jq -e '.[] | select(.item==\"secrets folder key\") | .status==\"warn\"'"
 mm config unset vault.secrets_dir >>"$LOG" 2>&1
 
 echo '== no value anywhere'
