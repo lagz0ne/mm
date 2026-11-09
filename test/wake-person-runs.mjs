@@ -95,6 +95,8 @@ l.push({ id, status: 'idle', labels: { project, role, person, 'paseo-worker': wo
   const ev = (op, id, actor, extra = {}) => ({ seq: ++seq, op, issue_id: id, actor, ts: new Date().toISOString(), issue: items.find((i) => i.id === id), ...extra })
   const records = [ev('create', 'q-1', 'alice'), ev('create', 'q-2', 'dev'), ev('comment', 'q-2', 'bob', { comment: { id: 'c1', author: 'bob', text: 'please check this' } }), ev('create', 'd-1', 'watchdog'), ev('create', 'd-3', 'dave'),
     ev('comment', 'd-3', 'dave', { comment: { id: 'c0', author: 'dave', text: 'mine' } })]
+  // wake's saved place (its cursor, sy-3r6u): after the two creates, so bob's and dave's comments come as events it missed
+  fs.mkdirSync(path.join(PR, '.run'), { recursive: true }); fs.writeFileSync(path.join(PR, '.run', 'wake-state.json'), JSON.stringify({ _seq: 2 }))
   const streams = []
   const emit = (e) => { records.push(e); for (const s of streams) s.write(`data: ${JSON.stringify(e)}\n\n`) }
   const srv = http.createServer((req, res) => {
@@ -126,10 +128,10 @@ l.push({ id, status: 'idle', labels: { project, role, person, 'paseo-worker': wo
     ok("wake reads mm's record of asks for its project (mm run-asks wp --json)", /^wp --json$/m.test(read(path.join(T, 'asks.log'))))
     ok('items nobody asked for (d-1, and d-3 under dave\'s name): the dev lead starts plain (bin/lead start dev), never as the owner', await until(() => plains().some((r) => r.role === 'dev' && r.next.includes('d-1'))))
     ok("...an item created and commented on under a person's name with no ask starts no run on their token (no mm run-as dave), nor the owner's", !runas().some((r) => r.person === 'dave' || r.person === 'boss'))
-    ok("...the plain dev lead is sent dave's comment on d-3 (a plain lead's work: nobody asked on the host)", await until(() => sent().split('----').some((m) => /TO plain-dev-/.test(m) && m.includes('d-3 has an unanswered comment from dave'))))
+    ok("...the plain dev lead is sent dave's comment on d-3 (a plain lead's work: nobody asked on the host)", await until(() => sent().split('----').some((m) => /TO plain-dev-/.test(m) && /dave commented on d-3/.test(m))))
     ok('...the person runs\' handover names only that person\'s items in progress (LEAD_ITEMS set, empty here)', runas().every((r) => r.items === ''))
     ok('...the qa lead never starts plain (each of its items has an ask)', !plains().some((r) => r.role === 'qa'))
-    // alice's run, idle, while only bob's work waits (his unanswered comment): it makes way, and bob's run starts
+    // alice's run, idle, while only bob's work waits (his comment): it makes way, and bob's run starts
     ok("alice's run makes way for bob's: archived, then the qa lead starts as bob", await until(() => runas().some((r) => r.person === 'bob' && r.role === 'qa'))
       && archived().includes('run-alice-qa') && /deleted qa's run for alice .*idle: only other people's work waits \(bob\)/.test(out))
     ok("...and his waiting item goes to his run", await until(() => sent().split('----').some((m) => /TO run-bob-qa/.test(m) && m.includes('q-2'))))
