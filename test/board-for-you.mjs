@@ -48,6 +48,14 @@ const GO = `## Owner
 - **Risk:** low, one rule with a rollback
 - **Head:** brain@abc1234
 
+## Task
+- **Task:** Open the mail port to the relay.
+- **Act:** t2-change
+- **Done when:** one alert leaves the machine.
+- **Verify:** send one alert → it reaches the relay
+- **Rollback:** close the port again with the plan's rule.
+- **Safeguard:** none, no access change
+
 The plan: plans/mail.md.`
 const REFUSED = GO.replace('Open the mail port', 'Open the web port').replace('brain@abc1234', 'brain@def5678')
 const REPLY = `## Owner
