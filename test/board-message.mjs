@@ -69,6 +69,7 @@ Done when: the item has signed-off and signed-head:mm@56ebb96, or a VERDICT bloc
 Verify: bd show ms-1 → labels include signed-head:mm@56ebb96
 By: next wake · Else: ops waits; nothing rolls out
 Ready: the artifact command, the secret scan
+Surfaces: the boards (template)
 Tests: artifacts/ms-1/gates.txt → 11 suites, 0 failed`
 const ASK = `ASK → ops
 Expect: ops: find why the release downloads answer 504.
