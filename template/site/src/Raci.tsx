@@ -5,10 +5,14 @@ import { Avatar, PersonaContext, personaOf } from '@/lib/persona'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { MEANS, problems as raciProblems } from '@/lib/raci.mjs'
 
-type Activity = { id: string; title: string; raci: Record<string, string> }
-const LETTERS = ['', 'R', 'A', 'C', 'I', 'RA'] as const
-const HELP: Record<string, string> = { R: 'Responsible: does it', A: 'Accountable: approves (one per row)', C: 'Consulted: asked before', I: 'Informed: told after', RA: 'Does it and approves it' }
+type Activity = { id: string; title: string; raci: Record<string, string>; consult?: string[] }
+// the letters (sy-lusk; bin/lib/raci.mjs): R does it, V verifies, A approves (one per row), C is asked, I is told
+const LETTERS = ['', 'R', 'V', 'A', 'C', 'I', 'RA', 'VA', 'CI'] as const
+const HELP: Record<string, string> = Object.fromEntries(LETTERS.filter(Boolean).map((l) => [l, [...l].map((x) => `${x}: ${MEANS[x]}`).join('; ')]))
+const caseList = (a: Activity | undefined) => (a?.consult || []).map((c) => c.trim()).filter(Boolean)
+const cases = (a: Activity | undefined) => caseList(a).join('\n')
 
 async function request(body: Record<string, unknown>) {
   const r = await fetch('/api/config/request', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
@@ -33,21 +37,19 @@ export function Raci({ raci }: { raci: { activities: Activity[] } | null }) {
     const cells = who.filter((p) => (a.raci[p] || '') !== (b?.raci[p] || '')).map((p) => `${p}=${a.raci[p] || '-'}`)
     if (!b) changes.push(`raci add ${a.id} "${a.title}"`)
     if (cells.length) changes.push(`raci set ${a.id} ${cells.join(' ')}`)
+    if (cases(a) !== cases(b)) changes.push(`raci consult ${a.id}${caseList(a).map((c) => ` "${c.replace(/"/g, "'")}"`).join('')}`)
   }
   for (const b of base) if (!draft.some((a) => a.id === b.id)) changes.push(`raci rm ${b.id}`)
-  const problems = draft.flatMap((a) => {
-    const v = Object.values(a.raci)
-    const A = v.filter((l) => l.includes('A')).length
-    return [...(A !== 1 ? [`${a.title}: needs exactly one A (has ${A})`] : []), ...(!v.some((l) => l.includes('R')) ? [`${a.title}: needs an R`] : [])]
-  })
+  const problems = raciProblems({ activities: draft.map((a) => ({ ...a, consult: caseList(a).length ? caseList(a) : undefined })) }, who)
 
   return (
     <div className="min-h-0 overflow-y-auto">
       <header className="flex flex-wrap items-baseline gap-4 border-b border-foreground px-6 pt-4 pb-2">
         <h2 className="text-[11px] font-bold tracking-[0.1em] uppercase">RACI</h2>
         <p className="text-[11px] text-muted-foreground">
-          Who is <b>R</b>esponsible, <b>A</b>ccountable (approves), <b>C</b>onsulted, <b>I</b>nformed for each kind of work. Items carry <code>act:&lt;id&gt;</code>;
-          the board asks Consulted roles when one is created and tells Informed roles when it closes. Leads read this matrix in their brief.
+          For each kind of work: <b>R</b> does it, <b>V</b> verifies (a VERDICT on each new head), <b>A</b> approves (one per row), <b>C</b> is asked (only in the row's
+          consult cases; no answer by By = no input), <b>I</b> is told once, at DONE. R, V and A are the gate; C and I never block. Items carry <code>act:&lt;id&gt;</code>;
+          the board wakes C on an ASK to it, V on a HANDOFF of a new head, and I when the item closes. Leads read this matrix in their brief.
         </p>
       </header>
       <div className="overflow-x-auto">
@@ -73,12 +75,20 @@ export function Raci({ raci }: { raci: { activities: Activity[] } | null }) {
           <tbody>
             {draft.map((a, k) => (
               <tr key={a.id} className="border-b hover:bg-muted/40">
-                <td className="px-6 py-1.5"><b>{a.title}</b> <code className="text-[11px] text-muted-foreground">act:{a.id}</code></td>
+                <td className="px-6 py-1.5">
+                  <b>{a.title}</b> <code className="text-[11px] text-muted-foreground">act:{a.id}</code>
+                  {(Object.values(a.raci).some((l) => l.includes('C')) || (a.consult || []).length > 0) && (
+                    <textarea value={(a.consult || []).join('\n')} rows={Math.max(1, (a.consult || []).length)} placeholder="when C is asked, one case a line: ops: when it changes a port"
+                      title="Consult cases: when each C of this row is asked (and only then)"
+                      onChange={(e) => { const d = structuredClone(draft); const cs = e.target.value.split('\n'); if (cs.some((c) => c.trim())) d[k].consult = cs; else delete d[k].consult; setDraft(d) }}
+                      className={cn('mt-1 block w-full resize-y border px-1 py-0.5 text-[11px] text-muted-foreground', cases(a) !== cases(base.find((x) => x.id === a.id)) && 'bg-swiss/10')} />
+                  )}
+                </td>
                 {who.map((p) => (
                   <td key={p} className="px-1 py-1 text-center">
                     <select value={a.raci[p] || ''} title={HELP[a.raci[p] || ''] || 'not involved'}
                       onChange={(e) => { const d = structuredClone(draft); if (e.target.value) d[k].raci[p] = e.target.value; else delete d[k].raci[p]; setDraft(d) }}
-                      className={cn('h-7 w-12 border text-center font-mono font-bold', a.raci[p]?.includes('A') && 'border-swiss text-swiss', !a.raci[p] && 'text-muted-foreground',
+                      className={cn('h-7 w-12 border text-center font-mono font-bold', /[AV]/.test(a.raci[p] || '') && 'border-swiss text-swiss', !a.raci[p] && 'text-muted-foreground',
                         (a.raci[p] || '') !== (base.find((x) => x.id === a.id)?.raci[p] || '') && 'bg-swiss/10')}>
                       {LETTERS.map((l) => <option key={l} value={l}>{l || '·'}</option>)}
                     </select>

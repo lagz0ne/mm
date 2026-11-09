@@ -4,61 +4,118 @@
       "id": "t1-change",
       "title": "T1 machine change (reversible, local)",
       "raci": {
-        "ops": "R",
-        "human": "A",
+        "ops": "RA",
         "review": "I",
-        "platform": "I"
-      }
+        "platform": "CI",
+        "human": "I"
+      },
+      "consult": [
+        "platform: when the change touches mm's files or its services"
+      ]
     },
     {
       "id": "t2-change",
       "title": "T2 machine change (access, network, firewall, exposure, harness, promote --approved)",
       "raci": {
         "ops": "R",
-        "review": "C",
-        "human": "A",
-        "platform": "I"
-      }
+        "review": "V",
+        "platform": "CI",
+        "human": "A"
+      },
+      "consult": [
+        "platform: when the change touches mm's files or its services"
+      ]
     },
     {
       "id": "incident",
-      "title": "Incidents and alerts",
+      "title": "Incidents and alerts (a T2 step in it is its own t2-change item)",
       "raci": {
-        "ops": "R",
+        "ops": "RA",
         "review": "I",
-        "human": "A",
-        "platform": "C"
-      }
+        "platform": "C",
+        "human": "I"
+      },
+      "consult": [
+        "platform: when mm or a board is the cause"
+      ]
     },
     {
       "id": "posture",
       "title": "Security posture and audit",
       "raci": {
-        "review": "R",
+        "review": "RA",
         "ops": "C",
-        "human": "A",
-        "platform": "I"
-      }
+        "platform": "I",
+        "human": "I"
+      },
+      "consult": [
+        "ops: for the machine's facts (what runs, listens, is installed or allowed)"
+      ]
+    },
+    {
+      "id": "mm-template",
+      "title": "mm template change (no T2)",
+      "raci": {
+        "platform": "R",
+        "review": "VA",
+        "ops": "C",
+        "human": "I"
+      },
+      "consult": [
+        "ops: when the change alters a service, a port or the rollout steps"
+      ]
+    },
+    {
+      "id": "mm-template-t2",
+      "title": "mm template change (T2: the approval path, access, exposure)",
+      "raci": {
+        "platform": "R",
+        "review": "V",
+        "ops": "C",
+        "human": "A"
+      },
+      "consult": [
+        "ops: when the change alters a service, a port or the rollout steps"
+      ]
     },
     {
       "id": "mm-release",
-      "title": "mm template and releases",
+      "title": "mm release and push",
       "raci": {
         "platform": "R",
-        "review": "C",
-        "human": "A",
-        "ops": "I"
-      }
+        "review": "V",
+        "ops": "CI",
+        "human": "A"
+      },
+      "consult": [
+        "ops: when a machine step is in the release"
+      ]
     },
     {
       "id": "project-rollout",
-      "title": "mm update of projects",
+      "title": "Rollout of projects (mm update; the head holds no T2 work)",
       "raci": {
-        "platform": "R",
-        "ops": "C",
-        "human": "A",
-        "review": "I"
-      }
+        "ops": "RA",
+        "review": "V",
+        "platform": "C",
+        "human": "I"
+      },
+      "consult": [
+        "platform: when a gate failed or the head moved"
+      ]
+    },
+    {
+      "id": "project-rollout-t2",
+      "title": "Rollout of projects (mm update; the head holds T2 work)",
+      "raci": {
+        "ops": "R",
+        "review": "V",
+        "platform": "C",
+        "human": "A"
+      },
+      "consult": [
+        "platform: when a gate failed or the head moved"
+      ]
     },
     {
       "id": "project-governance",
@@ -68,16 +125,19 @@
         "ops": "C",
         "human": "A",
         "review": "I"
-      }
+      },
+      "consult": [
+        "ops: when the item asks a project for a machine step or a service change"
+      ]
     },
     {
       "id": "sync",
       "title": "mastermind sync and pushes",
       "raci": {
         "ops": "R",
-        "review": "C",
-        "human": "A",
-        "platform": "I"
+        "review": "V",
+        "platform": "I",
+        "human": "A"
       }
     }
   ]

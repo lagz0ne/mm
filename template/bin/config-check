@@ -21,6 +21,7 @@ import { dirs, projectName, svcUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
 import { secretsIn } from './lib/secret-scan.mjs'
 import { FILE as GLOSSARY, WORDS as WORD_LIST, checkWords, readGlossary } from './lib/glossary.mjs'
+import { problems as raciProblems } from './lib/raci.mjs'
 cli('config-check')
 const ARTIFACT_MAX = 5 << 20
 const HOME = process.env.HOME || os.homedir()
@@ -413,6 +414,17 @@ const CARD_RULE = '## Asking the owner: the owner card'
   const f = path.join(P, 'leads', 'CLAUDE.md')
   if (fs.existsSync(f) && !fs.readFileSync(f, 'utf8').includes(CARD_RULE)) bad(`leads/CLAUDE.md: lost its "${CARD_RULE}" section (how a lead asks the owner: the card at the top of the item)`)
 }
+// The RACI drives the messages (sy-lusk, the owner): with a leads/raci.json, the leads' shared brief says when to involve
+// each letter and how an item's Task is written (bd refuses a lead's item without one).
+const RACI_RULE = '## Who to involve: the RACI', TASK_RULE = '## The Task'
+{
+  const f = path.join(P, 'leads', 'CLAUDE.md')
+  if (fs.existsSync(f) && fs.existsSync(path.join(P, 'leads', 'raci.json'))) {
+    const brief = fs.readFileSync(f, 'utf8')
+    if (!brief.includes(RACI_RULE)) bad(`leads/CLAUDE.md: lost its "${RACI_RULE}" section (when each RACI letter is involved, and when not)`)
+    if (!brief.includes(TASK_RULE)) bad(`leads/CLAUDE.md: lost its "${TASK_RULE}" section (bin/bd refuses a lead's item without a valid Task)`)
+  }
+}
 // Assistants: read-only by permissions, whatever their brief says.
 const SYSTEM_NAMES = new Set(['wake', 'watchdog', 'brain', 'ui', 'beads', 'smoke', 'system', 'admin', 'setup', 'guest', 'human', 'mm-upstream'])
 for (const u of ASSISTANTS) {
@@ -472,18 +484,13 @@ if (fs.existsSync(pf)) {
     }
   } catch (e) { bad(`personas.json is not valid JSON (${e.message})`) }
 }
-// RACI: exactly one Accountable and at least one Responsible per activity; only known participants.
+// RACI (bin/lib/raci.mjs, sy-lusk): exactly one Accountable and at least one Responsible per activity; only known
+// participants and letters (R A V C I); a person only A or I; a row with a C lists its consult cases.
 const rf = path.join(P, 'leads', 'raci.json')
 if (fs.existsSync(rf)) {
   try {
-    const rj = JSON.parse(fs.readFileSync(rf, 'utf8')); const who = [...ROLES, 'human']
-    for (const a of rj.activities || []) {
-      const cells = Object.entries(a.raci || {})
-      for (const [p, l] of cells) { if (!who.includes(p)) bad(`raci ${a.id}: unknown participant ${p}`); if (!/^[RACI]{1,2}$/.test(l)) bad(`raci ${a.id}: bad letters ${p}=${l}`) }
-      const A = cells.filter(([, l]) => l.includes('A')).length
-      if (A !== 1) bad(`raci ${a.id}: needs exactly one Accountable (has ${A})`)
-      if (!cells.some(([, l]) => l.includes('R'))) bad(`raci ${a.id}: needs at least one Responsible`)
-    }
+    const rj = JSON.parse(fs.readFileSync(rf, 'utf8'))
+    for (const m of raciProblems(rj, [...ROLES, 'human'])) bad(`raci ${m}`)
     if (process.argv.includes('--render')) execFileSync(path.join(P, 'bin', 'raci'), ['render'], { cwd: P, stdio: 'ignore' })
   } catch (e) { bad(`raci.json unreadable (${e.message})`) }
 }
