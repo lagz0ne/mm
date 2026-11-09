@@ -105,6 +105,16 @@ suite test/wake-person-runs.mjs   hermetic
 suite test/wake-reconcile.mjs     hermetic
 suite test/wake-resume.mjs        hermetic
 suite test/wake-signals.mjs       hermetic
+# landed after the map was written (sy-ko6r, sy-lusk, sy-0omb, sy-nu5r, sy-x7kh)
+suite test/glossary.mjs           hermetic
+suite test/writing.mjs            hermetic
+suite test/task.mjs               hermetic
+suite test/raci.mjs               hermetic
+suite test/supervisor-raci.mjs    hermetic
+suite test/wake-owner-card.mjs    hermetic
+suite test/doctor-docker.sh       hermetic
+suite test/board-glossary.mjs     hermetic needs=site
+suite test/board-links.mjs        hermetic needs=site
 suite test/wake-stale-lead.mjs    hermetic
 suite test/wake-stall.mjs         hermetic
 suite test/wake-start.mjs         hermetic
@@ -172,6 +182,7 @@ set site test/board-*.mjs test/lead-state.mjs test/config-review.mjs test/projec
 set engine test/wake-*.mjs test/supervisor*.mjs test/upstream.mjs test/sentinel-assist.mjs test/flow.mjs
 set engine test/trace-refused.sh test/lead.sh test/lead-workspace.sh test/bd-actor.sh test/owner-card-bd.sh
 set engine test/message.mjs test/owner-card.mjs test/paseo-refuse.mjs test/allow-only.mjs test/sockets.sh
+set engine test/glossary.mjs test/writing.mjs test/task.mjs test/raci.mjs
 set engine test/span-answers.sh test/init-retry.sh test/dolt-run.sh test/backup-data.sh test/pc-skipped.sh @site @render
 
 # the containers built from box/ and the Docker wrapper
@@ -186,6 +197,7 @@ rule src/boxreg.ts                test/boxreg.sh test/api.sh test/ai.sh
 rule src/boxruns.ts               test/wake-box-person-runs.mjs test/box-person-runs.sh
 rule src/auth.ts                  test/auth.sh test/board-approve.sh test/board-owner-card.mjs test/board-phone.mjs test/waiting-phone.mjs test/doop-gateway.sh test/auth-e2e.sh test/box-gateway.sh test/ba-spike.ts
 rule src/flow.ts                  test/flow.mjs test/board-pull.mjs
+rule src/doctor.ts                test/doctor-docker.sh
 rule src/personasks.ts            test/wake-person-runs.mjs test/box-person-runs.sh
 rule src/paseo.ts                 test/mm-paseo.sh test/paseo-token.sh
 rule src/restore.ts               test/restore.sh test/restore-drill.sh
