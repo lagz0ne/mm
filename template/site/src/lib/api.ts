@@ -76,6 +76,7 @@ export interface Meta {
   creators: Record<string, string>
   personas?: import('@/lib/persona').Personas | null
   roles?: import('@/lib/board').RoleDef[]
+  lead?: string | null // the board's Lead (roles.json `lead`): a person's comment goes to it unless they pick a role (sy-uykv)
   setup?: boolean // the board has its setup agent (setup/CLAUDE.md): a message may address it (sy-0ggd)
   raci?: { activities: { id: string; title: string; raci: Record<string, string>; consult?: string[] }[] } | null
   last: Record<string, { author: string; at: string }>

@@ -35,9 +35,11 @@ const PROJECT = process.env.BOARD_PROJECT || projectName()
 const PASEO = process.env.PASEO_BIN || 'paseo'
 // Roles: leads/roles.json, kept in place (same array) so every user of ROLES sees changes without a restart.
 const ROLES = []
-let ROLE_DEFS = []
+let ROLE_DEFS = [], BOARD_LEAD = null // the board's Lead (roles.json `lead`): a person's comment goes to it by default (sy-uykv)
 function loadRoles() {
-  try { ROLE_DEFS = JSON.parse(fs.readFileSync(path.resolve(here, '..', 'leads', 'roles.json'), 'utf8')).roles || [] } catch { ROLE_DEFS = [] }
+  let d = {}
+  try { d = JSON.parse(fs.readFileSync(path.resolve(here, '..', 'leads', 'roles.json'), 'utf8')); ROLE_DEFS = d.roles || [] } catch { ROLE_DEFS = [] }
+  BOARD_LEAD = ROLE_DEFS.some((r) => r.id === d.lead) ? d.lead : null
   ROLES.splice(0, ROLES.length, ...ROLE_DEFS.map((r) => r.id))
 }
 loadRoles()
@@ -435,7 +437,7 @@ async function sendMeta(res) {
     try { personas = JSON.parse(readText('leads/personas.json') || 'null') } catch {}
     let raci = null
     try { raci = JSON.parse(readText('leads/raci.json') || 'null') } catch {}
-    send(res, 200, { project: PROJECT, leads: l, states, creators: meta.creators, last: meta.last, personas, roles: ROLE_DEFS, setup: readText(SETUP_BRIEF) !== null, raci, panels: PANELS })
+    send(res, 200, { project: PROJECT, leads: l, states, creators: meta.creators, last: meta.last, personas, roles: ROLE_DEFS, lead: BOARD_LEAD, setup: readText(SETUP_BRIEF) !== null, raci, panels: PANELS })
   } catch (e) { send(res, 502, { title: 'meta failed', detail: e.message }) }
 }
 

@@ -14,8 +14,10 @@ const TAG: Record<string, string> = {
   DONE: 'bg-foreground text-background',
   NOTE: 'bg-muted text-muted-foreground',
 }
-// the order the keys show in: the expectation first, then the intent's own keys as written
-const FIRST = ['Expect', 'Done when', 'Verify', 'By']
+// the order the keys show in (sy-uykv): who acts and by when (Expect, By), then how it is checked (Done when, Verify),
+// then the intent's own keys as written; each group a block of its own
+const GROUPS = [['Expect', 'By'], ['Done when', 'Verify']]
+const FIRST = GROUPS.flat()
 
 export function IntentTag({ intent, className }: { intent: string; className?: string }) {
   return <span data-intent={intent} className={cn('inline-flex h-5 items-center px-1.5 font-mono text-[10px] font-semibold tracking-[0.08em]', TAG[intent] || TAG.NOTE, className)}>{intent}</span>
@@ -25,33 +27,35 @@ export function IntentTag({ intent, className }: { intent: string; className?: s
 export function CommentBody({ text, author, onRef, className }: { text: string; author: string; onRef: (n: number) => void; className?: string }) {
   // a VERDICT not written by review shows as text (review sy-0gsw #8: only review writes one)
   const m: Message = parseMessage(text, { roles: MESSAGE_ROLES, author })
-  if (!m.ok) return <Markdown className={className} onRef={onRef}>{text}</Markdown>
+  if (!m.ok) return <Markdown className={className} onRef={onRef} breaks fold>{text}</Markdown>
   const rest = m.intent === 'NOTE' ? m.text.split('\n').slice(1).join('\n').trim() : ''
   const keys = Object.keys(m.keys).filter((k) => k !== 'Head')
-  const order = [...FIRST.filter((k) => keys.includes(k)), ...keys.filter((k) => !FIRST.includes(k))]
+  const groups = [...GROUPS.map((g) => g.filter((k) => keys.includes(k))), keys.filter((k) => !FIRST.includes(k))]
+  const rowsOf = ['act', 'check', 'own']
   return (
-    <div className={cn('grid min-w-0 gap-1', className)} data-message={m.intent}>
+    <div className={cn('grid min-w-0 gap-1.5 border bg-background px-3 py-2', className)} data-message={m.intent}>
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
         <IntentTag intent={m.intent!} />
         <span className="text-muted-foreground">→ <b className="text-foreground">{m.to}</b></span>
         {m.re !== null && <a href={`#ref-${m.re}`} onClick={(e) => { e.preventDefault(); onRef(m.re!) }} className="font-mono text-[11px] text-muted-foreground underline hover:text-swiss">re #{m.re}</a>}
         {m.keys.Head && <code className="font-mono text-[11px] text-muted-foreground">{m.keys.Head}</code>}
       </div>
-      {rest && <Markdown onRef={onRef}>{rest}</Markdown>}
-      {order.length > 0 && (
-        <dl className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-x-2 gap-y-0.5 text-[13px] max-md:grid-cols-1">
-          {order.map((k) => (
+      {rest && <Markdown onRef={onRef} breaks fold>{rest}</Markdown>}
+      {groups.map((g, gi) => g.length > 0 && (
+        <dl key={rowsOf[gi]} data-rows={rowsOf[gi]}
+          className={cn('grid grid-cols-[5.5rem_minmax(0,1fr)] gap-x-2 gap-y-0.5 text-[13px] max-md:grid-cols-1', gi > 0 && groups.slice(0, gi).some((x) => x.length) && 'border-t pt-1.5')}>
+          {g.map((k) => (
             <div key={k} className="contents">
               <dt className={cn('text-[11px] text-muted-foreground uppercase tracking-[0.06em] max-md:mt-1', k === 'Expect' && 'font-semibold text-foreground')}>{k}</dt>
               <dd className={cn('min-w-0 break-words', k === 'Verify' && 'font-mono text-[12px]', k === 'Expect' && 'font-medium')}>
                 {k === 'Result' && m.intent === 'VERDICT'
                   ? <b className={/^blocked/.test(m.keys[k]) ? 'text-destructive' : 'text-emerald-700 dark:text-emerald-300'}>{m.keys[k]}</b>
-                  : <Markdown embeds={k === 'Tests' || k === 'Artifacts'} onRef={onRef}>{m.keys[k]}</Markdown>}
+                  : <Markdown embeds={k === 'Tests' || k === 'Artifacts'} onRef={onRef} breaks fold>{m.keys[k]}</Markdown>}
               </dd>
             </div>
           ))}
         </dl>
-      )}
+      ))}
     </div>
   )
 }

@@ -38,14 +38,48 @@ function linkPaths(md: string) {
     : part.replace(/(^|[\s(,;])((?:code\/)?(?:docs|public|test|src)\/[\w./-]+\.(?:md|html|svg|png|jpg|webp)|artifacts\/[a-z]+-[a-z0-9]+(?:\.[0-9]+)*\/[\w-][\w.-]*\.(?:md|html|svg|png|jpg|webp|txt|json))(?=[\s),.;:]|$)/gm, '$1`$2`'))).join('')
 }
 
-export function Markdown({ children: raw, embeds = true, className, onRef }: { children: string; embeds?: boolean; className?: string; onRef?: (n: number) => void }) {
+/** A remark plugin: a single line break in prose stays a line break (as remark-breaks; code is left alone). */
+type MdNode = { type: string; value?: string; children?: MdNode[] }
+function remarkKeepBreaks() {
+  const walk = (n: MdNode) => {
+    if (!n.children) return
+    n.children = n.children.flatMap((k): MdNode[] => {
+      if (k.type !== 'text' || !k.value?.includes('\n')) { walk(k); return [k] }
+      return k.value.split(/\r?\n/).flatMap((v, i) => (i ? [{ type: 'break' }, { type: 'text', value: v }] : [{ type: 'text', value: v }]))
+    })
+  }
+  return (tree: MdNode) => walk(tree)
+}
+
+/** A long block (a log, a table) folds to `max` px, with "Show all" (sy-uykv). Short ones show as they are. */
+export function Fold({ children, max = 260, kind }: { children: React.ReactNode; max?: number; kind: string }) {
+  const box = useRef<HTMLDivElement>(null)
+  const [long, setLong] = useState(false)
+  const [open, setOpen] = useState(false)
+  useLayoutEffect(() => { const el = box.current; if (el) setLong(el.scrollHeight > max + 40) }, [children, max])
+  const folded = long && !open
+  return (
+    <div className="relative min-w-0" data-fold={kind} data-folded={folded ? '1' : '0'}>
+      <div ref={box} className={cn('min-w-0', folded && 'overflow-hidden')} style={folded ? { maxHeight: max } : undefined}>{children}</div>
+      {folded && <div className="pointer-events-none absolute inset-x-0 bottom-7 h-10 bg-gradient-to-b from-transparent to-background" />}
+      {long && <button type="button" onClick={() => setOpen(!open)} className="mt-1 text-[11px] font-semibold hover:underline max-md:min-h-9">
+        {open ? 'Show less' : `Show all (${kind})`}</button>}
+    </div>
+  )
+}
+
+export function Markdown({ children: raw, embeds = true, className, onRef, breaks = false, fold = false }: {
+  children: string; embeds?: boolean; className?: string; onRef?: (n: number) => void
+  /** keep single line breaks (a comment as its writer typed it) */ breaks?: boolean
+  /** fold long code blocks and tables */ fold?: boolean
+}) {
   const [open, setOpen] = useState<string | null>(null)
   // "#12" refers to comment 12 of the same thread; it becomes a link when the caller can jump to it.
   const children = onRef ? linkPaths(raw).replace(/(^|[\s(,;])#(\d{1,4})\b/g, '$1[#$2](#ref-$2)') : linkPaths(raw)
   const refs = embeds ? refsIn(children) : []
   return (
     <div className={cn('md', className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+      <ReactMarkdown remarkPlugins={breaks ? [remarkGfm, remarkKeepBreaks] : [remarkGfm]} components={{
         a: ({ href = '', children: c }) => {
           const ref = /^#ref-(\d+)$/.exec(href)
           if (ref && onRef) return <button type="button" className="md-link font-mono" onClick={() => onRef(Number(ref[1]))}>{c}</button>
@@ -58,8 +92,9 @@ export function Markdown({ children: raw, embeds = true, className, onRef }: { c
           const kid = Array.isArray(c) ? c[0] : c
           const k = kid as { props?: { className?: string; children?: unknown } } | undefined
           if (k?.props?.className?.includes('language-mermaid')) return <Mermaid source={String(k.props.children ?? '').replace(/\n$/, '')} />
-          return <pre>{c}</pre>
+          return fold ? <Fold kind="log"><pre>{c}</pre></Fold> : <pre>{c}</pre>
         },
+        table: ({ children: c }) => (fold ? <Fold kind="table"><table>{c}</table></Fold> : <table>{c}</table>),
         code: ({ className: cls, children: c }) => {
           const text = String(c ?? '')
           const r = !cls && !text.includes('\n') ? fileRef(text) : null

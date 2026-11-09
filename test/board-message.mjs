@@ -153,7 +153,7 @@ try {
     const first = page.locator('[data-message="HANDOFF"]')
     ok('...the HANDOFF shows → review and its Head', /→ review/.test(await first.textContent()) && (await first.locator('code').first().textContent()) === 'mm@56ebb96')
     const dts = await first.locator('dt').allTextContents()
-    ok('...its keys, the expectation first', dts.slice(0, 4).join() === 'Expect,Done when,Verify,By' && dts.includes('Ready') && dts.includes('Tests'), dts.join())
+    ok('...its keys: Expect and By first, then Done when and Verify (sy-uykv)', dts.slice(0, 4).join() === 'Expect,By,Done when,Verify' && dts.includes('Ready') && dts.includes('Tests'), dts.join())
     ok('the ANSWER links re #2', (await page.locator('[data-message="ANSWER"] a', { hasText: 're #2' }).count()) === 1)
     const res = page.locator('[data-message="VERDICT"] dd b')
     ok('the VERDICT: Result blocked, in red', (await res.textContent()) === 'blocked' && /destructive/.test(await res.getAttribute('class')))

@@ -257,7 +257,7 @@ for (const [w, h] of [[390, 844], [375, 667]]) {
   await page.getByText('Signed off.').first().waitFor({ timeout: 10000 })
   await page.waitForTimeout(700)
   ok(`item sy-1 @${size}: a go ask has no Reply or Done box`, (await page.locator('[data-owner-answer]').count()) === 0)
-  const ta = page.getByPlaceholder(/Write to the lead/)
+  const ta = page.getByPlaceholder(/Write to /)
   await ta.scrollIntoViewIfNeeded()
   await ta.fill('From a phone.')
   shots.push(await check(page, 'item-comment', size, ['Send']))
