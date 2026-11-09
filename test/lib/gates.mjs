@@ -195,7 +195,22 @@ export function changedFiles(repo, base, head) {
 
 // --- running -------------------------------------------------------------------------------------------------------
 
-const strip = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+// {old-template}: the template a project upgrades from. Lifecycle's conflict step needs template/site/package.json
+// to differ between old and new; a range that does not touch it would give no conflict. So: the base, when its
+// package.json differs from the head's; else the newest commit before the head's last change of that file (its
+// first parent). Returns { ref, why }; ref is the base when the file has no history (nothing better to pick).
+export const CONFLICT_FILE = 'template/site/package.json'
+export function oldTemplateRef(repo, base, head, file = CONFLICT_FILE) {
+  const blob = (c) => git(repo, ['rev-parse', '--verify', '--quiet', `${c}:${file}`], { ok: true })?.trim() || null
+  const hb = blob(head)
+  if (blob(base) !== hb) return { ref: base, why: `the base (${file} differs from the head's)` }
+  const last = git(repo, ['log', '-1', '--format=%H', head, '--', file], { ok: true })?.trim()
+  const before = last && git(repo, ['rev-parse', '--verify', '--quiet', `${last}~1^{commit}`], { ok: true })?.trim()
+  if (!before) return { ref: base, why: `the base (${file} has no earlier version)` }
+  return { ref: before, why: `${before.slice(0, 7)}, the commit before ${last.slice(0, 7)} (the head's last change of ${file}; the base has the same one)` }
+}
+
+const strip = (s) =>s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
 // the counts a suite prints: its "ok" and "FAIL" lines (the tests' own check helpers)
 export function counts(log) {
   let ok = 0, fail = 0
@@ -550,8 +565,11 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
     let oldTpl = null
     await prep('old template', toRun.filter((s) => uses(s, '{old-template}')), async () => {
       const d = path.join(T, 'old'); fs.mkdirSync(d)
-      const a = spawnSync('sh', ['-c', `git -C "$1" archive "$2" template | tar -x -C "$3"`, 'sh', repo, mergeBase, d], { encoding: 'utf8' })
-      if (a.status !== 0) throw new Error(`git archive ${mergeBase.slice(0, 7)} template: ${a.stderr.trim()}`)
+      const pick = oldTemplateRef(repo, mergeBase, head)
+      note(`old template: ${pick.why}`)
+      say(`gates: old template: ${pick.why}`)
+      const a = spawnSync('sh', ['-c', `git -C "$1" archive "$2" template | tar -x -C "$3"`, 'sh', repo, pick.ref, d], { encoding: 'utf8' })
+      if (a.status !== 0) throw new Error(`git archive ${pick.ref.slice(0, 7)} template: ${a.stderr.trim()}`)
       oldTpl = path.join(d, 'template')
     })
     const fill = (a) => a.replaceAll('{mm}', mmBin || '').replaceAll('{bd}', tools.bd || '').replaceAll('{dolt}', tools.dolt || '').replaceAll('{old-template}', oldTpl || '')
