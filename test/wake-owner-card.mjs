@@ -2,7 +2,7 @@
 // bin/wake and the owner card (sy-0omb): bd refuses needs-you unless the item's description starts with a valid owner
 // card (bin/owner-card gate), and the owner is asked only through one.
 //   - the hop limit: the item gets `paused` (never needs-you) and the board's Lead is woken with it; while `paused` is
-//     on no lead is woken for the item; removing `paused` (anyone) resumes it, so does a human comment (wake then
+//     on no lead is woken for the item; removing `paused` (the Lead or a human; another lead's removal is undone) resumes it, so does a human comment (wake then
 //     removes the label itself);
 //   - where wake asks the owner itself (a reassign to a person, a block nobody else can take, an upstream wait): an item
 //     with no card gets a minimal one first, its old description below it unchanged; an item with a valid card keeps it;
@@ -136,6 +136,13 @@ try {
   change('p-1', 'platform', { assignee: 'review', status: 'open' })
   await sleep(1500)
   ok('while paused, a lead\'s comment or change wakes no lead', !/p-1/.test(sent().slice(q1.length)))
+  // review #4: a looping lead must not unpause itself: only the Lead (ops) or a human resumes it
+  const q1b = sent()
+  change('p-1', 'platform', { labels: [] })
+  ok('a lead removes paused (not the Lead): still paused (wake labels it again)', await until(() => has('p-1', 'paused') && /p-1: paused removed by platform, who is not the Lead \(ops\) or a human: labelled again/.test(opsLog())))
+  ok('...the Lead is told, and no other lead is woken', await until(() => times('ops', /PAUSED: platform removed `paused` from p-1/g) === 1) && !/HANDOFF to you|on p-1 \(/.test(sent().slice(q1b.length).replace(/PAUSED: platform removed[^\n]*/g, '')))
+  change('p-1', 'review/w1', { labels: [] })
+  ok("...a worker's removal too (only the Lead itself)", await until(() => has('p-1', 'paused') && /removed by review\/w1, who is not the Lead/.test(opsLog())))
   change('p-1', 'ops', { labels: [] }) // the Lead resumes it
   ok('removing paused resumes it (logged)', await until(() => /p-1: paused removed \(by ops\): resumed/.test(opsLog())))
   change('p-1', 'review', { assignee: 'platform', status: 'open' })
