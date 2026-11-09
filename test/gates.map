@@ -92,6 +92,7 @@ suite test/allow-only.mjs         hermetic
 suite test/ba-spike.ts            hermetic
 suite test/board-artifacts.mjs    hermetic needs=site
 suite test/board-designs.mjs      hermetic
+suite test/board-files.mjs        hermetic needs=site
 suite test/board-message.mjs      hermetic needs=site
 suite test/board-owner-card.mjs   hermetic needs=site
 suite test/board-phone.mjs        hermetic needs=site
@@ -306,7 +307,7 @@ rule template/bin/lib/allow-only.mjs test/allow-only.mjs test/sysworkers.sh
 rule template/bin/lib/assist.mjs  test/assist.sh test/sentinel-assist.mjs
 rule template/bin/lib/guard-rules.mjs test/guard.sh test/sysworkers.sh
 rule template/bin/lib/ledger.mjs  test/mm-approve.sh test/guard.sh test/board-approve.sh test/auth.sh test/flow.mjs
-rule template/bin/lib/secret-scan.mjs test/artifact.sh test/board-artifacts.mjs test/guard.sh
+rule template/bin/lib/secret-scan.mjs test/artifact.sh test/board-artifacts.mjs test/guard.sh test/board-files.mjs
 rule template/bin/lib/doop-init.mjs test/box-doop.sh test/doop-container.sh test/doop-gateway.sh test/doop.sh
 rule template/bin/lib/flow.mjs    test/flow.mjs test/board-pull.mjs
 
@@ -371,6 +372,7 @@ rule template/site/src/App.tsx          test/board-for-you.mjs test/board-pull.m
 rule template/site/src/Designs.tsx      test/board-designs.mjs test/board-phone-space.mjs
 rule template/site/src/Detail.tsx       test/board-owner-card.mjs test/board-message.mjs test/board-artifacts.mjs
 rule template/site/src/Diff.tsx         test/board-artifacts.mjs
+rule template/site/src/Files.tsx        test/board-files.mjs
 rule template/site/src/Flow.tsx         test/board-structured.mjs test/board-pull.mjs
 rule template/site/src/ForYou.tsx       test/board-for-you.mjs
 rule template/site/src/Glossary.tsx     test/board-glossary.mjs
@@ -397,6 +399,7 @@ rule template/site/lead-state.mjs       test/lead-state.mjs test/board-for-you.m
 rule template/site/pull-state.mjs       test/board-pull.mjs
 rule template/site/flow-rows.mjs        test/board-pull.mjs test/flow.mjs
 rule template/site/config-api.mjs       test/config-review.mjs test/lead-state.mjs
+rule template/site/files.mjs            test/board-files.mjs
 rule template/site/designs.mjs          test/board-designs.mjs test/doop-designs.sh
 rule template/site/compress.mjs         test/front.sh @site-smoke
 rule template/site/annotate.js          test/board-designs.mjs test/doop-designs.sh
