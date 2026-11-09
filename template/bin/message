@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // message — check a message between roles (sy-0gsw; the format: bin/lib/message.mjs, the leads' brief "Messages
 // between roles"). Every comment a lead (a role of leads/roles.json, or its worker <role>/<name>) writes is one.
-//   message check -                 a message on stdin: exit 0 ok, 1 invalid (the reasons on stderr)
-//   message check <id> <n>          comment #n of the item, read with this project's bin/bd
+//   message check - [--item <id>]   a message on stdin: exit 0 ok, 1 invalid (the reasons on stderr). With --item, a
+//                                   HANDOFF → review is checked for its gates file on that item too; without, not.
+//   message check <id> <n>          comment #n of the item, read with this project's bin/bd (with the gates file check)
 //   message waits <id>              what waits on whom on the item: each ASK or HANDOFF with no answer (re #n)
 //   message gate <actor> -- <bd args>  bin/bd runs it on bd comments add / bd comment: refuses (exit 1, the reasons) a
 //                                   comment by a lead that is not a valid message. Any other actor (wake, watchdog,
@@ -10,6 +11,10 @@
 //                                   who writes. --stdin is refused for a lead: write the text to a file (-f).
 // A message may address a role, or setup when the board has its setup agent (setup/CLAUDE.md; messageRoles, sy-0ggd).
 // Setup is no lead: its own comments pass the gate unread.
+// A HANDOFF → review whose Head is <repo>@<sha> for a repo of gates.json (default mm) needs the item's passing gates file
+// artifacts/<id>/gates-<sha7>.txt (sy-6avk; bin/lib/gates-file.mjs, the rule review's signed-head: needs): the gate
+// and check <id> <n> refuse it without, naming the file. The live group skipped is refused only on a t2 item (bd show is
+// read only then). Any other intent, receiver or repo: not checked.
 // The words of a message follow the writing rules (sy-ko6r; bin/lib/writing.mjs, the glossary glossary.yaml and
 // glossary.local.yaml, the word list bin/lib/words.txt): before the glossary's refuse_from (or with none) a problem is a
 // warning on stderr and the comment goes through; from that day on the gate refuses it. A person's comment is not read.
@@ -17,8 +22,9 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { handoffRefusal } from './lib/gates-file.mjs'
 import { readGlossary } from './lib/glossary.mjs'
-import { FORMAT, SETUP_BRIEF, messageRoles, openWaits, parseMessage } from './lib/message.mjs'
+import { FORMAT, REVIEWER, SETUP_BRIEF, messageRoles, openWaits, parseMessage } from './lib/message.mjs'
 import { sayWriting } from './lib/writing.mjs'
 import { actOf, noInputOk, rowOf } from './lib/raci.mjs'
 
@@ -60,6 +66,18 @@ function comments(id) {
   catch { return [] }
 }
 
+/** sy-6avk: the reason a HANDOFF → review on item id may not be written (its Head's gates file), or null. labels: the
+ *  item's labels when known; else bd show is read only when the file passed with the live group skipped (is it t2?). */
+function gatesWhy(r, id, labels = null) {
+  if (r.intent !== 'HANDOFF' || !id) return null
+  const why = handoffRefusal(P, id, r.to, r.keys?.Head, { reviewer: REVIEWER })
+  if (why) return why
+  const t2why = handoffRefusal(P, id, r.to, r.keys?.Head, { reviewer: REVIEWER, t2: true })
+  if (!t2why) return null
+  if (labels === null) { comments(id); labels = shown.labels }
+  return labels.includes('t2') ? t2why : null
+}
+
 // bd's flags that take a value (everything else is a switch)
 const VALUED = new Set(['--actor', '--db', '--database', '-C', '--directory', '-f', '--file', '-a', '--author', '--dolt-auto-commit', '--cpu-profile-file', '--mem-profile'])
 function gate(actor, argv) {
@@ -91,21 +109,25 @@ function gate(actor, argv) {
   const w = writing()
   const r = parseMessage(body, { roles: addressed(), author: actor, writing: w })
   if (!r.ok) no(`${r.found ? `this ${r.intent} is invalid` : 'it is not a message'}:\n${say(r)}`)
+  const why = gatesWhy(r, pos[0] === 'comment' ? pos[1] : pos[2])
+  if (why) { console.error(`bd: refused (${actor}): ${why}`); process.exit(1) }
   warn(r, w)
   process.exit(0)
 }
 
 const [cmd, ...rest] = process.argv.slice(2)
 if (cmd === 'check') {
-  let text, what, author
-  if (rest.length === 1 && rest[0] === '-') { text = fs.readFileSync(0, 'utf8'); what = 'the message' }
+  let text, what, author, item = null, labels = null
+  if (rest[0] === '-' && (rest.length === 1 || (rest.length === 3 && rest[1] === '--item' && rest[2]))) { text = fs.readFileSync(0, 'utf8'); what = 'the message'; item = rest[2] ?? null }
   else if (rest.length === 2 && /^[0-9]+$/.test(rest[1])) {
     const c = comments(rest[0])[Number(rest[1]) - 1]
     if (!c) die(`${rest[0]} has no comment #${rest[1]}`)
-    text = c.text; author = String(c.author ?? ''); what = `${rest[0]} #${rest[1]}`
-  } else die('usage: message check - | message check <id> <n>')
+    text = c.text; author = String(c.author ?? ''); what = `${rest[0]} #${rest[1]}`; item = rest[0]; labels = shown.labels
+  } else die('usage: message check - [--item <id>] | message check <id> <n>')
   const w = writing()
   const r = parseMessage(text, { roles: addressed(), author, writing: w })
+  const why = r.ok ? gatesWhy(r, item, labels) : null
+  if (why) { console.error(`message: ${what}: ${why}`); process.exit(1) }
   if (r.ok) { console.log(`message ok (${r.intent} → ${r.to})`); warn(r, w); process.exit(0) }
   console.error(`message: ${what} is ${r.found ? `an invalid ${r.intent}` : 'not a message'}:\n${say(r)}\nThe format: ${FORMAT}.`)
   process.exit(1)
@@ -121,4 +143,4 @@ if (cmd === 'check') {
   const [actor, ...more] = rest
   if (!actor) die('usage: message gate <actor> -- <bd args>')
   gate(actor, more[0] === '--' ? more.slice(1) : more)
-} else die('usage: message check - | message check <id> <n> | message waits <id> | message gate <actor> -- <bd args>')
+} else die('usage: message check - [--item <id>] | message check <id> <n> | message waits <id> | message gate <actor> -- <bd args>')
