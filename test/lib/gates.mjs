@@ -2,7 +2,8 @@
 // test/gates: the changed files of a commit range decide the test suites (test/gates.map), and the suites run on the
 // head's content. Usage:
 //   test/gates <base>..<head> [--list] [--out <file>] [--item <id>] [--no-live] [--bin <mm>] [--jobs <n>] [--keep]
-//     --list         print the suites and why (which changed file matched which rule); run nothing
+//              [--no-rerun]
+//     --list        print the suites and why (which changed file matched which rule); run nothing
 //     --out <file>   the result file (default gates-<short head>.txt here); each suite's whole log next to it, in
 //                    <file without .txt>.logs/
 //     --item <id>    then `artifact <id> <file>` when artifact is on PATH (else it says so); while it runs, a mark on
@@ -13,6 +14,7 @@
 //                    max(1, CPUs - 1-minute load average); see defaultJobs)
 //     --keep         keep the throwaway worktree and the built mm (their folder is printed)
 //     --map <file>   another map (default: the head's test/gates.map, else this checkout's)
+//     --no-rerun     a suite that fails is not run again alone (see the rerun, below)
 // The range: <base>..<head> or <base>...<head>; the files are what <head> changed since its merge base with <base>.
 // The run: a throwaway `git worktree` of <head> under $TMPDIR (a shared clone where the repo can't take a worktree),
 // removed after; never the caller's checkout. An mm, when a suite needs one, is built from that worktree into the
@@ -32,6 +34,15 @@
 // one). A run that waits says once: "gates: waits for the run lock, held by <item or range> pid <n> since <time>". A
 // holder that no longer runs (its pid is gone, or reused: another start time) holds nothing: flock's lock dies with
 // it, and a <lock>.d whose holder is gone is taken over.
+// The rerun (sy-sbjh.4): a suite that failed (it ran and exited non-zero; not a timeout, not one that could not be
+// prepared) runs once more, ALONE, after every other suite of the run, still inside the run lock. Its result line says
+// `flaky (exit <n>, then passed alone)` when the rerun passed: a flaky suite does not fail the run (the result line
+// counts the flaky ones), but its line stays for review to see; `failed (exit <n>, again alone)` when it failed twice.
+// Both runs are in its one log, the rerun after a "# gates: rerun alone" line. --no-rerun: no rerun, a fail is a fail.
+// The history (sy-sbjh.4): each run appends one JSON line per suite that ran (or was skipped) to $MM_GATES_HISTORY,
+// else ~/.cache/mm-gates/history.jsonl: {suite, head, group, status (passed, failed, flaky, skipped), secs (its first
+// run), date}; written inside the run lock, cut to its last HISTORY_MAX lines. The Supervisor reads it: a flaky or a
+// slow suite becomes an item.
 import { spawn, spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -40,6 +51,21 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const GROUPS = ['hermetic', 'ports', 'docker', 'live']
+export const HISTORY_MAX = 5000
+export const defaultHistory = () => process.env.MM_GATES_HISTORY || path.join(os.homedir(), '.cache', 'mm-gates', 'history.jsonl')
+
+// appendHistory(file, entries, max): one JSON line per entry, then the file cut to its last `max` lines (a whole new
+// file renamed into place, so a reader never sees half of it). The caller holds the run lock.
+export function appendHistory(file, entries, max = HISTORY_MAX) {
+  if (!entries.length) return
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.appendFileSync(file, entries.map((e) => JSON.stringify(e) + '\n').join(''))
+  const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)
+  if (lines.length <= max) return
+  const tmp = `${file}.tmp-${process.pid}`
+  fs.writeFileSync(tmp, lines.slice(-max).join('\n') + '\n')
+  fs.renameSync(tmp, file)
+}
 const NEEDS = ['mm', 'site']
 const PLACEHOLDERS = ['{mm}', '{bd}', '{dolt}', '{old-template}']
 
@@ -415,7 +441,7 @@ async function pool(items, n, fn) {
 }
 
 function parseArgs(argv) {
-  const o = { list: false, noLive: false, keep: false, jobs: defaultJobs(), timeout: 1800 }
+  const o = { list: false, noLive: false, keep: false, rerun: true, jobs: defaultJobs(), timeout: 1800 }
   const rest = []
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -423,6 +449,7 @@ function parseArgs(argv) {
     if (a === '--list') o.list = true
     else if (a === '--no-live') o.noLive = true
     else if (a === '--keep') o.keep = true
+    else if (a === '--no-rerun') o.rerun = false
     else if (a === '--out') o.out = val()
     else if (a === '--item') o.item = val()
     else if (a === '--bin') o.bin = val()
@@ -439,7 +466,7 @@ function parseArgs(argv) {
   return o
 }
 
-const usage = 'usage: test/gates <base>..<head> [--list] [--out <file>] [--item <id>] [--no-live] [--bin <mm>] [--jobs <n>] [--keep]'
+const usage = 'usage: test/gates <base>..<head> [--list] [--out <file>] [--item <id>] [--no-live] [--bin <mm>] [--jobs <n>] [--keep] [--no-rerun]'
 
 // A run with --item marks itself on the board while it runs (sy-brny): <board>/.run/gates/<item>.<pid>.pid, holding
 // {pid, item, start} (start: field 22 of /proc/self/stat, where there is one), removed when the run ends. bin/wake reads
@@ -655,6 +682,26 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
     try {
       await Promise.all([pool(lane('hermetic'), o.jobs, runOne), pool(lane('ports'), 1, runOne), pool(lane('docker'), 1, runOne)])
       await pool(lane('live'), 1, runOne)
+      // the rerun: each suite that failed, once more, alone (one at a time, nothing beside it), after all the others
+      const again = o.rerun ? results.filter((r) => r.status === 'failed' && r.code != null && r.code !== 124) : []
+      for (const r of again) {
+        const s = toRun.find((x) => x.path === r.suite)
+        const extra = s.needs.includes('site') ? { BOARD_PHONE_NOBUILD: '1' } : {}
+        if (mmBin && (s.needs.includes('mm') || uses(s, '{mm}'))) extra.MM_BIN_DIR = mmDir
+        const from = fs.statSync(r.log).size
+        fs.appendFileSync(r.log, `\n# gates: rerun alone (the first run failed with exit ${r.code})\n`)
+        const x = await runTo(interp(s.path)[0], [s.path, ...s.args.map(fill)], { cwd: wt, env: { ...env, ...extra }, log: r.log, timeout: o.timeout })
+        r.rerun = { code: x.code, secs: x.secs, ...counts(fs.readFileSync(r.log, 'utf8').slice(from)) }
+        if (x.code === 0) Object.assign(r, { status: 'flaky', note: `exit ${r.code}, then passed alone` })
+        else r.note = `exit ${r.code}, again alone`
+        say(`  ${(x.code === 0 ? 'flaky' : 'failed').padEnd(6)}  ${s.group.padEnd(8)}  ${s.path}  (rerun alone: ${x.secs.toFixed(0)}s)`)
+      }
+      // the history, inside the lock (one writer at a time); a suite not run (not prepared, not in the head) is not in it
+      try {
+        const date = new Date().toISOString()
+        appendHistory(defaultHistory(), results.filter((r) => r.code != null || r.status === 'skipped')
+          .map((r) => ({ suite: r.suite, head, group: r.group, status: r.status, secs: Math.round(r.secs * 10) / 10, date })))
+      } catch (e) { warn(`could not write the history ${defaultHistory()}: ${e.message}`) }
     } finally { if (release) await release() }
   } catch (e) {
     warn(e.message)
@@ -674,6 +721,7 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
   const failed = results.filter((r) => r.status === 'failed')
   const passed = results.filter((r) => r.status === 'passed')
   const skipped = results.filter((r) => r.status === 'skipped')
+  const flaky = results.filter((r) => r.status === 'flaky')
   const verdict = failed.length ? 'failed' : skipped.length ? 'passed (live skipped: --no-live)' : 'passed'
   const sw = Math.max(10, ...results.map((r) => r.suite.length))
   const lines = [
@@ -682,7 +730,7 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
     `date: ${t0.toISOString()}`,
     `map: ${mapFrom}`,
     `mm: ${mmNote}`,
-    `result: ${verdict}: ${passed.length} passed, ${failed.length} failed, ${skipped.length} skipped, of ${results.length}`,
+    `result: ${verdict}: ${passed.length} passed, ${failed.length} failed, ${flaky.length ? `${flaky.length} flaky, ` : ''}${skipped.length} skipped, of ${results.length}`,
     '',
     ...results.map((r) => {
       const st = r.status === 'skipped' ? `skipped (${r.note})` : r.note ? `${r.status} (${r.note})` : r.status === 'failed' && r.code != null ? `failed (exit ${r.code})` : r.status
