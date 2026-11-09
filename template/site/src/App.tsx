@@ -98,7 +98,7 @@ export default function App() {
   const load = useCallback(async () => {
     try {
       // items first: never hold the board back for agents/personas (meta fills in when it arrives)
-      api.meta().then((m) => { setRoleDefs(m.roles); setMeta(m) }).catch(() => {})
+      api.meta().then((m) => { setRoleDefs(m.roles, !!m.setup); setMeta(m) }).catch(() => {})
       const [open, closed, rdy] = await Promise.all([api.open(), api.closed(), api.ready()])
       setIssues([...open, ...closed])
       setReady(new Set(rdy.map((i) => i.id)))
@@ -147,7 +147,7 @@ export default function App() {
 
   // Lead status changes in Paseo, not in Beads, so poll it.
   useEffect(() => {
-    const t = window.setInterval(() => { api.meta().then((m) => { setRoleDefs(m.roles); setMeta(m) }).catch(() => {}); setNow(Date.now()) }, 5000)
+    const t = window.setInterval(() => { api.meta().then((m) => { setRoleDefs(m.roles, !!m.setup); setMeta(m) }).catch(() => {}); setNow(Date.now()) }, 5000)
     return () => window.clearInterval(t)
   }, [])
 

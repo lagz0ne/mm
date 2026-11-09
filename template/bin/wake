@@ -29,7 +29,7 @@ import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/o
 import { headRefusal, isGoAsk, KEYS as CARD_KEYS, parseCard } from './lib/owner-card.mjs'
 import os from 'node:os'
 import * as P_ from './lib/paseo.mjs'
-import { parseMessage } from './lib/message.mjs'
+import { SETUP, SETUP_BRIEF, messageRoles, parseMessage } from './lib/message.mjs'
 import { actOf, lettersOf, mayAsk, rowOf, withLetter } from './lib/raci.mjs'
 import { places, total as placesTotal, workersOf } from './lib/places.mjs'
 import http from 'node:http'
@@ -182,26 +182,30 @@ function raciRoute(e, byLead = false) {
 //   HANDOFF → <role>  the role is V in the row, and the Head is new: not one V signed (signed-head:<head>), not one
 //                     wake already gave it on this item (a HANDOFF with no Head always wakes)
 // Any other message, and words that are no message, wake only the assignee (as any comment does). Returns the roles woken.
+// setup (sy-0ggd): a message may go to it when the board has its setup agent (messageRoles); it has no RACI column, so
+// an ASK or a HANDOFF to it always wakes it (a HANDOFF's head is still woken once).
 const handedHeads = new Map() // item id -> the heads a HANDOFF → V already woke V for
 function messageRoute(e, byLead = false) {
   const woke = new Set(), c = e.comment
   if (e.op !== 'comment' || !c || SYSTEM.includes(c.author)) return woke
-  const m = parseMessage(c.text, { roles: ROLES, author: String(c.author ?? '') })
+  const m = parseMessage(c.text, { roles: messageRoles(ROLES, fs.existsSync(path.join(P, SETUP_BRIEF))), author: String(c.author ?? '') })
   if (!m.ok || !['ASK', 'HANDOFF'].includes(m.intent)) return woke
   const role = m.expect?.role || m.to.split('/')[0], self = leadOf(c.author), id = e.issue_id, labels = e.issue?.labels || []
   if (!ROLES.includes(role) || role === self) return woke
-  const row = rowOf(raci(), actOf(labels)), l = lettersOf(row, role), author = actorName(c.author)
+  const row = rowOf(raci(), actOf(labels)), l = lettersOf(row, role), author = actorName(c.author), toSetup = role === SETUP
   const text = [boardLine(id, e.issue?.title), boardLine(`${id} ${m.intent} by ${author}`, c.text, 400)]
   if (m.intent === 'ASK') {
-    if (!mayAsk(row, role)) { log(`ASK on ${id} by ${c.author} to ${role}: not C, V, R or A in act:${actOf(labels)}; nobody woken`); return woke }
-    const as = row ? ` (you are ${[...l].join('·')} in ${row.id})` : ''
+    if (!toSetup && !mayAsk(row, role)) { log(`ASK on ${id} by ${c.author} to ${role}: not C, V, R or A in act:${actOf(labels)}; nobody woken`); return woke }
+    const as = row && l ? ` (you are ${[...l].join('·')} in ${row.id})` : ''
     note(role, id, `ASK to you from ${author} on ${id}${as} (quoted below). Answer it with an ANSWER (re #n) by its By${/C/.test(l) && !/[RAV]/.test(l) ? ', or "no input"' : ''}.`, byLead, 'talk', text)
   } else {
-    if (!/V/.test(l)) return woke
+    if (!toSetup && !/V/.test(l)) return woke
     const head = m.keys.Head, had = handedHeads.get(id) || new Set()
     if (head && (labels.includes(`signed-head:${head}`) || had.has(head))) { log(`HANDOFF on ${id} by ${c.author} to ${role}: ${head} already ${had.has(head) ? 'handed' : 'signed'}; not woken again`); return woke }
     if (head) handedHeads.set(id, had.add(head))
-    note(role, id, `HANDOFF to you (V in ${row.id}) from ${author} on ${id}${head ? `, head ${head}` : ''} (quoted below). Verify it: a VERDICT on that head (re #n) by its By.`, byLead, 'talk', text)
+    note(role, id, toSetup
+      ? `HANDOFF to you from ${author} on ${id}${head ? `, head ${head}` : ''} (quoted below). Take it up and answer on the item (re #n) by its By.`
+      : `HANDOFF to you (V in ${row.id}) from ${author} on ${id}${head ? `, head ${head}` : ''} (quoted below). Verify it: a VERDICT on that head (re #n) by its By.`, byLead, 'talk', text)
   }
   count('mm_wake_signals_total', { kind: `${m.intent}_MESSAGE` })
   log(`${m.intent} on ${id} by ${c.author}: waking ${role}`)

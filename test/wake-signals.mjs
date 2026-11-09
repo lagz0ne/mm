@@ -28,14 +28,15 @@ fs.writeFileSync(path.join(T, 'proj', 'leads', 'roles.json'), JSON.stringify({ l
 fs.writeFileSync(path.join(T, 'proj', 'leads', 'raci.json'), JSON.stringify({ activities: [{ id: 'sec', title: 'Security', raci: { review: 'A', platform: 'R', ops: 'I' } },
   { id: 'chg', title: 'A change', raci: { platform: 'R', review: 'VA', ops: 'C' }, consult: ['ops: when it changes a port'] }] }))
 fs.mkdirSync(path.join(T, 'proj', 'control'), { recursive: true })
+fs.mkdirSync(path.join(T, 'proj', 'setup'), { recursive: true }); fs.writeFileSync(path.join(T, 'proj', 'setup', 'CLAUDE.md'), '# Setup\n') // the board has its setup agent (sy-0ggd)
 const BDLOG = path.join(T, 'bd.log')
 fs.writeFileSync(path.join(T, 'proj', 'bin', 'bd'), `#!/bin/sh\nprintf '%s\\n' "$*" >>"${BDLOG}"\n`, { mode: 0o755 })
 // stub paseo: each role's agent status in <role>.status; `send` records the prompt per agent
 const SENT = path.join(T, 'sent.txt'), st = (r, s) => fs.writeFileSync(path.join(T, `${r}.status`), s)
-for (const r of ROLES) st(r, 'idle')
+for (const r of [...ROLES, 'setup']) st(r, 'idle')
 fs.writeFileSync(path.join(T, 'paseo'), `#!/bin/sh
 case "$1" in
-  ls) for r in ${ROLES.join(' ')}; do case "$*" in *role=$r*) echo "[{\\"id\\":\\"agent-$r\\",\\"shortId\\":\\"$r\\",\\"status\\":\\"$(cat ${T}/$r.status)\\"}]"; exit 0 ;; esac; done; echo '[]' ;;
+  ls) for r in ${ROLES.join(' ')} setup; do case "$*" in *role=$r*) echo "[{\\"id\\":\\"agent-$r\\",\\"shortId\\":\\"$r\\",\\"status\\":\\"$(cat ${T}/$r.status)\\"}]"; exit 0 ;; esac; done; echo '[]' ;;
   send) id=$2; shift; while [ $# -gt 0 ]; do [ "$1" = --prompt ] && printf 'TO %s\\n%s\\n----\\n' "$id" "$2" >>"${SENT}"; shift; done ;;
 esac
 `, { mode: 0o755 })
@@ -63,6 +64,8 @@ add('r-2', { status: 'in_progress', labels: ['act:sec'] })
 add('r-4', { status: 'in_progress', labels: ['act:chg', 'signed-head:mm@ccccccc'] })
 add('r-5', { status: 'in_progress', labels: ['act:sec'] })
 add('r-6', { status: 'in_progress' })
+add('r-8', { status: 'in_progress', labels: ['act:chg'] })
+add('r-9', { status: 'in_progress' })
 const records = [], streams = []
 const srv = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x'), json = (o, c = 200) => { res.writeHead(c, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)) }
@@ -194,6 +197,12 @@ try {
   change('r-5', 'platform', { status: 'closed', close_reason: 'done' }, 'close')
   ok('close of an act:sec item: its I (ops) is told once', await until(() => /FYI: platform closed r-5/.test(to('ops'))))
   ok('...and its A (review) is not', !/r-5/.test(to('review').slice(0)) && (sent().slice(q1.length).match(/FYI: platform closed r-5/g) || []).length === 1)
+
+  console.log('== a message to the board\'s setup agent (sy-0ggd): it has no RACI column, an ASK or a HANDOFF to it wakes it')
+  comment('r-8', 'platform', ASK('setup'))
+  ok('an ASK → setup on an act:chg item (setup has no letter there): setup is woken', await until(() => /ASK to you from platform on r-8 \(quoted below\)/.test(to('setup'))))
+  comment('r-9', 'platform', HO('ddddddd').replace('HANDOFF → review', 'HANDOFF → setup').replace('Expect: review:', 'Expect: setup:'))
+  ok('a HANDOFF → setup: setup is woken, told to take it up (no VERDICT)', await until(() => /HANDOFF to you from platform on r-9, head mm@ddddddd \(quoted below\)\. Take it up/.test(to('setup'))))
 
   console.log('== a working lead is not interrupted')
   st('review', 'running')

@@ -24,6 +24,18 @@ import { writingCheck } from './writing.mjs'
 export const MAX = 600
 /** The role that writes a VERDICT (review sy-0gsw #8): as only it signs off (bin/owner-card signoff). */
 export const REVIEWER = 'review'
+/** The board's setup agent (sy-0ggd): its actor, and the brief bin/lead starts it from. A board has it when the brief is
+ * there. It is no lead (not in leads/roles.json, no RACI column): its own comments are not held to this format. */
+export const SETUP = 'setup'
+export const SETUP_BRIEF = 'setup/CLAUDE.md'
+/**
+ * Whom a message may address (the "→" of an ASK, HANDOFF or VERDICT, an Expect's role): the board's role ids
+ * (leads/roles.json), and setup when the board has its setup agent. bin/message, wake and the board's browser code pass
+ * this as parseMessage's and openWaits' roles.
+ * @param {string[]} roleIds  leads/roles.json's ids
+ * @param {boolean} hasSetup  the board has SETUP_BRIEF
+ */
+export const messageRoles = (roleIds, hasSetup) => [...new Set([...(Array.isArray(roleIds) ? roleIds : []).filter((x) => x !== SETUP), ...(hasSetup ? [SETUP] : [])])]
 export const MAX_EXPECT_WORDS = 20
 const COMMON = ['Head', 'Expect', 'Done when', 'Verify', 'By']
 /** intent -> { req: its own required keys, opt: its own optional keys, expect: 'role' | 'none' | 'any' | 'no' } */
@@ -57,8 +69,8 @@ export const looksLikeMessage = (text) => LOOSE_HEADER.test(String(text ?? '').r
 /**
  * Read and check one message.
  * @param {string} text  the comment's text
- * @param {{ roles?: string[], author?: string, reviewer?: string }} [o]  roles: the board's role ids (leads/roles.json);
- *   when given, the "→" of an ASK, HANDOFF or VERDICT and the role of an Expect must be one of them. author: who
+ * @param {{ roles?: string[], author?: string, reviewer?: string }} [o]  roles: whom a message may address
+ *   (messageRoles: the role ids of leads/roles.json, and setup when the board has it); when given, the "→" of an ASK, HANDOFF or VERDICT and the role of an Expect must be one of them. author: who
  *   wrote it (bd's actor, a comment's author); when given, a VERDICT is valid only from the reviewer role (reviewer,
  *   default REVIEWER) or its worker <reviewer>/<name>. writing: the writing check's setting ({ terms, words, roles,
  *   refuseFrom, today }: writing.mjs writingCheck); none: no check
