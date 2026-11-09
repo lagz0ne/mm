@@ -270,5 +270,44 @@ ok('no roles file', messageRoles(undefined, true).join(',') === 'setup')
 ok('SETUP_BRIEF is the brief bin/lead starts setup from', SETUP_BRIEF === 'setup/CLAUDE.md' && /DIR=\$P\/setup/.test(fs.readFileSync(path.join(SRC, 'template/bin/lead'), 'utf8')) && fs.existsSync(path.join(SRC, 'template', SETUP_BRIEF)))
 fs.rmSync(D, { recursive: true, force: true })
 
+step('the structured form (sy-rfup, step 1): one ```mm-message v1 block, read as the same keys')
+{
+  const J = (d) => '```mm-message v1\n' + JSON.stringify(d, null, 2) + '\n```'
+  const W1 = { done: { is: 'signed-off' }, verify: { check: 'bd show sy-1 --json', expect: 'signed-off' }, else: { do: 'escalate', to: 'ops' } }
+  const ask = { intent: 'ASK', to: 'review', expect: { role: 'review', do: 'review', on: 'mm@abcdef1' }, ...W1, by: '11:00', need: 'review', parts: [{ type: 'text', text: 'Read the plan first.' }] }
+  const R1 = { roles: ROLES, author: 'platform' }
+  const m = parseMessage(J(ask), R1)
+  ok('a valid ASK block: ok, found, intent, to', m.ok && m.found && m.intent === 'ASK' && m.to === 'review', m.errors.join('; '))
+  ok('...expect { role, action } as the text form has it', m.expect?.role === 'review' && m.expect?.action === 'review mm@abcdef1')
+  ok('...by "11:00 UTC": dueAt reads it', m.by === '11:00 UTC' && dueAt(m.by, '2026-01-02T10:00:00Z') === Date.parse('2026-01-02T11:00:00Z'))
+  ok('...keys: Expect, Done when, Verify, By, Why', m.keys.Expect === 'review: review mm@abcdef1' && m.keys['Done when'] === 'this item is signed-off' && m.keys.Verify === 'bd show sy-1 --json → signed-off' && m.keys.By === '11:00 UTC · Else: escalate ops' && m.keys.Why === 'review')
+  ok('...json: the data', m.json?.parts?.[0]?.text === 'Read the plan first.')
+  ok('the MAX of the text form does not apply (the block has its caps)', parseMessage(J({ ...ask, parts: [{ type: 'markdown', markdown: 'x'.repeat(MAX + 100) }] }), R1).ok)
+  const bad = (d, x, s, o = R1) => { const r = parseMessage(typeof x === 'string' ? x : J(x), o); ok(`${d}: "${s}"`, !r.ok && r.errors.some((e) => e.includes(s)), r.errors.join('; ')) }
+  bad('to a person', { ...ask, to: 'owner' }, 'to: owner is not a role (ops, review, platform)')
+  bad('Expect of a person', { ...ask, expect: { role: 'owner', do: 'decide' } }, 'expect.role: owner is not a role')
+  bad('a VERDICT by platform', { intent: 'VERDICT', to: 'platform', expect: { role: 'platform', do: 'land' }, ...W1, by: 'today', result: 'signed-off', head: 'mm@abcdef1' }, 'only review writes a VERDICT')
+  ok('...the same VERDICT by review/w1: ok', parseMessage(J({ intent: 'VERDICT', to: 'platform', expect: { role: 'platform', do: 'land' }, ...W1, by: 'today', result: 'signed-off', head: 'mm@abcdef1' }), { roles: ROLES, author: 'review/w1' }).ok)
+  bad('a schema error', { ...ask, by: 'soon' }, 'by: "soon" does not match')
+  bad('an mm-task block as a comment', '```mm-task v1\n{}\n```', 'an mm-task block is no message')
+  bad('text after the block', `${J(ask)}\nmore`, 'nothing goes after the block')
+  bad('not JSON', '```mm-message v1\n{"intent":\n```', 'the block is not JSON')
+  ok('an invalid block with a known intent is found (the gate says "this ASK is invalid")', parseMessage(J({ ...ask, by: 'soon' }), R1).found)
+  // openWaits reads both forms: a block ASK, answered by a text ANSWER; a text HANDOFF answered by a block DONE
+  const C = [
+    { author: 'platform', text: J(ask), created_at: '2026-01-02T10:00:00Z' },
+    { author: 'review', text: J({ intent: 'ANSWER', to: 'platform', re: 1, expect: 'none', answer: 'yes', verify: { check: 'bd show sy-1', expect: 'signed-off' } }), created_at: '2026-01-02T10:30:00Z' },
+    { author: 'platform', text: J({ ...ask, need: 'decision' }), created_at: '2026-01-02T10:40:00Z' },
+  ]
+  const w = openWaits(C, { roles: ROLES, now: Date.parse('2026-01-02T12:00:00Z') })
+  ok('openWaits: the block ASK answered (re #1) by a block ANSWER waits no more; the second waits, late', w.length === 1 && w[0].n === 3 && w[0].role === 'review' && w[0].late, JSON.stringify(w))
+  // the writing check runs on the text parts (and only on them)
+  const words = new Map(['read', 'the', 'plan', 'first'].map((x) => [x, { pos: '', base: '' }]))
+  const wr = parseMessage(J({ ...ask, parts: [{ type: 'text', text: 'Read the zorblax first.' }, { type: 'markdown', markdown: 'zorblax' }] }), { ...R1, writing: { words, terms: [], refuseFrom: '2020-01-01' } })
+  ok('the writing check: a text part\'s unknown word refuses from refuse_from on', !wr.ok && wr.errors.some((e) => /writing \(ASD-STE100\), line 1: .*zorblax/.test(e)) && wr.writing.length === 1, JSON.stringify(wr.errors))
+  const wk = parseMessage(J(ask), { ...R1, writing: { words, terms: [], refuseFrom: '2020-01-01' } })
+  ok('...known words: ok', wk.ok, wk.errors.join('; '))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

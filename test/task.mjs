@@ -60,6 +60,23 @@ ok('an unknown key, a key twice, a line that is no key: refused',
   /unknown key "Owner"/.test(errs(TASK.replace('\n\nThe rest.', '\n- **Owner:** x'))) && /Act is there twice/.test(errs(TASK.replace('\n\nThe rest.', '\n- **Act:** t2-change'))) &&
   /is not "- \*\*Key:\*\* value"/.test(errs(TASK.replace('\n\nThe rest.', '\nfree words'))))
 
+console.log('== the structured form (sy-rfup, step 1): one ```mm-task v1 block, after the card when there is one')
+const JT = { act: 'mm-template', do: 'build', on: 'sy-1', done: { is: 'closed' }, verify: { check: 'bin/raci', expect: 'review column: V' }, head: 'mm@0a1b2c3' }
+const JB = '```mm-task v1\n' + JSON.stringify(JT, null, 2) + '\n```\n\nThe rest.'
+{
+  const p = parseTask(JB, { acts: ACTS })
+  ok('a valid block: ok, the same keys (Task "<do> <on>", Act, Done when, Verify, Head)', p.ok && p.found && p.task.Task === 'build sy-1' && p.task.Act === 'mm-template' && p.task['Done when'] === 'this item is closed' && p.task.Verify === 'bin/raci → review column: V' && p.task.Head === 'mm@0a1b2c3')
+  ok('...json is the data; rest is the description after it', p.json?.do === 'build' && p.rest === 'The rest.')
+  ok('after a text card', parseTask(`${CARD}\n${JB}`, { acts: ACTS }).ok)
+  const CJ = '```mm-card v1\n' + JSON.stringify({ what: { do: 'apply' }, why: 'access', you: { kind: 'nothing' } }) + '\n```'
+  ok('after a block card', parseTask(`${CJ}\n\n${JB}`, { acts: ACTS }).ok, errs(`${CJ}\n\n${JB}`))
+  ok('a text Task after a block card', parseTask(`${CJ}\n\n${TASK}`, { acts: ACTS }).ok)
+  ok('an act not in leads/raci.json: "act: ... is not an activity"', /act: deploy is not an activity of leads\/raci\.json \(t2-change, mm-template\)/.test(errs(JB.replace('"mm-template"', '"deploy"'))))
+  ok('a schema error: the path and the reason', /done\.is: "nice" is not one of/.test(errs(JB.replace('"closed"', '"nice"'))))
+  ok('an mm-message block where the Task goes: no Task', !parseTask('```mm-message v1\n{}\n```', { acts: ACTS }).found)
+  ok('a block that is not JSON: found, invalid', (() => { const r = parseTask('```mm-task v1\n{x\n```', { acts: ACTS }); return r.found && !r.ok && /not JSON/.test(r.errors[0]) })())
+}
+
 console.log('== bin/bd and bin/task')
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'task-'))
 try {
@@ -104,6 +121,12 @@ try {
   ok('...an invalid one: exit 1, the reasons', x.status === 1 && /has no Task/.test(x.stderr))
   fs.writeFileSync(path.join(T, 'item.json'), JSON.stringify([{ id: 'sy-1', description: `${CARD}\n${TASK}` }]))
   ok('task check <id>: reads the item through bin/bd show', task(['check', 'sy-1']).status === 0)
+  // the structured form (sy-rfup): the gate passes a valid mm-task block and refuses a wrong one, with the schema's reason
+  fs.writeFileSync(F, JB)
+  ok('gate: bd create --body-file <an mm-task block> passes', passed(bd('create', 'x', '--body-file', F, '--actor', 'platform')))
+  fs.writeFileSync(F, JB.replace('"mm-template"', '"deploy"'))
+  x = bd('create', 'x', '--body-file', F, '--actor', 'platform')
+  ok('gate: ...an act not in leads/raci.json: refused, the reason', refused(x) && /act: deploy is not an activity of leads\/raci\.json/.test(x.stderr))
 } finally { fs.rmSync(T, { recursive: true, force: true }) }
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
