@@ -338,6 +338,13 @@ const r = {
   refusedMember: waitingOf({ items: [it(undefined, { refused: 'x' })] }, false)!.items,
   refusedLong: waitingOf({ items: [it(null, { refused: 'r'.repeat(201) })] }, true)!.items,
   refusedBidi: waitingOf({ items: [it(null, { refused: 'a' + bidi })] }, true)!.items,
+  // sy-w5bt: an mm.api request's decide text
+  decide: waitingOf({ items: [it({ you: 'Tap Approve' }, { labels: ['needs-you'], decide: 'Decide it in your terminal.' })] }, true)!.items,
+  decideT2: waitingOf({ items: [it(null, { labels: ['needs-you', 't2', 'signed-off'], decide: 'd' })] }, true)!.items,
+  decideNoAsk: waitingOf({ items: [it(null, { labels: [], decide: 'd' })] }, true)!.items,
+  decideMember: waitingOf({ items: [it(undefined, { labels: [], decide: 'd' })] }, false)!.items,
+  decideLong: waitingOf({ items: [it(null, { labels: ['needs-you'], decide: 'd'.repeat(201) })] }, true)!.items,
+  decideBidi: waitingOf({ items: [it(null, { labels: ['needs-you'], decide: 'a' + bidi })] }, true)!.items,
 }
 console.log(JSON.stringify(r))
 EOF
@@ -349,6 +356,8 @@ check "a card in a member's list: dropped (only the owner's entries carry one); 
 
 check "a card's head: <repo>@<sha> kept; anything else drops the item (sy-hzmu)" eval 'echo "$WO" | jq -e ".head[0].card.head == \"mm@0a1b2c3\" and (.headBad | length == 0) and (.headUp | length == 0)"'
 check "refused: kept for the owner; a member's, one over 200 or with a bidi character: dropped" eval 'echo "$WO" | jq -e ".refused[0].refused == \"the head changed\" and (.refusedMember | length == 0) and (.refusedLong | length == 0) and (.refusedBidi | length == 0)"'
+check "decide (sy-w5bt): kept for the owner with needs-you, its own ask, no action (never Approve)" eval 'echo "$WO" | jq -e ".decide | length == 1 and .[0].decide == \"Decide it in your terminal.\" and .[0].act == \"none\" and .[0].ask == \"decide through mm.api\""'
+check "...with t2 labels, without needs-you, a member's, over 200, a bidi character: dropped" eval 'echo "$WO" | jq -e "[.decideT2, .decideNoAsk, .decideMember, .decideLong, .decideBidi] | all(length == 0)"'
 
 if [ "$fail" -gt 0 ]; then echo "--- gw.log"; tail -20 "$T/gw.log"; echo "--- board log"; tail -20 "$BLOG" 2>/dev/null; tail -5 "$T/board.log"; cat "$T/wo.err" 2>/dev/null; fi
 echo; echo "$pass passed, $fail failed"

@@ -18,6 +18,11 @@
 // only when valid), and an entry whose T2 go the board would refuse for its head (owner-card.mjs headRefusal: review's
 // sign-off names another head, or none) carries `refused`, the reason as plain text (at most REFUSED_MAX): the gateway
 // shows it instead of Approve. The board refuses the go anyway.
+// An mm.api request (label mm-api, sy-w5bt; filed by mm's src/api.ts) is never a T2 go here: only mm.api decides it (the
+// owner's `mm api approve <request>` with the one-time code, or Allow/Deny in mm's Telegram message), and the board
+// has no go to give for it. The owner gets it when it is needs-you, or t2 and signed off (an egress request: review
+// first); its labels are needs-you only, so no reader offers Approve. With `decide` (?decide=1) it also carries
+// `decide`: how the owner decides it, plain text (at most DECIDE_MAX), with the request id when the item names one.
 // The answer stays under 32 KB (MAX_BYTES): what doesn't fit is counted in `more`, never cut in the middle.
 // Pure: the board's server feeds it, test/board-pull.mjs checks it.
 import { HEAD, headRefusal, isApproved, isNonGoAsk, parseCard } from '../bin/lib/owner-card.mjs'
@@ -26,6 +31,7 @@ export const MAX_BYTES = 32 * 1024
 export const TITLE_MAX = 200
 export const YOU_MAX = 160
 export const REFUSED_MAX = 200
+export const DECIDE_MAX = 200
 // the card's fields as the list sends them: name -> [the card's key, the most characters] (owner-card.mjs KEYS; Risk
 // is its level and up to 80 more)
 export const CARD_FIELDS = { what: ['What', 120], why: ['Why', 120], you: ['You', 160], if_yes: ['If yes', 120], if_no: ['If no', 120], risk: ['Risk', 100] }
@@ -50,6 +56,16 @@ export function cardFields(description, labels, head = false) {
   if (head && typeof c.Head === 'string' && HEAD.test(c.Head)) out.head = c.Head
   return out
 }
+// the line mm writes last on the item: `mm-api: <request id> sha256:<digest>` (src/api.ts itemText)
+const MMAPI_LINE = /^mm-api: (r-[0-9a-f]{4,32}) sha256:[0-9a-f]+[ \t]*$/gm
+/** How the owner decides an mm.api request item (sy-w5bt): plain text, with the request id when the item names one. */
+export function decideText(description) {
+  const ids = [...String(description ?? '').matchAll(MMAPI_LINE)].map((m) => m[1])
+  const id = ids[ids.length - 1]
+  return plain(id
+    ? `Decide it in your terminal: mm api approve ${id}, or mm api deny ${id}. Or tap Allow or Deny in mm's Telegram message.`
+    : `Decide it in your terminal: mm api approve with the request id on the item. Or tap Allow or Deny in mm's Telegram message.`, DECIDE_MAX)
+}
 function plain(t, max) {
   const s = String(t ?? '').replace(CONTROL, ' ').replace(/\s+/g, ' ').trim()
   const cps = Array.from(s)
@@ -62,15 +78,20 @@ function plain(t, max) {
  * @param owner  true when the assertion says owner
  * @param now    ms
  * @param cards  the owner's entries carry `card` (?card=1: true or 1; ?card=1&head=1: 2, with `head` and `refused`)
- * @returns { items: [{ id, title, age_min, labels, you?, card?, refused? }], more }
+ * @param decide the owner's mm.api request entries carry `decide` (?decide=1)
+ * @returns { items: [{ id, title, age_min, labels, you?, card?, refused?, decide? }], more }
  */
-export function waitingFor({ items, me, owner, now = Date.now(), max = MAX_BYTES, cards = false }) {
+export function waitingFor({ items, me, owner, now = Date.now(), max = MAX_BYTES, cards = false, decide = false }) {
   const has = (i, l) => Array.isArray(i.labels) && i.labels.includes(l)
   const out = []
   for (const i of items) {
     if (!i || i.status === 'closed' || typeof i.id !== 'string' || !ID_RE.test(i.id)) continue
-    let labels
-    if (owner) {
+    let labels, mmapi = false
+    if (owner && has(i, 'mm-api')) {
+      // an mm.api request (sy-w5bt): never an approval; it waits for the owner as needs-you, decided only through mm.api
+      if (!has(i, 'needs-you') && !(has(i, 't2') && has(i, 'signed-off'))) continue
+      labels = ['needs-you']; mmapi = true
+    } else if (owner) {
       // never an approval for a non-go ask (sy-t9tg: You Reply:/Check:/Nothing): it is listed by its needs-you, with no
       // t2 labels, so the gateway offers its Reply or Done and never Approve (no card: an approval, with its refusal)
       // approved counts only for the card's Head now (sy-6gz6): an approved for another head waits for a new go
@@ -85,7 +106,7 @@ export function waitingFor({ items, me, owner, now = Date.now(), max = MAX_BYTES
     const refused = v2 && labels.includes('t2') ? headRefusal(i.description, i.labels) : null
     out.push({ id: i.id, title: plainTitle(i.title), age_min: Math.max(0, Math.floor((now - (Number.isNaN(t) ? now : t)) / 60000)), labels,
       ...(owner || you ? { you } : {}), ...(owner && cards ? { card: cardFields(i.description, i.labels, v2) } : {}),
-      ...(refused ? { refused: plain(refused, REFUSED_MAX) } : {}) })
+      ...(refused ? { refused: plain(refused, REFUSED_MAX) } : {}), ...(mmapi && decide ? { decide: decideText(i.description) } : {}) })
   }
   out.sort((a, b) => b.age_min - a.age_min || a.id.localeCompare(b.id))
   // keep under the cap, with room for the envelope and `more`

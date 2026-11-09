@@ -510,6 +510,30 @@ ${URL_}`
     ok('no page error', errs.length === 0, errs.join(' | '))
     await ctx.close()
   }
+  step('an mm.api request (sy-w5bt): For you says how to decide it, never Approve')
+  {
+    const RID = 'r-1a2b3c4d'
+    const req = { ...base, id: 'fy-30', title: 'mm.api: shop asks for egress api.example.com', assignee: 'review', labels: ['mm-api', 't2', 'signed-off', 'signed-head:mm@abc1234'], updated_at: iso(5),
+      description: `A request from the box of project **shop**, filed by mm.api.\n\n- **Request:** \`${RID}\` (egress)\n\nmm-api: ${RID} sha256:${'ab'.repeat(32)}` }
+    OPEN.push(req); all[req.id] = req
+    const wl = await fetch(`${PUB}/api/waiting?card=1&head=1&decide=1`, { headers: asOwner }).then((x) => x.json()).catch((e) => ({ error: String(e) }))
+    const we = wl.items?.find((x) => x.id === 'fy-30')
+    ok('/api/waiting: the request is no approval (needs-you only), with its decide text', JSON.stringify(we?.labels) === '["needs-you"]' && !('refused' in (we || {}))
+      && we?.decide === `Decide it in your terminal: mm api approve ${RID}, or mm api deny ${RID}. Or tap Allow or Deny in mm's Telegram message.`, JSON.stringify(we))
+    const { ctx, page, errs } = await human('boss', 'owner', 390, 844)
+    await page.goto(`${PUB}/`)
+    const card = page.locator('[data-needs-you="fy-30"]')
+    await card.waitFor({ timeout: 10000 }).catch(() => {})
+    ok('...its card: the title as headline, the decide text, no Approve, no Not now, no button at all in its action', (await card.locator('[data-you]').textContent().catch(() => '')) === req.title
+      && ((await card.locator('[data-decide]').textContent().catch(() => '')) || '').startsWith(`Decide it in your terminal: mm api approve ${RID}`)
+      && (await card.locator('[data-act]').count()) === 0 && (await card.locator('[data-part="act"] button').count()) === 0)
+    ok('...the other T2 go keeps its Approve', (await page.locator('[data-needs-you="fy-1"] [data-act="approve"]').count()) === 1)
+    await card.scrollIntoViewIfNeeded().catch(() => {})
+    await page.screenshot({ path: path.join(SHOTS, 'for-you-mm-api-390.png') })
+    ok('no page error', errs.length === 0, errs.join(' | '))
+    await ctx.close()
+    OPEN.splice(OPEN.indexOf(req), 1); delete all[req.id]
+  }
   step('closing an item removes needs-you (sy-e234): the board\'s Close and a move to closed')
   const w0 = WRITES.length, writesSince = () => WRITES.slice(w0)
   const close = (id, how) => fetch(how === 'patch' ? `${PUB}/api/v0/beads/issues/${id}` : `${PUB}/api/v0/beads/issues/${id}:close`, { method: how === 'patch' ? 'PATCH' : 'POST',

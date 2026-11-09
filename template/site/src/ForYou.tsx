@@ -3,7 +3,8 @@
 //              leads with the action: its You line as the headline, then the one action it asks, large: Approve and
 //              Not now (a T2 go; its head refused: why, in Approve's place), a Reply box (Reply:) or Done (Check:);
 //              then What and Why (a go: If yes, If no, Risk) in smaller text; the link to the item last. A t2 non-go
-//              ask gets its Reply or Done, never Approve. The server checks the owner and the item again. Send reply
+//              ask gets its Reply or Done, never Approve. An mm.api request (sy-w5bt: `decide`) gets its title and how
+//              to decide it (in the owner's terminal, or in mm's Telegram message), never a button. The server checks the owner and the item again. Send reply
 //              and Done post the owner's comment (sy-e234: the one answer path, as a comment on the item); the card
 //              leaves the list and its count at once (App: answered), and wake removes needs-you.
 //   To review  the items closed or handed over since this person's start mark (/api/to-review: with an artifact or a
@@ -113,7 +114,9 @@ function NeedsCard({ w, owner, approval, onOpen, onChanged, onAnswered }: {
   const kind = youKind(you)
   // a T2 go: t2 and signed-off, and not a non-go ask (sy-t9tg: You Reply:/Check:/Nothing gets its own answer, never
   // Approve; a t2 card without its keys still counts as a go ask, and the server refuses it with its reason)
-  const go = w.labels.includes('t2') && w.labels.includes('signed-off') && !isNonGoAsk({ You: you })
+  // an mm.api request (sy-w5bt) is decided only through mm.api: its own text, never Approve
+  const decide = w.decide?.trim() || ''
+  const go = !decide && w.labels.includes('t2') && w.labels.includes('signed-off') && !isNonGoAsk({ You: you })
   const missing = owner && !w.card
   async function run(what: () => Promise<{ title: string }>, after?: string, answer = false) {
     setBusy(true)
@@ -124,16 +127,18 @@ function NeedsCard({ w, owner, approval, onOpen, onChanged, onAnswered }: {
     <article data-needs-you={w.id} className="min-w-0 border-2 border-foreground bg-background">
       <div data-part="you" className="px-4 pt-3 pb-1">
         <p className="text-[11px] font-bold tracking-[0.1em] text-swiss uppercase">
-          {go ? 'Your go' : kind === 'reply' ? 'Your answer' : kind === 'check' ? 'Your check' : 'For you'}
+          {decide ? 'Your decision, outside the board' : go ? 'Your go' : kind === 'reply' ? 'Your answer' : kind === 'check' ? 'Your check' : 'For you'}
           <span className="font-normal text-muted-foreground"> · waiting {age(w.age_min)}</span>
         </p>
         <p data-you className="pt-1 text-xl leading-tight font-bold [overflow-wrap:anywhere] md:text-2xl">
-          {you || (missing ? 'This item does not say what it asks.' : w.title)}
+          {decide ? w.title : you || (missing ? 'This item does not say what it asks.' : w.title)}
         </p>
       </div>
-      {owner && (go || kind === 'reply' || kind === 'check' || missing) && (
+      {owner && (decide || go || kind === 'reply' || kind === 'check' || missing) && (
         <div data-part="act" className="flex flex-wrap items-center gap-2 px-4 pt-2 pb-4">
-          {go ? (w.refused ? (
+          {decide ? (
+            <p data-decide className="w-full border-l-4 border-swiss bg-muted px-3 py-2.5 text-[15px] leading-snug font-semibold [overflow-wrap:anywhere]">{decide}</p>
+          ) : go ? (w.refused ? (
             <p data-head-refused className="w-full border-l-4 border-swiss bg-muted px-3 py-2.5 text-[15px] leading-snug font-semibold [overflow-wrap:anywhere]">
               No go yet: {w.refused}. Review signs off the head the card names.</p>
           ) : sent ? <p data-approved className="text-[15px] font-semibold">{sent}</p> : (<>

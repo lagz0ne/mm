@@ -51,6 +51,9 @@ const items = [
   { id: 'ab-14', title: 'Check the new sign-in page', age_min: 12, ask: 'needs you', hot: true, you: 'Check: the sign-in page, on your phone', card: { what: 'The sign-in page is new.', why: 'It must work on a phone.', you: 'Check: the sign-in page, on your phone' }, act: 'check' },
   { id: 'ab-15', title: 'For your information: the backup ran', age_min: 3, ask: 'needs you', hot: true, you: 'Nothing', card: { what: 'The backup ran.', why: 'You asked to hear.', you: 'Nothing' }, act: 'none' },
   { id: 'ab-16', title: 'An item with no card', age_min: 1, ask: 'needs you', hot: true, you: null, card: null, act: 'none' },
+  // sy-w5bt: an mm.api request: its own way to decide, no form
+  { id: 'ab-17', title: 'mm.api: shop asks for egress api.example.com', age_min: 0, ask: 'decide through mm.api', hot: true, you: null, card: null, act: 'none',
+    decide: "Decide it in your terminal: mm api approve r-1a2b3c4d, or mm api deny r-1a2b3c4d. Or tap Allow or Deny in mm's Telegram message." },
 ]
 fs.writeFileSync(out + '/owner.html', P.home('Alex Example-Longname', [
   { project: 'a-rather-long-project-name-with-dashes', host: 'board.example.org', role: 'owner', s: sum, w: { items, more: 0 }, older: false }], 'a-rather-long-project-name-with-dashes ab-12: Approved on the board by alex.'))
@@ -99,6 +102,10 @@ try {
         document.querySelectorAll('button[value=approve]').length === 1 && document.querySelectorAll('button[value=not-now]').length === 1
         && document.querySelectorAll('textarea[name=t]').length === 1 && [...document.querySelectorAll('.w-act button')].filter((b) => b.textContent === 'Done').length === 1))
       ok('..."Nothing" and no card: the link only', await page.evaluate(() => [...document.querySelectorAll('.w-list li')].slice(3).every((li) => !li.querySelector('form'))))
+      ok('...an mm.api request (sy-w5bt): its decide text, no form, no Approve', await page.evaluate(() => {
+        const li = [...document.querySelectorAll('.w-list li')].find((x) => x.textContent.includes('ab-17'))
+        return !!li && !li.querySelector('form') && !li.querySelector('button') && /^Decide it in your terminal: mm api approve r-1a2b3c4d,/.test(li.querySelector('.w-decide[role=note]')?.textContent || '')
+      }))
       ok('...the card shown as text: the <script> in What is text, no script element', await page.evaluate(() =>
         document.querySelectorAll('script').length === 0 && [...document.querySelectorAll('.w-card dd')].some((d) => d.textContent.includes('<script>alert(1)</script>'))))
       ok('...the board\'s answer shown at the top', await page.evaluate(() => document.querySelector('main > p.msg[role=status]')?.textContent.includes('Approved on the board')))

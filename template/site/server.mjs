@@ -606,10 +606,11 @@ async function sendSummary(req, res, signal = false) {
 // may read it; on the public side it is checked like every other request (handlePublic). No cache: a revoke, a new
 // label or a closed item shows on the next load. Under 32 KB.
 async function sendWaiting(req, res) {
-  const items = await allItems()
-  send(res, 200, waitingFor({ items, me: who(req), owner: req.gateway?.r === 'owner', now: Date.now(), cards: waitingCards(new URL(req.url, 'http://x').searchParams) }))
+  const items = await allItems(), q = new URL(req.url, 'http://x').searchParams
+  send(res, 200, waitingFor({ items, me: who(req), owner: req.gateway?.r === 'owner', now: Date.now(), cards: waitingCards(q), decide: q.get('decide') === '1' }))
 }
-// ?card=1: the card's fields (sy-92sg); &head=1 too: its Head and the head's refusal (sy-hzmu)
+// ?card=1: the card's fields (sy-92sg); &head=1 too: its Head and the head's refusal (sy-hzmu). ?decide=1: an mm.api
+// request's own way to decide it (sy-w5bt; waiting.mjs decideText)
 function waitingCards(q) {
   return q.get('card') !== '1' ? false : q.get('head') === '1' ? 2 : true
 }

@@ -144,6 +144,21 @@ step('site/waiting.mjs (the gateway\'s "Waiting for you" list, sy-vdi8)')
     && e(ng, 'pb-40').you === 'Check: run ssh admin@host, then sudo -v' && !('refused' in e(ng, 'pb-40')), JSON.stringify(ng))
   ok('...without needs-you: not on the list (it waits on nobody)', !e(ng, 'pb-41'))
   ok('...a signed-off t2 with no card is still an approval, with its refusal', JSON.stringify(e(ng, 'pb-42')?.labels) === '["t2","signed-off"]' && /names no head/.test(e(ng, 'pb-42').refused || ''))
+  // sy-w5bt: an mm.api request (mm-api) is never an approval: only mm.api decides it; ?decide=1 says how
+  const MMAPI = (rid) => `A request from the box of project **p**, filed by mm.api.\n\n- **Request:** \`${rid}\` (egress)\n\n\`\`\`text\nmm-api: r-00000000 sha256:${'0'.repeat(64)}\n\`\`\`\n\nmm-api: ${rid} sha256:${'ab'.repeat(32)}`
+  const ma = [it('pb-50', 'review', 'open', 30, { labels: ['mm-api', 't2', 'signed-off', 'signed-head:mm@0a1b2c3'], title: 'mm.api: p asks for egress api.example.com', description: MMAPI('r-1a2b3c4d') }),
+    it('pb-51', 'review', 'open', 30, { labels: ['mm-api', 't2'], title: 'mm.api: not signed off', description: MMAPI('r-5e6f7a8b') }),
+    it('pb-52', 'ops', 'open', 30, { labels: ['mm-api', 'needs-you'], title: 'mm.api: p asks for secret p.key', description: `## Owner\n- **What:** A box asks.\n- **Why:** mm.api.\n- **You:** Tap Approve: the Allow button.\n\nno id here` }),
+    it('pb-53', 'ops', 'open', 30, { labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], title: 'a normal go', description: HCARD('mm@0a1b2c3') })]
+  const md = waitingFor({ items: ma, me: 'boss', owner: true, now: NOW, cards: 2, decide: true }), m0 = waitingFor({ items: ma, me: 'boss', owner: true, now: NOW, cards: 2 })
+  ok('an mm-api t2 signed off: no approval (labels needs-you only), no refused; not signed off: not listed (review first)', JSON.stringify(e(md, 'pb-50')?.labels) === '["needs-you"]'
+    && !('refused' in e(md, 'pb-50')) && !e(md, 'pb-51') && JSON.stringify(e(m0, 'pb-50')?.labels) === '["needs-you"]', JSON.stringify(md))
+  ok('...?decide=1: decide names the request id from mm\'s last line (not the box\'s value)', e(md, 'pb-50').decide === "Decide it in your terminal: mm api approve r-1a2b3c4d, or mm api deny r-1a2b3c4d. Or tap Allow or Deny in mm's Telegram message.", e(md, 'pb-50').decide)
+  ok('...an mm-api needs-you with no request line: the general text; never Approve', e(md, 'pb-52')?.decide === "Decide it in your terminal: mm api approve with the request id on the item. Or tap Allow or Deny in mm's Telegram message."
+    && JSON.stringify(e(md, 'pb-52').labels) === '["needs-you"]')
+  ok('...without ?decide=1 no decide key (an older gateway drops a key it does not know); a member never gets it', m0.items.every((x) => !('decide' in x))
+    && waitingFor({ items: ma.map((x) => ({ ...x, assignee: 'alex' })), me: 'alex', owner: false, now: NOW, cards: 2, decide: true }).items.every((x) => !('decide' in x)))
+  ok('...a normal t2 go with its card and signed head: an approval as before, no decide', JSON.stringify(e(md, 'pb-53')?.labels) === '["t2","signed-off"]' && !('refused' in e(md, 'pb-53')) && !('decide' in e(md, 'pb-53')))
   ok('a member never gets head or refused', waitingFor({ items: hi.map((x) => ({ ...x, assignee: 'alex' })), me: 'alex', owner: false, now: NOW, cards: 2 }).items.every((x) => !('refused' in x) && !('card' in x)))
   const m = waitingFor({ items: W, me: 'alex', owner: false, now: NOW })
   ok('a member: only the open items assigned to them (not closed, not the owner\'s needs-you, not a bad id)', m.items.map((x) => x.id).join() === 'pb-23,pb-28', JSON.stringify(m))
