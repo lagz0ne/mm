@@ -136,6 +136,7 @@ suite test/board-thread.mjs       hermetic needs=site
 suite test/board-structured.mjs   hermetic needs=site
 suite test/board-for-you.mjs      hermetic needs=site
 suite test/board-ships.mjs        hermetic needs=site
+suite test/board-perf.mjs         hermetic needs=site
 suite test/wake-person-to.mjs     hermetic
 suite test/schema.mjs             hermetic
 suite test/placements.mjs         hermetic
@@ -367,8 +368,9 @@ rule template/site/src/lib/*.tsx        @site-smoke
 rule template/site/src/lib/links.ts     test/board-links.mjs
 rule template/site/src/lib/phone.ts     test/board-phone-space.mjs test/waiting-phone.mjs
 rule template/site/src/lib/api.ts       test/board-message.mjs test/board-pull.mjs
+rule template/site/src/lib/live.ts      test/board-perf.mjs
 rule template/site/src/lib/persona.tsx  test/board-presence.mjs
-rule template/site/src/App.tsx          test/board-for-you.mjs test/board-pull.mjs test/board-owner-card.mjs test/waiting-phone.mjs
+rule template/site/src/App.tsx          test/board-for-you.mjs test/board-pull.mjs test/board-owner-card.mjs test/waiting-phone.mjs test/board-perf.mjs
 rule template/site/src/Designs.tsx      test/board-designs.mjs test/board-phone-space.mjs
 rule template/site/src/Detail.tsx       test/board-owner-card.mjs test/board-message.mjs test/board-artifacts.mjs
 rule template/site/src/Diff.tsx         test/board-artifacts.mjs
