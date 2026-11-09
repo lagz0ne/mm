@@ -241,6 +241,20 @@ that gets past the text rules and writes as review is recorded as review. A real
 review's session can make, for example a line signed with a key the other agents can't read (as `mm-approve` signs the
 owner's go). That is not built.
 
+**Review signs off a head only with the gates result for it** (sy-n4f5). An agent's reading is a signal; the fixed
+tests are the gate. When review adds `signed-head:<repo>@<sha>` for a repo of the board's `gates.json`
+(`{"repos": [...]}`; with none, or a broken one, `["mm"]`), `bin/bd` (through `bin/owner-card signoff`,
+`bin/lib/gates-file.mjs`) refuses it unless `artifacts/<item>/gates-<first 7>.txt` (or a `gates-<sha>.txt` whose sha
+agrees with the label's) is a regular file that `test/gates <base>..<sha> --item <item>` wrote: its `head:` is that
+sha, its `result:` is passed, no suite failed, at least one ran. A live group skipped with `--no-live` is not passed
+on a t2 item (on the item, or added in the same call); on any other item it passes, as only a t2 change reaches the
+machine through the owner's go and the live group needs the machine. A new item (create/q) cannot carry a
+`signed-head:` unless `--id` names it and its file is there. Other repos (e.g. a brain with no gates script) are not
+checked: review's reading stays their only check. The refusals start "bd: refused: review signs off a head only with
+the gates result for that exact head: " and then name the missing file, the failed suites, the other head, or the
+skipped live suites. Removing a `signed-head:`, `signed-off` alone, and `--set-labels` that keeps a signed head the
+item has are not checked.
+
 ### The board's web Approve (with the ledger on)
 
 With `verifier = ledger`, the board writes no `approved` on its public side and signs nothing: adding the label

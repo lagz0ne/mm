@@ -267,6 +267,7 @@ first, and the owner reads only it. The format is fixed:
 - **A t2 card names its head** (`- **Head:** mm@<sha>`, the commit or migration review signs off). Review adds
   `signed-head:<repo>@<sha>` with its sign-off. A new head after the sign-off needs a new sign-off: the board and bd
   refuse the go (and `needs-you`) until then, and say why.
+- **The gates are the gate, review's reading is a signal:** bd refuses `signed-head:mm@<sha>` until `artifacts/<item>/gates-<sha7>.txt` (`test/gates <base>..<sha> --item <item>`) shows all passed (live too on t2); the VERDICT's Verify links it.
 - **A go ask or another ask.** A t2 card whose `You` is "Tap Approve" asks for the go: it needs If yes, If no, Risk,
   Head, a Rollback and a Safeguard in the item's Task, and review's sign-off before `needs-you`. Without the Rollback
   or the Safeguard, bd refuses `needs-you` and the board refuses the go (Approve, Not now, the Waiting list). A t2

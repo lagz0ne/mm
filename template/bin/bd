@@ -30,7 +30,11 @@ esac
 # item (bd show) only for --set-labels. Every other call costs only this loop.
 case "$cmd" in
   create|q|new|update|edit|label)
-    case "${actor%%/*}" in review) ;; *)
+    case "${actor%%/*}" in review)
+      # ...and review signs off a head only with the gates result for that exact head (sy-n4f5): a signed-head: it adds
+      # needs artifacts/<item>/gates-<sha7>.txt that shows all passed (bin/owner-card signoff; repos: gates.json, mm)
+      for a in "$@"; do case "$a" in --) break ;; *signed-head:*) "$P/bin/owner-card" signoff -- "$@" || exit 1; break ;; esac; done ;;
+    *)
       for a in "$@"; do case "$a" in --) break ;; *signed-off*|*signed-head:*|--set-labels|--set-labels=*) "$P/bin/owner-card" signoff -- "$@" || exit 1; break ;; esac; done ;;
     esac ;;
 esac
