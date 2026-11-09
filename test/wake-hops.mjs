@@ -39,7 +39,7 @@ fs.writeFileSync(path.join(PROJ, 'bin', 'bd'), `#!/bin/sh\nprintf '%s\\n' "$*" >
 const now = () => new Date().toISOString()
 const items = new Map()
 const add = (id, f) => items.set(id, { id, title: `title of ${id}`, status: 'open', assignee: 'platform', labels: [], description: '', updated_at: now(), ...f })
-for (const id of ['n-1', 'n-2', 's-1', 'r-1', 'a-1', 'c-1']) add(id)
+for (const id of ['n-1', 'n-2', 's-1', 'r-1', 'a-1', 'c-1', 'n-9']) add(id)
 add('c-1.1', { status: 'in_progress', assignee: 'ops' })
 const records = [], streams = []
 let seq = 0, n = 0
@@ -61,7 +61,7 @@ const srv = http.createServer((req, res) => {
 })
 await new Promise((r) => srv.listen(0, '127.0.0.1', r))
 const env = { ...process.env, BD_SERVE: `http://127.0.0.1:${srv.address().port}`, PASEO_BIN: path.join(T, 'paseo'), PASEO_NO_SDK: '1', MM_PROJECT: 'wh',
-  MM_OBS_TRACES: '', MM_OBS_METRICS: '', WAKE_EVERY_MS: '300', WAKE_CHECK_MS: '500', WAKE_RESUME_CHECK_MS: '600000', WAKE_LABEL_GAP_MS: '20' }
+  MM_OBS_TRACES: '', MM_OBS_METRICS: '', WAKE_EVERY_MS: '300', WAKE_CHECK_MS: '500', WAKE_RESUME_CHECK_MS: '600000', WAKE_LABEL_GAP_MS: '20', WAKE_MAX_WAKES: '8' }
 delete env.MM_SERVICE
 const w = spawn('node', [path.join(PROJ, 'bin', 'wake')], { env, stdio: ['ignore', 'pipe', 'pipe'] })
 let out = ''; w.stdout.on('data', (d) => (out += d)); w.stderr.on('data', (d) => (out += d))
@@ -131,6 +131,16 @@ try {
 
   const errs = opsLog().split('\n').filter((l) => /"level":"error"/.test(l))
   ok('no errors logged', errs.length === 0)
+  console.log('== the hard cap (review #3): a new Head on every turn still pauses at WAKE_MAX_WAKES (8 here; 12 by default)')
+  all = true
+  for (let i = 0; i < 8; i++) { const [from, next] = pair(i); all = (await turn('n-9', from, next, () => comment('n-9', from, HO(next, (`${i}`.repeat(7)).slice(0, 7))))) && all }
+  ok('8 turns, each with a new Head: each wakes the next lead', all)
+  {
+    const [from, next] = pair(8)
+    const woke = await turn('n-9', from, next, () => comment('n-9', from, HO(next, '9999999')))
+    ok('...the 9th: paused at the cap, the next lead not woken', !woke && (await until(() => paused('n-9'), 6000)))
+  }
+  ok('the default cap is 12 (wake reads WAKE_MAX_WAKES, else 12)', /WAKE_MAX_WAKES \|\| 12\)/.test(fs.readFileSync(path.join(SRC, 'template', 'bin', 'wake'), 'utf8')))
 } finally {
   w.kill(); srv.close(); for (const s of streams) s.end()
   if (fail) console.log(out.slice(-3000))
