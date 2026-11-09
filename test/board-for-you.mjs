@@ -90,8 +90,15 @@ const CLOSED = [
   { ...base, id: 'fy-7', title: 'Board screenshots', status: 'closed', labels: [], updated_at: iso(20), closed_at: iso(20), description: 'Shots in the artifacts.' },
   { ...base, id: 'fy-10', title: 'Closed long ago', status: 'closed', labels: [], updated_at: iso(3 * 1440), closed_at: iso(3 * 1440), description: DONE_CARD },
 ]
+// old data (sy-e234): items closed before closing removed needs-you still have it; bd serve lists them with the rest.
+// Nothing counts or lists them. fy-13 and fy-14 are closed through the board below (bd serve answers them as closed).
+const STALE = [
+  { ...base, id: 'fy-12', title: 'Closed but still labelled', status: 'closed', labels: ['needs-you'], updated_at: iso(500), closed_at: iso(400), description: CHECK },
+  { ...base, id: 'fy-13', title: 'Closed on the board', status: 'closed', labels: ['needs-you', 't1'], updated_at: iso(10), description: CHECK },
+  { ...base, id: 'fy-14', title: 'Closed on the board, no ask', status: 'closed', labels: ['t1'], updated_at: iso(10), description: 'Plain.' },
+]
 const snap = (i, more = {}) => ({ id: i.id, title: i.title, description: i.description, status: i.status, issue_type: i.issue_type, assignee: i.assignee, labels: i.labels, ...more })
-const all = Object.fromEntries([...OPEN, ...CLOSED].map((i) => [i.id, i]))
+const all = Object.fromEntries([...OPEN, ...CLOSED, ...STALE].map((i) => [i.id, i]))
 let seq = 0
 const ev = (min, op, id, actor, more = {}) => ({ seq: ++seq, ts: iso(min), op, issue_id: id, actor, issue: snap(all[id], more) })
 const EVENTS = [
@@ -177,11 +184,11 @@ const bdSrv = http.createServer((req, res) => {
     const s = Number(u.searchParams.get('since') || 0), n = Number(u.searchParams.get('limit') || 40)
     return json({ head: seq, records: EVENTS.filter((e) => e.seq > s).slice(0, n) })
   }
-  if (u.pathname === '/v0/beads/issues') return json({ items: list(u.searchParams.get('status') === 'closed' ? CLOSED : OPEN), has_more: false })
+  if (u.pathname === '/v0/beads/issues') return json({ items: list(u.searchParams.get('status') === 'closed' ? CLOSED : [...OPEN, STALE[0]]), has_more: false })
   if (u.pathname === '/v0/beads/ready') return json({ items: list(OPEN.filter((i) => !i.labels.includes('needs-you'))), has_more: false })
   const cm = /^\/v0\/beads\/issues\/([\w.-]+)\/comments$/.exec(u.pathname)
   if (cm && req.method === 'POST') { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => { const c = JSON.parse(b || '{}'); POSTED.push({ item: cm[1], ...c }); json({ id: `c${POSTED.length}`, ...c }) }); return }
-  if (req.method !== 'GET') { WRITES.push(`${req.method} ${u.pathname}`); return json({}) }
+  if (req.method !== 'GET') { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => { WRITES.push(`${req.method} ${u.pathname} ${b}`); json({}) }); return }
   const m = /^\/v0\/beads\/issues\/([\w.-]+)$/.exec(u.pathname)
   if (m) { const i = all[m[1]]; return i ? json(i) : json({ title: 'not found' }, 404) }
   json({ items: [] })
@@ -211,6 +218,13 @@ const tr2 = await fetch(`${PUB}/api/to-review?since=1`, { headers: { 'x-forwarde
 ok('...never more than 7 days back (since=1 is cut to the floor)', Date.parse(tr2.since) > Date.now() - 7.01 * 86400e3 && tr2.items?.some((x) => x.id === 'fy-10'), tr2.since)
 const nope = await fetch(`${PUB}/api/to-review`, { headers: { 'x-forwarded-host': HOST } }).then((x) => x.status)
 ok('...nothing without the gateway\'s assertion', nope === 401, String(nope))
+
+step('closed items never wait on the owner (sy-e234): fy-12 is closed, still labelled needs-you (old data)')
+const asOwner = { 'x-forwarded-host': HOST, 'x-mm-assertion': sign('boss', 'owner') }
+const sum = await fetch(`${PUB}/api/summary?signal=1`, { headers: asOwner }).then((x) => x.json()).catch(() => ({}))
+ok('the gateway\'s per-board signal: needs_you counts the 5 open asks only, its age the open ones', sum.needs_you === 5 && sum.needs_you_min < 500, JSON.stringify(sum))
+const wl = await fetch(`${PUB}/api/waiting?card=1&head=1`, { headers: asOwner }).then((x) => x.json()).catch(() => ({}))
+ok('...the Waiting list: the 5 open asks, never fy-12', wl.items?.length === 5 && !wl.items.some((x) => x.id === 'fy-12'), JSON.stringify(wl.items?.map((x) => x.id)))
 
 const browser = await chromium.launch({ executablePath: exe })
 const sideways = (page) => page.evaluate(() => document.documentElement.scrollWidth > innerWidth)
@@ -496,6 +510,19 @@ ${URL_}`
     ok('no page error', errs.length === 0, errs.join(' | '))
     await ctx.close()
   }
+  step('closing an item removes needs-you (sy-e234): the board\'s Close and a move to closed')
+  const w0 = WRITES.length, writesSince = () => WRITES.slice(w0)
+  const close = (id, how) => fetch(how === 'patch' ? `${PUB}/api/v0/beads/issues/${id}` : `${PUB}/api/v0/beads/issues/${id}:close`, { method: how === 'patch' ? 'PATCH' : 'POST',
+    headers: { ...asOwner, 'content-type': 'application/json' }, body: JSON.stringify(how === 'patch' ? { patch: { status: 'closed' } } : { reason: 'done' }) }).then((x) => x.status)
+  const st = await close('fy-13')
+  const dropped = () => writesSince().some((w) => w.startsWith('PATCH /v0/beads/issues/fy-13 ') && /"remove_labels":\["needs-you"\]/.test(w) && /"actor":"boss"/.test(w))
+  ok('Close on a needs-you item: closed, then needs-you removed, as the person who closed it', st === 200 && writesSince()[0]?.startsWith('POST /v0/beads/issues/fy-13:close') && await until(dropped), `${st}: ${writesSince().join(' | ')}`)
+  const w1 = WRITES.length
+  ok('...a PATCH to status closed: the same', (await close('fy-13', 'patch')) === 200 && await until(() => WRITES.slice(w1).some((w) => w.startsWith('PATCH /v0/beads/issues/fy-13 ') && /remove_labels/.test(w))), WRITES.slice(w1).join(' | '))
+  const w2 = WRITES.length
+  ok('...an item with no needs-you: only the close, no label write', (await close('fy-14')) === 200 && !(await until(() => WRITES.length > w2 + 1, 1500)), WRITES.slice(w2).join(' | '))
+  const w3 = WRITES.length
+  ok('...an item still open after the call (bd serve did not close it): needs-you left', (await close('fy-3')) === 200 && !(await until(() => WRITES.length > w3 + 1, 1500)), WRITES.slice(w3).join(' | '))
 } finally {
   await browser.close()
   srv.kill(); bdSrv.close()
