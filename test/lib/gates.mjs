@@ -18,14 +18,20 @@
 // removed after; never the caller's checkout. An mm, when a suite needs one, is built from that worktree into the
 // same throwaway folder (never dist/mm). Exit: 0 when every suite that ran passed; 1 when one failed (or could not be
 // prepared); 2 on a usage or map error.
-// The heavy lock: the heavy groups (docker, live) run one suite at a time across every gates run of the user on the
-// machine. Each heavy suite takes the lock right before it starts and gives it back right after, so two runs take
-// turns suite by suite; hermetic and ports suites never wait for it. The lock: $MM_GATES_LOCK, else
-// ~/.cache/mm-gates/heavy.lock. It is flock(2) (through the flock command) when flock is on PATH, else a directory
-// <lock>.d made by an atomic rename with the holder in it (MM_GATES_LOCK_MODE=flock|mkdir forces one). A run that
-// waits says once: "gates: waits for the heavy lock, held by <item or range> pid <n> since <time>". A holder that no
-// longer runs (its pid is gone, or reused: another start time) holds nothing: flock's lock dies with it, and a <lock>.d
-// whose holder is gone is taken over.
+// The run lock (sy-1nb8): one gates run at a time runs suites, across every gates run of the user on the machine. A
+// run takes the lock right before its first suite starts and gives it back after its last one ended, so a second run
+// waits for the first and never runs a suite beside it, of any group: ports and heavy suites bind fixed ports and
+// shared Docker names, and the hermetic ones are not shown to bind nothing (many start servers; two copies of one
+// suite at once could clash), so they wait too. What a run does before its suites (the worktree, packages, the mm
+// build, the site, bd and dolt) and after (the result file) needs no lock: it binds nothing. A run with no suite to
+// run (--list, all skipped or not prepared) takes none. Within a run, as before: hermetic suites side by side
+// (--jobs), ports and docker one at a time each, live last. The lock: $MM_GATES_LOCK, else
+// ~/.cache/mm-gates/heavy.lock (the heavy lock's file and layout, from when it covered the heavy suites only: an older
+// gates run and this one still exclude each other). It is flock(2) (through the flock command) when flock is on PATH,
+// else a directory <lock>.d made by an atomic rename with the holder in it (MM_GATES_LOCK_MODE=flock|mkdir forces
+// one). A run that waits says once: "gates: waits for the run lock, held by <item or range> pid <n> since <time>". A
+// holder that no longer runs (its pid is gone, or reused: another start time) holds nothing: flock's lock dies with
+// it, and a <lock>.d whose holder is gone is taken over.
 import { spawn, spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -244,7 +250,7 @@ function runTo(cmd, args, { cwd, env, log, timeout }) {
   })
 }
 
-// --- the heavy lock ------------------------------------------------------------------------------------------------
+// --- the run lock --------------------------------------------------------------------------------------------------
 
 export const defaultLock = () => process.env.MM_GATES_LOCK || path.join(os.homedir(), '.cache', 'mm-gates', 'heavy.lock')
 
@@ -263,11 +269,11 @@ export function holderAlive(h) {
 }
 const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return null } }
 const fmtTime = (iso) => { const d = new Date(iso); return isNaN(d) ? '?' : d.toISOString().replace(/\.\d+Z$/, 'Z') }
-export const waitLine = (h) => h ? `gates: waits for the heavy lock, held by ${h.label || '?'} pid ${h.pid ?? '?'} since ${fmtTime(h.since)}` : 'gates: waits for the heavy lock, held by an unknown holder'
+export const waitLine = (h) => h ? `gates: waits for the run lock, held by ${h.label || '?'} pid ${h.pid ?? '?'} since ${fmtTime(h.since)}` : 'gates: waits for the run lock, held by an unknown holder'
 
-// heavyLock({file, mode, label, say, poll}) -> { mode, acquire(): Promise<release()> }. One acquire at a time per lock
-// object (the heavy lanes of a run already run one suite at a time).
-export function heavyLock({ file = defaultLock(), mode = process.env.MM_GATES_LOCK_MODE, label = '?', say = () => {}, poll = 250 } = {}) {
+// runLock({file, mode, label, say, poll}) -> { mode, acquire(): Promise<release()> }. One acquire at a time per lock
+// object (a run takes it once, for all its suites).
+export function runLock({ file = defaultLock(), mode = process.env.MM_GATES_LOCK_MODE, label = '?', say = () => {}, poll = 250 } = {}) {
   if (!mode) mode = spawnSync('sh', ['-c', 'command -v flock'], { encoding: 'utf8' }).status === 0 ? 'flock' : 'mkdir'
   if (mode !== 'flock' && mode !== 'mkdir') throw new Error(`MM_GATES_LOCK_MODE: flock or mkdir, not "${mode}"`)
   fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -314,7 +320,7 @@ export function heavyLock({ file = defaultLock(), mode = process.env.MM_GATES_LO
       const now = readJson(path.join(dir, 'holder'))
       if (JSON.stringify(now) !== JSON.stringify(h)) return false // it changed hands meanwhile
       if (now ? holderAlive(now) : age(dir) < 30_000) return false
-      say(`gates: takes the heavy lock over from ${now?.label || 'an unknown holder'} pid ${now?.pid ?? '?'} (no longer running)`)
+      say(`gates: takes the run lock over from ${now?.label || 'an unknown holder'} pid ${now?.pid ?? '?'} (no longer running)`)
       return remove(dir)
     } finally { fs.rmSync(brk, { recursive: true, force: true }) }
   }
@@ -590,16 +596,14 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
       say(`  ${r.status.padEnd(6)}  ${s.group.padEnd(8)}  ${s.path}  (${x.secs.toFixed(0)}s)`)
     }
     const lane = (g) => toRun.filter((s) => s.group === g)
-    // the heavy groups: one suite at a time across every gates run (the heavy lock), taken per suite
-    let lock = null
-    const heavy = async (s) => {
-      if (failedPrep.has(s.path) || !fs.existsSync(path.join(wt, s.path))) return runOne(s) // nothing to run: no lock
-      lock ||= heavyLock({ label: o.item || o.range, say })
-      const release = await lock.acquire()
-      try { await runOne(s) } finally { await release() }
-    }
-    await Promise.all([pool(lane('hermetic'), o.jobs, runOne), pool(lane('ports'), 1, runOne), pool(lane('docker'), 1, heavy)])
-    await pool(lane('live'), 1, heavy)
+    // the run lock: one gates run's suites at a time on the machine, from its first suite to its last (see the top);
+    // a run with no suite to start (each not prepared or not in the head) takes none
+    const starts = toRun.some((s) => !failedPrep.has(s.path) && fs.existsSync(path.join(wt, s.path)))
+    const release = starts ? await runLock({ label: o.item || o.range, say }).acquire() : null
+    try {
+      await Promise.all([pool(lane('hermetic'), o.jobs, runOne), pool(lane('ports'), 1, runOne), pool(lane('docker'), 1, runOne)])
+      await pool(lane('live'), 1, runOne)
+    } finally { if (release) await release() }
   } catch (e) {
     warn(e.message)
     for (const s of sel.suites) if (!results.some((r) => r.suite === s.path)) results.push({ suite: s.path, group: s.group, status: 'failed', note: 'not run: ' + e.message, secs: 0, log: prepLog })
