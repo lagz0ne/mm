@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { ArrowsOutIcon, ArrowSquareOutIcon, ChatTeardropTextIcon, XIcon } from '@phosphor-icons/react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+import { StructuredBlock } from '@/Structured'
 
 // Files the board can show: things the leads write under code/ (spec, design docs, mockups).
 // A reference is a path like `code/docs/design/x.html` / `docs/design/x.md`, or a preview.<domain>/<project>-design link.
@@ -92,6 +93,9 @@ export function Markdown({ children: raw, embeds = true, className, onRef, break
           const kid = Array.isArray(c) ? c[0] : c
           const k = kid as { props?: { className?: string; children?: unknown } } | undefined
           if (k?.props?.className?.includes('language-mermaid')) return <Mermaid source={String(k.props.children ?? '').replace(/\n$/, '')} />
+          // a structured block (```mm-task v1 in a description, sy-rfup): its readable view, with its parts and Original
+          const s = /language-mm-(message|task|card)\b/.exec(k?.props?.className || '')
+          if (s) return <StructuredBlock kind={s[1]} code={String(k!.props!.children ?? '')} onRef={onRef} />
           return fold ? <Fold kind="log"><pre>{c}</pre></Fold> : <pre>{c}</pre>
         },
         table: ({ children: c }) => (fold ? <Fold kind="table"><table>{c}</table></Fold> : <table>{c}</table>),

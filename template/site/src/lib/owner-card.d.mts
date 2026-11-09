@@ -7,7 +7,7 @@ export declare const REQUIRED_T2: string[]
 export declare function youKind(v: string): 'approve' | 'reply' | 'check' | 'nothing' | null
 export declare const PROSE: string[]
 export declare function parseCard(description: string | undefined | null, labels?: string[], id?: string, o?: { writing?: Writing }): {
-  ok: boolean; found: boolean; card: Record<string, string> | null; errors: string[]; rest: string; writing: Problem[]
+  ok: boolean; found: boolean; card: Record<string, string> | null; errors: string[]; rest: string; writing: Problem[]; json?: any; raw?: string
 }
 export declare const HEAD: RegExp
 export declare const SIGNED_HEAD: string

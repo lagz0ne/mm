@@ -13,7 +13,7 @@ export declare function looksLikeMessage(text: string | undefined | null): boole
 export interface Message {
   ok: boolean; found: boolean; intent: string | null; to: string | null; re: number | null
   keys: Record<string, string>; expect: { role: string; action: string } | null; by: string | null; text: string; errors: string[]
-  writing: Problem[]
+  writing: Problem[]; json?: any
 }
 export declare function parseMessage(text: string | undefined | null, o?: { roles?: readonly string[] | string[]; author?: string; reviewer?: string; writing?: Writing }): Message
 export declare function dueAt(by: string | null, at: string | number | Date, nextWakeMin?: number): number | null

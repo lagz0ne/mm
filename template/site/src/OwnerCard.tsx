@@ -7,6 +7,7 @@
 import { useState } from 'react'
 import { KEYS, parseCard } from '@/lib/owner-card.mjs'
 import { Viewer, fileRef, fileUrl } from '@/Markdown'
+import { Original, Parts } from '@/Structured'
 
 export type Card = ReturnType<typeof parseCard>
 
@@ -45,6 +46,7 @@ export function OwnerCard({ card, needsYou, id }: { card: Card; needsYou: boolea
             </dd>
           </div>
         </dl>
+        {card.json && <div className="grid gap-2 border-t px-3 py-2"><Parts parts={card.json.parts} /><Original raw={card.raw ?? ''} /></div>}
         {!card.ok && (
           <p data-owner-card-note className="border-t px-3 py-1.5 text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
             card invalid: {card.errors.join('; ')}
