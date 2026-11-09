@@ -63,7 +63,7 @@ JSON
 {
 $SANDBOX
   "permissions": {
-    "deny": ["Edit($W/.claude/**)", "Write($W/.claude/**)", "Bash(git push*)", "Bash(*SANDBOX*)"]
+    "deny": ["Edit($W/.claude/**)", "Write($W/.claude/**)", "Bash(git push*)", "Bash(*SANDBOX*)", "mcp__paseo"]
   }
 }
 JSON
