@@ -166,6 +166,16 @@ call label add sy-hnone needs-you;                      check "signed off, but n
 check "...the reason" says "review's sign-off names no head (card: mm@0a1b2c3)"
 call update sy-hmatch -d "$(printf '%s' "$HCARD" | sed 's/0a1b2c3/9f8e7d6/')" --add-label needs-you; check "a new head in the call's own description: refused" refused
 call label add sy-hmatch needs-you;                     check "the signed head is the card's head: passed" passed
+# sy-6gz6: an approved counts only for the head it was given for; one for another head (or none) is no go, so the head
+# checks apply as to an item with no approved (before: any approved passed, the old tap read as the go)
+item sy-hstale "$(printf '%s' "$HCARD" | sed 's/0a1b2c3/9f8e7d6/')" '["t2","signed-off","signed-head:mm@0a1b2c3","approved","approved-head:mm@0a1b2c3"]'
+item sy-hold "$HCARD" '["t2","signed-off","approved"]'
+item sy-hgo "$HCARD" '["t2","signed-off","signed-head:mm@0a1b2c3","approved","approved-head:mm@0a1b2c3"]'
+call label add sy-hstale needs-you;                     check "approved for the old head, the head moved, not signed: refused" refused
+check "...the reason names both heads" says "the head changed since review's sign-off (card: mm@9f8e7d6, signed: mm@0a1b2c3)"
+call label add sy-hold needs-you;                       check "an approved with no approved-head and no signed-head: refused" refused
+check "...the reason" says "review's sign-off names no head (card: mm@0a1b2c3)"
+call label add sy-hgo needs-you;                        check "approved for the card's Head: passed" passed
 as review update sy-hnone --add-label signed-head:mm@0a1b2c3,needs-you; check "signed-head added in the same call: passed" passed
 as review create "a title" -d "$HCARD" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create with the matching signed-head: passed" passed
 

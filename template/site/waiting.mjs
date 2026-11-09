@@ -20,7 +20,7 @@
 // shows it instead of Approve. The board refuses the go anyway.
 // The answer stays under 32 KB (MAX_BYTES): what doesn't fit is counted in `more`, never cut in the middle.
 // Pure: the board's server feeds it, test/board-pull.mjs checks it.
-import { HEAD, headRefusal, isNonGoAsk, parseCard } from '../bin/lib/owner-card.mjs'
+import { HEAD, headRefusal, isApproved, isNonGoAsk, parseCard } from '../bin/lib/owner-card.mjs'
 
 export const MAX_BYTES = 32 * 1024
 export const TITLE_MAX = 200
@@ -73,7 +73,8 @@ export function waitingFor({ items, me, owner, now = Date.now(), max = MAX_BYTES
     if (owner) {
       // never an approval for a non-go ask (sy-t9tg: You Reply:/Check:/Nothing): it is listed by its needs-you, with no
       // t2 labels, so the gateway offers its Reply or Done and never Approve (no card: an approval, with its refusal)
-      const approval = has(i, 't2') && has(i, 'signed-off') && !has(i, 'approved') && !isNonGoAsk(parseCard(i.description, i.labels).card)
+      // approved counts only for the card's Head now (sy-6gz6): an approved for another head waits for a new go
+      const approval = has(i, 't2') && has(i, 'signed-off') && !isApproved(i.description, i.labels) && !isNonGoAsk(parseCard(i.description, i.labels).card)
       labels = [...(has(i, 'needs-you') ? ['needs-you'] : []), ...(approval ? ['t2', 'signed-off'] : [])]
       if (!labels.length) continue
     } else {

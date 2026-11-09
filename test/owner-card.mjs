@@ -7,7 +7,7 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { headRefusal, isGoAsk, isNonGoAsk, NO_GO, parseCard, youKind } from '../template/bin/lib/owner-card.mjs'
+import { approvalRefusal, goLabels, headRefusal, isApproved, isGoAsk, isNonGoAsk, NO_GO, NOT_APPROVED, parseCard, youKind } from '../template/bin/lib/owner-card.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 let pass = 0, fail = 0
@@ -169,7 +169,29 @@ step('the Head key and headRefusal (sy-hzmu)')
   ok('headRefusal: the head moved: "the head changed since review\'s sign-off (card: X, signed: Y)"',
     headRefusal(D2, ['t2', 'signed-off', `signed-head:${H}`]) === `the head changed since review's sign-off (card: ${H2}, signed: ${H})`)
   ok('headRefusal: a prefix of the head is not the head', headRefusal(D, ['t2', 'signed-off', 'signed-head:mm@0a1b2c']) !== null)
-  ok('headRefusal: approved is not re-checked: null', headRefusal(D2, ['t2', 'signed-off', `signed-head:${H}`, 'approved']) === null)
+  // sy-6gz6: approved counts only for the head it was given for (approved-head:<repo>@<sha>)
+  const SG = (h) => ['t2', 'signed-off', `signed-head:${h}`]
+  ok('approvalRefusal: approved for the card\'s Head, signed: counts (null); headRefusal null', approvalRefusal(D, [...SG(H), 'approved', `approved-head:${H}`]) === null
+    && isApproved(D, [...SG(H), 'approved', `approved-head:${H}`]) && headRefusal(D, [...SG(H), 'approved', `approved-head:${H}`]) === null)
+  ok('approvalRefusal: approved for the old head, the Head now H2 (signed too): no go, with the reason',
+    approvalRefusal(D2, [...SG(H2), 'approved', `approved-head:${H}`]) === `approved for ${H}; the Head is now ${H2}: a new go is needed`
+    && !isApproved(D2, [...SG(H2), 'approved', `approved-head:${H}`]))
+  ok('...headRefusal reads that item as not approved: a new go may be given for the signed H2 (null)', headRefusal(D2, [...SG(H2), 'approved', `approved-head:${H}`]) === null)
+  ok('...and when review signed only the old head: headRefusal gives the head check\'s reason (no fall-through to the old go)',
+    headRefusal(D2, [...SG(H), 'approved', `approved-head:${H}`]) === `the head changed since review's sign-off (card: ${H2}, signed: ${H})`)
+  ok('approvalRefusal: an old approved with no approved-head: no go (a new tap), with the reason',
+    /^approved names no head \(no approved-head:<repo>@<sha>.*\); the Head is mm@0a1b2c3: a new go is needed$/.test(approvalRefusal(D, [...SG(H), 'approved']) || ''))
+  ok('...headRefusal reads it as not approved: the head check (was: null, the old tap read as a go)',
+    headRefusal(D2, [...SG(H), 'approved']) === `the head changed since review's sign-off (card: ${H2}, signed: ${H})`)
+  ok('approvalRefusal: approved-head for H, but review signed another head: no go', /^approved for mm@0a1b2c3, but review's sign-off does not name it \(signed: mm@9f8e7d6c5b4a\)/.test(approvalRefusal(D, [...SG(H2), 'approved', `approved-head:${H}`]) || ''))
+  ok('approvalRefusal: two approved-head:*: no go (fail closed)', /approved names more than one head/.test(approvalRefusal(D, [...SG(H), 'approved', `approved-head:${H}`, `approved-head:${H2}`]) || ''))
+  ok('approvalRefusal: a prefix of the head is not the head', /^approved for mm@0a1b2c;/.test(approvalRefusal(D, [...SG(H), 'approved', 'approved-head:mm@0a1b2c']) || ''))
+  ok('approvalRefusal: approved on a t2 card with no Head: no go', /names no valid Head/.test(approvalRefusal(T2NH, ['t2', 'signed-off', 'approved', `approved-head:${H}`]) || ''))
+  ok('approvalRefusal: no approved: NOT_APPROVED (an approved-head alone is nothing)', approvalRefusal(D, [...SG(H), `approved-head:${H}`]) === NOT_APPROVED)
+  ok('approvalRefusal: not t2: approved counts as it is', approvalRefusal(D2, ['approved']) === null && approvalRefusal('', ['t1', 'approved']) === null)
+  ok('goLabels: approved and approved-head:<the card\'s Head>, every other approved-head:* to remove',
+    JSON.stringify(goLabels(D2, [...SG(H2), 'approved', `approved-head:${H}`])) === JSON.stringify({ head: H2, add: ['approved', `approved-head:${H2}`], remove: [`approved-head:${H}`] })
+    && goLabels(T2NH, ['t2']) === null)
   ok('headRefusal: not t2: null', headRefusal(D2, ['signed-off', `signed-head:${H}`]) === null && headRefusal(D, []) === null)
   ok('headRefusal: an invalid Head is refused, with the reason', /the card's Head is not <repo>@<sha>/.test(headRefusal(withHead('mm@main'), ['t2', 'signed-off', 'signed-head:mm@main']) || ''))
   ok('headRefusal: a t2 with no card is refused; nothing to check without t2', /the card names no head/.test(headRefusal('Some text.', ['t2', 'signed-off']) || '') && headRefusal(undefined, undefined) === null)

@@ -199,8 +199,8 @@ export const RULES = // BEGIN RULES
       "id": "approved-label",
       "on": "bash",
       "pre": true,
-      "re": "{{BD}}[^;&|\\n]*?(?:\\slabel\\s+(?:add|remove)\\s[^;&|\\n]*?|\\s--(?:add-label|remove-label|set-labels)(?:=|\\s+)['\"]?(?:[^\\s,'\"]+,\\s*)*|\\screate\\s[^;&|\\n]*?\\s(?:-l=?\\s*|--labels(?:=|\\s+))['\"]?(?:[^\\s,'\"]+,\\s*)*)(?<![\\w.:-])['\"]?approved(?![\\w.:-])|\\bxargs\\b[^;&|\\n]*{{BD}}[^;&|\\n]*?\\s(?:label\\s+(?:add|remove)|--(?:add-label|remove-label|set-labels)|create\\s[^;&|\\n]*?\\s(?:-l|--labels))\\b",
-      "why": "sets or removes `approved`: that is the owner's T2 go, never an agent's. The owner gives it on the board's public address (signed in as the owner) or with the bridge's Approve button; ask for it on the item."
+      "re": "{{BD}}[^;&|\\n]*?(?:\\slabel\\s+(?:add|remove)\\s[^;&|\\n]*?|\\s--(?:add-label|remove-label|set-labels)(?:=|\\s+)['\"]?(?:[^\\s,'\"]+,\\s*)*|\\screate\\s[^;&|\\n]*?\\s(?:-l=?\\s*|--labels(?:=|\\s+))['\"]?(?:[^\\s,'\"]+,\\s*)*)(?<![\\w.:-])['\"]?approved(?:-head:[^\\s,'\"]*)?(?![\\w.:-])|\\bxargs\\b[^;&|\\n]*{{BD}}[^;&|\\n]*?\\s(?:label\\s+(?:add|remove)|--(?:add-label|remove-label|set-labels)|create\\s[^;&|\\n]*?\\s(?:-l|--labels))\\b",
+      "why": "sets or removes `approved` or `approved-head:` (the head the go was given for): that is the owner's T2 go, never an agent's. The owner gives it on the board's public address (signed in as the owner) or with the bridge's Approve button; ask for it on the item."
     },
     {
       "id": "approval-write",

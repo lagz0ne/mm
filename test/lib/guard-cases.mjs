@@ -474,6 +474,13 @@ export const APPROVER = [
   ['Bash', 'bd update sy-1 --remove-label "approved"', 'deny'],
   ['Bash', 'bd create "x" -l t2,approved --json', 'deny'],
   ['Bash', 'bd create "x" -t task --labels=approved', 'deny'],
+  // sy-6gz6: the head the go was given for is the go's too: no agent moves it to a new head
+  ['Bash', 'bd label add sy-1 approved-head:mm@0a1b2c3', 'deny'],
+  ['Bash', 'bd label remove sy-1 "approved-head:mm@0a1b2c3"', 'deny'],
+  ['Bash', 'bd update sy-1 --add-label approved-head:mm@9f8e7d6', 'deny'],
+  ['Bash', 'bd update sy-1 --set-labels t2,signed-off,approved-head:mm@9f8e7d6', 'deny'],
+  ['Bash', 'bd create "x" -l t2,approved-head:mm@9f8e7d6 --json', 'deny'],
+  ['Bash', 'bd label add sy-1 approved-later', 'allow'],
   ['Bash', 'bd update x --actor bridge', 'deny'],
   ['Bash', 'bd update sy-1 --actor=bridge -s open', 'deny'],
   ['Bash', 'bd comments add sy-1 "ok" --actor "bridge"', 'deny'],

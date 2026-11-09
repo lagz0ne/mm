@@ -42,6 +42,9 @@
 //                        requests, mm.auth's grants). Branch or worktree work alone is not live (sy-0cvx).
 //                        The tier is the one bin/brain applied (its state mark), else the header, read as 2
 //                        when the migration writes under /etc/ or /usr/local/. It says who took `t2` off such an item.
+//                        An approver's approved counts only for the head it was given for (sy-6gz6): its
+//                        approved-head:<repo>@<sha>, added by an approver, is the card's Head and review's signed-head
+//                        (owner-card.mjs approvalRefusal); else the reason ("approved for X; the Head is now Y").
 //                        Clears when an approver sets approved, or no applied migration names it and it is not in
 //                        progress with a live signal. Never muted: closed by hand, it opens again      P1
 //     t2-waiting         one list: unapproved t2 items in progress for over 4 h with no live step yet          P3
@@ -84,7 +87,7 @@ import { cli } from './lib/obs.mjs'
 import * as paseo from './lib/paseo.mjs'
 import { loadConf as approveConf, migrationSubject, readLedger } from './lib/ledger.mjs'
 import { places, projectCap, total, workersOf } from './lib/places.mjs'
-import { SIGNED_HEAD, parseCard } from './lib/owner-card.mjs'
+import { APPROVED_HEAD, SIGNED_HEAD, approvalRefusal, parseCard } from './lib/owner-card.mjs'
 import { dueAt, openWaits, parseMessage } from './lib/message.mjs'
 import { actOf, lettersOf, mayAsk, noInputOk, rowOf } from './lib/raci.mjs'
 import { formatTask, parseTask } from './lib/task.mjs'
@@ -135,8 +138,8 @@ state.seq ||= 0
 // the summary's version: when what is folded from the journal changes (approvals and t2 labels per item, sy-7xq0; closed
 // items kept), a summary from an older Supervisor misses what happened before the upgrade (sy-m5qr: an approval by the
 // bridge at 16:36 never seen after 17:00). So a new version reads the whole journal again, from the start.
-// v3: each item's `blocks` edges (bk, sy-28ev). v4: who added signed-off and each signed-head:* (so, sy-9bss).
-const STATE_V = 4
+// v3: each item's `blocks` edges (bk, sy-28ev). v4: who added signed-off and each signed-head:* (so, sy-9bss). v5: who added each approved-head:* (ah, sy-6gz6).
+const STATE_V = 5
 if (state.v !== STATE_V) { state.seq = 0; state.items = {}; state.v = STATE_V }
 state.t2since ||= NOW // closed items: only migrations applied since this check first ran (no flood from older ones)
 
@@ -189,6 +192,14 @@ const journal = once(async () => {
         const labels = e.issue.labels || [], had = s.lb ? s.lb.includes('approved') : e.op !== 'create' && labels.includes('approved')
         if (labels.includes('approved') && !had) s.ap = { ok: APPROVERS.has(String(e.actor || '')), by: String(e.actor || ''), at: t }
         if (!labels.includes('approved')) delete s.ap
+        // the head the go was given for (sy-6gz6): who added each approved-head:*, as approved (a label first seen
+        // mid-life has no known setter: '')
+        const ah = {}
+        for (const l of labels.filter((x) => String(x).startsWith(APPROVED_HEAD))) {
+          const seen = s.lb ? s.lb.includes(l) : e.op !== 'create'
+          ah[l] = seen ? (s.ah?.[l] ?? '') : String(e.actor || '')
+        }
+        if (Object.keys(ah).length) s.ah = ah; else delete s.ah
         // review's sign-off (sy-9bss): who added signed-off and each signed-head:*, from the record that added it (a
         // label first seen mid-life has no known setter: ''); dropped when the label goes, set again when it comes back
         const so = {}
@@ -661,6 +672,15 @@ const liveSteps = once(async () => {
 // With the ledger on (sy-1jmi), the journal's actor counts for nothing: an item is approved only by well-signed ledger
 // lines, one naming each applied migration's subject (its script and rollback), and an `approved` label with no line of
 // the item is a finding of its own. A ledger that can't be trusted (owner, mode, key) is one finding, and nothing counts.
+/** Why an approver's `approved` on this item does not count for its head (sy-6gz6), or null: the rule
+ *  (owner-card.mjs approvalRefusal, on the labels as a t2 item's), then the journal's setter of its approved-head:*. */
+function headless(i, s) {
+  const labels = [...new Set([...(i.labels || []), 't2'])]
+  const why = approvalRefusal(i.description || '', labels)
+  if (why) return why
+  const l = labels.find((x) => String(x).startsWith(APPROVED_HEAD)), by = s?.ah?.[l] ?? ''
+  return APPROVERS.has(by) ? null : `${l} was added by ${by || 'an unknown actor'}, who is not an approver: a new go is needed`
+}
 async function t2() {
   const [all, sum, main, steps] = await Promise.all([issues(), journal(), mainCommits(), liveSteps()])
   const mig = migrations(), problems = [], waiting = [], led = LEDGER ? readLedger(APPROVE) : null
@@ -672,7 +692,10 @@ async function t2() {
     const stray = led && tagged && !led.has(i.id) // an approved label the ledger doesn't back
     if (mine(i) || (!labelled && !mig[i.id] && !stray)) continue
     const ap = sum[i.id]?.ap
-    if (!led && ap?.ok) continue
+    // sy-6gz6: an approver's approved counts only for the head it was given for (owner-card.mjs approvalRefusal, read
+    // as t2: the item is t2 for this check), and only with an approved-head:* an approver added
+    const stale = !led && ap?.ok ? headless(i, sum[i.id]) : null
+    if (!led && ap?.ok && !stale) continue
     const applied = (mig[i.id] || []).filter((m) => i.status !== 'closed' || m.at >= state.t2since)
     const going = labelled && i.status === 'in_progress', since = Math.max(ms(i.started_at), sum[i.id]?.ip || 0)
     const unsigned = led ? applied.filter((m) => !led.has(i.id, m.subject)) : applied
@@ -692,6 +715,7 @@ async function t2() {
     const label = led
       ? (unsigned.length ? `no signed ledger line of ${i.id} for ${unsigned.map((m) => `${m.name} (${m.subject})`).join(', ')}` : `no signed ledger line of ${i.id}`) +
         (tagged ? `; its approved label${ap?.by ? ` (added by ${ap.by})` : ''} does not count without one` : '')
+      : stale ? `approved from ${ap.by} at ${at(ap.at)} that does not count: ${stale}`
       : ap ? `approved was added by ${ap.by || 'an unknown actor'} at ${at(ap.at)}, who is not an approver` : 'no approved from an approver'
     problems.push({ key: `t2-unapproved:${i.id}`, priority: 1, title: `Unapproved t2: ${i.id} (${i.assignee || 'nobody'}) ${why} without the owner's ${led ? 'signed ' : ''}approval${off ? `; ${off.by || 'someone'} removed its t2 label` : ''}`,
       note: `${i.status}; ${what.join('; ')}; ${label}`,

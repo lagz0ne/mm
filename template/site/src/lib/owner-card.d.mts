@@ -11,6 +11,11 @@ export declare function parseCard(description: string | undefined | null, labels
 }
 export declare const HEAD: RegExp
 export declare const SIGNED_HEAD: string
+export declare const APPROVED_HEAD: string
+export declare const NOT_APPROVED: string
+export declare function approvalRefusal(description: string | undefined | null, labels: Iterable<string> | undefined | null): string | null
+export declare function isApproved(description: string | undefined | null, labels: Iterable<string> | undefined | null): boolean
+export declare function goLabels(description: string | undefined | null, labels: Iterable<string> | undefined | null): { head: string; add: string[]; remove: string[] } | null
 export declare function headRefusal(description: string | undefined | null, labels: Iterable<string> | undefined | null): string | null
 export declare function isGoAsk(card: Record<string, string> | null | undefined): boolean
 export declare function isNonGoAsk(card: Record<string, string> | null | undefined): boolean

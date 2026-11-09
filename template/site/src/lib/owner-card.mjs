@@ -46,6 +46,10 @@ const RISK = /^(low|medium|high)(?:[ \t]*[,:;–—-][ \t]*(.*))?$/i
 export const HEAD = /^[a-z][a-z0-9-]{0,30}@[0-9a-f]{7,40}$/
 /** The label review adds next to signed-off when it signs off a card with a Head: signed-head:<repo>@<sha>. */
 export const SIGNED_HEAD = 'signed-head:'
+/** The label written next to `approved` at the owner's go (sy-6gz6): approved-head:<repo>@<sha>, the card's Head at the
+ * tap. Written only with `approved`, by whoever writes the go (the board's Approve and its owner label rail, the
+ * bridge); `approved` on a t2 item counts only for that head (approvalRefusal). */
+export const APPROVED_HEAD = 'approved-head:'
 const len = (s) => Array.from(s).length
 const ID = '[a-z]+-[a-z0-9]+(?:\\.[0-9]+)*'
 const ITEM_URL = new RegExp(`^https?://[^\\s/?#<>"]+/?[^\\s?#<>"]*\\?item=(${ID})$`)
@@ -154,13 +158,16 @@ function cardBlock(b, labels, id, o) {
  * One check for the bd gate, the board (its label rail, Approve, Not now, the Waiting list) and the bridge.
  * @param {string} description  the item's description
  * @param {Iterable<string>} labels  the item's labels (as they are, or as they will be after the call)
- * @returns {string|null} null: no objection (not t2, already approved, or a go ask whose Head is the head review
- *   signed); else the reason: a non-go ask (NO_GO), a card with no Head (review sy-hzmu #3, no fail-open; no card too),
+ * @returns {string|null} null: no objection (not t2, approved for this head (approvalRefusal), or a go ask whose Head
+ *   is the head review signed; an `approved` that does not count is read as none); else the reason: a non-go ask (NO_GO), a card with no Head (review sy-hzmu #3, no fail-open; no card too),
  *   a Head review did not sign, or a card whose You is no go ask.
  */
 export function headRefusal(description, labels) {
   const ls = [...(labels ?? [])].map(String)
-  if (!ls.includes('t2') || ls.includes('approved')) return null
+  if (!ls.includes('t2')) return null
+  // approved counts only for the head it was given for (sy-6gz6); an approved that does not count is no go: the item is
+  // read as not approved (the checks below: may it get a new go?)
+  if (ls.includes('approved') && approvalRefusal(description, ls) === null) return null
   const card = parseCard(description, ls).card
   if (isNonGoAsk(card)) return NO_GO
   const head = card?.Head
@@ -170,6 +177,44 @@ export function headRefusal(description, labels) {
   if (signed.includes(head)) return isGoAsk(card) ? null : 'the card asks for no go: its You does not start with "Tap Approve"'
   if (!signed.length) return `review's sign-off names no head (card: ${head})`
   return `the head changed since review's sign-off (card: ${head}, signed: ${signed.map(clip).join(', ')})`
+}
+
+/** The reason approvalRefusal gives when the item has no `approved` at all. */
+export const NOT_APPROVED = 'not approved'
+/**
+ * Does this item's `approved` count? (sy-6gz6) The one rule for the board, the Waiting list, headRefusal, the bd gate,
+ * the Supervisor's t2 checks and wake. On a t2 item `approved` counts only when its approved-head:<repo>@<sha> is the
+ * card's Head now, and review's signed-head names that head too; anything else is no go, with the reason. An
+ * `approved` with no approved-head: (a go from before sy-6gz6) counts for nothing: the owner taps again for the head.
+ * Not t2: `approved` counts as it is (the head rule is the T2 go's). Who added the labels is not read here (the
+ * Supervisor reads that from the journal).
+ * @param {string} description  the item's description
+ * @param {Iterable<string>} labels  the item's labels
+ * @returns {string|null} null: `approved` counts; else why not (NOT_APPROVED when there is no `approved`).
+ */
+export function approvalRefusal(description, labels) {
+  const ls = [...(labels ?? [])].map(String)
+  if (!ls.includes('approved')) return NOT_APPROVED
+  if (!ls.includes('t2')) return null
+  const given = ls.filter((l) => l.startsWith(APPROVED_HEAD)).map((l) => l.slice(APPROVED_HEAD.length))
+  const head = parseCard(description, ls).card?.Head
+  if (head === undefined || !HEAD.test(head)) return 'approved, but the card names no valid Head (- **Head:** <repo>@<sha>): a new go is needed for a head'
+  if (!given.length) return `approved names no head (no ${APPROVED_HEAD}<repo>@<sha>: a go from before the head was recorded); the Head is ${head}: a new go is needed`
+  if (given.length > 1) return `approved names more than one head (${given.map(clip).join(', ')}); the Head is ${head}: a new go is needed`
+  if (given[0] !== head) return `approved for ${clip(given[0])}; the Head is now ${head}: a new go is needed`
+  const signed = ls.filter((l) => l.startsWith(SIGNED_HEAD)).map((l) => l.slice(SIGNED_HEAD.length))
+  if (!signed.includes(head)) return `approved for ${head}, but review's sign-off does not name it (${signed.length ? `signed: ${signed.map(clip).join(', ')}` : 'no signed-head'}): a new sign-off and a new go are needed`
+  return null
+}
+/** `approved` counts (approvalRefusal is null). */
+export const isApproved = (description, labels) => approvalRefusal(description, labels) === null
+/** The labels the go writes for the card's Head now (sy-6gz6): { add: approved and approved-head:<Head>, remove: every
+ * other approved-head:* }. null when the card names no valid Head (a t2 go is refused before that anyway). */
+export function goLabels(description, labels) {
+  const ls = [...(labels ?? [])].map(String), head = parseCard(description, ls).card?.Head
+  if (head === undefined || !HEAD.test(head)) return null
+  const mine = `${APPROVED_HEAD}${head}`
+  return { head, add: ['approved', mine], remove: ls.filter((l) => l.startsWith(APPROVED_HEAD) && l !== mine) }
 }
 
 const clip = (s) => (len(s) > 60 ? `${Array.from(s).slice(0, 59).join('')}…` : s)
