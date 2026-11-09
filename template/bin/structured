@@ -48,7 +48,8 @@ const FLAGS = {
     ['--tests-artifact', 'tests.artifact', 's'], ['--tests-passed', 'tests.passed', 'i'], ['--tests-failed', 'tests.failed', 'i'], ['--open', 'open', 'l'],
     ['--result', 'result', 's'], ['--must-change', 'mustChange', 'm'], ['--follow-up', 'followUps', 'l'], ['--artifact', 'artifacts', 'l'], ['--answer', 'answer', 's'], ...PARTS],
   task: [['--act', 'act', 's'], ['--do', 'do', 's'], ['--on', 'on', 's'], ...DONE, ['--head', 'head', 's'], ['--rollback-run', 'rollback.run', 's'],
-    ['--rollback-migration', 'rollback.migration', 's'], ['--safeguard-check', 'safeguard.check', 's'], ['--safeguard-expect', 'safeguard.expect', 's'], ...PARTS],
+    ['--rollback-migration', 'rollback.migration', 's'], ['--safeguard-check', 'safeguard.check', 's'], ['--safeguard-expect', 'safeguard.expect', 's'],
+    ['--safeguard-none', 'safeguard', 't:none, no access change'], ...PARTS],
   card: [['--what', 'what.do', 's'], ['--what-on', 'what.on', 's'], ['--what-role', 'what.role', 's'], ['--why', 'why', 's'], ['--you', 'you.kind', 's'], ['--you-at', 'you.at', 's'],
     ['--if-yes', 'ifYes.do', 's'], ['--if-yes-role', 'ifYes.role', 's'], ['--if-yes-on', 'ifYes.on', 's'], ['--if-yes-by', 'ifYes.by', 's'],
     ['--if-no', 'ifNo.do', 's'], ['--if-no-role', 'ifNo.role', 's'], ['--if-no-on', 'ifNo.on', 's'], ['--if-no-by', 'ifNo.by', 's'],
@@ -78,7 +79,7 @@ bd task set <item> [flags] [--print]
     --act <activity of leads/raci.json> --do <action> [--on <ref>]
     --done <state> [--done-item <id>]  |  --done-check <cmd> --done-expect <output>
     --verify-check <cmd> --verify-expect <output>    [--head <repo>@<sha>]
-    [--rollback-run <cmd> | --rollback-migration <path>] [--safeguard-check <cmd> --safeguard-expect <output>]`,
+    [--rollback-run <cmd> | --rollback-migration <path>] [--safeguard-check <cmd> --safeguard-expect <output> | --safeguard-none]`,
   card: `bd card set <item> [flags] [--print]
   The owner card is one \`\`\`mm-card v1 block (bin/lib/schemas/card.v1.json), the first thing in the description. To ask
   the owner, label the item needs-you after (bd label add <item> needs-you): the gate checks the card then.

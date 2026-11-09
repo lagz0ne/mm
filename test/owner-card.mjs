@@ -241,8 +241,13 @@ step('the structured form (sy-rfup, step 1): one ```mm-card v1 block at the top'
   ok('...rest: the description after the block; json: the data', r.rest === 'The rest.' && r.json?.why === 'access')
   // sy-w5az: the go also needs the Task's Rollback and Safeguard; a block card is followed by a text Task here
   ok('...isGoAsk; headRefusal: ok with the signed head and a Task with Rollback and Safeguard, refused with another head', isGoAsk(r.card) && headRefusal(J(go, `\n\n${GO_TASK}`), ['t2', 'signed-head:brain@abcdef1']) === null && /changed since review's sign-off/.test(headRefusal(J(go, `\n\n${GO_TASK}`), ['t2', 'signed-head:brain@1234567']) || ''))
-  ok('...with no Task, or a ```mm-task v1 block (no rollback or safeguard in task.v1 yet, sy-wx71): the Task reason', /^the item's Task has no Rollback and no Safeguard line/.test(headRefusal(J(go), ['t2', 'signed-head:brain@abcdef1']) || '')
-    && /^the item's Task has no Rollback and no Safeguard line/.test(headRefusal(J(go, '\n\n```mm-task v1\n' + JSON.stringify({ act: 't2-change', do: 'apply', on: 'migrations/port.sh', done: { is: 'closed' }, verify: { check: 'ss -lnt', expect: 'the port' } }) + '\n```\n\nThe rest.'), ['t2', 'signed-head:brain@abcdef1']) || ''))
+  const TB = (o) => '\n\n```mm-task v1\n' + JSON.stringify({ act: 't2-change', do: 'apply', on: 'migrations/port.sh', done: { is: 'closed' }, verify: { check: 'ss -lnt', expect: 'the port' }, ...o }) + '\n```\n\nThe rest.'
+  ok('...with no Task, or a ```mm-task v1 block with no rollback or safeguard: the Task reason', /^the item's Task has no Rollback and no Safeguard line/.test(headRefusal(J(go), ['t2', 'signed-head:brain@abcdef1']) || '')
+    && /^the item's Task has no Rollback and no Safeguard line/.test(headRefusal(J(go, TB({})), ['t2', 'signed-head:brain@abcdef1']) || ''))
+  // sy-wx71: a block Task with rollback and safeguard gets the go as the text form does; one of them missing: the text form's reason
+  ok('...a ```mm-task v1 block with rollback and safeguard: no objection', headRefusal(J(go, TB({ rollback: { migration: 'migrations/port.down.sh' }, safeguard: 'none, no access change' })), ['t2', 'signed-head:brain@abcdef1']) === null)
+  ok('...a block with rollback, no safeguard: the text form\'s reason', headRefusal(J(go, TB({ rollback: { run: 'git revert HEAD' } })), ['t2', 'signed-head:brain@abcdef1'])
+    === headRefusal(J(go, `\n\n${GO_TASK.replace(/- \*\*Safeguard:\*\*.*\n/, '')}`), ['t2', 'signed-head:brain@abcdef1']) && /has no Safeguard line/.test(headRefusal(J(go, TB({ rollback: { run: 'git revert HEAD' } })), ['t2', 'signed-head:brain@abcdef1']) || ''))
   const { ifYes, ifNo, risk, head, ...short } = go
   const t = parseCard(J(short), ['t2'])
   ok('t2 go ask with none of ifYes, ifNo, risk, head: each is missing', !t.ok && ['ifYes', 'ifNo', 'risk', 'head'].every((k) => t.errors.some((e) => e.startsWith(`${k}: is missing (required with t2`))), t.errors.join('; '))

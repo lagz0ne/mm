@@ -147,7 +147,16 @@ const task = { act: 'build', do: 'build', on: 'sy-1', done: { is: 'closed' }, ve
 ok('a Task: valid', validate('task', task).length === 0, validate('task', task).join('; '))
 ok('a Task with no act: "act: is missing"', validate('task', without(task, 'act')).includes('act: is missing'))
 ok('a Task with words for do', validate('task', { ...task, do: 'Add the schemas' }).some((e) => e.startsWith('do: "Add the schemas" is not one of')))
-ok('a Task with an empty rollback', validate('task', { ...task, rollback: {} }).some((e) => e.includes('rollback: needs at least 1 key(s)')))
+{ // sy-wx71: rollback and safeguard are optional in task.v1; safeguard is a check or exactly the words the text Task allows
+  const bare = without(without(task, 'rollback'), 'safeguard')
+  ok('a Task without rollback and safeguard: valid (the t2 go asks for them, not the schema)', validate('task', bare).length === 0, validate('task', bare).join('; '))
+  ok('a Task with safeguard "none, no access change": valid, Safeguard reads the same words', validate('task', { ...task, safeguard: 'none, no access change' }).length === 0 && taskKeys({ ...task, safeguard: 'none, no access change' }).Safeguard === 'none, no access change')
+  ok('a Task with a rollback migration: valid', validate('task', { ...task, rollback: { migration: 'migrations/x.down.sh' } }).length === 0)
+  ok('a Task with a safeguard in other words: refused', validate('task', { ...task, safeguard: 'none' }).some((e) => e.startsWith('safeguard')), validate('task', { ...task, safeguard: 'none' }).join('; '))
+  ok('a Task with a safeguard check and no expect: refused', validate('task', { ...task, safeguard: { check: 'ssh host true' } }).some((e) => e.startsWith('safeguard')))
+  ok('a Task with a rollback as free words: refused (a run or a migration)', validate('task', { ...task, rollback: 'undo it' }).some((e) => e.startsWith('rollback')))
+}
+ok('a Task with an empty rollback',validate('task', { ...task, rollback: {} }).some((e) => e.includes('rollback: needs at least 1 key(s)')))
 ok('taskKeys: Task "<do> <on>", Done when, Verify, Rollback, Safeguard', (() => { const k = taskKeys(task); return k.Task === 'build sy-1' && k.Act === 'build' && k['Done when'] === 'this item is closed' && k.Verify === 'bash test/x.sh → 0 failed' && k.Rollback === 'run git revert HEAD' && k.Safeguard === 'ssh -o BatchMode=yes host true → exit 0' })())
 const card = { what: { do: 'apply', on: 'migrations/port.sh' }, why: 'access', you: { kind: 'approve' }, ifYes: { role: 'ops', do: 'apply', on: 'migrations/port.sh', by: 'today' },
   ifNo: { do: 'nothing' }, risk: { level: 'medium', of: ['lockout'] }, head: 'brain@abcdef1', link: 'plans/port.md', item: 'https://board.example/?item=sy-1' }

@@ -136,6 +136,11 @@ call task new --title 'Add the schemas' -p 2 -l t1 --act build --do build --on s
 check "task new: posted as bd create, its flags kept, --body-file" ran '^create --title Add the schemas -p 2 -l t1 --body-file .*body\.md --actor platform$'
 check "...the description is one mm-task v1 block" sh -c "head -1 '$T/body' | grep -qx '\`\`\`mm-task v1'"
 check "...task check - reads it" sh -c "'$T/bin/task' check - <'$T/body' | grep -qF 'task ok (act:build)'"
+call task new --title 'Add the schemas' --act build --do build --done closed --verify-check a --verify-expect b \
+  --rollback-run 'git revert HEAD' --safeguard-none --actor platform
+check "task new --safeguard-none: safeguard is the words the text Task allows (sy-wx71)" grep -qF '"safeguard": "none, no access change"' "$T/body"
+call task new --title x --act build --do build --done closed --verify-check a --verify-expect b --safeguard-check 'ssh host true' --actor platform
+check "task new: a safeguard check with no expect: refused" refused 'safeguard'
 call task new --title x --act deploy --do build --done closed --verify-check a --verify-expect b --actor platform
 check "task new: act not in leads/raci.json" refused 'act: deploy is not an activity of leads/raci.json (build, incident, mm-template)'
 call task new --act build --do build --done closed --verify-check a --verify-expect b --actor platform

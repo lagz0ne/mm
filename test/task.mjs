@@ -90,7 +90,23 @@ ok('goTaskRefusal: no Task: both named', /^the item's Task has no Rollback and n
 ok('an empty Rollback: an error of the Task, and a gap', /Rollback is empty/.test(errs(GO.replace('git revert the commit.', ''))) && /no Rollback line/.test(goTaskRefusal(GO.replace('git revert the commit.', '')) || ''))
 ok('template/site/src/lib/task.mjs is the same file as template/bin/lib/task.mjs',
   fs.readFileSync(path.join(SRC, 'template/site/src/lib/task.mjs'), 'utf8') === fs.readFileSync(path.join(SRC, 'template/bin/lib/task.mjs'), 'utf8'))
-ok('a block Task (task.v1 has no rollback or safeguard yet, sy-wx71): both named, the same reason', /^the item's Task has no Rollback and no Safeguard line/.test(goTaskRefusal(JB) || '') && goTaskRefusal(`${CARD}\n${JB}`) === goTaskRefusal(GO.replace(/- \*\*(Rollback|Safeguard):\*\*.*\n/g, '')))
+ok('a block Task without rollback and safeguard: both named, the same reason as the text form', /^the item's Task has no Rollback and no Safeguard line/.test(goTaskRefusal(JB) || '') && goTaskRefusal(`${CARD}\n${JB}`) === goTaskRefusal(GO.replace(/- \*\*(Rollback|Safeguard):\*\*.*\n/g, '')))
+{ // sy-wx71: task.v1 carries rollback and safeguard; the block and the text form give the same parsed keys and the same go check
+  const jb = (o) => '```mm-task v1\n' + JSON.stringify(o) + '\n```\n\nThe rest.'
+  const BOTH = { ...JT, rollback: { run: 'git revert HEAD' }, safeguard: 'none, no access change' }
+  r = parseTask(jb(BOTH), { acts: ACTS })
+  ok('a block with rollback and safeguard "none, no access change": valid, read as Rollback and Safeguard', r.ok && r.task.Rollback === 'run git revert HEAD' && r.task.Safeguard === 'none, no access change', r.errors.join(' | '))
+  ok('...the same Safeguard as the text form\'s "none, no access change"', r.task.Safeguard === parseTask(GO).task.Safeguard)
+  ok('...goTaskRefusal: null (after the owner card too)', goTaskRefusal(jb(BOTH)) === null && goTaskRefusal(`${CARD}\n${jb(BOTH)}`) === null)
+  const CHK = { ...BOTH, rollback: { migration: 'migrations/port.down.sh' }, safeguard: { check: 'ssh -o BatchMode=yes admin@localhost true', expect: 'exit 0' } }
+  r = parseTask(jb(CHK), { acts: ACTS })
+  ok('a block with a migration rollback and a safeguard check: valid, go not refused', r.ok && r.task.Rollback === 'migration migrations/port.down.sh' && r.task.Safeguard === 'ssh -o BatchMode=yes admin@localhost true → exit 0' && goTaskRefusal(jb(CHK)) === null, r.errors.join(' | '))
+  const noSafe = { ...BOTH }; delete noSafe.safeguard
+  const noRoll = { ...BOTH }; delete noRoll.rollback
+  ok('a block without safeguard: refused, the text form\'s reason', goTaskRefusal(jb(noSafe)) === goTaskRefusal(GO.replace(/- \*\*Safeguard:\*\*.*\n/, '')) && /has no Safeguard line/.test(goTaskRefusal(jb(noSafe)) || ''))
+  ok('a block without rollback: refused, the text form\'s reason', goTaskRefusal(jb(noRoll)) === goTaskRefusal(GO.replace(/- \*\*Rollback:\*\*.*\n/, '')) && /has no Rollback line/.test(goTaskRefusal(jb(noRoll)) || ''))
+  ok('a block with a safeguard in other words: invalid (a check, or exactly "none, no access change")', /safeguard/.test(errs(jb({ ...BOTH, safeguard: 'none' }))))
+}
 
 console.log('== bin/bd and bin/task')
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'task-'))

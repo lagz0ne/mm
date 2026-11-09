@@ -15,8 +15,9 @@
 // (Task: "<do> <on>"), and .json is its data. Both forms pass for now.
 // Rollback and Safeguard are optional here; goTaskRefusal says whether a Task has both, non-empty: owner-card.mjs
 // headRefusal refuses the T2 go (and needs-you on a t2 go ask) without them; a t2 non-go ask needs neither.
-// goTaskRefusal reads the keys parseTask returns for either form; task.v1 has no rollback or safeguard yet (sy-wx71),
-// so a block Task has neither, and a t2 go ask with one is refused for the same reason until it does.
+// goTaskRefusal reads the keys parseTask returns for either form (sy-wx71): a block's rollback ({run} or {migration})
+// and safeguard ({check, expect}, or exactly "none, no access change") are its Rollback and Safeguard, so a block
+// without one is refused for the same reason as the text form.
 // Pure; imports only its neighbours structured.mjs and owner-card.mjs (the card it comes after, and the Head format),
 // which imports this one back (headRefusal: goTaskRefusal): neither uses the other's exports before a call. Used by
 // bin/task (bin/bd's gate), owner-card.mjs and the Supervisor; the board's browser code has an identical copy
