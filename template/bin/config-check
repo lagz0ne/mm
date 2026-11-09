@@ -20,6 +20,7 @@ import os from 'node:os'
 import { dirs, projectName, svcUrl } from './lib/svc.mjs'
 import { cli } from './lib/obs.mjs'
 import { secretsIn } from './lib/secret-scan.mjs'
+import { memoryProblems } from './lib/memory.mjs'
 import { FILE as GLOSSARY, WORDS as WORD_LIST, checkWords, readGlossary } from './lib/glossary.mjs'
 import { problems as raciProblems } from './lib/raci.mjs'
 cli('config-check')
@@ -167,6 +168,10 @@ const shq = (s) => (/^[\w./+-]+$/.test(s) ? s : `'${s.replaceAll("'", "'\\''")}'
 const allowOnlyCmd = (kind, folder) => `${shq(ALLOW_ONLY)} ${kind} ${shq(folder)} || exit 2`
 try { fs.accessSync(ALLOW_ONLY, fs.constants.X_OK) } catch { bad('bin/lib/allow-only.mjs is missing or not executable (the hook of every read and board worker)') }
 try { fs.accessSync(GUARD, fs.constants.X_OK) } catch { bad('bin/guard is missing or not executable (the hook every lead and setup runs)') }
+// memory-commit's hook (sy-3wn3): after a write, records which role wrote a file of memory/ (bin/memory-commit note)
+const MEMORY_COMMIT = path.join(P, 'bin', 'memory-commit')
+const MEMORY_TOOLS = 'Write|Edit|MultiEdit'
+const memoryHook = (role) => `${shq(MEMORY_COMMIT)} note ${shq(role)} || true`
 // worker: { actor, deny, allowOnly? } for a worker's folder (sy-asaw): its own actor, and its denies instead of its
 // lead's; allowOnly (read and board workers, sy-txfn): the allow-only hook's command, put first
 function render(tmpl, role, assistant = false, worker = null) {
@@ -183,7 +188,11 @@ function render(tmpl, role, assistant = false, worker = null) {
     if (runsHook(hooks, wrapHook(h))) continue
     hooks = { ...(hooks || {}), PreToolUse: [...(hooks?.PreToolUse || []), { matcher: GUARD_TOOLS.join('|'), hooks: [{ type: 'command', command: wrapHook(h), timeout: 10 }] }] }
   }
-  if (worker?.allowOnly) hooks = { ...(hooks || {}), PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: worker.allowOnly, timeout: 10 }] },
+  // who wrote a memory note (sy-3wn3): every lead and setup records it after a write, so bin/memory-commit commits the
+  // note as its author; never a worker's or an assistant's (their memory is not the project's, sy-0e5)
+  if (!assistant && !worker && role && !(hooks?.PostToolUse || []).some((e) => (e?.hooks || []).some((h) => h?.command === memoryHook(role))))
+    hooks = { ...(hooks || {}), PostToolUse: [...(hooks?.PostToolUse || []), { matcher: MEMORY_TOOLS, hooks: [{ type: 'command', command: memoryHook(role), timeout: 10 }] }] }
+  if (worker?.allowOnly) hooks ={ ...(hooks || {}), PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: worker.allowOnly, timeout: 10 }] },
     ...(hooks?.PreToolUse || []).filter((e) => !(Array.isArray(e?.hooks) ? e.hooks : []).some((h) => String(h?.command ?? '') === worker.allowOnly))] }
   const govDeny = [...ALWAYS_DENY.map(gfill), ...BRAIN_DENY, ...(assistant ? ASSIST_DENY : []), ...(!assistant && role && ROLES.includes(role) ? (worker ? worker.deny : mandatoryDeny(role)) : []), ...(G.deny_all || []).map(grule)] // every safety deny, always
   // who the session is, in the settings themselves (sy-670): a lead that Paseo resumes from `closed` runs without the
@@ -441,18 +450,10 @@ for (const u of ASSISTANTS) {
   if (fs.existsSync(f)) { try { const deny = new Set(JSON.parse(fs.readFileSync(f, 'utf8')).permissions?.deny || []); for (const d of ASSIST_DENY) if (!deny.has(d)) bad(`${who}: settings.json lost the deny ${d}`) } catch { bad(`${who}: settings.json is not valid JSON`) } }
   else if (u !== '_template') bad(`${who}: missing .claude/settings.json (config-check --render)`)
 }
-// Project memory (memory/*.md): each file says what it is (frontmatter name + description, like the brain's) and
-// when it was last checked and for how long it holds (verified + ttl_days, required: the owner, sy-0e5). No
-// defaults: a default would claim a check nobody made. bin/health reports the ones past their time.
+// Project memory (memory/*.md): its rules are in bin/lib/memory.mjs (bin/memory-commit runs the same ones before it
+// commits a note). bin/health reports the ones past their time.
 const MEM = path.join(P, 'memory')
-for (const f of fs.existsSync(MEM) ? fs.readdirSync(MEM).filter((x) => x.endsWith('.md') && !['MEMORY.md', 'README.md'].includes(x)) : []) {
-  const head = /^---\n([\s\S]*?)\n---/.exec(fs.readFileSync(path.join(MEM, f), 'utf8'))
-  if (!head || !/^name:\s*\S/m.test(head[1]) || !/^description:\s*\S/m.test(head[1])) { bad(`memory/${f}: needs frontmatter with name and description`); continue }
-  const v = /^\s*verified:\s*(\S+)/m.exec(head[1]), t = /^\s*ttl_days:\s*(\S+)/m.exec(head[1])
-  if (!v || !t) bad(`memory/${f}: needs verified: <YYYY-MM-DD> and ttl_days: <days> under metadata: (when it was last checked, and how long it holds)`)
-  if (v && !/^\d{4}-\d\d-\d\d$/.test(v[1])) bad(`memory/${f}: verified must be a date (YYYY-MM-DD)`)
-  if (t && !/^\d+$/.test(t[1])) bad(`memory/${f}: ttl_days must be a number of days`)
-}
+for (const f of fs.existsSync(MEM) ? fs.readdirSync(MEM).filter((x) => x.endsWith('.md')) : []) for (const m of memoryProblems(f, fs.readFileSync(path.join(MEM, f), 'utf8'))) bad(m)
 // The glossary (sy-ko6r, the owner): the writing check's terms. glossary.yaml (the template's) is valid: its keys, each
 // term's fields and kind, one entry per term, refuse_from a date or empty; glossary.local.yaml (the board's) adds terms
 // only, never one of glossary.yaml, and sets no refuse_from; each term's owner is a role here (or setup); the word list

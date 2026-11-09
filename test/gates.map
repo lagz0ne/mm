@@ -47,6 +47,7 @@ suite test/init-retry.sh          hermetic
 suite test/lead.sh                hermetic
 suite test/lead-workspace.sh      hermetic
 suite test/memory-links.sh        hermetic
+suite test/memory-commit.sh       hermetic
 suite test/mm-approve.sh          hermetic
 suite test/mm-docker.sh           hermetic
 suite test/mm-home-modes.sh       hermetic
@@ -175,11 +176,12 @@ set cli test/npm-lock.sh test/obs-home.sh test/outside.sh test/paseo-token.sh te
 set cli test/person-run.sh test/portless-claim.sh test/restore.sh test/root-leftover.sh test/routes.sh test/sockets.sh
 set cli test/span-answers.sh test/sync.sh test/sysworkers.sh test/template-base.sh test/update-lock.sh test/vault.sh
 set cli test/writing-rule.sh test/board-pull.mjs test/flow.mjs test/board-phone.mjs test/waiting-phone.mjs
-set cli test/wake-box-person-runs.mjs test/wake-person-runs.mjs
+set cli test/wake-box-person-runs.mjs test/wake-person-runs.mjs test/memory-commit.sh
 
 # the suites that render the template as mm new lays it out and run config-check on it (the leads' and setup's files)
 set render test/denies.sh test/guard.sh test/brain-deny.sh test/memory-links.sh test/sysworkers.sh test/writing-rule.sh
 set render test/engine-drift.sh test/template-base.sh test/update-lock.sh test/assist.sh test/artifact.sh
+set render test/memory-commit.sh
 
 # the built site in a browser (Playwright)
 set browser test/board-artifacts.mjs test/board-message.mjs test/board-owner-card.mjs test/board-phone.mjs
@@ -286,7 +288,9 @@ rule template/ops/githooks/**     test/artifact.sh test/sync.sh test/template-ba
 rule template/bin/lead            test/lead.sh test/lead-workspace.sh test/memory-links.sh test/paseo-refuse.mjs test/person-run.sh test/box-person-runs.sh test/wake-*.mjs
 rule template/bin/svc             test/upstream.mjs test/sockets.sh
 rule template/bin/trace           test/trace-refused.sh test/bd-actor.sh test/owner-card-bd.sh test/span-answers.sh test/bd-home.sh
-rule template/bin/wake            test/wake-*.mjs test/restore-drill.sh
+rule template/bin/wake            test/wake-*.mjs test/restore-drill.sh test/memory-commit.sh
+rule template/bin/memory-commit   test/memory-commit.sh
+rule template/bin/lib/memory.mjs  test/memory-commit.sh @render
 rule template/bin/wt              test/sysworkers.sh test/memory-links.sh test/lead.sh
 rule template/bin/persona         @engine
 rule template/bin/raci            @engine
