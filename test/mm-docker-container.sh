@@ -116,8 +116,10 @@ w logs --tail 5 "$ONE" 2>/dev/null | grep -qx hello-logs && ok "logs" || bad "lo
 p=$(w port "$ONE" 2>&1); [ $? = 0 ] && [ -z "$p" ] && ok "port: nothing published" || bad "port: $p"
 w kill "$ONE" >/dev/null 2>&1 && sleep 1 && [ "$(w inspect -f '{{.State.Running}}' "$ONE" 2>/dev/null)" = false ] && ok "kill" || bad "kill"
 [ -n "$(w images -q "$IMG" 2>/dev/null)" ] && ok "images: $IMG is there" || bad "images"
+# the base is a local image only where the build left one (BuildKit keeps a pulled base in its own cache, not as an image)
+had=$(w images -q "$BASE" 2>/dev/null)
 w rmi "$BASE" >/dev/null 2>"$T/err"
-[ $? = 125 ] && [ -n "$(w images -q "$BASE" 2>/dev/null)" ] && ok "rmi $BASE (not mm's) is refused, it is still there" || bad "rmi $BASE"
+[ $? = 125 ] && grep -q 'refused: rmi' "$T/err" && [ "$(w images -q "$BASE" 2>/dev/null)" = "$had" ] && ok "rmi $BASE (not mm's) is refused${had:+, it is still there}" || { bad "rmi $BASE"; cat "$T/err"; }
 
 echo "== refused, and nothing was made"
 gone() { ! w container inspect "$BOX" >/dev/null 2>&1; }
