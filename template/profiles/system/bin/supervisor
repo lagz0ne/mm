@@ -48,9 +48,10 @@
 //     overcap:<role>     a role with workers holds more places than its capacity (each live worker one, each item in
 //                        progress no worker works on one; +1 while it holds a P0), or, while any role has workers, the
 //                        board more than its cap (overcap:board)                                                    P2
-//     placements:daily   once a UTC day, the parts of the structured blocks (sy-rfup; bin/lib/placements.mjs) on items
+//     placements:daily   once a UTC day, the misc of the structured blocks (sy-rfup; bin/lib/placements.mjs) on items
 //                        changed in the last 24 h: per kind and part type the count, the size (median, max), the most
-//                        common leading words of text parts. Data only; edited in place; none on a day with no block P4
+//                        common leading words of text parts; per typed field, the misc text it could hold and its
+//                        items. Data only; edited in place; none on a day with no block                         P4
 //     supervisor:<check> the supervisor could not read a source (that check's items are left as they are)     P2
 // Sources, all read-only: the board (bd serve: items, ready, the event journal), Paseo (leads by label project/role),
 // `mm ls` (project roots), git (log, status, worktree list). A reply, a comment or a change means one by a lead, its
@@ -413,24 +414,25 @@ async function tasks() {
 }
 
 // The monitored placements (sy-rfup, step 1; bin/lib/placements.mjs): once a UTC day, what went into the free field
-// `parts` of the structured blocks (messages, Tasks, owner cards) on items changed in the last 24 h: per kind and type
-// of part, the count, the size (median, max) and the most common leading words of the text parts. Data only: a shape
-// that comes back often can become a typed field in v2. One item, edited in place each day; none on a day with no block.
+// `misc` of the structured blocks (messages, Tasks, owner cards) on items changed in the last 24 h: per kind and type
+// of part, the count, the size (median, max) and the most common leading words of the text parts; and, per typed field,
+// the misc text parts that look like its content (placements.mjs FLAGS), with their items. Data only: a shape that
+// comes back often can become a typed field in v2. One item, edited in place each day; none on a day with no block.
 async function placements() {
   const day = now.slice(0, 10), prev = state.placements
   if (prev?.day === day) return { prefix: 'placements:', problems: prev.problem ? [prev.problem] : [] }
-  const since = NOW - 24 * 3600e3, texts = []
-  for (const i of await issues()) {
+  const since = NOW - 24 * 3600e3, texts = [], all = await issues()
+  for (const i of all) {
     if (mine(i) || ms(i.updated_at) < since) continue
-    if (i.description) texts.push(i.description)
+    if (i.description) texts.push({ id: i.id, text: i.description })
     if (!(i.comment_count > 0)) continue
     const full = await bd('GET', `/v0/beads/issues/${encodeURIComponent(i.id)}?include_comments=true`)
-    for (const c of full.comments || []) if (ms(c.created_at) >= since && c.text) texts.push(c.text)
+    for (const c of full.comments || []) if (ms(c.created_at) >= since && c.text) texts.push({ id: i.id, text: c.text })
   }
-  const c = countPlacements(texts)
-  const problem = Object.keys(c.blocks).length ? { key: 'placements:daily', priority: 4, parts: [day], title: `Supervisor digest: the parts of structured blocks (${day})`,
-    note: c.rows.map((r) => `${r.kind} ${r.type} ${r.count}`).join('\n'),
-    body: `What went into the free field \`parts\` of the structured blocks (bin/lib/placements.mjs), on items changed in the 24 h before ${at(NOW)}:\n\n` +
+  const c = countPlacements(texts, { ids: new Set(all.map((i) => i.id)) })
+  const problem = Object.keys(c.blocks).length ? { key: 'placements:daily', priority: 4, parts: [day], title: `Supervisor digest: the misc of structured blocks (${day})`,
+    note: [...c.rows.map((r) => `${r.kind} ${r.type} ${r.count}`), ...c.flags.map((f) => `flag ${f.field} ${f.count}`)].join('\n'),
+    body: `What went into the free field \`misc\` of the structured blocks (bin/lib/placements.mjs), on items changed in the 24 h before ${at(NOW)}:\n\n` +
       `${formatPlacements(c)}\n\nData only, no judgement: a shape that comes back often can become a typed field in v2 of the schemas. This item is edited in place each day.` } : null
   state.placements = { day, problem }
   return { prefix: 'placements:', problems: problem ? [problem] : [] }
