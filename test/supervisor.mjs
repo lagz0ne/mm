@@ -424,6 +424,13 @@ git(MMR, ['add', 'src/a.ts']); git(MMR, ['commit', '-q', '-m', 'the change', '-m
 clock = T0 + 143 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('...a commit with code naming it: the finding opens', openKeys() === `${DIRTY} ${T2('sy-31')} ${T2('sy-32')} ${T2('sy-39')}`)
+// review sy-xpkc #2: test/gates, test/gates.map and test/lib/ choose the tests a sign-off needs: they count as live
+item('sy-38', { title: 't2, only the gates map names it', priority: 2, assignee: 'platform', labels: ['t2'] }); update('sy-38', { status: 'in_progress' }, 'platform')
+fs.writeFileSync(path.join(MMR, 'test', 'gates.map'), 'x\n'); git(MMR, ['add', 'test/gates.map']); git(MMR, ['commit', '-q', '-m', 'gates: drop a suite', '-m', 'sy-38'])
+clock = T0 + 144 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('...a commit that changes only test/gates.map, naming a t2 item: the finding opens (sy-38)', openKeys().includes(T2('sy-38')))
+go('sy-38', ['t2', 'approved'], 'bridge')
 go('sy-31', ['t2', 'approved'], 'bridge'); go('sy-32', ['t2', 'approved'], 'bridge'); go('sy-39', ['t2', 'approved'], 'bridge')
 
 step('run 9i (+377..441 min): unapproved t2 items in progress over 4 h with nothing live: one P3 list, refreshed')
