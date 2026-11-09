@@ -37,8 +37,17 @@ if [ -e /etc/mm-box ]; then skip "this machine has /etc/mm-box (run it on the ho
 else
   W=$(wt wt w-a1); is "wt prints the worktree" "$P/worktrees/w-a1" "$W"
   is "the sandbox, on and failIfUnavailable, and the permissions" "sandbox true true false denies" "$(read_s "$W")"
-  grep -qx '.claude/settings.local.json' "$P/code/.git/info/exclude" && ok "the settings are excluded from the repo" || bad "not in info/exclude"
+  is "the settings stay out of the worker's commits (git status: clean)" "" "$(git -C "$W" status --porcelain --untracked-files=all)"
 fi
+
+echo "== code/.git/info/exclude read-only (a box mounts it so, sy-r069)"
+mkdir -p "$P/code/.git/info"; touch "$P/code/.git/info/exclude"; chmod 444 "$P/code/.git/info/exclude"
+before=$(cat "$P/code/.git/info/exclude")
+W=$(wt wt-root w-a5 2>"$T/err"); rc=$?
+is "wt w-<item> still makes the worktree (exit 0)" "0 $P/worktrees/w-a5" "$rc $W"
+is "...its settings, out of git status" "" "$(git -C "$W" status --porcelain --untracked-files=all 2>&1)"
+is "...and info/exclude is not touched" "$before" "$(cat "$P/code/.git/info/exclude")"
+chmod 644 "$P/code/.git/info/exclude"
 
 echo "== a marker that is not root's"
 if [ "$(id -u)" = 0 ]; then skip "running as root: the test's own file is root's"
