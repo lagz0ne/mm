@@ -34,6 +34,14 @@ rm -rf "$P/release"
 OUT=$(MM_TRACE_SELF="$P/bin/backup" BACKUP_DIR="$T/bk2" "$P/bin/backup" 2>&1); RC=$?
 check "it runs, with no data/ folder and 0 data files" sh -c "[ $RC = 0 ] && ! ls -d '$T/bk2'/20*/data >/dev/null 2>&1 && echo '$OUT' | grep -q ', 0 data files'"
 
+echo "== the app's DATA_DIR (data/app/, outside release/: sy-plpv)"
+mkdir -p "$P/data/app/videos"; echo db >"$P/data/app/app.db"; echo v >"$P/data/app/videos/a.mp4"; echo w >"$P/data/app/app.db.tmp"
+OUT=$(MM_TRACE_SELF="$P/bin/backup" BACKUP_DIR="$T/bk3" "$P/bin/backup" 2>&1); RC=$?
+D=$(ls -1d "$T/bk3"/20*/ 2>/dev/null | head -1)
+check "it is in <backup>/app/, sub-folders too, not its *.tmp files" sh -c "[ $RC = 0 ] && cmp -s '$P/data/app/app.db' '${D}app/app.db' && cmp -s '$P/data/app/videos/a.mp4' '${D}app/videos/a.mp4' && [ ! -e '${D}app/app.db.tmp' ]"
+check "...user-only (dirs 0700, files 0600), and counted in the summary (2 data files)" sh -c "! find '${D}app' -type d ! -perm 700 | grep -q . && ! find '${D}app' -type f ! -perm 600 | grep -q . && echo '$OUT' | grep -q ', 2 data files'"
+rm -rf "$P/data/app"
+
 echo "== its Doop, through bin/doop-run and a docker stand-in (sy-bey8)"
 # the stand-in: `container inspect` answers line n of $T/dk/state at its n-th call (then the last line again; "none":
 # no such container, "down": the daemon fails); `exec` runs the host's tar over data/doop/, or fails as $T/dk/exec says
