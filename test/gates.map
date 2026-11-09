@@ -310,7 +310,7 @@ rule template/bin/task            test/task.mjs test/bd-actor.sh test/owner-card
 rule template/bin/structured      test/structured.sh
 rule template/bin/flow            test/flow.mjs test/board-pull.mjs
 rule template/bin/artifact        test/artifact.sh test/board-artifacts.mjs test/structured.sh
-rule template/bin/backup          test/backup-data.sh test/sync.sh test/restore.sh test/engine-drift.sh test/doop-container.sh test/clean-box.sh test/restore-drill.sh
+rule template/bin/backup          test/backup-data.sh test/sync.sh test/restore.sh test/engine-drift.sh test/clean-box.sh test/restore-drill.sh
 rule template/bin/bd              test/bd-actor.sh test/owner-card-bd.sh test/trace-refused.sh test/init-retry.sh test/bd-autostart.sh test/bd-home.sh test/task.mjs test/message.mjs test/structured.sh test/wake-start.mjs test/wake-signals.mjs test/upstream.mjs
 rule template/bin/bd-quiet        test/bd-autostart.sh test/bd-home.sh test/init-retry.sh
 rule template/bin/config-check    @settings test/memory-links.sh test/template-base.sh test/engine-drift.sh test/update-lock.sh test/assist.sh test/artifact.sh test/glossary.mjs test/api.sh test/lead.sh test/box.sh
@@ -335,7 +335,7 @@ rule template/bin/smoke-beads     test/bd-autostart.sh
 rule template/bin/purge           test/engine-drift.sh test/template-base.sh
 rule template/bin/deploy          test/trace-refused.sh
 rule template/ops/land-check      test/trace-refused.sh
-rule template/ops/githooks/**     test/artifact.sh test/sync.sh test/template-base.sh test/restore-drill.sh
+rule template/ops/githooks/**     test/artifact.sh test/sync.sh test/template-base.sh
 
 # --- rules: the template's site -------------------------------------------------------------------------------------
 
@@ -414,11 +414,11 @@ rule template/services.yaml       test/bd-autostart.sh test/pc-skipped.sh test/e
 rule template/tools.json          test/bd-autostart.sh test/bd-home.sh test/init-retry.sh test/clean-box.sh test/restore-drill.sh test/box.sh
 rule template/secrets.json        test/needs-fill.sh test/vault.sh test/sync.sh test/restore.sh test/api.sh test/board-artifacts.mjs
 rule template/.gitignore          test/artifact.sh test/board-artifacts.mjs test/restore.sh test/sync.sh test/supervisor.mjs test/template-base.sh
-rule template/leads/roles.json    test/wake-start.mjs test/wake-hops.mjs test/supervisor.mjs test/flow.mjs test/message.mjs test/lead.sh test/bd-actor.sh test/auth.sh test/board-approve.sh test/person-run.sh test/raci.mjs test/doop-designs.sh
+rule template/leads/roles.json    test/wake-start.mjs test/wake-hops.mjs test/supervisor.mjs test/flow.mjs test/message.mjs test/lead.sh test/bd-actor.sh test/auth.sh test/board-approve.sh test/person-run.sh test/raci.mjs
 rule template/leads/raci.json     test/raci.mjs test/supervisor-raci.mjs test/wake-hops.mjs test/lead.sh
-rule template/leads/design/**     test/doop.sh test/doop-designs.sh
+rule template/leads/design/**     test/doop.sh
 rule template/leads/START.md      test/lead.sh test/person-run.sh
-rule template/setup/**            test/sync.sh test/restore-drill.sh
+rule template/setup/**            test/sync.sh
 rule template/worktrees/**        test/sysworkers.sh
 
 # the system profile
