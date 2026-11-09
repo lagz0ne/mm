@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Toaster } from '@/components/ui/sonner'
 import { useDesk, usePhone } from '@/lib/phone'
+import { REL_TAG, clearLinks, hoverLinks, linksNotShown, linksPinned, pinLinks, setLinkGraph, useLinkRel, useMarked } from '@/lib/links'
 import { Goals } from '@/Goals'
 import { PhoneBar } from '@/PhoneBar'
 import { cn } from '@/lib/utils'
@@ -26,6 +27,7 @@ const viewOf = (h: string) => (h === '#leads' ? 'leads' : h === '#machine' ? 'ma
 if (typeof window !== 'undefined') window.addEventListener('load', () => setTimeout(() => { loadDetail(); loadLeads() }, 1500))
 const EMPTY_META: Meta = { project: '', leads: {}, creators: {}, last: {} }
 const SLOW_MIN = 15 // a ready item nobody picked up for this long turns red
+const LONG_PRESS_MS = 450 // a press this long on a phone marks the card's links instead of opening it
 
 export default function App() {
   const [issues, setIssues] = useState<Issue[]>([])
@@ -187,6 +189,16 @@ export default function App() {
   }, [])
 
   const byId = useMemo(() => new Map(issues.map((i) => [i.id, i])), [issues])
+  // the links a hovered (or long-pressed) card marks come from this list: no fetch per hover (sy-x7kh)
+  useEffect(() => setLinkGraph(issues), [issues])
+  // a long press marks until the next tap anywhere, Escape, or another view
+  useEffect(() => {
+    const off = (e: Event) => { if (linksPinned() && !(e.target as HTMLElement).closest?.('[data-card]')) clearLinks() }
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') clearLinks() }
+    document.addEventListener('pointerdown', off); document.addEventListener('keydown', esc)
+    return () => { document.removeEventListener('pointerdown', off); document.removeEventListener('keydown', esc) }
+  }, [])
+  useEffect(() => clearLinks(), [view, col, openId])
   const epics = useMemo(() => issues.filter((i) => i.issue_type === 'epic' && i.status !== 'closed'), [issues])
   const work = useMemo(() => {
     const needle = q.trim().toLowerCase()
@@ -502,14 +514,42 @@ function Card({ issue: i, col, waitsOn, last, onOpen, worker }: {
   const awaitingLead = !closed && !!role && !!last && !fromLead
   const needsYou = !closed && fromLead && (i.status === 'blocked' || (i.labels || []).includes('needs-you'))
   const waitedMin = (Date.now() - new Date(i.updated_at).getTime()) / 60000
+  // its links (sy-x7kh): the mouse over it, or a long press on a phone (a tap still opens it)
+  const phone = usePhone()
+  const rel = useLinkRel(i.id), marked = useMarked()
+  const [notShown, setNotShown] = useState(0)
+  useEffect(() => { if (rel === 'self') setNotShown(linksNotShown(i.id)) }, [rel, i.id])
+  const press = useRef<{ timer: number; x: number; y: number; fired: boolean } | null>(null)
+  const endPress = () => { if (press.current) window.clearTimeout(press.current.timer) }
   return (
     <button
-      draggable
-      onDragStart={(e) => e.dataTransfer.setData('text/plain', i.id)}
-      onClick={() => onOpen(i.id)}
-      className={cn('grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1 border border-border bg-card px-2 py-1.5 text-left hover:border-foreground max-md:px-3 max-md:py-2.5',
+      data-card={i.id}
+      data-link={rel || undefined}
+      draggable={!phone}
+      onDragStart={(e) => { clearLinks(); e.dataTransfer.setData('text/plain', i.id) }}
+      onPointerEnter={(e) => { if (e.pointerType === 'mouse') hoverLinks(i.id) }}
+      onPointerLeave={(e) => { if (e.pointerType === 'mouse') hoverLinks(null) }}
+      onTouchStart={(e) => {
+        endPress()
+        const t = e.touches[0]
+        const p = { x: t.clientX, y: t.clientY, fired: false, timer: 0 }
+        p.timer = window.setTimeout(() => { p.fired = true; pinLinks(i.id); navigator.vibrate?.(10) }, LONG_PRESS_MS)
+        press.current = p
+      }}
+      onTouchMove={(e) => { const p = press.current, t = e.touches[0]; if (p && Math.hypot(t.clientX - p.x, t.clientY - p.y) > 10) endPress() }}
+      onTouchEnd={(e) => { endPress(); if (press.current?.fired) e.preventDefault() }}
+      onTouchCancel={endPress}
+      onContextMenu={(e) => { if (press.current?.fired || phone) e.preventDefault() }}
+      onClick={() => {
+        if (press.current?.fired) { press.current = null; return } // the long press's own click: the marks stay
+        clearLinks(); onOpen(i.id)
+      }}
+      className={cn('relative grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1 border border-border bg-card px-2 py-1.5 text-left hover:border-foreground max-md:px-3 max-md:py-2.5 max-md:select-none max-md:[-webkit-touch-callout:none]',
         i.priority === 0 && !closed && 'border-l-4 border-l-swiss', closed && 'opacity-55')}
     >
+      {/* the tags lie over the card: marking never moves a card, so the mouse never slips off the one it marks */}
+      {marked && REL_TAG[rel] && <span data-link-tag={rel} className="link-tag pointer-events-none absolute top-0 right-0 z-[1] px-1.5 py-0.5 text-[11px] leading-none font-semibold">{REL_TAG[rel]} {marked}</span>}
+      {rel === 'self' && notShown > 0 && <span data-links-hidden={notShown} className="pointer-events-none absolute right-0 bottom-0 z-[1] border border-foreground bg-background px-1.5 py-0.5 text-[11px] leading-none font-semibold">+{notShown} linked, not shown</span>}
       <span className="flex items-center gap-2 text-[11px]">
         {roleOf(i) && <Avatar actor={roleOf(i)} size="xs" />}
         <span className="font-mono text-muted-foreground">{i.id}</span>
