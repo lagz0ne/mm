@@ -169,7 +169,10 @@ function toBridge(sock, item, assertionHeader) {
 //             Whichever comes first counts (the bridge's label or this one); the second answers "already approved".
 //   not-now   the same checks; a comment, and needs-you removed.
 //   reply     a comment (1..1000 characters) as the owner.
-//   done      an item with needs-you: a comment, and needs-you removed.
+//   done      an item with needs-you: the comment "Done." as the owner.
+//   Reply and Done are only the owner's comment (sy-e234: one answer path, the same as a comment on the item): wake
+//   reads a person's comment on a needs-you item whose card asks Reply: or Check: as the answer, removes needs-you and
+//   wakes the board's Lead. Approve and Not now answer a go ask and remove needs-you here.
 // Each one is logged (who, item, what, from where); never the assertion or a cookie.
 const T2_NO_SIGNOFF = 'review has not signed it off yet (a t2 item: plan -> review\'s sign-off -> your go)'
 /** The T2 go comes after review's sign-off (sy-l9uc, review's sy-16ml #2; the bridge's tap checks the same): the item's
@@ -286,10 +289,11 @@ async function webReply(req, res) {
 async function webDone(req, res) {
   const a = await ownerAction(req, res, 'done'); if (!a) return
   if (!a.labels.has('needs-you')) return send(res, 409, { title: `${a.item} does not wait for you (no needs-you).` })
-  if (!(await bdComment(a.item, a.g.u, `Checked: done, said ${a.g.u}.`))) return send(res, 502, { title: 'The board could not write it.' })
-  const dropped = await bdLabels(a.item, a.g.u, { remove_labels: ['needs-you'] })
-  did(req, 'done', a, { dropped })
-  return send(res, 200, { ok: true, title: `Checked: done, said on ${a.item}.` })
+  // one answer path (sy-e234): Done is the owner's comment, as a Reply is; wake reads it as the answer to the card's
+  // Check: (or Reply:) ask, removes needs-you and wakes the board's Lead
+  if (!(await bdComment(a.item, a.g.u, 'Done.'))) return send(res, 502, { title: 'The board could not write it.' })
+  did(req, 'done', a)
+  return send(res, 200, { ok: true, title: `Done: said on ${a.item}.` })
 }
 async function currentItem(id) {
   const r = await fetch(new URL(`/v0/beads/issues/${encodeURIComponent(id)}`, BD)).then((x) => x.json()).catch(() => null)
