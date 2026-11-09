@@ -16,6 +16,14 @@ One shared model account should not have to do a project's work by itself. The w
 - Review, gates, landing and rollouts stay on the main machine. A worker that runs off the main machine gets only the
   project's code and board.
 
+**mm as server and client.** One mm can be both:
+- a **server** hosts the boards, their queues, the gateway (sign-in and tokens), boxes, review, gates and rollouts;
+- a **client** runs `mm join <server>/<project>`: it gets a person's token for that one project (from the server's
+  gateway, after the person signs in), a local box for the project's code, and a worker with the person's own model
+  account, which pulls units from that project's queue.
+
+A pilot: the main machine is the server; a second machine (a person's laptop) joins one project and takes units 1:1.
+
 The question for this step: can the Paseo Hub "mailbox" be that queue?
 
 ## Sources
