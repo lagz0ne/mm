@@ -5,7 +5,8 @@
 //     --list         print the suites and why (which changed file matched which rule); run nothing
 //     --out <file>   the result file (default gates-<short head>.txt here); each suite's whole log next to it, in
 //                    <file without .txt>.logs/
-//     --item <id>    then `artifact <id> <file>` when artifact is on PATH (else it says so)
+//     --item <id>    then `artifact <id> <file>` when artifact is on PATH (else it says so); while it runs, a mark on
+//                    the board keeps the item's claim from expiring (markRun)
 //     --no-live      skip the live group; the result says "skipped (--no-live)" for each, never "passed"
 //     --bin <mm>     the mm the suites get ({mm}, MM_BIN_DIR) instead of one built from the head
 //     --jobs <n>     hermetic suites at once (default: half the CPUs, 2 to 6)
@@ -252,7 +253,39 @@ function parseArgs(argv) {
 
 const usage = 'usage: test/gates <base>..<head> [--list] [--out <file>] [--item <id>] [--no-live] [--bin <mm>] [--jobs <n>] [--keep]'
 
-export async function main(argv, { stdout = process.stdout, stderr = process.stderr, cwd = process.cwd() } = {}) {
+// A run with --item marks itself on the board while it runs (sy-brny): <board>/.run/gates/<item>.<pid>.pid, holding
+// {pid, item, start} (start: field 22 of /proc/self/stat, where there is one), removed when the run ends. bin/wake reads
+// it: while the run is alive, the item's claim does not expire. The board: $MM_GATES_DIR (a folder for the files), else
+// the board whose bin/ is on PATH (the folder with wake, lead and artifact: a lead's PATH has it). None: no mark.
+export function gatesDir(env = process.env) {
+  if (env.MM_GATES_DIR) return path.resolve(env.MM_GATES_DIR)
+  for (const d of String(env.PATH || '').split(path.delimiter)) {
+    if (!d || !path.isAbsolute(d)) continue
+    if (['wake', 'lead', 'artifact'].every((f) => { try { return fs.statSync(path.join(d, f)).isFile() } catch { return false } }))
+      return path.join(path.dirname(fs.realpathSync(d)), '.run', 'gates')
+  }
+  return null
+}
+const ITEM = /^[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*$/
+export function markRun(item, warn = () => {}, env = process.env) {
+  const dir = ITEM.test(item || '') ? gatesDir(env) : null
+  if (!dir) return () => {}
+  const f = path.join(dir, `${item}.${process.pid}.pid`)
+  let start = ''
+  try { start = fs.readFileSync('/proc/self/stat', 'utf8').replace(/^.*\) /s, '').split(' ')[19] || '' } catch {}
+  try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(f, JSON.stringify({ pid: process.pid, item, start }) + '\n') } catch (e) { warn(`could not mark the run for ${item} (${e.message}): its claim may expire while it runs`); return () => {} }
+  const rm = () => { try { fs.rmSync(f, { force: true }) } catch {} }
+  const sig = (s) => () => { rm(); process.kill(process.pid, s) }
+  const onExit = rm, onInt = sig('SIGINT'), onTerm = sig('SIGTERM')
+  process.once('exit', onExit); process.once('SIGINT', onInt); process.once('SIGTERM', onTerm)
+  return () => { rm(); process.off('exit', onExit); process.off('SIGINT', onInt); process.off('SIGTERM', onTerm) }
+}
+
+export async function main(argv, opts = {}) {
+  const marks = []
+  try { return await main1(argv, opts, marks) } finally { for (const u of marks) u() }
+}
+async function main1(argv, { stdout = process.stdout, stderr = process.stderr, cwd = process.cwd() } = {}, marks = []) {
   const say = (s = '') => stdout.write(s + '\n')
   const warn = (s) => stderr.write(`gates: ${s}\n`)
   let o
@@ -316,6 +349,7 @@ export async function main(argv, { stdout = process.stdout, stderr = process.std
   }
 
   // --- the run ---
+  if (o.item) marks.push(markRun(o.item, warn))
   const outFile = path.resolve(cwd, o.out || `gates-${short}.txt`)
   const logDir = outFile.replace(/\.txt$/, '') + '.logs'
   fs.rmSync(logDir, { recursive: true, force: true })

@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { GROUPS, fetchTool, globMatch, parseMap, resolve, select, selectBoth } from './lib/gates.mjs'
+import { GROUPS, fetchTool, gatesDir, globMatch, markRun, parseMap, resolve, select, selectBoth } from './lib/gates.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const GATES = path.join(SRC, 'test', 'gates')
@@ -104,11 +104,12 @@ step('test/gates on a fixture repo')
 const R = path.join(T, 'repo')
 fs.mkdirSync(path.join(R, 'test'), { recursive: true })
 const g = (...a) => sh('git', ['-C', R, ...a], { env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.org', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.org' } })
-const MARK = path.join(T, 'ran'), SPANS = path.join(T, 'spans')
+const MARK = path.join(T, 'ran'), SPANS = path.join(T, 'spans'), SEEN = path.join(T, 'gates-seen')
 const W = (f, s) => { fs.mkdirSync(path.dirname(path.join(R, f)), { recursive: true }); fs.writeFileSync(path.join(R, f), s) }
 // a stub suite: records its run (start, end) and its args, prints ok/FAIL lines, exits as told
 const stub = (name, { fails = 0, sleep = 0 } = {}) => `#!/usr/bin/env bash
 echo "$(basename "$0") $(date +%s.%N) start" >>"${SPANS}"; echo "$(basename "$0") $*" >>"${MARK}"
+[ -z "\${MM_GATES_DIR:-}" ] || ls "\$MM_GATES_DIR" >>"${SEEN}" 2>/dev/null
 echo "args: $*"; echo "cwd: $(pwd)"; for i in $(seq 1 200); do echo "line $i of a long log"; done
 printf '  \\033[32mok\\033[0m   one\\n  \\033[32mok\\033[0m   two\\n'
 ${fails ? "printf '  \\033[31mFAIL\\033[0m three\\n'" : ''}
@@ -183,7 +184,8 @@ const short = g('rev-parse', '--short=7', 'HEAD').stdout.trim()
 const STUBS = path.join(T, 'stubs'); fs.mkdirSync(STUBS)
 fs.writeFileSync(path.join(STUBS, 'artifact'), `#!/bin/sh\necho "$@" >"${T}/artifact.args"\necho "artifacts/$1/$(basename "$2")"\n`, { mode: 0o755 })
 const fakeMm = path.join(T, 'fake-mm'); fs.writeFileSync(fakeMm, '#!/bin/sh\necho fake\n', { mode: 0o755 })
-r = run(['main~2..main', '--bin', fakeMm, '--item', 'ab-1'], { path: `${STUBS}:${process.env.PATH}` })
+const GD = path.join(T, 'board', '.run', 'gates')
+r = sh(GATES, ['main~2..main', '--bin', fakeMm, '--item', 'ab-1'], { cwd: R, env: { ...process.env, PATH: `${STUBS}:${process.env.PATH}`, MM_GATES_DIR: GD } })
 ok('a failing suite: exit 1', r.status === 1, r.stdout + r.stderr)
 const def = path.join(R, `gates-${short}.txt`)
 const res2 = fs.existsSync(def) ? fs.readFileSync(def, 'utf8') : ''
@@ -191,6 +193,9 @@ ok(`the default result file: gates-<short head>.txt (${path.basename(def)})`, re
 ok('result: the failed suite with its exit code and counts', /^test\/f\.sh\s+hermetic\s+failed \(exit 1\)\s+2 ok, 1 FAIL/m.test(res2) && /^result: failed: 1 passed, 1 failed, 0 skipped, of 2/m.test(res2), res2)
 ok('{mm} is the --bin binary', fs.readFileSync(MARK, 'utf8').includes(`m.sh ${fakeMm} x`) && /^mm: --bin /m.test(res2), fs.readFileSync(MARK, 'utf8'))
 ok('--item: artifact <id> <result file>', fs.existsSync(`${T}/artifact.args`) && fs.readFileSync(`${T}/artifact.args`, 'utf8').trim() === `ab-1 ${def}` && /artifact: on ab-1/.test(r.stdout), r.stdout)
+const seen = fs.existsSync(SEEN) ? fs.readFileSync(SEEN, 'utf8') : ''
+ok('--item: while it runs, the board has its mark (<item>.<pid>.pid, sy-brny)', /^ab-1\.\d+\.pid$/m.test(seen), seen)
+ok('...removed when the run ends', fs.existsSync(GD) && fs.readdirSync(GD).length === 0, fs.existsSync(GD) ? fs.readdirSync(GD) : 'no folder')
 r = run(['main~1..main', '--item', 'ab-1', '--out', path.join(T, 'out', 'r3.txt')], { path: [NODE_DIR, '/usr/bin', '/bin'].join(':') })
 ok('--item without artifact on PATH: says so (the run still counts)', r.status === 1 && /artifact: not on PATH/.test(r.stdout), r.stdout + r.stderr)
 r = run(['main~3..main', '--list', '--no-live'])
@@ -201,6 +206,18 @@ W('test/gates.map', mapNow.replace('rule lib/** test/h1.sh test/h2.sh test/d1.sh
 W('lib/a.txt', '3\n'); g('add', 'lib/a.txt', 'test/gates.map'); g('commit', '-qm', 'drop gates from the map')
 r = run(['main~1..main', '--list'])
 ok("a range that changes the map: the base's map chooses too (the dropped suites still listed)", r.status === 0 && /test\/d1\.sh\s+<- lib\/\*\* \(the base's map\) \(lib\/a\.txt\)/.test(r.stdout) && /test\/l\.sh/.test(r.stdout) && /the base's: this range changes the map/.test(r.stdout), r.stdout + r.stderr)
+
+step('markRun: the mark wake reads (sy-brny)')
+{
+  const MD = path.join(T, 'marks'), um = markRun('ab-2.1', () => {}, { MM_GATES_DIR: MD })
+  const f = path.join(MD, `ab-2.1.${process.pid}.pid`), j = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {}
+  ok('a mark: <item>.<pid>.pid, with the pid, the item and (on Linux) the start', j.pid === process.pid && j.item === 'ab-2.1' && (process.platform !== 'linux' || /^\d+$/.test(j.start)), JSON.stringify(j))
+  um(); ok('...and its remover removes it', !fs.existsSync(f))
+  ok('a bad item id: no mark', (markRun('../x', () => {}, { MM_GATES_DIR: MD }), fs.readdirSync(MD).length === 0), fs.readdirSync(MD))
+  const B = path.join(T, 'brd'); fs.mkdirSync(path.join(B, 'bin'), { recursive: true }); for (const n of ['wake', 'lead', 'artifact']) fs.writeFileSync(path.join(B, 'bin', n), '')
+  ok('the board from PATH: the folder with wake, lead and artifact', gatesDir({ PATH: `/nowhere:${path.join(B, 'bin')}` }) === path.join(fs.realpathSync(B), '.run', 'gates'))
+  ok('no board on PATH: no mark', gatesDir({ PATH: '/usr/bin:/bin' }) === null)
+}
 
 step('fetchTool: the pinned checksums (review #3, 2)')
 {
