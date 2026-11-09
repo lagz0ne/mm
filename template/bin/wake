@@ -4,8 +4,13 @@
 // so a working lead is never interrupted. Changes a lead (or its workers, actor `<role>/...`) makes never wake it.
 // The end of a unit of work is a bd state change (reassign, blocked, dep add, reopen, close): it wakes the role who acts
 // next, even when the writer is the item's old assignee (see transition()).
-// Hop limit: after MAX_HOPS lead-to-lead wakes on one item without a human in between, the item gets `paused` and goes
-// to the board's Lead (sy-0omb; see stopLoop()): no lead is woken for it while `paused` is on.
+// Hop limit: after MAX_HOPS lead-to-lead wakes on one item without a human and without progress in between, the item
+// gets `paused` and goes to the board's Lead (sy-0omb; see stopLoop()): no lead is woken for it while `paused` is on.
+// A hop counts only when nothing moved since the last hop on that item (sy-ydoe; hopSeen(), hopsOf()); a hop after
+// progress is hop 1 again. Progress is any of: a new Head in a valid message (bin/lib/message.mjs), a new
+// `signed-head:` label, a new artifact quoted in a comment (artifacts/<id>/<name>), a child (<id>.<n>) or an item it
+// waits on (bd dep add) closed, a status other than at the last hop, or an assignee who is neither of the last two
+// hops' (a third role; the ping-pong between the same two is no progress). A human resets it too.
 // The owner is asked only through an owner card (sy-0omb): where wake asks the owner itself (needs-you), it writes a
 // minimal card first when the item has none (askOwner()).
 // The pull model (plans/slp shape 5): the board is the queue. A role's queue is `bd ready --assignee <role>`; its lead
@@ -71,7 +76,7 @@ function loadRoles() {
 }
 loadRoles()
 const raci = () => { try { return JSON.parse(fs.readFileSync(path.join(P, 'leads', 'raci.json'), 'utf8')).activities || [] } catch { return [] } }
-const hops = new Map() // issue id -> lead-to-lead wakes sent since a human last acted on it
+const hops = new Map() // issue id -> lead-to-lead wakes sent with no progress (and no human) in between (hopsOf())
 const paused = new Set() // items paused (the hop limit, or the label `paused`): no lead wakes for them until resumed
 const pauseOn = new Set() // ...those whose label `paused` wake has seen on the board
 const PAUSED = 'paused'
@@ -329,17 +334,60 @@ function upstreamWaits(b) {
   if (JSON.stringify(now) !== JSON.stringify(raised)) editState((s) => { s._upWait = now })
 }
 
+// The hop limit's progress (sy-ydoe; the rule: the top of this file). marks: what moved on an item, in sets that only
+// grow (heads, signed heads, artifacts) and a count (children or dependencies closed), with its status and assignee;
+// lastHop: the marks as of the item's last hop, and the assignees of its last two hops.
+const marks = new Map(), lastHop = new Map(), waitsOn = new Map() // waitsOn: item id -> the items that wait on it
+const ART = /\bartifacts\/[a-z]+-[a-z0-9]+(?:\.[0-9]+)*\/[A-Za-z0-9._-]+/g
+function marksOf(id) {
+  let m = marks.get(id)
+  if (!m) marks.set(id, (m = { heads: new Set(), signed: new Set(), arts: new Set(), done: 0, status: '', assignee: '' }))
+  return m
+}
+const markKey = (m) => [m.heads.size, m.signed.size, m.arts.size, m.done, m.status].join('/')
+function hopSeen(e) {
+  const id = e.issue_id, i = e.issue, c = e.comment
+  if (!id) return
+  if (e.op === 'dep_add' && e.dep?.target && (!e.dep.kind || e.dep.kind === 'blocks')) waitsOn.set(e.dep.target, (waitsOn.get(e.dep.target) || new Set()).add(id))
+  const m = marksOf(id)
+  if (e.op === 'comment' && c && !SYSTEM.includes(c.author)) {
+    const msg = parseMessage(c.text, { roles: messageRoles(ROLES, fs.existsSync(path.join(P, SETUP_BRIEF))), author: String(c.author ?? '') })
+    if (msg.ok && msg.keys.Head) m.heads.add(msg.keys.Head)
+    for (const a of String(c.text ?? '').match(ART) || []) m.arts.add(a)
+  }
+  if (!i) return
+  for (const l of i.labels || []) if (l.startsWith('signed-head:')) m.signed.add(l)
+  const was = seen.get(id)?.status
+  if (i.status === 'closed' && was && was !== 'closed') {
+    const parent = /\.[0-9]+$/.test(id) ? id.replace(/\.[0-9]+$/, '') : null
+    for (const o of new Set([parent, ...(waitsOn.get(id) || [])])) if (o) marksOf(o).done++
+  }
+  m.status = i.status || ''; m.assignee = i.assignee || ''
+}
+/** The item's hop count now: 0 when it moved since its last hop. */
+function hopsOf(id) {
+  const h = lastHop.get(id), m = marksOf(id)
+  if (h && (h.mark !== markKey(m) || (h.asg.length === 2 && m.assignee && !h.asg.includes(m.assignee)))) return 0
+  return hops.get(id) || 0
+}
+/** A lead-to-lead wake on the item was sent: one hop more, or hop 1 after progress. */
+function hopSent(id) {
+  const n = hopsOf(id) + 1, m = marksOf(id), h = n === 1 ? null : lastHop.get(id)
+  hops.set(id, n)
+  lastHop.set(id, { mark: markKey(m), asg: [...(h?.asg || []), m.assignee].slice(-2) })
+}
+
 function onEvent(e) {
   return span('wake event', { op: e.op, issue: e.issue_id, actor: e.actor }, () => {
-    try { keptSeen(e); upSeen(e); pauseSeen(e); onEvent1(e) } finally { if (e.issue) seen.set(e.issue_id, { assignee: e.issue.assignee || '', status: e.issue.status }); soon() }
+    try { keptSeen(e); upSeen(e); pauseSeen(e); hopSeen(e); onEvent1(e) } finally { if (e.issue) seen.set(e.issue_id, { assignee: e.issue.assignee || '', status: e.issue.status }); soon() }
   }, { minMs: 1000 })
 }
 function onEvent1(e) {
   if (e.actor === 'wake') return // its own pause notes
-  if (isHuman(e.actor)) hops.delete(e.issue_id) // a human in the loop resets the count (and resumes a pause: pauseSeen())
+  if (isHuman(e.actor)) { hops.delete(e.issue_id); lastHop.delete(e.issue_id) } // a human in the loop resets the count (and resumes a pause: pauseSeen())
   if (paused.has(e.issue_id)) return // paused: no lead is woken for it
   const byLead = !!leadOf(e.actor)
-  if (byLead && (hops.get(e.issue_id) || 0) >= MAX_HOPS) { // at the limit: pause it, visibly, once
+  if (byLead && hopsOf(e.issue_id) >= MAX_HOPS) { // at the limit: pause it, visibly, once
     paused.add(e.issue_id); log(`hop limit on ${e.issue_id}: paused`); count('mm_wake_paused_total', {}); stopLoop(e.issue_id, e.issue?.title)
     return
   }
@@ -398,6 +446,7 @@ async function catchUp() {
   const last = {}
   for (const e of ev.records) if (e.op === 'comment' && e.comment) last[e.issue_id] = e.comment
   for (const e of ev.records) upSeen(e) // how long an upstream:* item has waited blocked on the system board
+  for (const e of ev.records) hopSeen(e) // the heads, artifacts and dependencies already there: no progress later (sy-ydoe)
   for (const i of open) seen.set(i.id, { assignee: i.assignee || '', status: i.status })
   for (const i of open) if (i.status !== 'closed' && (i.labels || []).includes(PAUSED)) { paused.add(i.id); pauseOn.add(i.id) } // paused before this start
   for (const i of open) {
@@ -548,7 +597,7 @@ async function tick1() {
       await span('wake lead', { role, agent: a.id, items: items.join(' '), via: P_.via() }, () => P_.send(a.id, msg))
       count('mm_wake_sent_total', { role })
       delete sendFails[role]
-      for (const [id, r] of batch) if (r.byLead) hops.set(id, (hops.get(id) || 0) + 1) // a lead-to-lead wake, sent
+      for (const [id, r] of batch) if (r.byLead) hopSent(id) // a lead-to-lead wake, sent (hop 1 again after progress)
       for (const id of items) (handed[role] ||= new Map()).set(id, Date.now()) // told: the reconcile does not hand it again
       // For the board's "who is working on what": the items this lead was just woken for.
       editState((st) => { st[role] = { items, at: new Date().toISOString(), agent: a.id } })

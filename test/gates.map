@@ -105,6 +105,7 @@ suite test/wake-person-runs.mjs   hermetic
 suite test/wake-reconcile.mjs     hermetic
 suite test/wake-resume.mjs        hermetic
 suite test/wake-signals.mjs       hermetic
+suite test/wake-hops.mjs          hermetic
 # landed after the map was written (sy-ko6r, sy-lusk, sy-0omb, sy-nu5r, sy-x7kh)
 suite test/glossary.mjs           hermetic
 suite test/writing.mjs            hermetic
