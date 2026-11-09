@@ -11,9 +11,10 @@
 # It refuses, among the rest: --privileged; a mount of a host path outside the project's own folders (after realpath,
 # so `..` and symlinks lead nowhere else); --pid/--ipc/--uts/--userns, --network host; root in a container and any
 # --cap-add (root_containers = no, the default: every container mm runs is its own uid, 100000 and up, with no
-# capabilities); --device, --mount, --volumes-from; --security-opt other than no-new-privileges (always added); global options
-# (-H, --context, --config) and DOCKER_HOST (docker gets a clean environment); exec into a container that is not mm's
-# (its name and its mm.project label, then exec by its id); a build whose context is not a folder of the caller's own
+# capabilities); --device, --mount, --volumes-from; any --sysctl but one, net.ipv4.ip_local_reserved_ports as one range
+# inside mm's ports (38000-38999: a port-0 listener in a box never takes one of them); --security-opt other than
+# no-new-privileges (always added); global options (-H, --context, --config) and DOCKER_HOST (docker gets a clean
+# environment); exec into a container that is not mm's (its name and its mm.project label, then exec by its id); a build whose context is not a folder of the caller's own
 # files (copied, as checked, into a private folder first), or whose tag is not mm's; a cp with a container that has
 # mounts, or with a host path outside its project (the host side read and written as the owner, never as root).
 #
@@ -343,9 +344,12 @@ RUN = {
     '--tmpfs': (None, True), '--cap-drop': (None, True), '--cap-add': (None, True), '--security-opt': (None, True),
     '--pids-limit': (None, True), '--memory': ('m', True), '--cpus': (None, True), '--env': ('e', True),
     '--env-file': (None, True), '--group-add': (None, True), '--volume': ('v', True), '--workdir': ('w', True),
-    '--entrypoint': (None, True),
+    '--entrypoint': (None, True), '--sysctl': (None, True),
 }
 EGRESS_CAPS = {'SETUID', 'SETGID'}
+# mm's own ports (src/project.ts MM_PORTS): a box may keep them out of its kernel's random ports (sy-gld3), nothing else
+MM_PORTS = (38000, 38999)
+SYSCTL = 'net.ipv4.ip_local_reserved_ports'
 CHOWN_CAPS = {'CHOWN', 'FOWNER', 'DAC_OVERRIDE'}
 
 
@@ -419,6 +423,16 @@ def check_run(args, c, sub='run'):
     for e in every(opts, '--env'):
         if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}=[^\0]*', e, re.S):
             refuse(f'--env {show(e)}: only NAME=value')
+    # sysctls: only the one that keeps mm's ports out of the box's random ports (a box has its own network namespace,
+    # so it is the box's); one range inside mm's
+    sysctl = one(opts, '--sysctl')
+    if sysctl is not None:
+        k, _, v = sysctl.partition('=')
+        if k != SYSCTL:
+            refuse(f'--sysctl {show(sysctl)}: only {SYSCTL}=<a-b> (mm\'s ports)')
+        m = re.fullmatch(r'(\d{5})-(\d{5})', v)
+        if not m or not (MM_PORTS[0] <= int(m.group(1)) <= int(m.group(2)) <= MM_PORTS[1]):
+            refuse(f'--sysctl {show(sysctl)}: only one range a-b inside {MM_PORTS[0]}-{MM_PORTS[1]}')
     entry = one(opts, '--entrypoint')
     if entry is not None and entry not in ('sh', 'chown'):
         refuse(f'--entrypoint {show(entry)}: only sh (Doop) or chown (mm\'s helper)')

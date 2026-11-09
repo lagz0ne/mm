@@ -131,6 +131,7 @@ mm up >"$T/up.json" 2>&1
 runline() { grep '^run -d --name mm-box-acme-shop ' "$T/docker.log" | tail -1; }
 export -f runline
 check "the box gets $H/doop-sock at /run/mm/doop, read-only" sh -c "runline | grep -q -- '-v $H/doop-sock:/run/mm/doop:ro'"
+check "the box keeps mm's ports (38000-38999) out of its kernel's random ports (sy-gld3)" sh -c "runline | grep -q -- '--sysctl net.ipv4.ip_local_reserved_ports=38000-38999 '"
 check "...and no other folder of the box's Doop (not doop/, not its data)" sh -c "! runline | grep -qE -- '$DH(:|/)'"
 check "...its key is in the box's secrets folder only by doop-run's copy (none yet)" sh -c "! [ -e '$T/run-secrets/acme-shop/doop-agent-key' ]"
 touch "$T/run-secrets/acme-shop/doop-agent-key"; sed -i 's/^services_on: \[doop\]$/services_on: []/' "$R/.mm-answers.yaml"
