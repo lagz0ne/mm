@@ -105,6 +105,7 @@ step('site/waiting.mjs (the gateway\'s "Waiting for you" list, sy-vdi8)')
   const lng = youLine(CARD.replace('Reply: ok, or say which line to change.', `Reply: ${'w'.repeat(200)}`)), bad = youLine(CARD.replace('**You:** Reply: ok, or say which line to change.', '**You:** \u202e'))
   ok(`...cut to ${YOU_MAX} characters (an invalid card's You still shows: its own detail says invalid); none for no card, an empty one`, Array.from(lng).length === YOU_MAX && lng.endsWith('…') && youLine('no card') === null && bad === null)
   // sy-92sg: with ?card=1 the owner's entries carry the card's fields, plain text, each cut to the card's limit
+  const GO_TASK = '## Task\n- **Task:** Rotate the key.\n- **Act:** t2-change\n- **Done when:** the new key works.\n- **Verify:** the check → ok\n- **Rollback:** put the old key back.\n- **Safeguard:** none, no access change\n\nThread.'
   const T2CARD = `## Owner\n- **What:** Rotate <b>the</b> key\u202e now.\n- **Why:** ${'w'.repeat(130)}\n- **You:** Tap Approve\n- **If yes:** it runs\n- **If no:** it waits\n- **Risk:** low, a minute\n- **Link:** https://evil.example/\n\nThread.`
   const c = waitingFor({ items: [...W, it('pb-29', 'ops', 'open', 50, { labels: ['t2', 'signed-off'], title: 'carded', description: T2CARD })], me: 'boss', owner: true, now: NOW, cards: true })
   const cc = c.items.find((x) => x.id === 'pb-29').card
@@ -114,7 +115,10 @@ step('site/waiting.mjs (the gateway\'s "Waiting for you" list, sy-vdi8)')
   ok('...without ?card=1 no card key (an older gateway drops an entry with a key it doesn\'t know); never for a member', !o.items.some((x) => 'card' in x)
     && !waitingFor({ items: W, me: 'alex', owner: false, now: NOW, cards: true }).items.some((x) => 'card' in x))
   // sy-hzmu: with ?card=1&head=1 the card also carries its Head, and an entry whose head review did not sign off its reason
-  const HCARD = (h) => T2CARD.replace('- **Link:**', `- **Head:** ${h}\n- **Link:**`)
+  const HCARD = (h) => T2CARD.replace('- **Link:**', `- **Head:** ${h}\n- **Link:**`).replace('\n\nThread.', `\n\n${GO_TASK}`)
+  // sy-w5az: the signed head with no Rollback or Safeguard in the Task: refused, the Task's reason
+  const nt = waitingFor({ items: [it('pb-33', 'ops', 'open', 40, { labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], title: 'no task', description: HCARD('mm@0a1b2c3').replace(/## Task[\s\S]*$/, 'Thread.') })], me: 'boss', owner: true, now: NOW, cards: 2 })
+  ok('...the signed head, no Rollback or Safeguard in the Task: refused, the reason names both (sy-w5az)', /^the item's Task has no Rollback and no Safeguard line/.test(nt.items[0]?.refused || ''), JSON.stringify(nt))
   const hi = [it('pb-30', 'ops', 'open', 40, { labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], title: 'moved', description: HCARD('mm@9f8e7d6') }),
     it('pb-31', 'ops', 'open', 40, { labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], title: 'signed', description: HCARD('mm@0a1b2c3') }),
     it('pb-32', 'ops', 'open', 40, { labels: ['t2', 'signed-off'], title: 'bad head', description: HCARD('mm@main') })]

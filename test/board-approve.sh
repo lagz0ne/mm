@@ -67,7 +67,9 @@ import http from 'node:http'; import fs from 'node:fs'
 const [port, logf] = process.argv.slice(2)
 // a t2 card names its head (required with t2 since review sy-hzmu #3); signed-off t2 items carry review's signed-head
 const HEAD = 'mm@0a1b2c3', SH = `signed-head:${HEAD}`
-const card = (you, head = HEAD) => `## Owner\n- **What:** Rotate the key for <script>alert(1)</script> the shop.\n- **Why:** The old one leaked in a log.\n- **You:** ${you}\n- **If yes:** Ops rotates it tonight.\n- **If no:** The old key stays.\n- **Risk:** medium, a minute without sign-in${head ? `\n- **Head:** ${head}` : ''}\n\nThe thread.`
+// sy-w5az: the item's Task has a Rollback and a Safeguard (a t2 go needs both); card(you, head, '') has no Task
+const TASK = '## Task\n- **Task:** Rotate the key.\n- **Act:** t2-change\n- **Done when:** sign-in works with the new key.\n- **Verify:** a sign-in → ok\n- **Rollback:** put the old key back.\n- **Safeguard:** a second session stays open.\n\n'
+const card = (you, head = HEAD, task = TASK) => `## Owner\n- **What:** Rotate the key for <script>alert(1)</script> the shop.\n- **Why:** The old one leaked in a log.\n- **You:** ${you}\n- **If yes:** Ops rotates it tonight.\n- **If no:** The old key stays.\n- **Risk:** medium, a minute without sign-in${head ? `\n- **Head:** ${head}` : ''}\n\n${task}The thread.`
 const at = '2026-11-07T10:00:00Z'
 const I = (id, labels, f = {}) => ({ id, title: `title ${id}`, status: 'open', priority: 2, assignee: 'ops', labels, updated_at: at, ...f })
 const items = [
@@ -92,6 +94,9 @@ const items = [
   I('ap-23', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve', 'mm@9f8e7d6') }),
   I('ap-24', ['t2', 'signed-off', 'needs-you', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve') }),
   I('ap-25', ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], { description: card('Tap Approve') }),
+  // sy-w5az: the signed head, but the Task has no Rollback / no Safeguard
+  I('ap-26', ['t2', 'signed-off', 'needs-you', SH], { description: card('Tap Approve', HEAD, '') }),
+  I('ap-27', ['t2', 'signed-off', SH], { description: card('Tap Approve', HEAD, TASK.replace(/- \*\*Safeguard:\*\*.*\n/, '')) }),
   // sy-t9tg: t2 cards that ask something other than the go (no Head needed; never an Approve)
   I('ap-30', ['t2', 'signed-off', 'needs-you', SH], { description: card('Check: run ssh admin@host, then sudo -v, and say if it worked') }),
   I('ap-31', ['t2', 'needs-you'], { description: card('Reply: which account do we use?', '') }),
@@ -200,6 +205,10 @@ MOVED="the head changed since review's sign-off (card: mm@9f8e7d6, signed: mm@0a
 check "Approve, the card's head moved after the sign-off: 403, the reason" eval '[ "$(act approve "$OA" "{\"item\":\"ap-20\"}")" = 403 ] && says "$MOVED" && [ "$(writes ap-20)" = 0 ] && ! has ap-20 approved'
 check "Not now, the same: 403, the reason, nothing written" eval '[ "$(act not-now "$OA" "{\"item\":\"ap-20\"}")" = 403 ] && says "$MOVED" && [ "$(writes ap-20)" = 0 ]'
 check "Approve, signed off with no signed-head: 403, \"review's sign-off names no head (card: mm@0a1b2c3)\"" eval '[ "$(act approve "$OA" "{\"item\":\"ap-22\"}")" = 403 ] && says "review'"'"'s sign-off names no head (card: mm@0a1b2c3)" && [ "$(writes ap-22)" = 0 ]'
+NOTASK="the item's Task has no Rollback and no Safeguard line: a t2 go needs both"
+check "Approve, the signed head but no Rollback or Safeguard in the Task (sy-w5az): 403, the reason, nothing written" eval '[ "$(act approve "$OA" "{\"item\":\"ap-26\"}")" = 403 ] && says "$NOTASK" && [ "$(writes ap-26)" = 0 ] && ! has ap-26 approved'
+check "...no Safeguard only: 403, the reason names it" eval '[ "$(act approve "$OA" "{\"item\":\"ap-27\"}")" = 403 ] && says "the item'"'"'s Task has no Safeguard line" && [ "$(writes ap-27)" = 0 ]'
+check "...Not now, the same: 403, nothing written" eval '[ "$(act not-now "$OA" "{\"item\":\"ap-26\"}")" = 403 ] && says "$NOTASK" && [ "$(writes ap-26)" = 0 ]'
 # the label rail: the owner adds approved through the board's API (the public side)
 lab() { curl -s -o "$T/ab" -w '%{http_code}' -X PATCH -H 'content-type: application/json' -H "x-forwarded-host: $BOARD" -H "x-mm-assertion: $1" \
   -H "origin: https://$BOARD" -H 'sec-fetch-site: same-origin' -d "{\"patch\":{\"add_labels\":[\"$3\"]}}" "http://127.0.0.1:$BP/api/v0/beads/issues/$2"; }
@@ -255,6 +264,8 @@ check "\"Nothing…\", or no card: the link only (no form)" eval '! row ap-13 | 
 check "a card that names its head: \"Head\" on the row (sy-hzmu)" eval 'row ap-20 | grep -qF "<dt>Head</dt><dd>mm@9f8e7d6</dd>"'
 check "...a moved head: the board's reason instead of Approve and Not now" eval 'row ap-20 | grep -qF "<p class=\"w-refused\" role=\"note\">No go yet: the head changed since review&#39;s sign-off (card: mm@9f8e7d6, signed: mm@0a1b2c3).</p>" && ! row ap-20 | grep -q "value=\"approve\""' 
 check "...no signed-head: the reason too" eval 'row ap-22 | grep -qF "No go yet: review&#39;s sign-off names no head (card: mm@0a1b2c3)." && ! row ap-22 | grep -q "value=\"approve\""'
+check "...the signed head, no Rollback or Safeguard (sy-w5az): the board's reason instead of Approve and Not now" eval 'row ap-26 | grep -qF "No go yet: the item&#39;s Task has no Rollback and no Safeguard line: a t2 go needs both" && ! row ap-26 | grep -q -e "value=\"approve\"" -e "value=\"not-now\""'
+check "...no Safeguard only: the reason names it" eval 'row ap-27 | grep -qF "No go yet: the item&#39;s Task has no Safeguard line" && ! row ap-27 | grep -q "value=\"approve\""'
 check "...the signed head: Head and Approve, no reason" eval 'row ap-25 | grep -qF "<dt>Head</dt><dd>mm@0a1b2c3</dd>" && row ap-25 | grep -q "value=\"approve\"" && ! row ap-25 | grep -q "w-refused"'
 check "a signed-off t2 Reply: ask (sy-t9tg): \"needs you\", the reply box, no Approve, no Not now, no refusal note" eval 'row ap-32 | grep -q "needs you" && ! row ap-32 | grep -q "approve (t2" && row ap-32 | grep -q "<textarea id=\"r-acme-shop-ap-32\"" && ! row ap-32 | grep -q -e "value=\"approve\"" -e "value=\"not-now\"" -e "w-refused"'
 check "...a signed-off t2 Check: ask: Done, no Approve" eval 'row ap-33 | grep -qF "<input type=\"hidden\" name=\"a\" value=\"done\"><button type=\"submit\">Done</button>" && ! row ap-33 | grep -q -e "value=\"approve\"" -e "approve (t2"'
@@ -269,6 +280,7 @@ check "...the board checked it as a browser's: the gateway sent a fresh owner as
 check "...and twice: the board's \"already approved\" on the page (409)" eval '[ "$(post "$SB" "${same[@]}" -d "a=approve&b=acme-shop&i=ap-10")" = 409 ] && msg | grep -q "already approved"'
 check "...approved, it no longer waits for the owner: needs-you is gone and so is its row" eval 'home "$SB"; ! has ap-10 needs-you && [ -z "$(row ap-10)" ]'
 fi
+check "Approve through the gateway, no Rollback or Safeguard in the Task (sy-w5az): the board's refusal on the page, nothing written" eval 'n=$(writes ap-26); [ "$(post "$SB" "${same[@]}" -d "a=approve&b=acme-shop&i=ap-26")" = 403 ] && msg | grep -qF "acme-shop ap-26: Not allowed: the item&#39;s Task has no Rollback and no Safeguard line" && [ "$(writes ap-26)" = "$n" ] && ! has ap-26 approved'
 check "Not now through the gateway: a comment, needs-you removed" eval '[ "$(post "$SB" "${same[@]}" -d "a=not-now&b=acme-shop&i=ap-16")" = 200 ] && lastw ap-16/comments POST | jq -e ".b.text == \"[owner] Not now, said boss on the board.\"" && ! has ap-16 needs-you'
 check "Reply through the gateway: a comment as the owner, the text as typed (line breaks kept)" eval '[ "$(post "$SB" "${same[@]}" --data-urlencode "a=reply" --data-urlencode "b=acme-shop" --data-urlencode "i=ap-11" --data-urlencode "t=Use acme.
 Thanks.")" = 200 ] && lastw ap-11/comments POST | jq -e ".b.text == \"[owner] Use acme.\nThanks.\" and .b.author == \"boss\"" && has ap-11 needs-you'

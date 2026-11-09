@@ -12,6 +12,8 @@
 //                                  non-go ask (Reply:/Check:/Nothing, sy-t9tg) does not; adding t2 to an item that has
 //                                  needs-you is checked the same way. When the card names a Head (sy-hzmu), review's
 //                                  sign-off must name that head too (label signed-head:<repo>@<sha>; headRefusal).
+//                                  A t2 go ask's Task also has a Rollback and a Safeguard line (sy-w5az; task.mjs
+//                                  goTaskRefusal); a non-go ask needs neither.
 //                                  Removing needs-you, or any other call: exit 0.
 //   owner-card signoff -- <bd args> bin/bd runs it when its actor is not review and its arguments name signed-off or
 //                                  signed-head: (or set labels): refuses (exit 1) a call that adds or removes one
@@ -26,6 +28,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readGlossary } from './lib/glossary.mjs'
 import { FORMAT, SIGNED_HEAD, headRefusal, isGoAsk, parseCard } from './lib/owner-card.mjs'
+import { goTaskRefusal } from './lib/task.mjs'
 import { sayWriting } from './lib/writing.mjs'
 
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -146,7 +149,10 @@ function gate(argv) {
     // before review's sign-off and before any head exists; it never gets the go (headRefusal refuses it there)
     if (labels.includes(T2) && !isGoAsk(r.card)) return
     if (labels.includes(T2) && !labels.includes(SIGNED)) refuse([who], `a t2 item waits on the owner only after review signed it off (label ${SIGNED}): plan -> review's sign-off -> ${LABEL}. Ask review first; add ${LABEL} after.`)
+    // sy-w5az: a t2 go ask's Task has a Rollback and a Safeguard (headRefusal's last check: here with its own fix)
+    const t = labels.includes(T2) ? goTaskRefusal(description) : null
     const h = headRefusal(description, labels)
+    if (t && h === t) refuse([who], `${t}. Write both lines in the item's Task (bd update <id> --body-file <file>); add ${LABEL} after.`)
     if (h) refuse([who], `${h}: review signs off the head the card names (label signed-head:<repo>@<sha>, next to ${SIGNED}). Ask review to sign off this head; add ${LABEL} after.`)
   }
   if (creating) { check('the new item', desc ?? '', adding); process.exit(0) }
