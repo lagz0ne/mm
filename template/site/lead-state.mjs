@@ -10,7 +10,7 @@
 /**
  * @param role     the role id
  * @param agent    its Paseo agent ({ status }) or null
- * @param wake     its entry in .wake-state.json ({ items, at, startError }) or undefined
+ * @param wake     its entry in wake's state, .run/wake-state.json ({ items, at, startError }) or undefined
  * @param items    the board's items (any status; only this role's open ones count)
  * @param lastAct  { item, at } the role's latest board action, or undefined
  */

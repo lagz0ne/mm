@@ -143,6 +143,7 @@ suite test/structured.sh          hermetic
 suite test/wake-stale-lead.mjs    hermetic
 suite test/wake-stall.mjs         hermetic
 suite test/wake-start.mjs         hermetic
+suite test/wake-state.mjs         hermetic
 suite test/wake-twoleads.mjs      hermetic
 suite test/wake-workers.mjs       hermetic
 
