@@ -202,6 +202,24 @@ check "...approved: the owner is told how to fill it in their own terminal; mm n
 check "...with no vault on this machine, it can't be filled into the project's folder (the box's to read)" bash -c "! printf x | mm fill acme-shop:stripe-key && ! test -e '$HOME/projects/acme/shop/secrets/stripe-key'"
 check "...asked again: done" bash -c "call '$S1' secret '{\"name\":\"stripe-key\"}' | jq -e '.status == \"done\"'"
 
+echo "== the items pass the system board's gates (sy-jycr): an owner card for needs-you, then a Task"
+# the description of the first item filed for a call (bd create's -d), checked by the template's own checks: the card
+# by bin/owner-card check -, the Task by task.mjs with the activities of the system board's RACI
+cat >"$T/taskcheck.mjs" <<'EOF'
+import fs from 'node:fs'
+const [lib, raci] = process.argv.slice(2), { parseTask } = await import(lib)
+const acts = JSON.parse(fs.readFileSync(raci, 'utf8')).activities.map((a) => a.id)
+const r = parseTask(fs.readFileSync(0, 'utf8'), { acts }); if (!r.ok) console.error(r.errors.join('\n')); process.exit(r.ok ? 0 : 1)
+EOF
+for c in route release secret; do
+  grep '"create"' "$T/bd.jsonl" | jq -c --arg c "$c" 'select(.[1] | test("asks for " + $c + " ")) | .[3]' | head -1 | jq -r . >"$T/desc-$c"
+  check "$c: the item's description has a valid owner card (bin/owner-card check -), no t2 go ask" bash -c "node '$SRC/template/bin/owner-card' check - <'$T/desc-$c' && head -5 '$T/desc-$c' | grep -q '^- \\*\\*You:\\*\\* Tap Approve: the Allow button' && ! grep -q '^- \\*\\*\\(If yes\\|If no\\|Risk\\|Head\\):' '$T/desc-$c'"
+  check "...then a valid Task (task.mjs; Act t2-change, an activity of the system board's RACI)" bash -c "node '$T/taskcheck.mjs' '$SRC/template/bin/lib/task.mjs' '$SRC/template/profiles/system/leads/raci.json' <'$T/desc-$c' && grep -qx -- '- \\*\\*Act:\\*\\* t2-change' '$T/desc-$c'"
+  check "...then the text as before (the request's line, the box's value in mm's frame)" bash -c "grep -q '^A request from the box of project \\*\\*acme-shop\\*\\*' '$T/desc-$c' && grep -q '^\\*\\*From the box\\*\\*' '$T/desc-$c'"
+done
+grep '"create"' "$T/bd.jsonl" | jq -c 'select(.[1] | test("asks for egress api.stripe.com")) | .[3]' | head -1 | jq -r . >"$T/desc-egress"
+check "egress (t2, review's, no needs-you): unchanged, no owner card and no Task" bash -c "head -1 '$T/desc-egress' | grep -q '^A request from the box of project' && ! grep -q '^## \\(Owner\\|Task\\)' '$T/desc-egress'"
+
 echo '== deny'
 OUT=$(call "$S2" egress '{"site":"evil.example.com"}'); RD=$(echo "$OUT" | jq -r .id)
 check "mm api deny: refused; the box sees refused; the item closed" bash -c "mm api deny $RD --why 'not needed' && [ \"\$(st $RD)\" = refused ] && call '$S2' egress '{\"site\":\"evil.example.com\"}' | jq -e '.status == \"refused\"'"

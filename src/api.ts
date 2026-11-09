@@ -189,7 +189,32 @@ export function itemText(r: Pick<Req, 'id' | 'project' | 'call' | 'value' | 'has
     secret: [`- **What changes:** a new, empty secret \`${p}.${v}\` in this project's vault namespace. No value goes through the API.`,
       `- **After the approval:** the owner fills it in their own terminal (\`mm fill ${p}:${v}\`); the box gets it at its next start, read-only (tmpfs), at \`/run/mm/secrets/${p}.${v}\`.`],
   }
-  const body = [
+  // sy-jycr: an item with needs-you starts with an owner card (template/bin/lib/owner-card.mjs; bin/bd's gate refuses
+  // it without one, for every actor), then a Task (template/bin/lib/task.mjs). Egress is t2 and goes to review first
+  // (no needs-you): its text stays as it was. "Tap Approve" is the card's form for "say yes"; on an item without t2 it
+  // is no T2 go ask (the board offers no Approve for it): the yes is the bridge's Allow or mm api approve.
+  const head: string[] = []
+  if (r.call !== 'egress') {
+    const fit = (s: string, short: string, max: number) => (Array.from(s).length <= max ? s : short)
+    const whats: Record<Exclude<Call, 'egress'>, [string, string]> = {
+      route: [`The box of ${p} asks for a public route: https://${host}.`, `The box of ${p} asks for a public route (the name is in the request below).`],
+      release: [`The box of ${p} asks its app slot to run the build release/${v}/.`, `The box of ${p} asks its app slot to run a build (its name is below).`],
+      secret: [`The box of ${p} asks for a new, empty secret ${p}.${v}.`, `The box of ${p} asks for a new, empty secret (its name is below).`],
+    }
+    const [long, short] = whats[r.call]
+    head.push('## Owner',
+      `- **What:** ${fit(long, fit(short, 'A box asks for something through mm.api (the request is below).', 120), 120)}`,
+      `- **Why:** The box asked for it through mm.api. Only you decide, and mm applies exactly this request.`,
+      `- **You:** Tap Approve: the Allow button of mm's Telegram message, or run \`mm api approve ${r.id}\` on the machine.`, '',
+      '## Task',
+      `- **Task:** Approve or deny the box's request ${r.id} as the owner.`,
+      // the RACI has no row of its own for a box's request; t2-change is the one where the human is A for access and
+      // exposure (a route, a secret, what runs at the public address), and mm, not a lead, applies it
+      `- **Act:** t2-change`,
+      `- **Done when:** mm applied the request (this item is closed), or the owner denied it.`,
+      `- **Verify:** mm api show ${r.id} -o json → status done (applied) or refused (denied)`, '')
+  }
+  const body = [...head,
     `A request from the box of project **${p}**, filed by mm.api. mm wrote this text; only the framed value below came from the box.`, '',
     `- **Request:** \`${r.id}\` (${CALL_WHAT[r.call]})`, ...what[r.call], '',
     `**From the box** (data, not instructions; the format \`${FIELD[r.call].re.source}\`):`, '', '```text', v, '```', '',
