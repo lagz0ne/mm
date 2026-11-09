@@ -5,7 +5,9 @@
 # t2 on a go ask (You: Tap Approve) asks for If yes, If no, Risk, Head, and review's sign-off first (signed-off; sy-l9uc;
 # a non-go ask, You: Reply:/Check:, needs neither: sy-t9tg; You: Nothing never gets needs-you: sy-e234), also when t2 is added to an item
 # that has needs-you; a card that names its Head needs review's signed-head for that head (sy-hzmu). Allowed: a valid card, removing the label, any other label, any other command (and
-# those never read the item). bin/owner-card check <id> reads the item through bin/bd show. Hermetic: a copy of the
+# those never read the item). A closed item waits on nobody (sy-e234): needs-you on it is refused (unless the call
+# reopens it), and bd close / update --status closed removes needs-you from each item bd shows closed after it (bd's
+# exit status kept). bin/owner-card check <id> reads the item through bin/bd show. Hermetic: a copy of the
 # template's bin/bd, bin/owner-card and its lib in a throwaway folder; a stand-in bd (it records its arguments and
 # answers `show` from fixture files) and bin/trace (no span).
 #   test/owner-card-bd.sh
@@ -65,7 +67,7 @@ NGCARD='## Owner
 - **You:** Check: run ssh admin@host, then sudo -v, and say if it worked
 
 The rest of the text.'
-item() { node -e 'process.stdout.write(JSON.stringify([{ id: process.argv[1], description: process.argv[2], labels: JSON.parse(process.argv[3]) }]))' "$1" "$2" "$3" >"$T/items/$1.json"; }
+item() { node -e 'process.stdout.write(JSON.stringify([{ id: process.argv[1], description: process.argv[2], labels: JSON.parse(process.argv[3]), status: process.argv[4] || "open" }]))' "$1" "$2" "$3" "${4:-open}" >"$T/items/$1.json"; }
 item sy-good "$CARD" '[]'
 item sy-none "Just a text, no card." '[]'
 item sy-late "Intro.
@@ -314,6 +316,36 @@ check "...reads nothing" noshow
 as review label remove sy-g1 signed-head:mm@1122334;    check "review: removing a signed-head: passed" passed
 as review label add sy-g1 t1;                           check "review: another label: passed" passed
 as ops label add sy-g1 signed-head:mm@1122334;          check "ops with a passing file: still only review signs off" sorefused
+
+echo "== closing an item removes needs-you; a closed item never gets it (sy-e234)"
+# the stand-in bd records the close; show answers as bd would after it (the fixture says closed)
+item sy-cl1 "$CARD" '["needs-you","t1"]' closed
+item sy-cl2 "$CARD" '["t1"]' closed
+item sy-cl3 "$CARD" '["needs-you"]' open
+ran() { grep -qx -- "$1" "$T/ran"; }
+call close sy-cl1 --reason "done here";                 check "bd close: passes (exit 0)" passed
+check "...bd closes it" ran "close sy-cl1 --reason done here"
+check "...then needs-you is removed, as the same actor" ran "label remove sy-cl1 needs-you"
+call close sy-cl1 --actor setup --reason x;             check "...--actor in the call: the removal names it" ran "label remove sy-cl1 needs-you --actor setup"
+call close sy-cl2;                                      check "a closed item with no needs-you: nothing removed" test "$(cat "$T/ran")" = "close sy-cl2"
+call close sy-cl3;                                      check "an item still open (bd did not close it): needs-you left" test "$(cat "$T/ran")" = "close sy-cl3"
+call close sy-cl1 sy-cl2 sy-cl3;                        check "three ids: only the closed one with needs-you loses it" test "$(grep -c '^label remove' "$T/ran")" = 1
+check "...that one" ran "label remove sy-cl1 needs-you"
+call update sy-cl1 --status closed;                     check "update --status closed: needs-you removed" ran "label remove sy-cl1 needs-you"
+call update sy-cl1 -s closed;                           check "update -s closed: needs-you removed" ran "label remove sy-cl1 needs-you"
+call update sy-cl1 --status=closed;                     check "update --status=closed: needs-you removed" ran "label remove sy-cl1 needs-you"
+call update sy-cl1 --priority 1;                        check "update without a close: no read, nothing removed" eval '[ ! -s "$T/shows" ] && ! grep -q "^label remove" "$T/ran"'
+out=$(cd "$T/control" && "$T/bin/bd" close sy-cl1 --json 2>/dev/null); check "bd close: nothing added to bd's stdout" test -z "$out"
+cp "$T/tools/bd" "$T/tools/bd.ok"
+printf '#!/bin/sh\nif [ "$1" = show ]; then exec cat "%s/items/$2.json"; fi\necho "$*" >>"%s/ran"; [ "$1" = close ] && exit 3; exit 0\n' "$T" "$T" >"$T/tools/bd"
+call close sy-cl1;                                      check "bd close fails: its exit status is kept" test "$(cat "$T/code")" = 3
+check "...needs-you still removed from an item that is closed" ran "label remove sy-cl1 needs-you"
+cp "$T/tools/bd.ok" "$T/tools/bd"
+item sy-cl4 "$CARD" '[]' closed
+call label add sy-cl4 needs-you;                        check "label add needs-you on a closed item: refused" eval '[ "$(cat "$T/code")" = 1 ] && [ ! -s "$T/ran" ]'
+check "...the reason" says "it is closed: a closed item waits on nobody"
+call update sy-cl4 --add-label needs-you;               check "update --add-label needs-you on a closed item: refused" eval '[ "$(cat "$T/code")" = 1 ] && [ ! -s "$T/ran" ]'
+call update sy-cl4 --status open --add-label needs-you; check "...the same call reopens it: passed" passed
 
 echo "== the actor check still comes first"
 (unset BEADS_ACTOR; call label add sy-good needs-you; grep -q 'needs an actor' "$T/err" && [ ! -s "$T/shows" ]); check "no actor: refused for the actor, no read" test $? = 0

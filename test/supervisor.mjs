@@ -652,6 +652,8 @@ step('run 9o (+520..535 min): a needs-you item with no valid owner card: a findi
   item('sy-42', { title: 't2, a card without its t2 keys', assignee: 'ops', labels: ['needs-you', 't2'], description: CARD.replace('**You:** Check: the card on the board', '**You:** Tap Approve') }, 'ops') // a go ask (sy-t9tg)
   item('sy-43', { title: 'no card, no needs-you', assignee: 'ops', description: 'Text.' }, 'ops')
   item('sy-44', { title: 'needs-you on a card that asks nothing', assignee: 'review', labels: ['needs-you'], description: CARD.replace('**You:** Check: the card on the board', '**You:** Nothing') }, 'review')
+  // old data (sy-e234): closed before closing removed needs-you; a closed item waits on nobody, so no finding
+  item('sy-90', { title: 'closed, still labelled, no card', status: 'closed', assignee: 'ops', labels: ['needs-you'], description: 'Done.' }, 'ops')
   clock = T0 + 520 * MIN
   ok('exit 0', (await supervise()) === 0)
   const C = openOf('card:sy-40'), C2 = openOf('card:sy-42'), C4 = openOf('card:sy-44')
@@ -659,6 +661,7 @@ step('run 9o (+520..535 min): a needs-you item with no valid owner card: a findi
   ok('card:sy-40 opened to the item\'s role (platform), P2, with the reason', C && C.assignee === 'platform' && C.priority === 2 && /Owner card missing: sy-40/.test(C.title) && /does not start with "## Owner"/.test(C.description))
   ok('card:sy-42 (t2) opened to ops, naming the t2 keys', C2 && C2.assignee === 'ops' && /Owner card invalid/.test(C2.title) && /If yes is missing \(required with t2\)/.test(C2.description))
   ok('none for sy-41 (a valid card) or sy-43 (no needs-you)', !openOf('card:sy-41') && !openOf('card:sy-43'))
+  ok('none for sy-90: closed, its needs-you (old data) is not counted (sy-e234)', !byKey('card:sy-90').length)
   clock = T0 + 525 * MIN
   ok('exit 0', (await supervise()) === 0)
   ok('nothing changed: no duplicate, no comment', byKey('card:sy-40').length === 1 && openOf('card:sy-40').comments.length === 0)

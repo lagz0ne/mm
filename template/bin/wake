@@ -735,6 +735,7 @@ function labelQ(args, what, skip = () => false) {
 //   - a card whose You is "Nothing" (it asks the owner nothing, sy-e234): no label;
 //   - a card someone wrote that the gate would refuse (invalid, or a t2 go ask without review's sign-off of its head):
 //     never written over; the item goes to the board's Lead (a reason for it, and the comment), no label.
+//   - a closed item: nothing (it waits on nobody, sy-e234).
 // Resolves to { ok, how: 'label' | 'card' | 'already' | 'lead' } or bdStep's failure; `skip()` as in labelQ.
 const fit = (s, n) => { const a = Array.from(oneLine(s, 4 * n).trim()); return a.length > n ? `${a.slice(0, n - 1).join('')}…` : a.join('') }
 const cardText = (c) => ['## Owner', ...['What', 'Why', 'You'].map((k) => `- **${k}:** ${fit(c[k], CARD_KEYS[k])}`)].join('\n')
@@ -745,6 +746,8 @@ function askOwner(id, card, comment = '', skip = () => false) {
     if (!i?.id) { log(`${id}: could not read it to ask the owner (left as it is)`); return { ok: false } }
     const labels = Array.isArray(i.labels) ? i.labels : [], desc = typeof i.description === 'string' ? i.description : ''
     if (labels.includes('needs-you')) return { ok: true, how: 'already' }
+    // a closed item waits on nobody (sy-e234; bin/bd removes needs-you when an item closes, and refuses adding it)
+    if (i.status === 'closed') { log(`${id}: closed: the owner is not asked`); return { ok: false, how: 'closed' } }
     const r = parseCard(desc, labels, id)
     const goBlocked = r.ok && labels.includes('t2') && isGoAsk(r.card) && (!labels.includes('signed-off') || !!headRefusal(desc, labels))
     if (r.found && (!r.ok || goBlocked)) {
