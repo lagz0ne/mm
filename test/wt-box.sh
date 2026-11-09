@@ -27,7 +27,7 @@ wt() { local b=$1; shift; MM_TRACE_SELF="$P/bin/$b" "$P/bin/$b" "$@"; }
 # what the settings say: sandbox on? failIfUnavailable? the four denies?
 read_s() { node -e '
   const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")), d = s.permissions?.deny || [], w = process.argv[2]
-  const want = [`Edit(/${w}/.claude/**)`, `Write(/${w}/.claude/**)`, "Bash(git push*)", "Bash(*SANDBOX*)"]
+  const want = [`Edit(/${w}/.claude/**)`, `Write(/${w}/.claude/**)`, "Bash(git push*)", "Bash(*SANDBOX*)", "mcp__paseo"]
   console.log([s.sandbox ? `sandbox ${s.sandbox.enabled} ${s.sandbox.failIfUnavailable} ${s.sandbox.allowUnsandboxedCommands}` : "no-sandbox",
     want.every((x) => d.includes(x)) ? "denies" : "denies-missing:" + JSON.stringify(d)].join(" "))' "$1/.claude/settings.local.json" "$1" 2>&1; }
 is() { local d=$1 want=$2 got=$3; [ "$got" = "$want" ] && ok "$d" || bad "$d: want '$want', got '$got'"; }
