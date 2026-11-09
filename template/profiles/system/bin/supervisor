@@ -678,7 +678,9 @@ function headless(i, s) {
   const labels = [...new Set([...(i.labels || []), 't2'])]
   const why = approvalRefusal(i.description || '', labels)
   if (why) return why
-  const l = labels.find((x) => String(x).startsWith(APPROVED_HEAD)), by = s?.ah?.[l] ?? ''
+  const l = labels.find((x) => String(x).startsWith(APPROVED_HEAD))
+  if (!l) return null // no head recorded (an old go, or the bot before it records one): approved counts as before (review #3)
+  const by = s?.ah?.[l] ?? ''
   return APPROVERS.has(by) ? null : `${l} was added by ${by || 'an unknown actor'}, who is not an approver: a new go is needed`
 }
 async function t2() {
