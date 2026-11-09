@@ -2,9 +2,9 @@
 # mm ship <sha> --item <id> (sy-sbjh step 5), hermetic: a throwaway HOME / MM_HOME, a throwaway mm repo (its main and a
 # side branch), a fake bd (the item's labels from a file, comments to a log), and a cached build whose mm is a fake
 # (ls, update, inspect, obs errors: what it ran and with which umask goes to a log). Nothing is started.
-#   test/ship.sh [mm command]       default: bun <repo>/src/cli.ts
+#   test/ship.sh [mm command]       default: bun <repo>/src/cli.ts (bun by its full path: a build case puts a fake bun first)
 set -uo pipefail
-SRC=$(cd "$(dirname "$0")/.." && pwd); MMC=${1:-"bun $SRC/src/cli.ts"}
+SRC=$(cd "$(dirname "$0")/.." && pwd); BUN=$(command -v bun); MMC=${1:-"$BUN $SRC/src/cli.ts"}
 pass=0; fail=0
 ok()   { pass=$((pass+1)); printf '  \e[32mok\e[0m   %s\n' "$*"; }
 bad()  { fail=$((fail+1)); printf '  \e[31mFAIL\e[0m %s\n' "$*"; }
@@ -71,6 +71,7 @@ case "$1" in
 esac
 EOF
   chmod +x "$MM_HOME/builds/$1/mm"
+  (cd "$MM_HOME/builds/$1" && sha256sum mm >mm.sha256)   # stamped, as test/gates makes it
 }
 build "$B" new-b
 printf 'acme-shop\nacme-blog\nacme-docs\n' >"$STATE/boards"
@@ -156,6 +157,43 @@ check "mm ship with no sha is still the log shipper's (refuses --item)" sh -c "$
 echo "== the build (step 2): never dist/, a clean worktree, a cache"
 item sy-c "signed-off,signed-head:mm@$a7"; gates sy-c "$A" passed; rm -rf "$MM_HOME/builds/$A"
 check "...the build fails on a repo with no mm source, and leaves no temp folder" sh -c "! $MMC ship $A --item sy-c --repo '$T/repo' --dry-run >'$T/b' 2>&1; grep -q 'build: .* failed' '$T/b' && ! ls -a '$MM_HOME/builds' | grep -q '^\.tmp-' && [ ! -e '$MM_HOME/builds/$A' ] && [ -z \"\$(git -C '$T/repo' worktree list | sed 1d)\" ]"
+
+
+# a fake bun first on PATH for the build: install and pack do nothing, build copies the fake mm to --outfile; each call
+# goes to $STATE/bun.log. D (on main) has a template/ to archive.
+mkdir -p "$T/fakebun"
+cat >"$T/fakebun/bun" <<EOF
+#!/bin/sh
+FAKE_MM='$MM_HOME/builds/$B/mm'
+EOF
+cat >>"$T/fakebun/bun" <<'EOF'
+echo "$*" >>"$STATE/bun.log"
+case "$1" in
+  install|scripts/pack-template.ts) exit 0 ;;
+  build) while [ $# -gt 0 ]; do [ "$1" = --outfile ] && { cp "$FAKE_MM" "$2"; chmod +x "$2"; exit 0; }; shift; done; exit 1 ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$T/fakebun/bun"
+mkdir -p "$R/template"; echo 1 >"$R/template/VERSION"; G add template; G commit -q -m D; D=$(G rev-parse HEAD); d7=${D:0:7}
+item sy-d "signed-off,signed-head:mm@$d7"; gates sy-d "$D" passed
+fship() { rm -f "$STATE/bun.log"; PATH="$T/fakebun:$PATH" $MMC ship "$@" --repo "$T/repo" --dry-run; }
+fship "$D" --item sy-d >"$T/d" 2>&1; echo "exit $?" >>"$T/d"
+check "a build ship makes: built, from a clean worktree" sh -c "grep -q 'build: built' '$T/d' && grep -q '^exit 0' '$T/d' && grep -q '^build src/cli.ts --compile' '$STATE/bun.log'"
+check "...its stamp: mm.sha256 in sha256sum -c form" sh -c "cd '$MM_HOME/builds/$D' && [ -d template ] && grep -qE '^[0-9a-f]{64}  mm\$' mm.sha256 && sha256sum -c --quiet mm.sha256"
+check "...no temp folder left" sh -c "! ls -a '$MM_HOME/builds' | grep -qE '^\.(tmp|old)-'"
+fship "$B" --item sy-a >"$T/g" 2>&1
+check "a gates-made build with a good stamp: reused, no build call" sh -c "grep -q 'build: cached .*$B (sha256 ' '$T/g' && [ ! -s '$STATE/bun.log' ]"
+echo "0000000000000000000000000000000000000000000000000000000000000000  mm" >"$MM_HOME/builds/$D/mm.sha256"
+fship "$D" --item sy-d >"$T/w" 2>&1
+check "a wrong stamp: says why, built again" sh -c "grep -q \"does not count (its mm's sha256 .* is not the stamp's (000000000000)): built again\" '$T/w' && grep -q 'build: built' '$T/w' && grep -q '^build ' '$STATE/bun.log'"
+check "...and stamped right again" sh -c "cd '$MM_HOME/builds/$D' && sha256sum -c --quiet mm.sha256"
+rm -f "$MM_HOME/builds/$D/mm.sha256"
+fship "$D" --item sy-d >"$T/m" 2>&1
+check "a missing stamp: says why, built again" sh -c "grep -q 'does not count (no mm.sha256): built again' '$T/m' && grep -q '^build ' '$STATE/bun.log' && [ -s '$MM_HOME/builds/$D/mm.sha256' ]"
+mkdir -p "$T/elsewhere"
+check "MM_BUILDS: the cache root (the build goes there, not under MM_HOME)" sh -c "rm -f '$STATE/bun.log'; MM_BUILDS='$T/elsewhere' PATH='$T/fakebun':\"\$PATH\" $MMC ship $D --item sy-d --repo '$T/repo' --dry-run >'$T/e' 2>&1 && [ -x '$T/elsewhere/$D/mm' ] && (cd '$T/elsewhere/$D' && sha256sum -c --quiet mm.sha256)"
+check "mm ship never prunes the cache (current, previous and the other builds still there)" sh -c "[ -e '$MM_HOME/builds/previous/mm' ] && [ -L '$MM_HOME/builds/current' ] && [ -d '$MM_HOME/builds/$B' ]"
 
 echo
 echo "ship: $pass passed, $fail failed"

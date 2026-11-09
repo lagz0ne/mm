@@ -4,15 +4,18 @@
 //      signed-head:mm@<sha>), and on a t2 item approved for that head too (approved-head:mm@<sha>, sy-6gz6's rule);
 //      a gates file for that head that passed (artifacts/<id>/gates-<sha7>.txt). The board is read through its bd;
 //      mm ship never writes a label.
-//   2. the build: ~/.mm/builds/<sha>/ (mm and its template/), made once from a clean worktree of <sha>; never dist/mm.
+//   2. the build: <builds>/<sha>/ (mm, its template/ and mm.sha256, the stamp), made once from a clean worktree of
+//      <sha>; never dist/mm. <builds> is $MM_BUILDS, else $MM_HOME/builds: test/gates' cache too. A cached build counts
+//      only when its mm's sha256 is its stamp's; else it is built again. mm ship never prunes the cache.
 //   3. a dry run on every board (mm update --dry-run, with that build): a conflict stops it, naming the board and file.
-//   4. each board in turn: the build it replaces is kept as ~/.mm/builds/previous; mm update (umask 022); then mm inspect
+//   4. each board in turn: the build it replaces is kept as <builds>/previous; mm update (umask 022); then mm inspect
 //      shows the new template version and mm obs errors shows no new error. A failed check stops the rollout and prints
 //      the one-line rollback; nothing is rolled back by itself.
 //   5. one comment per board on the item (bd, as the role that runs it).
 // --dry-run: steps 1 to 3 only.
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { createHash, randomBytes } from 'node:crypto'
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { basename, join, resolve } from 'node:path'
 import { getPath, loadConfig } from './config'
 import { DIRS, run, tilde } from './env'
 import { gatesVerdict, parseSignedHead } from '../template/bin/lib/gates-file.mjs'
@@ -21,7 +24,10 @@ import { approvalRefusal, APPROVED_HEAD } from '../template/bin/lib/owner-card.m
 export interface ShipOpts { item: string; dryRun?: boolean; boards?: string[]; repo?: string }
 type Say = (line: string) => void
 
-const BUILDS = () => join(DIRS.mm, 'builds')
+/** The build cache, shared with test/gates: $MM_BUILDS, else $MM_HOME/builds, else ~/.mm/builds. */
+export const BUILDS = () => process.env.MM_BUILDS ? resolve(process.env.MM_BUILDS) : join(DIRS.mm, 'builds')
+/** A build's stamp: its mm's sha256 in `sha256sum -c` form, written when it is built (by mm ship or test/gates). */
+export const BUILD_STAMP = 'mm.sha256'
 /** The system board's bd (MM_SHIP_BD for a test), run in the board's folder. */
 const BD = () => process.env.MM_SHIP_BD || join(DIRS.system, 'bin', 'bd')
 const BOARD = () => process.env.MM_SHIP_BOARD_DIR || DIRS.system
@@ -96,14 +102,29 @@ export function checkHead(sha: string, o: ShipOpts): { sha: string; repo: string
 
 const isBuild = (d: string) => { try { return statSync(join(d, 'mm')).isFile() && statSync(join(d, 'template')).isDirectory() } catch { return false } }
 
-/** Step 2. ~/.mm/builds/<sha>/ (mm + template/): the cached one, else built once from a clean worktree of sha. */
+const sha256 = (f: string) => createHash('sha256').update(readFileSync(f)).digest('hex')
+/** A cached build that counts: mm, template/ and a stamp that is mm's sha256; else why it does not. */
+export function checkBuild(dir: string): { sha256: string } | { why: string } {
+  try { if (!statSync(join(dir, 'mm')).isFile()) return { why: 'its mm is not a file' } } catch { return { why: 'no mm' } }
+  try { if (!statSync(join(dir, 'template')).isDirectory()) return { why: 'no template/' } } catch { return { why: 'no template/' } }
+  let stamp: string
+  try { stamp = readFileSync(join(dir, BUILD_STAMP), 'utf8').trim().split(/\s+/)[0] } catch { return { why: `no ${BUILD_STAMP}` } }
+  const sum = sha256(join(dir, 'mm'))
+  if (stamp !== sum) return { why: `its mm's sha256 (${sum.slice(0, 12)}) is not the stamp's (${stamp.slice(0, 12)})` }
+  return { sha256: sum }
+}
+
+/** Step 2. <builds>/<sha>/ (mm + template/ + mm.sha256): the cached one when its stamp holds, else built once from a
+ *  clean worktree of sha (in a temp folder, stamped, then renamed into place). */
 export function buildFor(repo: string, sha: string, say: Say): { dir: string } | { refused: string } {
-  const dir = join(BUILDS(), sha)
-  if (isBuild(dir)) { say(`build: cached ${tilde(dir)}`); return { dir } }
-  if (existsSync(dir)) return { refused: `${tilde(dir)} is there but holds no mm and template/: remove it, then run again` }
-  mkdirSync(BUILDS(), { recursive: true })
-  const tmp = join(BUILDS(), `.tmp-${sha.slice(0, 12)}-${process.pid}`), src = join(tmp, 'src')
-  rmSync(tmp, { recursive: true, force: true }); mkdirSync(tmp, { recursive: true })
+  const root = BUILDS(), dir = join(root, sha)
+  const have = checkBuild(dir)
+  if ('sha256' in have) { say(`build: cached ${tilde(dir)} (sha256 ${have.sha256.slice(0, 12)})`); return { dir } }
+  if (existsSync(dir)) say(`build: ${tilde(dir)} does not count (${have.why}): built again`)
+  mkdirSync(root, { recursive: true })
+  const tag = () => `${sha.slice(0, 12)}-${process.pid}-${randomBytes(4).toString('hex')}`
+  const tmp = join(root, `.tmp-${tag()}`), src = join(tmp, 'src')
+  mkdirSync(tmp, { recursive: true })
   say(`build: ${sha.slice(0, 7)} from a clean worktree into ${tilde(dir)}`)
   const fail = (what: string, r: { err: string; out: string; code: number }) => {
     git(repo, ['worktree', 'remove', '--force', src]); rmSync(tmp, { recursive: true, force: true })
@@ -119,19 +140,32 @@ export function buildFor(repo: string, sha: string, say: Say): { dir: string } |
   for (const [what, argv, cwd] of steps) { const r = run(argv, { cwd, timeoutMs: 15 * 60_000 }); if (!r.ok) return fail(what, r) }
   git(repo, ['worktree', 'remove', '--force', src]); rmSync(src, { recursive: true, force: true })
   if (!isBuild(tmp)) return fail('check', { err: 'no mm or template/ after the build', out: '', code: 1 })
-  renameSync(tmp, dir)
+  const sum = sha256(join(tmp, 'mm'))
+  writeFileSync(join(tmp, BUILD_STAMP), `${sum}  mm\n`)
+  if (existsSync(dir)) { // one that does not count: away first
+    const old = join(root, `.old-${tag()}`)
+    try { renameSync(dir, old); rmSync(old, { recursive: true, force: true }) } catch {}
+  }
+  try { renameSync(tmp, dir) } catch (e) {
+    rmSync(tmp, { recursive: true, force: true })
+    const other = checkBuild(dir) // another run (mm ship or test/gates) placed it meanwhile: that one
+    if (!('sha256' in other)) return { refused: `build: cannot place it in ${tilde(dir)}: ${(e as Error).message}` }
+    say(`build: cached ${tilde(dir)} (sha256 ${other.sha256.slice(0, 12)}; another run built it meanwhile)`)
+    return { dir }
+  }
+  say(`build: built ${tilde(dir)} (sha256 ${sum.slice(0, 12)})`)
   return { dir }
 }
 
-/** The build the boards run now: ~/.mm/builds/current (mm ship points it at each head it shipped), else none known. */
+/** The build the boards run now: <builds>/current (mm ship points it at each head it shipped), else none known. */
 function currentBuild(): string | null {
   const c = join(BUILDS(), 'current')
   try { const t = readlinkSync(c); const d = t.startsWith('/') ? t : join(BUILDS(), t); return isBuild(d) ? d : null } catch { return null }
 }
-/** Keep the build being replaced as ~/.mm/builds/previous (a copy: the cache of that sha may be pruned). */
+/** Keep the build being replaced as <builds>/previous (a copy: the cache of that sha may be pruned). */
 function keepPrevious(cur: string | null, say: Say): string | null {
   const prev = join(BUILDS(), 'previous')
-  if (!cur) { say('rollback: no earlier build of mm ship known (~/.mm/builds/current); none kept'); return isBuild(prev) ? prev : null }
+  if (!cur) { say(`rollback: no earlier build of mm ship known (${tilde(join(BUILDS(), 'current'))}); none kept`); return isBuild(prev) ? prev : null }
   if (basename(cur) === readFileSync0(join(prev, 'sha'))) return prev
   const tmp = `${prev}.tmp-${process.pid}`
   rmSync(tmp, { recursive: true, force: true })
