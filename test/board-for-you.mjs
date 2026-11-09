@@ -12,7 +12,9 @@
 //             large (Approve and Not now for a T2 go; why not, in Approve's place, for a refused head; a Reply box;
 //             Done; a t2 non-go ask: its Done, never Approve), then What and Why in smaller text, the link last
 //   Board     behind its tab, the full board; a filter set in the menu shows as a line with Clear
-// and a lead's local side (no assertion) unchanged: the old header and toolbar, no For you. No sideways scroll.
+// and a lead's local side (no assertion) unchanged: the old header and toolbar, no For you. No sideways scroll; and with
+// long content (a long URL, Head, command, a title with no spaces) at 360, 390 and 430 px, For you, the board and an
+// open item stay inside the screen, the page's scroll boxes too (sy-hl2t; a failure names the widest element).
 //   node test/board-for-you.mjs        exit 0 = every check passed
 //   BOARD_PHONE_NOBUILD=1 ...          use template/site/dist as it is
 //   BOARD_FORYOU_SHOTS=<dir>           where the screenshots go (default: a folder under the temp dir)
@@ -352,6 +354,96 @@ try {
       && (await page.getByPlaceholder('Search').count()) === 1 && (await page.getByRole('button', { name: /^New$/ }).count()) === 1)
     else ok('...the phone\'s bar with its column picker', (await page.getByRole('button', { name: /^Column: / }).count()) === 1)
     await page.screenshot({ path: path.join(SHOTS, `lead-local-${width}.png`) })
+    await ctx.close()
+  }
+
+  // sy-hl2t: For you was wider than a phone (a sideways scrollbar). Cards with long content (a long URL, a long Head, a
+  // long command in code marks, a title with no spaces, a row of buttons), at 360, 390 and 430 px: For you, the board
+  // and an open item. The page never scrolls sideways (the document, nor main or the item's sheet, the boxes that
+  // scroll); a code block may scroll inside its own box. A failure names the widest element.
+  const HEX = 'f'.repeat(8) + '0123456789abcdef0123456789abcdef'
+  const URL_ = 'https://example.org/a/very/long/link/that/should/wrap/somewhere/in/the/card/and/never/push/the/page/sideways/at/all'
+  const LONGWORD = 'Rotate-the-gateway-key-and-restart-every-service-on-the-machine-without-a-single-space-in-it'
+  const CMD = 'bin/brain run migrations/0042-rotate-the-gateway-key-and-restart-the-names-proxy.sh --rollback-on-failure'
+  const LONG_GO = `## Owner
+- **What:** Rotate the key, see ${URL_}
+- **Why:** ${LONGWORD}
+- **You:** Tap Approve, then run \`${CMD}\`
+- **If yes:** Ops runs \`${CMD}\` tonight.
+- **If no:** The old key stays at ${URL_}
+- **Risk:** low, ${LONGWORD}
+- **Head:** mm@${HEX}
+
+The plan:
+
+\`\`\`
+${CMD} && ${CMD}
+\`\`\`
+
+${URL_}`
+  const LONG_CHECK = `## Owner
+- **What:** ${LONGWORD}
+- **Why:** ${URL_}
+- **You:** Check: run \`${CMD}\` and say if it worked`
+  const longs = [
+    { ...base, id: 'fy-20', title: LONGWORD, labels: ['t2', 'needs-you', 'signed-off', `signed-head:mm@${HEX}`], updated_at: iso(10), description: LONG_GO,
+      comments: [{ id: 'l1', author: 'ops', text: `Plan: \`${CMD}\`\n\n\`\`\`\n${CMD} ${CMD}\n\`\`\`\n\n${URL_} mm@${HEX}`, created_at: iso(9) }] },
+    { ...base, id: 'fy-21', title: `${LONGWORD} ${URL_}`, labels: ['needs-you'], updated_at: iso(8), description: LONG_CHECK },
+    { ...base, id: 'fy-22', title: LONGWORD, labels: ['needs-you'], updated_at: iso(7), description: `## Owner\n- **What:** ${URL_}\n- **You:** Reply: ${LONGWORD}` },
+  ]
+  const longClosed = { ...base, id: 'fy-23', title: `${LONGWORD}${LONGWORD}`, status: 'closed', labels: [], updated_at: iso(6), closed_at: iso(6), description: LONG_CHECK.replace('Check: ', 'Nothing ') }
+  OPEN.push(...longs); CLOSED.push(longClosed)
+  for (const i of [...longs, longClosed]) all[i.id] = i
+  EVENTS.push(ev(3000, 'create', 'fy-23', 'ops', { status: 'open' }), ev(6, 'close', 'fy-23', 'platform'))
+  /** What sticks out at the right: the page's and its scroll boxes' widths, and the widest element past the screen that
+   *  no box of its own clips (a code block that scrolls in its box, a truncated line: fine). */
+  const overflow = (page) => page.evaluate(() => {
+    const de = document.documentElement, iw = innerWidth
+    const sel = (e) => { const p = []; for (let a = e; a && a !== document.body && p.length < 4; a = a.parentElement) {
+      const d = [...a.attributes].find((x) => x.name.startsWith('data-') && x.name !== 'data-slot')
+      p.unshift(a.tagName.toLowerCase() + (a.id ? `#${a.id}` : '') + (d ? `[${d.name}${d.value ? `=${d.value}` : ''}]` : '') + (a.getAttribute('data-slot') ? `[data-slot=${a.getAttribute('data-slot')}]` : '')
+        + (typeof a.className === 'string' && a.className ? `.${a.className.trim().split(/\s+/).slice(0, 4).join('.')}` : '')) } return p.join(' > ') }
+    // the boxes that scroll the page's content: main (For you, the board) and the item's sheet
+    const pageBoxes = [...document.querySelectorAll('main, [data-slot=sheet-content], [data-slot=sheet-content] *')].filter((e) => {
+      const o = getComputedStyle(e).overflowX; return (o === 'auto' || o === 'scroll') && !e.closest('pre, table') && e.clientWidth >= iw * 0.8 })
+    const boxes = pageBoxes.filter((b) => b.scrollWidth > b.clientWidth + 1).map((b) => `${sel(b)} (scrollWidth ${b.scrollWidth} > ${b.clientWidth})`)
+    const own = (e) => { for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) {
+      if (pageBoxes.includes(a) || a.matches('[data-slot=sheet-content]')) return false
+      if (getComputedStyle(a).overflowX !== 'visible') return true } return false }
+    const wide = [...document.querySelectorAll('body *')].map((e) => [e, e.getBoundingClientRect()])
+      .filter(([e, r]) => r.width && r.height && r.right > iw + 1 && getComputedStyle(e).position !== 'fixed' && !own(e))
+      .sort((a, b) => b[1].right - a[1].right).slice(0, 3).map(([e, r]) => `${sel(e)} (right ${Math.round(r.right)}, width ${Math.round(r.width)})`)
+    return { sw: de.scrollWidth, iw, boxes, wide }
+  })
+  const noWider = async (page, what) => {
+    await page.waitForTimeout(300)
+    const m = await overflow(page)
+    ok(`${what}: nothing wider than the screen (document ${m.sw} <= ${m.iw}, no scroll box wider)`, m.sw <= m.iw && m.boxes.length === 0 && m.wide.length === 0,
+      `boxes: ${m.boxes.join(' | ') || 'none'}\n        widest: ${m.wide.join(' | ') || 'none'}`)
+  }
+  for (const width of [360, 390, 430]) {
+    step(`long content at ${width} px: For you, the board, an open item (sy-hl2t)`)
+    const { ctx, page, errs } = await human('boss', 'owner', width, 844)
+    await page.addInitScript(() => { if (!localStorage.getItem('for-you:fy:boss:since')) localStorage.setItem('for-you:fy:boss:since', String(Date.now() - 86400e3)) })
+    await page.goto(`${PUB}/`)
+    await page.locator('[data-needs-you="fy-20"]').waitFor({ timeout: 10000 }).catch(() => {})
+    await page.locator('[data-to-review="fy-23"]').waitFor({ timeout: 10000 }).catch(() => {})
+    ok('the long cards are there (fy-20, fy-21, fy-22 in Needs you, fy-23 in To review)', (await page.locator('[data-needs-you="fy-20"], [data-needs-you="fy-21"], [data-needs-you="fy-22"], [data-to-review="fy-23"]').count()) === 4)
+    await noWider(page, `For you @${width}`)
+    if (width === 390) {
+      await page.screenshot({ path: path.join(SHOTS, `for-you-long-${width}.png`) })
+      await page.locator('[data-needs-you="fy-20"]').scrollIntoViewIfNeeded()
+      await page.screenshot({ path: path.join(SHOTS, `for-you-long-card-${width}.png`) })
+    }
+    await page.goto(`${PUB}/#board`)
+    await page.getByText('Plain work handed on, no card, no artifact').first().waitFor({ timeout: 8000 }).catch(() => {})
+    await noWider(page, `Board @${width}`)
+    await page.goto(`${PUB}/?item=fy-20`)
+    await page.locator('[data-slot="sheet-content"]').waitFor({ timeout: 8000 }).catch(() => {})
+    await page.waitForTimeout(700)
+    await noWider(page, `item fy-20 @${width}`)
+    if (width === 390) await page.screenshot({ path: path.join(SHOTS, `item-long-${width}.png`) })
+    ok('no page error', errs.length === 0, errs.join(' | '))
     await ctx.close()
   }
 } finally {

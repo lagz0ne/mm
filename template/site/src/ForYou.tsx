@@ -68,13 +68,13 @@ export function ForYou({ waiting, owner, approval, storeKey, tick, onOpen, onCha
         <h2 id="fy-needs" className={head}>Needs you{waiting && waiting.length > 0 && <span className="ml-1.5 bg-swiss px-1.5 text-white tabular-nums">{waiting.length}</span>}</h2>
         {waiting === null ? <p className="px-4 text-sm text-muted-foreground md:px-0">Loading…</p>
           : waiting.length === 0 ? <p data-empty="needs-you" className="px-4 text-[15px] md:px-0">Nothing needs you.</p>
-          : <div className="grid gap-3 px-2 md:px-0">{waiting.map((w) => <NeedsCard key={w.id} w={w} owner={owner} approval={approval} onOpen={onOpen} onChanged={onChanged} />)}</div>}
+          : <div className="grid grid-cols-[minmax(0,1fr)] gap-3 px-2 md:px-0">{waiting.map((w) => <NeedsCard key={w.id} w={w} owner={owner} approval={approval} onOpen={onOpen} onChanged={onChanged} />)}</div>}
       </section>
       <section aria-labelledby="fy-review" className="mt-4">
         <h2 id="fy-review" className={head}>To review</h2>
         {review === null ? <p className="px-4 text-sm text-muted-foreground md:px-0">Loading…</p>
           : toReview.length === 0 ? <p data-empty="to-review" className="px-4 text-[15px] md:px-0">Nothing new.</p>
-          : <div className="grid gap-3 px-2 md:px-0">{toReview.map((r) => <ReviewCard key={r.id} r={r} onOpen={onOpen} onSeen={() => markSeen(r.id)} />)}</div>}
+          : <div className="grid grid-cols-[minmax(0,1fr)] gap-3 px-2 md:px-0">{toReview.map((r) => <ReviewCard key={r.id} r={r} onOpen={onOpen} onSeen={() => markSeen(r.id)} />)}</div>}
         {more > 0 && <p className="px-4 pt-2 text-xs text-muted-foreground md:px-0">{more} more on the board.</p>}
       </section>
     </div>
@@ -118,7 +118,7 @@ function NeedsCard({ w, owner, approval, onOpen, onChanged }: {
   }
   const big = 'h-12 w-full px-6 text-[17px] font-bold sm:w-auto'
   return (
-    <article data-needs-you={w.id} className="border-2 border-foreground bg-background">
+    <article data-needs-you={w.id} className="min-w-0 border-2 border-foreground bg-background">
       <div data-part="you" className="px-4 pt-3 pb-1">
         <p className="text-[11px] font-bold tracking-[0.1em] text-swiss uppercase">
           {go ? 'Your go' : kind === 'reply' ? 'Your answer' : kind === 'check' ? 'Your check' : 'For you'}
@@ -164,7 +164,7 @@ function ReviewCard({ r, onOpen, onSeen }: { r: ReviewEntry; onOpen: (id: string
   const who = (n?: string) => (n ? ROLE_LABEL[n] || n : '')
   const imgs = r.artifacts.filter((a) => a.type.startsWith('image/')), rest = r.files - imgs.length
   return (
-    <article data-to-review={r.id} className="border border-foreground bg-background">
+    <article data-to-review={r.id} className="min-w-0 border border-foreground bg-background">
       <button type="button" onClick={() => onOpen(r.id)} className="grid w-full min-w-0 gap-1.5 px-3 pt-2.5 pb-2 text-left hover:bg-muted/50">
         <span className="text-[11px] text-muted-foreground">
           {r.kind === 'closed' ? <>Done{r.by && <> by <b className="text-foreground">{who(r.by)}</b></>}</> : <>Handed to <b className="text-foreground">{who(r.to)}</b></>} · {ago(r.at)} ago
