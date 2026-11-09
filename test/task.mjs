@@ -36,6 +36,12 @@ console.log('== formatTask (sy-n3r5: the items the watchdog makes)')
   }
 }
 
+{ // sy-48bt: health's incident goes to the board's Lead, never needs-you (it has no owner card)
+  const h = fs.readFileSync(path.join(SRC, 'template/bin/health'), 'utf8')
+  const create = (h.match(/title: `Incident: [^\n]*/) || [''])[0]
+  ok("health's incident: no needs-you, assigned to the board's Lead (incidentOwner)", create && !/needs-you/.test(create) && /assignee: incidentOwner\(\)/.test(create) && /function incidentOwner/.test(h))
+}
+
 console.log('== parseTask')
 let r = parseTask(TASK, { acts: ACTS })
 ok('a valid Task at the top', r.ok && r.found && r.task.Act === 'mm-template' && !('Head' in r.task))
