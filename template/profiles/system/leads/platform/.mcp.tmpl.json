@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "doop": {
+      "type": "http",
+      "url": "{url:doop}/mcp",
+      "headersHelper": "{root}/bin/doop-mcp-headers"
+    }
+  }
+}

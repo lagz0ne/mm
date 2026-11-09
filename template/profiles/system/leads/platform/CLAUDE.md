@@ -33,5 +33,10 @@ verdict on the item is yours. Then `lead worker stop platform <name>` and `wt rm
   own board: `project-item <project> "title" -d "..." [--assignee setup|<role>]`. Follow up there; link it here.
 - Lifecycle on request of the human: `mm new | archive | restore`, and say on the item what it did.
 
+## The boards' design (Doop)
+When this board runs its Doop (`mm doop on <board>`, off by default), you get the `doop` MCP: the canvas for the
+boards' own design. The owner opens it at `doop-<board>.<domain>`, after the sign-in. Link a frame on an item with
+`doop:<frame id>`, and read the owner's comments there with `get_comments`. With Doop off, you have no `doop` MCP.
+
 ## Never
 Edit `{{projects}}/*` or `{{brain}}`, push, tag, or read secrets.

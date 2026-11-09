@@ -34,6 +34,16 @@ services:
     port: none
     depends_on: { bd-serve: ready }
     restart: always
+  doop:
+    about: "Optional design canvas for the boards' own design (Doop, as a project's: bin/doop-run, the pinned image mm names in .run/endpoints.json): its data in data/doop/ (in the backup), its own account and agent key in secrets/. The platform lead reaches it by MCP on loopback; the owner opens it at doop-<board>.<domain> behind the sign-in gateway (owner only: nobody else holds a role on this board). Off by default; on with `mm doop on <board>`."
+    optional: true
+    command: "{root}/bin/doop-run"
+    env: { DOOP_URL: "{url:doop}" }
+    port: http
+    public: { name: "doop-{project}", auth: required }   # the system board keeps its own names: doop-<board>
+    ready: { http: /healthz }
+    restart: always
+    stop_seconds: 30   # its database closes, then it regroups its files (bin/doop-run): more than the default 10s
 schedules:
   health: { every: 1m, command: "node {root}/bin/health" }
   backup: { every: "daily 03:40", command: "{root}/bin/backup" }
