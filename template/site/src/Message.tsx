@@ -5,6 +5,7 @@ import { Markdown } from '@/Markdown'
 import { cn } from '@/lib/utils'
 import { MESSAGE_ROLES } from '@/lib/board'
 import { openWaits, parseMessage, type Message } from '@/lib/message.mjs'
+import { Original, Parts } from '@/Structured'
 
 const TAG: Record<string, string> = {
   ASK: 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100',
@@ -56,6 +57,7 @@ export function CommentBody({ text, author, onRef, className }: { text: string; 
           ))}
         </dl>
       ))}
+      {m.json && <><Parts parts={m.json.parts} onRef={onRef} /><Original raw={m.text} /></>}
     </div>
   )
 }

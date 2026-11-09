@@ -134,7 +134,7 @@ export function parseCard(description, labels = [], id = '', o = {}) {
 /** parseCard for a ```mm-card v1 block: the schema, then the rules a schema cannot say (t2 on a go ask, Item, Reply). */
 function cardBlock(b, labels, id, o) {
   const errors = [...b.errors]
-  const out = { ok: false, found: true, card: {}, errors, writing: [], rest: b.rest, json: b.data }
+  const out = { ok: false, found: true, card: {}, errors, writing: [], rest: b.rest, json: b.data, raw: b.raw }
   if (errors.length || !b.data) return out
   errors.push(...validate('card', b.data))
   const card = (out.card = cardKeys(b.data))
