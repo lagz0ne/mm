@@ -768,6 +768,8 @@ async function main1(argv, { stdout = process.stdout, stderr = process.stderr, c
     const suiteEnv = (s) => {
       const extra = s.needs.includes('site') ? { BOARD_PHONE_NOBUILD: '1' } : {}
       if (mmBin && (s.needs.includes('mm') || uses(s, '{mm}'))) { extra.MM_BIN_DIR = mmDir; if (mmTpl) extra.MM_TEMPLATE_DIR = mmTpl }
+      // the Doop image, only for the Doop suites: set for every suite, it wins over box-doop's config case (sy-1nb8)
+      if (process.env.GATES_DOOP_IMAGE && /^test\/doop-/.test(s.path)) extra.MM_DOOP_IMAGE = process.env.GATES_DOOP_IMAGE
       return extra
     }
     const fill = (a) => a.replaceAll('{mm}', mmBin || '').replaceAll('{bd}', tools.bd || '').replaceAll('{dolt}', tools.dolt || '').replaceAll('{old-template}', oldTpl || '')
