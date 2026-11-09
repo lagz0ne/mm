@@ -41,6 +41,7 @@ suite test/backup-data.sh         hermetic
 suite test/bd-actor.sh            hermetic
 suite test/bd-proxy-stop.sh       hermetic
 suite test/box-boot.sh            hermetic
+suite test/wt-box.sh              hermetic
 suite test/box-doop.sh            hermetic
 suite test/box-pc.sh              hermetic
 suite test/boxreg.sh              hermetic
@@ -170,6 +171,7 @@ suite test/bd-autostart.sh        ports -- {bd} {dolt}
 suite test/mm-docker-container.sh docker
 suite test/box-egress.sh          docker
 suite test/box-tools.sh           docker
+suite test/wt-box-container.sh    docker
 suite test/front-container.sh     docker
 suite test/doop-container.sh      docker
 suite test/doop-designs.sh        docker
@@ -213,7 +215,7 @@ set site test/board-*.mjs test/lead-state.mjs test/config-review.mjs test/projec
 
 # the containers built from box/ and the Docker wrapper
 set containers test/mm-docker-container.sh test/box-egress.sh test/front-container.sh test/doop-container.sh test/box-tools.sh
-set containers test/doop-designs.sh test/doop-gateway.sh test/box.sh test/doop.sh
+set containers test/doop-designs.sh test/doop-gateway.sh test/box.sh test/doop.sh test/wt-box-container.sh
 
 # the libs nearly every bin imports (svc.mjs, obs.mjs): one suite or two per bin family
 set engine-smoke test/wake-start.mjs test/supervisor.mjs test/lead.sh test/message.mjs test/upstream.mjs test/sockets.sh
@@ -275,7 +277,7 @@ rule deps/**                      test/npm-lock.sh test/mm-paseo.sh test/clean-b
 
 rule box/mm-docker                test/mm-docker.sh @containers test/clean-box.sh
 rule box/mm-approve               test/mm-approve.sh test/flow.mjs test/supervisor.mjs test/board-approve.sh
-rule box/Dockerfile               test/box-tools.sh test/front-container.sh test/box-egress.sh test/box.sh test/clean-box.sh
+rule box/Dockerfile               test/box-tools.sh test/front-container.sh test/box-egress.sh test/box.sh test/clean-box.sh test/wt-box-container.sh
 rule box/npm/**                   test/front-container.sh test/box.sh test/clean-box.sh
 rule box/paseo-join.mjs           test/box.sh
 rule box/egress.Dockerfile        test/box-egress.sh test/box.sh
@@ -342,7 +344,7 @@ rule template/bin/svc             test/upstream.mjs test/sockets.sh test/engine-
 rule template/bin/trace           test/trace-refused.sh test/bd-actor.sh test/owner-card-bd.sh test/span-answers.sh test/bd-home.sh test/task.mjs
 rule template/bin/wake            test/wake-*.mjs test/paseo-refuse.mjs test/memory-commit.sh
 rule template/bin/memory-commit   test/memory-commit.sh
-rule template/bin/wt              test/sysworkers.sh test/memory-links.sh test/lead.sh test/wt-ro-config.sh
+rule template/bin/wt              test/sysworkers.sh test/memory-links.sh test/lead.sh test/wt-ro-config.sh test/wt-box.sh test/wt-box-container.sh
 rule template/bin/raci            test/raci.mjs test/task.mjs
 rule template/bin/role            test/person-run.sh test/raci.mjs
 rule template/bin/persona         test/raci.mjs test/person-run.sh
@@ -460,7 +462,7 @@ rule template/profiles/system/services.yaml test/sysworkers.sh test/sentinel-ass
 rule test/gates                   test/gates.mjs
 rule test/gates.map               test/gates.mjs
 rule test/lib/gates.mjs           test/gates.mjs
-rule test/lib/docker.sh           test/box-egress.sh test/box.sh test/doop-container.sh test/doop-designs.sh test/doop-gateway.sh test/front-container.sh test/mm-docker-container.sh
+rule test/lib/docker.sh           test/box-egress.sh test/box.sh test/doop-container.sh test/doop-designs.sh test/doop-gateway.sh test/front-container.sh test/mm-docker-container.sh test/wt-box-container.sh
 rule test/lib/stock.sh            test/auth-e2e.sh test/box-gateway.sh test/clean-box.sh test/in-box.sh test/restore-drill.sh
 rule test/lib/expose              test/names.sh test/routes.sh test/box.sh test/doop.sh test/lifecycle.sh test/machine-panel.sh test/sentinel.sh
 rule test/lib/routes.sh           test/box.sh test/doop.sh test/lifecycle.sh test/machine-panel.sh test/sentinel.sh
