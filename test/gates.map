@@ -65,6 +65,7 @@ suite test/restore.sh             hermetic
 suite test/root-leftover.sh       hermetic
 suite test/routes.sh              hermetic
 suite test/span-answers.sh        hermetic
+suite test/ship.sh                hermetic
 suite test/sync.sh                hermetic
 suite test/sysworkers.sh          hermetic
 suite test/template-base.sh       hermetic
@@ -177,7 +178,7 @@ set cli test/npm-lock.sh test/obs-home.sh test/outside.sh test/paseo-token.sh te
 set cli test/person-run.sh test/portless-claim.sh test/restore.sh test/root-leftover.sh test/routes.sh test/sockets.sh
 set cli test/span-answers.sh test/sync.sh test/sysworkers.sh test/template-base.sh test/update-lock.sh test/vault.sh
 set cli test/writing-rule.sh test/board-pull.mjs test/flow.mjs test/board-phone.mjs test/waiting-phone.mjs
-set cli test/wake-box-person-runs.mjs test/wake-person-runs.mjs
+set cli test/wake-box-person-runs.mjs test/wake-person-runs.mjs test/ship.sh
 
 # the suites that render the template as mm new lays it out and run config-check on it (the leads' and setup's files)
 set render test/denies.sh test/guard.sh test/brain-deny.sh test/memory-links.sh test/sysworkers.sh test/writing-rule.sh
@@ -212,6 +213,7 @@ rule src/boxruns.ts               test/wake-box-person-runs.mjs test/box-person-
 rule src/auth.ts                  test/auth.sh test/auth-start.sh test/board-approve.sh test/board-owner-card.mjs test/board-phone.mjs test/waiting-phone.mjs test/doop-gateway.sh test/auth-e2e.sh test/box-gateway.sh test/ba-spike.ts
 rule src/flow.ts                  test/flow.mjs test/board-pull.mjs
 rule src/doctor.ts                test/doctor-docker.sh
+rule src/ship.ts                  test/ship.sh
 rule src/personasks.ts            test/wake-person-runs.mjs test/box-person-runs.sh
 rule src/paseo.ts                 test/mm-paseo.sh test/paseo-token.sh
 rule src/restore.ts               test/restore.sh test/restore-drill.sh
@@ -248,9 +250,9 @@ rule template/**                  @render test/lifecycle.sh
 rule template/bin/lib/message.mjs test/message.mjs test/bd-actor.sh test/owner-card-bd.sh test/board-message.mjs
 rule template/bin/message         test/message.mjs test/bd-actor.sh test/owner-card-bd.sh
 rule template/site/src/lib/message.mjs test/message.mjs test/board-message.mjs
-rule template/bin/lib/owner-card.mjs test/owner-card.mjs test/owner-card-bd.sh test/bd-actor.sh test/board-owner-card.mjs test/board-approve.sh test/waiting-phone.mjs
+rule template/bin/lib/owner-card.mjs test/owner-card.mjs test/owner-card-bd.sh test/bd-actor.sh test/board-owner-card.mjs test/board-approve.sh test/waiting-phone.mjs test/ship.sh
 rule template/bin/owner-card      test/owner-card.mjs test/owner-card-bd.sh
-rule template/bin/lib/gates-file.mjs test/owner-card-bd.sh test/bd-actor.sh
+rule template/bin/lib/gates-file.mjs test/owner-card-bd.sh test/bd-actor.sh test/ship.sh
 rule template/site/src/lib/owner-card.mjs test/owner-card.mjs test/board-owner-card.mjs
 rule template/site/src/**         @browser test/machine-panel.sh
 rule template/site/*              @site test/auth.sh test/board-approve.sh test/front.sh test/sync.sh test/doop-designs.sh test/machine-panel.sh
