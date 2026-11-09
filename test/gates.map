@@ -253,6 +253,8 @@ rule template/bin/owner-card      test/owner-card.mjs test/owner-card-bd.sh
 rule template/bin/lib/gates-file.mjs test/owner-card-bd.sh test/bd-actor.sh
 rule template/site/src/lib/owner-card.mjs test/owner-card.mjs test/board-owner-card.mjs
 rule template/site/src/**         @browser test/machine-panel.sh
+rule template/site/src/ForYou.tsx test/board-for-you.mjs
+rule template/site/src/App.tsx    test/board-for-you.mjs
 rule template/site/*              @site test/auth.sh test/board-approve.sh test/front.sh test/sync.sh test/doop-designs.sh test/machine-panel.sh
 
 rule template/bin/lib/obs.mjs     @engine test/obs-home.sh
