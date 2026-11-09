@@ -87,6 +87,15 @@ run "land" 2 "land: no worktree w-pg-9"
 check "no such worktree (exit 2): refused" refused 2
 run "land" 1 "land: lock busy for 120s"
 check "...but a busy lock stays a failure" failed 1
+echo "== lead's answers (sy-60id): a worker it won't start is refused, not failed"
+run "lead" 1 "lead worker: refused: platform holds 9 of its capacity 8 (each worker is one place): finish, stop or hand over one first
+error: lead failed (exit 1)"
+check "the capacity is full: refused" refused 1
+run "lead" 1 "lead worker: refused: sy-x is not in progress for platform: claim it first (bd update sy-x --claim)"
+check "the item is not claimed: refused" refused 1
+run "lead" 1 "lead worker: paseo did not answer
+error: lead failed (exit 1)"
+check "...but Paseo not answering stays a failure" failed 1
 echo "== exit 141 (SIGPIPE): the reader closed the pipe"
 : > "$T/spans"; "$T/bin/trace" "deploy" -- "$T/fake-bd" 141 "" 2>/dev/null | true; tail -1 "$T/.run/logs/ops.log" > "$T/last"
 check "piped (deploy status | head): info, outcome reader-closed, the span not failed" sh -c "jq -e '.level == \"info\" and .outcome == \"reader-closed\"' '$T/last' && ! grep -q '\"code\":2' '$T/spans'"

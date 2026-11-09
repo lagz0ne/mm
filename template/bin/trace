@@ -33,8 +33,12 @@ const BD_REFUSED = new RegExp([
 // land's answers to its caller (sy-4dg8): a branch it won't take (uncommitted changes, a conflict with main, its check
 // said no, a bad or missing worktree). A busy lock or anything else stays a failure.
 const LAND_REFUSED = /^land: (bad name|no worktree |.+ has uncommitted changes|code\/ has local edits|.+ conflicts with main|.+ refused by ops\/land-check)/m
+// lead's answers to its caller (sy-60id): a worker it won't start or stop (workers off, the item not claimed, the
+// capacity full, a worker of that name there or not there): "lead worker: refused: " at the start of a line
+const LEAD_REFUSED = /(^|\n)lead worker: refused: /
 const refusedBy = (code) => (name.startsWith('bd') && (code === 13 || (code === 1 && BD_REFUSED.test(tail))))
   || (name.startsWith('land') && (code === 1 || code === 2) && LAND_REFUSED.test(tail))
+  || (name.startsWith('lead') && code === 1 && LEAD_REFUSED.test(tail))
 // exit 141 (128 + SIGPIPE) with our stdout a pipe: the reader stopped reading (`deploy status | head`), not a failure
 let pipeOut = false; try { pipeOut = fs.fstatSync(1).isFIFO() } catch {}
 child.on('close', (code, sig) => {
