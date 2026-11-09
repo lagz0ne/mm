@@ -30,7 +30,7 @@ board() { # <root> <client> <name> <project> <profile> <with code?>
   cat >"$P/bin/backup" <<'EOF'
 #!/bin/sh
 set -eu
-P=$(cd "$(dirname "$0")/.." && pwd); D=$BACKUP_DIR/$(date -u +%Y-%m-%dT%H%MZ); mkdir -p "$D/board.dolt"
+P=$(cd "$(dirname "$0")/.." && pwd); D=$BACKUP_DIR/$(cat "$P/.stamp" 2>/dev/null || date -u +%Y-%m-%dT%H%MZ); mkdir -p "$D/board.dolt"
 [ ! -e "$P/.fail-backup" ] || { echo "bin/doop-run: Error response from daemon: container mm-doop-x is restarting" >&2; exit 1; }
 [ ! -e "$P/.fail-once" ] || { rm -f "$P/.fail-once"; echo "failed to connect to the dolt sql-server at 127.0.0.1:38111" >&2; exit 1; }
 cp "$P/.board-state" "$D/board.dolt/data"; cp "$P/.board-state" "$D/board.jsonl"
@@ -38,7 +38,7 @@ git -C "$P" bundle create -q "$D/config.bundle" --all
 [ ! -d "$P/code/.git" ] || git -C "$P/code" bundle create -q "$D/code.bundle" --all
 echo "backup $D: 1 items"
 EOF
-  chmod +x "$P/bin/backup"; echo "$M_BOARD $4" >"$P/.board-state"; printf '.board-state\n.fail-backup\n.fail-once\n' >"$P/.gitignore"
+  chmod +x "$P/bin/backup"; echo "$M_BOARD $4" >"$P/.board-state"; printf '.board-state\n.fail-backup\n.fail-once\n.stamp\n' >"$P/.gitignore"
   [ "$4" = system ] || echo '{"required":[{"name":"API_KEY","for":"app"}],"optional":[]}' >"$P/secrets.json"
   git -C "$P" init -q && git -C "$P" add -A && git -C "$P" commit -qm config
   if [ "$6" = 1 ]; then mkdir -p "$P/code" && echo "$M_CODE" >"$P/code/app.txt" && git -C "$P/code" init -q && git -C "$P/code" add -A && git -C "$P/code" commit -qm code; fi
@@ -164,6 +164,8 @@ echo "{\"commit\":\"$(git -C "$BX" rev-parse HEAD)\"}" >"$MM_HOME/box/acme-boxed
      --cacheinfo "100644,$(printf '{"permissions":{"allow":["Bash(*)"]}}\n' | git hash-object -w --stdin),setup/.claude/settings.tmpl.json" \
      --cacheinfo "100644,$(printf '{"permissions":{"allow":["Bash(*)"]}}\n' | git hash-object -w --stdin),setup/.claude/settings.json" \
   && git update-ref refs/heads/main "$(git commit-tree "$(git write-tree)" -p HEAD -m 'box: its own')") >>"$LOG" 2>&1
+# every backup of the box names the same minute (as two backups within one minute do; sy-dex7): each lands over the last
+date -u +%Y-%m-%dT%H%MZ >"$BX/.stamp"
 mm sync >>"$LOG" 2>&1 && ok "mm sync with a box project" || { bad "mm sync (box)"; tail -10 "$LOG"; }
 age -d -i "$T/recovery.key" "$CK/projects/acme/boxed/box.json.age" >"$T/box.json" 2>>"$LOG"
 check "mastermind holds the box's record, sealed" bash -c "git -C '$R' ls-tree -r --name-only main | grep -qx projects/acme/boxed/box.json.age && head -c 21 '$CK/projects/acme/boxed/box.json.age' | grep -qx 'age-encryption.org/v1'"
@@ -179,13 +181,15 @@ rm -f "$BX/governance.json"
 
 echo "== a box a rollout is restarting (sy-9r57)"
 # its config changes, so the sync needs a fresh backup; the box is down for 2 looks, then its Dolt refuses once
-echo one >"$BX/rollout.txt"; git -C "$BX" add -A && git -C "$BX" commit -qm 'during a rollout'
+# commits of rollout.txt only: the host's index is still the one before the box's commit (its plumbing), so -a or -A
+# would commit the host's files over the box's history
+echo one >"$BX/rollout.txt"; git -C "$BX" add rollout.txt && git -C "$BX" commit -qm 'during a rollout' -- rollout.txt
 echo 2 >"$MM_HOME/.fake-box-down"; touch "$BX/.fail-once"; HB=$(heads)
 mm sync >"$T/r.out" 2>&1 && ok "mm sync waits for the box, tries once more, and goes" || { bad "mm sync during a box restart"; tail -8 "$T/r.out"; }
 check "...the step says it waited for the box" grep -q 'backup acme-boxed.*waited [0-9]*s for the box' "$T/r.out"
 check "...and that it tried again, after which error" grep -q 'backup acme-boxed.*tried again after: .*dolt sql-server' "$T/r.out"
 check "...and the new backup went in (mastermind has a new commit)" bash -c "[ \"\$(git -C '$R' rev-parse main)\" != '$HB' ]"
-echo two >"$BX/rollout.txt"; git -C "$BX" commit -qam 'still restarting'; HR=$(heads)
+echo two >"$BX/rollout.txt"; git -C "$BX" commit -qm 'still restarting' -- rollout.txt; HR=$(heads)
 echo '[{"name":"acme-boxed.dolt","status":"Running","is_ready":"Not Ready","restarts":3}]' >"$MM_HOME/.fake-pc-list"
 check "a box whose Dolt never gets ready: refused after the wait, with why; nothing of it committed" bash -c "! MM_BOX_WAIT_MS=3000 mm sync >'$T/n.out' 2>&1 && grep -q 'backup acme-boxed .*bin/backup in the box not run: still not ready after [0-9]*s (its Dolt is Running, Not Ready)' '$T/n.out' && [ \"\$(git -C '$R' rev-parse main)\" = '$HR' ]"
 echo '[{"name":"acme-boxed.dolt","status":"Running","is_ready":"Ready","restarts":3}]' >"$MM_HOME/.fake-pc-list"
@@ -195,6 +199,7 @@ NB="$T/blank"; mkdir -p "$NB"; RB="$NB/.mm/projects/acme/boxed"
 (export HOME="$NB" MM_HOME="$NB/.mm"; unset MM_LAYOUT; mm restore --drill --data-only "$R" --identity "$T/recovery.key" --accept "$(git -C "$R" rev-parse main)" -o json) >"$T/restore.json" 2>>"$LOG" \
   && ok "a blank machine: mm restore --drill --data-only" || { bad "restore (box)"; jq -r '.[] | select(.status=="fail") | "       \(.step): \(.detail)"' "$T/restore.json" 2>/dev/null; }
 check "(the bundle brought the box's own commit)" bash -c "git -C '$RB' log --format=%s | grep -qx 'box: its own'"
+check "...the newest backup: one in the same minute as the last replaces it, not nested in it (sy-dex7)" bash -c "git -C '$RB' log --format=%s | grep -qx 'still restarting' && ! test -e '$MM_HOME/backups/acme-boxed/'\"\$(cat '$BX/.stamp')\"/\"\$(cat '$BX/.stamp')\""
 check "the project is a box: its answers on disk and in HEAD say box: true" bash -c "grep -qx 'box: true' '$RB/.mm-answers.yaml' && git -C '$RB' show HEAD:.mm-answers.yaml | grep -qx 'box: true'"
 check "services.yaml is the host's, not the box's" cmp "$BX/services.yaml" "$RB/services.yaml"
 check "restore made its own commit over the box's history, and no hook of the box's ran" bash -c "git -C '$RB' log -1 --format=%s | grep -q \"host's record\" && ! test -e '$T/hook-ran'"
