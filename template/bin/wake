@@ -23,7 +23,8 @@
 // reconcile pass, default 60000), WAKE_RESUME_MS (at most one start per role per this, default 600000), WAKE_IDLE_CLOSE_MS
 // (default 1800000 = 30 min; 0 = never close), WAKE_LEASE_MS (a claim with no update for this expires, default 1800000),
 // WAKE_CAP (the project's cap; else `wake.cap` in mm's config.yaml), WAKE_TRIES (3), WAKE_RETRY_MS (2000), WAKE_SOON_MS
-// (a pass this soon after an event, 1000). Paseo: bin/lib/paseo.mjs (its SDK, else the CLI: PASEO_BIN, PASEO_URL,
+// (a pass this soon after an event, 1000), WAKE_SETTLE_MS (a block is routed this long after it, on the item as it is
+// then, 1500). Paseo: bin/lib/paseo.mjs (its SDK, else the CLI: PASEO_BIN, PASEO_URL,
 // PASEO_NO_SDK=1).
 // Person runs (sy-q8fv; see personRuns() below): a run made for one person on their own Claude token (mm run-as) that
 // the Paseo daemon held before it restarted is archived, and wake, when `wake.person_runs` is on, starts each lead as one
@@ -241,7 +242,8 @@ function messageRoute(e, byLead = false) {
 //   blocked     bd update <id> -s blocked     wakes the item's Accountable role (its act: activity), else the board's Lead
 //                                             (roles.json `lead`), else labels needs-you; an item labelled upstream:*
 //                                             wakes nobody (it waits on the system board's answer, bin/upstream there);
-//                                             no answer for 24 h: needs-you (upstreamWaits())
+//                                             no answer for 24 h: needs-you (upstreamWaits()); read on the item as it
+//                                             is WAKE_SETTLE_MS later (bd writes the label after the status, sy-w4te)
 //   dependency  bd dep add <id> <other>       wakes <other>'s assignee
 //   reopen      bd reopen <id>                wakes <id>'s assignee (the board's Lead when that is the writer itself)
 //   done        bd close <id>                 wakes nobody (closing tells the RACI's Informed roles, once)
@@ -254,6 +256,8 @@ const seen = new Map() // item id -> { assignee, status } as of the last event (
 const REFUSED = /(^|\n)bd: refused: /
 const bdRun = (args, what) => execFile(path.join(P, 'bin/bd'), [...args, '--actor', 'wake'], { cwd: path.join(P, 'control'), timeout: 20000 },
   (err, _o, errOut) => err && (REFUSED.test(String(errOut || '')) ? olog('warn', `${what} refused by bd: ${clip(String(errOut), 200)}`) : log(`${what} failed:`, clip(err.message, 200))))
+// how long a block waits before wake reads the item as it is now (its other writes of one bd call land meanwhile)
+const SETTLE = Number(process.env.WAKE_SETTLE_MS || 1500), sleepMs = (ms) => new Promise((r) => setTimeout(r, ms))
 const KINDS = { handoff: 'HANDOFF', blocked: 'BLOCKED', dependency: 'DEPENDENCY', reopen: 'REOPEN' }
 function transition(e, byLead) {
   const woke = new Set(), id = e.issue_id, i = e.issue, was = seen.get(id)
@@ -265,10 +269,10 @@ function transition(e, byLead) {
     count('mm_wake_signals_total', { kind: KINDS[kind] })
     note(role, id, reason, byLead, 'talk', [...text, ...more]); woke.add(role); log(`${KINDS[kind]} on ${id} by ${writer}: waking ${role}`); return true
   }
-  const needsYou = (kind, why, card) => {
+  const needsYou = (kind, why, card, ls = labels) => {
     count('mm_wake_signals_total', { kind: KINDS[kind] })
     log(`${KINDS[kind]} on ${id} by ${writer}: ${why}; asking the owner (needs-you)`)
-    if (!labels.includes('needs-you')) askOwner(id, card)
+    if (!ls.includes('needs-you')) askOwner(id, card)
   }
   if (e.op === 'dep_add') { // `bd dep add <id> <target>`: <id> now waits on <target>
     const ref = e.dep?.target
@@ -286,17 +290,28 @@ function transition(e, byLead) {
     else if (i.assignee !== writer && !SYSTEM.includes(i.assignee)) needsYou('handoff', `handed to ${i.assignee} (a person)`, { What: `${by} handed ${id} to ${asg}, a person`,
       Why: 'A lead gave it to a person, not to a role, so a person acts next', You: 'Check: its latest comments, then act on it or hand it back to a role' })
   }
-  if (i.status === 'blocked' && was.status !== 'blocked' && labels.some((l) => l.startsWith('upstream:'))) {
+  const upstream = (ls) => ls.filter((l) => l.startsWith('upstream:'))
+  const waitsUp = (ls) => log(`BLOCKED on ${id} by ${writer}: ${upstream(ls).join(', ')}: waits on the system board; nobody woken`)
+  if (i.status === 'blocked' && was.status !== 'blocked' && upstream(labels).length) {
     // it waits on the system board (the upstream channel): nobody here can unblock it, and it is not the human's; the
     // answer comes back as a comment by mm-upstream, which wakes the assignee
-    log(`BLOCKED on ${id} by ${writer}: ${labels.filter((l) => l.startsWith('upstream:')).join(', ')}: waits on the system board; nobody woken`)
+    waitsUp(labels)
   } else if (i.status === 'blocked' && was.status !== 'blocked') {
-    const act = labels.find((l) => l.startsWith('act:'))?.slice(4)
-    const acc = Object.entries(raci().find((x) => x.id === act)?.raci || {}).find(([r, l]) => l.includes('A') && ROLES.includes(r) && r !== self)?.[0]
-    const target = acc || (BOARD_LEAD !== self ? BOARD_LEAD : null)
-    if (!target || !to('blocked', target, `BLOCKED: ${by} set ${id} to blocked (assignee ${asg}). Read why on the item; help unblock it, or route it to who can.`)) needsYou('blocked', 'no lead to route it to', {
-      What: `${by} set ${id} to blocked, and no other lead can take it`, Why: 'Its activity names no Accountable role, and the board\'s Lead set it or there is none',
-      You: 'Reply: what unblocks it? (Read why on the item; or unblock it yourself.)' })
+    // `bd update <id> --add-label upstream:x -s blocked` is two events, the status first and without the label (sy-w4te);
+    // a replay after a restart can show the old block too. So the item is read as it is now, a moment later: an upstream
+    // label it has now waits on the system board (upstreamWaits() keeps the 24 h rule), and a block that no longer holds
+    // asks nobody. If the read fails, the event's own labels decide.
+    sleepMs(SETTLE).then(() => bd(`/v0/beads/issues/${encodeURIComponent(id)}`)).catch(() => null).then((d) => {
+      const cur = d?.id === id ? d : null, ls = cur ? cur.labels || [] : labels
+      if (cur && cur.status !== 'blocked') return log(`BLOCKED on ${id} by ${writer}: no longer blocked (${actorName(cur.status)}); nobody woken`)
+      if (upstream(ls).length) return waitsUp(ls)
+      const act = ls.find((l) => l.startsWith('act:'))?.slice(4)
+      const acc = Object.entries(raci().find((x) => x.id === act)?.raci || {}).find(([r, l]) => l.includes('A') && ROLES.includes(r) && r !== self)?.[0]
+      const target = acc || (BOARD_LEAD !== self ? BOARD_LEAD : null)
+      if (!target || !to('blocked', target, `BLOCKED: ${by} set ${id} to blocked (assignee ${asg}). Read why on the item; help unblock it, or route it to who can.`)) needsYou('blocked', 'no lead to route it to', {
+        What: `${by} set ${id} to blocked, and no other lead can take it`, Why: 'Its activity names no Accountable role, and the board\'s Lead set it or there is none',
+        You: 'Reply: what unblocks it? (Read why on the item; or unblock it yourself.)' }, ls)
+    }).catch((err) => log(`BLOCKED on ${id}: ${err.message}`))
   }
   if (was.status === 'closed' && i.status !== 'closed') {
     let role = i.assignee
