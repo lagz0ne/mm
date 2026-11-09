@@ -1,6 +1,9 @@
 // Types for message.mjs (an identical copy of template/bin/lib/message.mjs; test/message.mjs keeps them equal).
 export declare const MAX: number
 export declare const REVIEWER: string
+export declare const SETUP: string
+export declare const SETUP_BRIEF: string
+export declare function messageRoles(roleIds: readonly string[] | string[] | undefined | null, hasSetup: boolean): string[]
 export declare const MAX_EXPECT_WORDS: number
 export declare const INTENTS: Record<string, { says: string; req: string[]; opt: string[]; expect: 'role' | 'none' | 'any' | 'no' }>
 export declare const WAITING: string[]

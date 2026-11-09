@@ -17,6 +17,7 @@ import { waitingFor } from './waiting.mjs'
 import { designsApi } from './designs.mjs'
 import { headRefusal, isNonGoAsk, parseCard, SIGNED_HEAD } from '../bin/lib/owner-card.mjs'
 import { readGlossary } from '../bin/lib/glossary.mjs'
+import { SETUP_BRIEF } from '../bin/lib/message.mjs'
 import * as P_ from '../bin/lib/paseo.mjs'
 import { bridgeSocket, ITEM, loadConf } from '../bin/lib/ledger.mjs'
 
@@ -434,7 +435,7 @@ async function sendMeta(res) {
     try { personas = JSON.parse(readText('leads/personas.json') || 'null') } catch {}
     let raci = null
     try { raci = JSON.parse(readText('leads/raci.json') || 'null') } catch {}
-    send(res, 200, { project: PROJECT, leads: l, states, creators: meta.creators, last: meta.last, personas, roles: ROLE_DEFS, raci, panels: PANELS })
+    send(res, 200, { project: PROJECT, leads: l, states, creators: meta.creators, last: meta.last, personas, roles: ROLE_DEFS, setup: readText(SETUP_BRIEF) !== null, raci, panels: PANELS })
   } catch (e) { send(res, 502, { title: 'meta failed', detail: e.message }) }
 }
 

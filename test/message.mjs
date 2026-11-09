@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { dueAt, MAX, openWaits, parseMessage } from '../template/bin/lib/message.mjs'
+import { dueAt, MAX, messageRoles, openWaits, parseMessage, SETUP_BRIEF } from '../template/bin/lib/message.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 let pass = 0, fail = 0
@@ -232,7 +232,41 @@ const run = (args, input, env = {}) => spawnSync(process.execPath, [path.join(D,
   show([])
   r = run(['waits', 'sy-9'])
   ok('waits: no activity: LATE, as before', /· LATE/.test(r.stdout), r.stdout + r.stderr)
+
+  // the board's setup agent (sy-0ggd): a message may address it when the board has setup/CLAUDE.md
+  const ASK_SETUP = EX.ask.replace('ASK → ops', 'ASK → setup').replace('Expect: ops:', 'Expect: setup:')
+  r = run(['check', '-'], ASK_SETUP)
+  ok('no setup/ here: ASK → setup is refused (not a role)', r.status === 1 && /ASK → setup: an ASK goes to a role \(ops, review, platform\)/.test(r.stderr), r.stderr)
+  r = run(['check', '-'], EX.handoff.replace('Expect: review:', 'Expect: setup:'))
+  ok('...and an Expect naming setup', r.status === 1 && /Expect names "setup", not a role/.test(r.stderr), r.stderr)
+  r = gate('platform', ['comments', 'add', 'sy-1', ASK_SETUP])
+  ok('...the gate refuses it from a lead', r.status === 1 && /refused/.test(r.stderr), r.stderr)
+  fs.mkdirSync(path.join(D, 'setup')); fs.writeFileSync(path.join(D, 'setup/CLAUDE.md'), '# Setup\n')
+  r = run(['check', '-'], ASK_SETUP)
+  ok('with setup/CLAUDE.md: ASK → setup is valid', r.status === 0 && /ASK → setup/.test(r.stdout), r.stderr)
+  r = gate('platform', ['comments', 'add', 'sy-1', ASK_SETUP])
+  ok('...the gate passes it from a lead', r.status === 0, r.stderr)
+  r = run(['check', '-'], EX.handoff.replace('HANDOFF → review', 'HANDOFF → setup').replace('Expect: review:', 'Expect: setup:'))
+  ok('...a HANDOFF → setup too', r.status === 0, r.stderr)
+  r = gate('setup', ['comments', 'add', 'sy-1', 'free text'])
+  ok('...setup is still no lead: its own free text is exempt', r.status === 0, r.stderr)
+  r = gate('setup/x', ['comments', 'add', 'sy-1', 'free text'])
+  ok('...as is setup/<name>', r.status === 0, r.stderr)
+  fs.writeFileSync(path.join(D, 'item.json'), JSON.stringify([{ id: 'sy-9', labels: [], comments: [{ author: 'platform', text: ASK_SETUP, created_at: old }] }]))
+  r = run(['waits', 'sy-9'])
+  ok('...waits: the ASK waits on setup', /#1 ASK platform → setup: .* · LATE/.test(r.stdout), r.stdout + r.stderr)
+  fs.rmSync(path.join(D, 'setup'), { recursive: true })
+  r = run(['waits', 'sy-9'])
+  ok('...without setup/: nothing waits (the ASK is no valid message)', /sy-9: nothing waits/.test(r.stdout), r.stdout + r.stderr)
 }
+
+step('messageRoles: the roles, and setup when the board has it')
+ok('with setup', messageRoles(ROLES, true).join(',') === 'ops,review,platform,setup')
+ok('without setup', messageRoles(ROLES, false).join(',') === 'ops,review,platform')
+ok('setup listed already (wake\'s list) and no setup agent: dropped', messageRoles([...ROLES, 'setup'], false).join(',') === 'ops,review,platform')
+ok('...and with one: once', messageRoles([...ROLES, 'setup'], true).join(',') === 'ops,review,platform,setup')
+ok('no roles file', messageRoles(undefined, true).join(',') === 'setup')
+ok('SETUP_BRIEF is the brief bin/lead starts setup from', SETUP_BRIEF === 'setup/CLAUDE.md' && /DIR=\$P\/setup/.test(fs.readFileSync(path.join(SRC, 'template/bin/lead'), 'utf8')) && fs.existsSync(path.join(SRC, 'template', SETUP_BRIEF)))
 fs.rmSync(D, { recursive: true, force: true })
 
 console.log(`\n${pass} passed, ${fail} failed`)

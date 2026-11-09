@@ -1,5 +1,6 @@
 import type { Issue, LeadState } from './api'
 
+import { messageRoles } from './message.mjs'
 import { setPersonaRoles } from './persona'
 
 export interface RoleDef { id: string; title: string; initial: string; color: string; workers?: boolean; summary?: string }
@@ -7,8 +8,11 @@ export interface RoleDef { id: string; title: string; initial: string; color: st
 export const ROLES: string[] = []
 export const ROLE_LABEL: Record<string, string> = { '': 'Unassigned' }
 export let ROLE_DEFS: RoleDef[] = []
-export function setRoleDefs(defs: RoleDef[] | undefined) {
+// Whom a message may address (message.mjs messageRoles): the roles, and setup when the board has it (/api/meta `setup`).
+export const MESSAGE_ROLES: string[] = []
+export function setRoleDefs(defs: RoleDef[] | undefined, hasSetup = false) {
   if (!defs?.length) return
+  MESSAGE_ROLES.splice(0, MESSAGE_ROLES.length, ...messageRoles(defs.map((d) => d.id), hasSetup))
   ROLE_DEFS = defs
   ROLES.splice(0, ROLES.length, ...defs.map((d) => d.id))
   for (const k of Object.keys(ROLE_LABEL)) if (k) delete ROLE_LABEL[k]

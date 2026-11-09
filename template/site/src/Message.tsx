@@ -3,7 +3,7 @@
 // comment that is not a valid message shows as text. And "Waits on": the item's ASKs and HANDOFFs with no answer yet.
 import { Markdown } from '@/Markdown'
 import { cn } from '@/lib/utils'
-import { ROLES } from '@/lib/board'
+import { MESSAGE_ROLES } from '@/lib/board'
 import { openWaits, parseMessage, type Message } from '@/lib/message.mjs'
 
 const TAG: Record<string, string> = {
@@ -24,7 +24,7 @@ export function IntentTag({ intent, className }: { intent: string; className?: s
 /** One comment: a valid message as its parts; anything else (a person's words, the system's, an older comment) as text. */
 export function CommentBody({ text, author, onRef, className }: { text: string; author: string; onRef: (n: number) => void; className?: string }) {
   // a VERDICT not written by review shows as text (review sy-0gsw #8: only review writes one)
-  const m: Message = parseMessage(text, { roles: ROLES, author })
+  const m: Message = parseMessage(text, { roles: MESSAGE_ROLES, author })
   if (!m.ok) return <Markdown className={className} onRef={onRef}>{text}</Markdown>
   const rest = m.intent === 'NOTE' ? m.text.split('\n').slice(1).join('\n').trim() : ''
   const keys = Object.keys(m.keys).filter((k) => k !== 'Head')
@@ -58,7 +58,7 @@ export function CommentBody({ text, author, onRef, className }: { text: string; 
 
 /** "Waits on": each ASK or HANDOFF on the item that no later message answers (re #n), whom it waits on, by when. */
 export function WaitsOn({ comments, onRef }: { comments: { author: string; text: string; created_at: string }[]; onRef: (n: number) => void }) {
-  const waits = openWaits(comments, { roles: ROLES })
+  const waits = openWaits(comments, { roles: MESSAGE_ROLES })
   if (!waits.length) return null
   return (
     <ul className="mb-3 grid gap-1 border-l-2 border-amber-500 bg-amber-50 px-3 py-2 text-xs dark:bg-amber-950/30" aria-label="Waits on" data-waits={waits.length}>

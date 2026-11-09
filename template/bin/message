@@ -8,6 +8,8 @@
 //                                   comment by a lead that is not a valid message. Any other actor (wake, watchdog,
 //                                   bridge, mm-upstream, a person) and any other call: exit 0. --author does not change
 //                                   who writes. --stdin is refused for a lead: write the text to a file (-f).
+// A message may address a role, or setup when the board has its setup agent (setup/CLAUDE.md; messageRoles, sy-0ggd).
+// Setup is no lead: its own comments pass the gate unread.
 // The words of a message follow the writing rules (sy-ko6r; bin/lib/writing.mjs, the glossary glossary.yaml and
 // glossary.local.yaml, the word list bin/lib/words.txt): before the glossary's refuse_from (or with none) a problem is a
 // warning on stderr and the comment goes through; from that day on the gate refuses it. A person's comment is not read.
@@ -16,7 +18,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readGlossary } from './lib/glossary.mjs'
-import { FORMAT, openWaits, parseMessage } from './lib/message.mjs'
+import { FORMAT, SETUP_BRIEF, messageRoles, openWaits, parseMessage } from './lib/message.mjs'
 import { sayWriting } from './lib/writing.mjs'
 import { actOf, noInputOk, rowOf } from './lib/raci.mjs'
 
@@ -27,6 +29,8 @@ function roles() {
   try { const j = JSON.parse(fs.readFileSync(path.join(P, 'leads', 'roles.json'), 'utf8')); return (j.roles || []).map((r) => r?.id).filter((x) => typeof x === 'string') }
   catch { return [] }
 }
+/** Whom a message may address: the roles, and setup when the board has its setup agent (setup/CLAUDE.md; sy-0ggd). */
+const addressed = () => messageRoles(roles(), fs.existsSync(path.join(P, SETUP_BRIEF)))
 /** The writing check's setting: the board's glossary (both files) and the word list. */
 function writing() {
   const g = readGlossary((f) => { try { return fs.readFileSync(path.join(P, f), 'utf8') } catch { return null } })
@@ -60,7 +64,7 @@ function comments(id) {
 const VALUED = new Set(['--actor', '--db', '--database', '-C', '--directory', '-f', '--file', '-a', '--author', '--dolt-auto-commit', '--cpu-profile-file', '--mem-profile'])
 function gate(actor, argv) {
   const RS = roles()
-  if (!RS.includes(String(actor).split('/')[0])) process.exit(0) // not a lead: wake, watchdog, bridge, a person
+  if (!RS.includes(String(actor).split('/')[0])) process.exit(0) // not a lead: setup, wake, watchdog, bridge, a person
   const pos = [], text = []
   let file = null, stdin = false
   for (let k = 0; k < argv.length; k++) {
@@ -85,7 +89,7 @@ function gate(actor, argv) {
   if (file !== null) { try { body = fs.readFileSync(file, 'utf8') } catch { no(`cannot read -f ${file}`) } }
   else body = [...words, ...text].join(' ')
   const w = writing()
-  const r = parseMessage(body, { roles: RS, author: actor, writing: w })
+  const r = parseMessage(body, { roles: addressed(), author: actor, writing: w })
   if (!r.ok) no(`${r.found ? `this ${r.intent} is invalid` : 'it is not a message'}:\n${say(r)}`)
   warn(r, w)
   process.exit(0)
@@ -101,13 +105,13 @@ if (cmd === 'check') {
     text = c.text; author = String(c.author ?? ''); what = `${rest[0]} #${rest[1]}`
   } else die('usage: message check - | message check <id> <n>')
   const w = writing()
-  const r = parseMessage(text, { roles: roles(), author, writing: w })
+  const r = parseMessage(text, { roles: addressed(), author, writing: w })
   if (r.ok) { console.log(`message ok (${r.intent} → ${r.to})`); warn(r, w); process.exit(0) }
   console.error(`message: ${what} is ${r.found ? `an invalid ${r.intent}` : 'not a message'}:\n${say(r)}\nThe format: ${FORMAT}.`)
   process.exit(1)
 } else if (cmd === 'waits') {
   if (rest.length !== 1) die('usage: message waits <id>')
-  const all = openWaits(comments(rest[0]), { roles: roles() }), r = row(shown.labels)
+  const all = openWaits(comments(rest[0]), { roles: addressed() }), r = row(shown.labels)
   // an ASK to a role that is only C in the item's RACI row (sy-lusk): no answer by By is "no input"; it blocks nothing
   const w = all.filter((x) => !(x.late && noInputOk(r, x.role, x.intent)))
   if (!w.length) console.log(`${rest[0]}: nothing waits`)
