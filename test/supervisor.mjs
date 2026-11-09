@@ -4,7 +4,7 @@
 // is opened twice, each clears and closes; a comment, a commit or an agent turn each keeps an item from stalling; a
 // failing source, a lost state file and an item closed by someone. Hermetic: temp folder only; nothing live is touched.
 //   node test/supervisor.mjs            exit 0 = every check passed
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
@@ -704,6 +704,59 @@ step('run 9p (+540..555 min): the gates\' history: a flaky and a slow suite, one
   ok('exit 0', (await supervise()) === 0)
   ok('the history shows neither any more (a passed, b fast): both cleared and closed', !openOf('suite:test/a.mjs') && !openOf('suite:test/b.sh') && byKey('suite:test/b.sh')[0].status === 'closed')
   fs.rmSync(HIST)
+}
+
+step('run 9q (+560..580 min): the nightly gates run (bin/nightly-gates --run, a stub test/gates): a failed night is ONE P1 to platform with its files, a passing one closes it (sy-sbjh.5)')
+{
+  const ND = path.join(T, 'nightly'), NR = path.join(T, 'nightly-repo'), ART = path.join(T, 'artifact.calls')
+  fs.copyFileSync(path.join(SRC, 'template/profiles/system/bin/nightly-gates'), path.join(SYS, 'bin/nightly-gates'))
+  fs.writeFileSync(path.join(T, 'artifact'), `#!/bin/sh\necho "$BEADS_ACTOR $*" >>"${ART}"\n`, { mode: 0o755 })
+  fs.writeFileSync(path.join(T, 'nmm'), `#!/bin/sh\n[ "$1 $2 $3" = "config get gates.repo" ] && { echo "${NR}"; exit 0; }\nexit 1\n`, { mode: 0o755 })
+  repo(NR)
+  // the stub test/gates: a result file as test/gates writes it; the suites that fail: <T>/nightly.fail (one per line)
+  fs.mkdirSync(path.join(NR, 'test'))
+  fs.writeFileSync(path.join(NR, 'test/gates'), `#!/bin/sh
+out=$4; logs=\${out%.txt}.logs; mkdir -p "$logs"; h=$(git rev-parse main); rc=0
+{ echo "head: $h init"; echo "range: --all main"; echo "result: x"; echo
+  echo "test/a.sh  hermetic  passed  1 ok, 0 FAIL  1s  $logs/a.sh.log"
+  if [ -f "${T}/nightly.fail" ]; then while read -r s; do echo "boom in $s" >"$logs/$s.log"; echo "test/$s  docker  failed (exit 1, again alone)  -  9s  $logs/$s.log"; done <"${T}/nightly.fail"; fi
+} >"$out"
+[ -s "${T}/nightly.fail" ] && exit 1; exit 0
+`, { mode: 0o755 })
+  const night = () => spawnSync('node', [path.join(SYS, 'bin/nightly-gates'), '--run'], { encoding: 'utf8', cwd: SYS, env: { ...ENV, MM_BIN: path.join(T, 'nmm'), MM_GATES_NIGHTLY: ND, NIGHTLY_NOW: String(clock) } })
+  Object.assign(ENV, { MM_GATES_NIGHTLY: ND, SUPERVISOR_ARTIFACT: path.join(T, 'artifact') })
+  const arts = () => (fs.existsSync(ART) ? fs.readFileSync(ART, 'utf8').trim().split('\n') : [])
+  const sha7 = git(NR, ['rev-parse', '--short=7', 'main']).trim()
+
+  clock = T0 + 560 * MIN
+  ok('no nightly run yet (no last.json): no finding', (await supervise()) === 0 && !openOf('nightly:gates'))
+  fs.writeFileSync(path.join(T, 'nightly.fail'), 'clean-box.sh\nrestore-drill.sh\n')
+  let n = night()
+  ok('a failed night: the job exits 1', n.status === 1, n.stdout + n.stderr)
+  clock = T0 + 565 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  const N = openOf('nightly:gates')
+  ok(`ONE item: "Nightly gates failed on main@${sha7}: clean-box.sh, restore-drill.sh", P1, to platform, act:mm-template`, byKey('nightly:gates').length === 1 && N?.title === `Nightly gates failed on main@${sha7}: clean-box.sh, restore-drill.sh` && N.priority === 1 && N.assignee === 'platform' && N.labels.includes('act:mm-template'), N)
+  ok('its result file and the failed logs attached, as the watchdog (artifact <id> <result> <failed>)', arts().length === 1 && new RegExp(`^watchdog ${N?.id} ${ND}/nightly-\\S+-${sha7}\\.txt ${ND}/nightly-\\S+-${sha7}-failed\\.txt$`).test(arts()[0]), arts())
+  clock = T0 + 570 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('the next pass: not duplicated, no comment, attached once', byKey('nightly:gates').length === 1 && openOf('nightly:gates').comments.length === 0 && arts().length === 1)
+  // the next night: main moved, another suite fails
+  write(path.join(NR, 'c.txt'), 'c\n', clock); git(NR, ['add', 'c.txt']); git(NR, ['commit', '-qm', 'more'])
+  const sha7b = git(NR, ['rev-parse', '--short=7', 'main']).trim()
+  fs.writeFileSync(path.join(T, 'nightly.fail'), 'auth-e2e.sh\n')
+  clock = T0 + 572 * MIN; night()
+  clock = T0 + 575 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  const N2 = openOf('nightly:gates')
+  ok(`another failed night: the same item, retitled (main@${sha7b}: auth-e2e.sh), one comment, its files attached`, byKey('nightly:gates').length === 1 && N2?.id === N.id && N2.title === `Nightly gates failed on main@${sha7b}: auth-e2e.sh` && N2.comments.length === 1 && /failed: test\/auth-e2e\.sh/.test(N2.comments[0].text) && arts().length === 2 && arts()[1].includes(sha7b), { title: N2?.title, arts: arts() })
+  fs.rmSync(path.join(T, 'nightly.fail'))
+  n = night()
+  ok('a passing night: the job exits 0', n.status === 0, n.stdout + n.stderr)
+  clock = T0 + 580 * MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('...the item is cleared and closed; no new one', !openOf('nightly:gates') && byKey('nightly:gates').length === 1 && byKey('nightly:gates')[0].status === 'closed' && /Cleared/.test(byKey('nightly:gates')[0].comments.at(-1).text))
+  delete ENV.MM_GATES_NIGHTLY; delete ENV.SUPERVISOR_ARTIFACT
 }
 
 step('run 10: the board is down: exit non-zero, nothing written')

@@ -1,0 +1,97 @@
+#!/usr/bin/env node
+// nightly-gates — every suite of mm's gates on mm's main, once a night (sy-sbjh.5; profile system, under mm cron every
+// 10 min). The heavy Docker and live suites run on a head only when its files map to them (test/gates.map); this run
+// is where all of them run, every night.
+// Settings (mm config):
+//   gates.repo      mm's repo (a git checkout); its `main` is what runs. Unset: a log line, nothing runs.
+//   gates.nightly   the hour, "HH:MM" local time (default 03:00); "off": never.
+// Each pass: once today's slot has passed and no run started since it, it starts one, detached (`nightly-gates --run`),
+// and exits at once (mm cron ends a job after 5 min; the whole run takes hours). A run still going: none beside it.
+// First seen (no state): it waits for the next slot, as mm cron does for a daily job.
+// --run: in the repo, `test/gates --all main --out <dir>/nightly-<date>-<sha7>.txt` (one run under the gates' run lock;
+// the mm it needs is built by test/gates in its own throwaway folder, never dist/), then <dir>/last.json:
+//   { head, sha7, date, code, failed: [suites], result, failedLogs, error }
+// failedLogs: the last lines of each failed suite's log, one file. The Supervisor reads last.json (key nightly:gates):
+// a failed night opens or updates ONE P1 item for platform, with both files as its artifacts; a passing night closes it.
+// <dir>: $MM_GATES_NIGHTLY, else ~/.cache/mm-gates/nightly; state.json there: { last (ms), pid, start }. The last 14
+// nights' files are kept. Env (tests): NIGHTLY_NOW (ms), MM_BIN.
+import { spawn, spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { cli } from './lib/obs.mjs'
+
+cli('nightly-gates')
+const E = process.env
+const HOME = E.HOME || os.homedir()
+const DIR = E.MM_GATES_NIGHTLY || path.join(HOME, '.cache', 'mm-gates', 'nightly')
+const STATE = path.join(DIR, 'state.json'), LAST = path.join(DIR, 'last.json')
+const MM = E.MM_BIN || 'mm'
+const KEEP = 14, TAIL = 60
+const say = (s) => console.log(`nightly-gates: ${s}`)
+const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return null } }
+const writeJson = (f, o) => { const t = `${f}.tmp-${process.pid}`; fs.writeFileSync(t, JSON.stringify(o, null, 1) + '\n'); fs.renameSync(t, f) }
+const conf = (k) => { const r = spawnSync(MM, ['config', 'get', k], { encoding: 'utf8', timeout: 30000 }); return r.status === 0 ? r.stdout.trim() : '' }
+const procStart = (pid) => { try { const s = fs.readFileSync(`/proc/${pid}/stat`, 'utf8'); return s.slice(s.lastIndexOf(')') + 2).split(' ')[19] || '' } catch { return '' } }
+const alive = (st) => { const pid = Number(st?.pid); if (!Number.isInteger(pid) || pid <= 0) return false
+  try { process.kill(pid, 0) } catch (e) { if (e.code !== 'EPERM') return false }
+  return !st.start || procStart(pid) === String(st.start) }
+
+const repo = (conf('gates.repo') || '').replace(/^~(?=\/|$)/, HOME)
+if (!repo) { say('gates.repo is not set (mm config set gates.repo <mm\'s repo>): no nightly run'); process.exit(0) }
+if (!fs.existsSync(path.join(repo, 'test', 'gates'))) { say(`gates.repo ${repo} has no test/gates: no nightly run`); process.exit(1) }
+fs.mkdirSync(DIR, { recursive: true })
+
+if (process.argv[2] === '--run') process.exit(run())
+
+// --- the pass under mm cron: is a run due? ---
+const at = conf('gates.nightly') || '03:00'
+if (at === 'off') { say('gates.nightly is off: no nightly run'); process.exit(0) }
+const m = /^(\d{1,2}):(\d{2})$/.exec(at)
+if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) { say(`gates.nightly "${at}" is not HH:MM (or off)`); process.exit(1) }
+const now = Number(E.NIGHTLY_NOW) || Date.now()
+const slot = new Date(now); slot.setHours(Number(m[1]), Number(m[2]), 0, 0)
+const st = readJson(STATE) || {}
+if (st.last === undefined) { writeJson(STATE, { last: now }); say(`first pass: the first run at the next ${at}`); process.exit(0) }
+if (now < slot.getTime() || st.last >= slot.getTime()) process.exit(0) // not yet, or done today
+if (alive(st)) { say(`the run started ${new Date(st.last).toISOString()} (pid ${st.pid}) still runs: none beside it`); process.exit(0) }
+const logf = path.join(DIR, `nightly-${new Date(now).toISOString().slice(0, 10)}.log`)
+const fd = fs.openSync(logf, 'a')
+const c = spawn(process.execPath, [fileURLToPath(import.meta.url), '--run'], { detached: true, stdio: ['ignore', fd, fd], env: E })
+c.unref(); fs.closeSync(fd)
+writeJson(STATE, { last: now, pid: c.pid, start: procStart(c.pid) })
+say(`started test/gates --all main in ${repo} (pid ${c.pid}; ${logf})`)
+process.exit(0)
+
+// --- the run (detached) ---
+function run() {
+  const date = new Date(Number(E.NIGHTLY_NOW) || Date.now()).toISOString().slice(0, 10)
+  const sha = spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', 'main^{commit}'], { encoding: 'utf8' }).stdout.trim()
+  if (!sha) { writeJson(LAST, { date: new Date().toISOString(), code: 2, failed: [], error: `${repo} has no main` }); say(`${repo} has no main`); return 2 }
+  const out = path.join(DIR, `nightly-${date}-${sha.slice(0, 7)}.txt`)
+  say(`test/gates --all main (${sha.slice(0, 7)}) -> ${out}`)
+  const r = spawnSync('sh', [path.join(repo, 'test', 'gates'), '--all', 'main', '--out', out], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 })
+  process.stdout.write(r.stdout || ''); process.stderr.write(r.stderr || '')
+  const code = r.status ?? 1
+  const res = fs.existsSync(out) ? fs.readFileSync(out, 'utf8') : ''
+  const head = /^head: ([0-9a-f]{40})/m.exec(res)?.[1] || sha
+  // each failed suite's line: "<suite>  <group>  failed (...)  ...  <log>"; its log's last lines into one file
+  const failed = [], tails = []
+  for (const l of res.split('\n')) {
+    const f = /^(test\/\S+)\s+\S+\s+failed\b.*\s(\S+)$/.exec(l)
+    if (!f) continue
+    failed.push(f[1])
+    let t = ''; try { t = fs.readFileSync(f[2], 'utf8').replace(/\n$/, '').split('\n').slice(-TAIL).join('\n') } catch { t = '(no log)' }
+    tails.push(`== ${f[1]}: the last ${TAIL} lines of ${f[2]}\n${t}\n`)
+  }
+  const failedLogs = tails.length ? out.replace(/\.txt$/, '-failed.txt') : null
+  if (failedLogs) fs.writeFileSync(failedLogs, tails.join('\n'))
+  const error = code && !failed.length ? (r.stderr || r.stdout || '').trim().split('\n').slice(-5).join('\n').slice(0, 1000) || `exit ${code}` : undefined
+  writeJson(LAST, { head, sha7: head.slice(0, 7), date: new Date().toISOString(), code, failed, result: res ? out : null, failedLogs, ...(error ? { error } : {}) })
+  // keep the last KEEP nights: older result files, their logs and run logs go
+  const nights = [...new Set(fs.readdirSync(DIR).map((f) => /^nightly-(\d{4}-\d\d-\d\d)/.exec(f)?.[1]).filter(Boolean))].sort()
+  for (const d of nights.slice(0, -KEEP)) for (const f of fs.readdirSync(DIR)) if (f.startsWith(`nightly-${d}`)) fs.rmSync(path.join(DIR, f), { recursive: true, force: true })
+  say(`${code ? `failed (exit ${code})${failed.length ? `: ${failed.join(' ')}` : ''}` : 'passed'}; ${LAST}`)
+  return code
+}
