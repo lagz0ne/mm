@@ -1397,4 +1397,19 @@ setInterval(() => check().catch((e) => log('stream check failed:', e.message)), 
 // the reconcile loop: a first pass right after start (wake itself restarts with the machine), then every RESUME_CHECK
 soon(0)
 setInterval(() => reconcile().catch((e) => log('reconcile:', e.message)), RESUME_CHECK)
+// the leads' memory notes (sy-3wn3): bin/memory-commit commits memory/*.md that passes its checks, one commit per role
+// that wrote them; a note that fails is said once (an error line here). Off with WAKE_MEMORY_MS=0.
+const MEMORY_EVERY = Number(process.env.WAKE_MEMORY_MS ?? 60000)
+let memoryRunning = false
+const memoryPass = () => {
+  if (memoryRunning) return
+  memoryRunning = true
+  execFile(path.join(P, 'bin', 'memory-commit'), [], { cwd: P, timeout: 60000 }, (e, out, err) => {
+    memoryRunning = false
+    for (const l of String(out || '').split('\n').filter(Boolean)) if (!/busy|another pass/.test(l)) olog('info', l)
+    for (const l of String(err || '').split('\n').filter(Boolean)) olog('error', l)
+    if (e && !err) log('memory-commit failed:', e.message)
+  })
+}
+if (MEMORY_EVERY > 0) { setTimeout(memoryPass, 5000); setInterval(memoryPass, MEMORY_EVERY) }
 watch()

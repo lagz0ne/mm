@@ -59,6 +59,7 @@ suite test/lead.sh                hermetic
 suite test/wt-ro-config.sh        hermetic
 suite test/lead-workspace.sh      hermetic
 suite test/memory-links.sh        hermetic
+suite test/memory-commit.sh       hermetic
 suite test/mm-approve.sh          hermetic
 suite test/mm-docker.sh           hermetic
 suite test/mm-home-modes.sh       hermetic
@@ -301,6 +302,7 @@ rule template/bin/lib/gates-file.mjs test/owner-card-bd.sh test/bd-actor.sh test
 rule template/bin/lib/paseo.mjs   test/paseo-refuse.mjs test/lead.sh test/lead-workspace.sh test/npm-lock.sh test/wake-start.mjs test/wake-twoleads.mjs test/wake-ondemand.mjs test/supervisor-workers.mjs test/paseo-lib.mjs
 rule template/bin/lib/run-as.mjs  test/wake-person-runs.mjs test/wake-box-person-runs.mjs test/person-run.sh test/box-person-runs.sh test/paseo-refuse.mjs
 rule template/bin/lib/claude.mjs  test/memory-links.sh test/lead.sh test/person-run.sh test/box-person-runs.sh test/assist.sh test/config-review.mjs
+rule template/bin/lib/memory.mjs  test/memory-commit.sh @settings test/memory-links.sh test/template-base.sh
 rule template/bin/lib/lead-workspace.mjs test/lead-workspace.sh test/lead.sh test/person-run.sh test/box-person-runs.sh
 rule template/bin/lib/places.mjs  test/wake-workers.mjs test/supervisor-workers.mjs test/sysworkers.sh
 rule template/bin/lib/workers.mjs test/wake-workers.mjs test/supervisor-workers.mjs test/sysworkers.sh test/lead.sh test/worker-cleanup.sh
@@ -321,7 +323,7 @@ rule template/bin/artifact        test/artifact.sh test/board-artifacts.mjs test
 rule template/bin/backup          test/backup-data.sh test/sync.sh test/restore.sh test/engine-drift.sh test/clean-box.sh test/restore-drill.sh
 rule template/bin/bd              test/bd-actor.sh test/owner-card-bd.sh test/trace-refused.sh test/init-retry.sh test/bd-autostart.sh test/bd-home.sh test/task.mjs test/message.mjs test/structured.sh test/wake-start.mjs test/wake-signals.mjs test/upstream.mjs
 rule template/bin/bd-quiet        test/bd-autostart.sh test/bd-home.sh test/init-retry.sh
-rule template/bin/config-check    @settings test/memory-links.sh test/template-base.sh test/engine-drift.sh test/update-lock.sh test/assist.sh test/artifact.sh test/glossary.mjs test/api.sh test/lead.sh test/box.sh
+rule template/bin/config-check    @settings test/memory-links.sh test/memory-commit.sh test/template-base.sh test/engine-drift.sh test/update-lock.sh test/assist.sh test/artifact.sh test/glossary.mjs test/api.sh test/lead.sh test/box.sh
 rule template/bin/dolt-ready      test/pc-skipped.sh test/bd-autostart.sh
 rule template/bin/dolt-run        test/dolt-run.sh test/bd-autostart.sh test/bd-home.sh
 rule template/bin/doop-mcp-headers test/denies.sh test/doop.sh
@@ -333,7 +335,8 @@ rule template/bin/land            test/trace-refused.sh test/box.sh
 rule template/bin/lead            test/lead.sh test/worker-cleanup.sh test/lead-workspace.sh test/memory-links.sh test/paseo-refuse.mjs test/person-run.sh test/box-person-runs.sh test/wake-start.mjs test/wake-twoleads.mjs test/wake-ondemand.mjs test/wake-stale-lead.mjs test/sysworkers.sh
 rule template/bin/svc             test/upstream.mjs test/sockets.sh test/engine-drift.sh
 rule template/bin/trace           test/trace-refused.sh test/bd-actor.sh test/owner-card-bd.sh test/span-answers.sh test/bd-home.sh test/task.mjs
-rule template/bin/wake            test/wake-*.mjs test/paseo-refuse.mjs
+rule template/bin/wake            test/wake-*.mjs test/paseo-refuse.mjs test/memory-commit.sh
+rule template/bin/memory-commit   test/memory-commit.sh
 rule template/bin/wt              test/sysworkers.sh test/memory-links.sh test/lead.sh test/wt-ro-config.sh
 rule template/bin/raci            test/raci.mjs test/task.mjs
 rule template/bin/role            test/person-run.sh test/raci.mjs
