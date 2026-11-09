@@ -19,6 +19,8 @@ export type Status = 'ok' | 'warn' | 'fail' | 'skip'
 export interface Check { layer: string; item: string; status: Status; detail: string; fix?: string }
 
 const expand = (p: string) => p.replace(/^~(?=\/|$)/, HOME)
+/** mm's Docker wrapper as the machine installs it (box/mm-docker; the only sudo rule for Docker). */
+const MM_DOCKER_WRAPPER = '/usr/local/libexec/mm-docker'
 /** A board's name in doctor's items (`bd quiet <id>`): system, or <client>/<name>. */
 const boardId = (root: string) => basename(root) === 'system' || root === DIRS.system ? 'system' : basename(dirname(root)) + '/' + basename(root)
 
@@ -371,11 +373,12 @@ export function doctor(): Check[] {
     out.push({ layer: 'access', item: 'tailscale', status: st.ok ? 'ok' : 'warn', detail: st.ok ? 'connected' : 'installed, not connected', fix: st.ok ? undefined : 'sudo tailscale up' })
   }
   if (access === 'domain') {
-    // through mm's own way to Docker (box.docker, e.g. the mm-docker wrapper) when it is set; else plain, then sudo
+    // through mm's own way to Docker (box.docker, e.g. the mm-docker wrapper) when it is set; else plain docker, then
+    // the installed wrapper through sudo (sy-nu5r): never plain `sudo docker` (the host's owner has no general sudo)
     const set = String(process.env.MM_DOCKER || getPath(c, 'box.docker') || '').split(/\s+/).filter(Boolean)
     const ps = (cmd: string[]) => run([...cmd, 'ps', '--format', '{{.Names}}'], { timeoutMs: 10_000 })
     const tr = ps(set.length ? set : ['docker'])
-    const names = tr.ok || set.length ? tr.out : ps(['sudo', '-n', 'docker']).out
+    const names = tr.ok || set.length ? tr.out : existsSync(MM_DOCKER_WRAPPER) ? ps(['sudo', '-n', MM_DOCKER_WRAPPER]).out : ''
     out.push({ layer: 'access', item: 'router', status: /traefik/.test(names) ? 'ok' : 'warn', detail: /traefik/.test(names) ? 'Traefik running (routes <name>.<domain>)' : 'no Traefik container found: public names will not route', fix: /traefik/.test(names) ? undefined : 'domain mode: set up Traefik (Dokploy) on this machine' })
   }
   return out
