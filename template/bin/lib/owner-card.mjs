@@ -26,8 +26,11 @@
 // The structured form (sy-rfup, step 1): a description that starts with a ```mm-card v1 block (bin/lib/structured.mjs;
 // bd card builds it) is checked by its schema (bin/lib/schemas/card.v1.json) and the same rules (t2, Item, the writing
 // check on its text parts; a Reply's question is its first text part), and maps to the same keys; .json is its data.
-// Pure; imports only writing.mjs and structured.mjs: bin/owner-card, bin/bd (through it), the Supervisor, the board's server (waiting.mjs) and, as an
+// A t2 go ask also needs a Rollback and a Safeguard in the item's Task (sy-w5az; task.mjs goTaskRefusal, called by
+// headRefusal); a non-go ask does not.
+// Pure; imports only writing.mjs, structured.mjs and task.mjs (which imports this one back; neither uses the other before a call): bin/owner-card, bin/bd (through it), the Supervisor, the board's server (waiting.mjs) and, as an
 // identical copy, the board's browser code (site/src/lib/owner-card.mjs; test/owner-card.mjs keeps them equal).
+import { goTaskRefusal } from './task.mjs'
 import { writingCheck } from './writing.mjs'
 import { cardKeys, firstText, miscText, readBlock, validate } from './structured.mjs'
 
@@ -154,9 +157,10 @@ function cardBlock(b, labels, id, o) {
  * One check for the bd gate, the board (its label rail, Approve, Not now, the Waiting list) and the bridge.
  * @param {string} description  the item's description
  * @param {Iterable<string>} labels  the item's labels (as they are, or as they will be after the call)
- * @returns {string|null} null: no objection (not t2, already approved, or a go ask whose Head is the head review
- *   signed); else the reason: a non-go ask (NO_GO), a card with no Head (review sy-hzmu #3, no fail-open; no card too),
- *   a Head review did not sign, or a card whose You is no go ask.
+ * @returns {string|null} null: no objection (not t2, already approved, or a go ask whose Task has a Rollback and a
+ *   Safeguard and whose Head is the head review signed); else the reason: a non-go ask (NO_GO), a card with no Head
+ *   (review sy-hzmu #3, no fail-open; no card too), a Head review did not sign, a card whose You is no go ask, or
+ *   (last) a Task without a Rollback or a Safeguard (sy-w5az, task.mjs goTaskRefusal).
  */
 export function headRefusal(description, labels) {
   const ls = [...(labels ?? [])].map(String)
@@ -167,7 +171,8 @@ export function headRefusal(description, labels) {
   if (head === undefined) return `the card names no head (required with t2: - **Head:** <repo>@<sha>)`
   if (!HEAD.test(head)) return `the card's Head is not <repo>@<sha> (card: ${clip(head)})`
   const signed = ls.filter((l) => l.startsWith(SIGNED_HEAD)).map((l) => l.slice(SIGNED_HEAD.length))
-  if (signed.includes(head)) return isGoAsk(card) ? null : 'the card asks for no go: its You does not start with "Tap Approve"'
+  // sy-w5az: the go also needs the Task's Rollback and Safeguard (checked last: the head first, then the Task)
+  if (signed.includes(head)) return isGoAsk(card) ? goTaskRefusal(description) : 'the card asks for no go: its You does not start with "Tap Approve"'
   if (!signed.length) return `review's sign-off names no head (card: ${head})`
   return `the head changed since review's sign-off (card: ${head}, signed: ${signed.map(clip).join(', ')})`
 }

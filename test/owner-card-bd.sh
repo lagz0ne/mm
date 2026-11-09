@@ -42,7 +42,19 @@ T2CARD='## Owner
 - **If yes:** Ops opens the port and tests one alert.
 - **If no:** The alerts stay on the board only.
 - **Risk:** medium, a wrong rule can close a port; the rollback is tested.
-- **Head:** mm@0a1b2c3'
+- **Head:** mm@0a1b2c3
+
+## Task
+- **Task:** Open the mail port to the relay.
+- **Act:** t2-change
+- **Done when:** one alert reaches the relay.
+- **Verify:** the alert test → sent
+- **Rollback:** close the port again with the plan'"'"'s rule.
+- **Safeguard:** none, no access change'
+# the same card, its Task without a Rollback / Safeguard / both (sy-w5az)
+T2NOROLL=$(printf '%s' "$T2CARD" | grep -v '^- \*\*Rollback:')
+T2NOSAFE=$(printf '%s' "$T2CARD" | grep -v '^- \*\*Safeguard:')
+T2NOTASK=$(printf '%s' "$T2CARD" | sed '/^## Task$/,$d')
 # a go ask (You: Tap Approve) without the t2 keys; a non-go ask (sy-t9tg: You: Check:) asks before any head exists
 GOCARD=$(printf '%s' "$CARD" | sed 's/^- \*\*You:\*\* Nothing$/- **You:** Tap Approve/')
 NGCARD='## Owner
@@ -69,6 +81,7 @@ item sy-wrongitem "$(printf '%s' "$CARD" | sed 's|^- \*\*You:\*\* Nothing$|- **Y
 item sy-item "$(printf '%s' "$CARD" | sed 's|^- \*\*You:\*\* Nothing$|- **You:** Tap Approve in Telegram, or press Approve on this item\n- **Item:** https://board-shop.example.org/?item=sy-item|')" '[]'
 printf '%s\n' "$CARD" >"$T/card.md"
 printf 'no card here\n' >"$T/nocard.md"
+printf '%s\n' "$T2CARD" >"$T/t2card.md"
 
 call() { : >"$T/ran"; : >"$T/shows"; (cd "$T/control" && "$T/bin/bd" "$@") >/dev/null 2>"$T/err"; echo $? >"$T/code"; }
 # as an actor other than ops (the default here): only review adds signed-off and signed-head:* (sy-9bss)
@@ -168,6 +181,24 @@ call update sy-hmatch -d "$(printf '%s' "$HCARD" | sed 's/0a1b2c3/9f8e7d6/')" --
 call label add sy-hmatch needs-you;                     check "the signed head is the card's head: passed" passed
 as review update sy-hnone --add-label signed-head:mm@0a1b2c3,needs-you; check "signed-head added in the same call: passed" passed
 as review create "a title" -d "$HCARD" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create with the matching signed-head: passed" passed
+
+echo "== a t2 go ask waits on the owner only with a Rollback and a Safeguard in its Task (sy-w5az)"
+SIGNED_T2='["t2","signed-off","signed-head:mm@0a1b2c3"]'
+item sy-noroll "$T2NOROLL" "$SIGNED_T2"
+item sy-nosafe "$T2NOSAFE" "$SIGNED_T2"
+item sy-notask "$T2NOTASK" "$SIGNED_T2"
+call label add sy-noroll needs-you;                     check "signed head, no Rollback: label add needs-you refused" refused
+check "...the reason names the line" says "the item's Task has no Rollback line: a t2 go needs both"
+check "...and the fix" grep -qF "or none, no access change). Write both lines in the item's Task (bd update <id> --body-file <file>); add needs-you after." "$T/err"
+call update sy-nosafe --add-label needs-you;            check "signed head, no Safeguard: update --add-label needs-you refused" refused
+check "...the reason names the line" says "the item's Task has no Safeguard line"
+call label add sy-notask needs-you;                     check "signed head, no Task at all: refused" refused
+check "...the reason names both" says "the item's Task has no Rollback and no Safeguard line"
+call update sy-notask --body-file "$T/t2card.md" --add-label needs-you; check "...the call's own description adds both: passed" passed
+call update sy-hmatch -d "$T2NOSAFE" --add-label needs-you; check "...the call's own description drops one: refused" refused
+as review create "a title" -d "$T2NOTASK" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create with the signed head, no Task lines: refused" refused
+item sy-ngnotask "$NGCARD" "$SIGNED_T2"
+call label add sy-ngnotask needs-you;                   check "a t2 non-go ask needs neither: passed" passed
 
 echo "== only review signs off: signed-off and signed-head:* (sy-9bss)"
 sorefused() { [ "$(cat "$T/code")" = 1 ] && [ ! -s "$T/ran" ] && grep -q '^bd: refused: only review signs off (signed-off, signed-head:): ask review on the item' "$T/err"; }

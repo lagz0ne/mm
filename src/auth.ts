@@ -984,8 +984,9 @@ function cardOfRow(c: WaitCard | null | undefined) {
   return lines.length ? `<dl class="w-card">${lines.map(([k, label]) => `<div><dt>${label}</dt><dd>${esc(c![k]!)}</dd></div>`).join('')}</dl>` : ''
 }
 /** The one action that fits the You line: a form that POSTs to this host (/s/act), no script. The gateway checks the
- *  person is the owner and asks the board, which checks everything again. A T2 go the board says it would refuse for
- *  the card's head (`refused`, sy-hzmu): the reason instead of Approve and Not now. */
+ *  person is the owner and asks the board, which checks everything again. A T2 go the board says it would refuse
+ *  (`refused`: for the card's head, sy-hzmu; for a Task without a Rollback or a Safeguard, sy-w5az; owner-card.mjs
+ *  headRefusal): the reason instead of Approve and Not now. The gateway never reads the description itself. */
 function actsOf(project: string, id: string, act: WaitAct | undefined, refused?: string) {
   if (!act || act === 'none') return ''
   if (act === 'approve' && refused) return `<p class="w-refused" role="note">No go yet: ${esc(refused)}.</p>`

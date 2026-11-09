@@ -38,8 +38,12 @@ draft from stdin. Write the description to a file and pass `--body-file <file>`.
 - **Done when:** <the visible result>
 - **Verify:** <the exact check> → <the expected output>
 - **Head:** <repo>@<sha>        (when it exists)
+- **Rollback:** <how to undo it>                      (t2 item: required for the go)
+- **Safeguard:** <the lockout safeguard, or "none, no access change">   (t2 item: required for the go)
 ```
-Label the item `act:<Act>` too. The Supervisor lists the open items without a valid Task.
+Label the item `act:<Act>` too. The Supervisor lists the open items without a valid Task. A t2 item's Task has a
+Rollback and a Safeguard: without both, bd refuses `needs-you` on its go ask and the board refuses the go, and each
+says which line is missing.
 
 ## Board CLI: `bd` (on your PATH; your actor is preset to your role, so changes show under your name)
 - `bd ready --assignee <role> --json` (your queue, in priority order) · `bd list --assignee <role> --status in_progress,blocked --json`
@@ -277,10 +281,12 @@ first, and the owner reads only it. The format is fixed:
   `signed-head:<repo>@<sha>` with its sign-off. A new head after the sign-off needs a new sign-off: the board and bd
   refuse the go (and `needs-you`) until then, and say why.
 - **A go ask or another ask.** A t2 card whose `You` is "Tap Approve" asks for the go: it needs If yes, If no, Risk,
-  Head, and review's sign-off before `needs-you`. A t2 card whose `You` is "Check:", "Reply:" or "Nothing" asks the
-  owner something else (e.g. "Check: run ssh admin@host, then sudo -v, and say if it worked"), before any head: those
-  four lines are optional and `needs-you` needs no sign-off, but it never gets an Approve. To ask for the go later,
-  change `You` to "Tap Approve" and follow the go ask's rules.
+  Head, a Rollback and a Safeguard in the item's Task, and review's sign-off before `needs-you`. Without the Rollback
+  or the Safeguard, bd refuses `needs-you` and the board refuses the go (Approve, Not now, the Waiting list). A t2
+  card whose `You` is "Check:", "Reply:" or "Nothing" asks the owner something else (e.g. "Check: run ssh admin@host,
+  then sudo -v, and say if it worked"), before any head: those four lines, and the Task's Rollback and Safeguard, are
+  optional and `needs-you` needs no sign-off, but it never gets an Approve. To ask for the go later, change `You` to
+  "Tap Approve" and follow the go ask's rules.
 - **Edit the card in place** (`bd update ID --body-file <file>`) when the ask changes. Never post it again as a comment.
 - **Plain words** (the ASD-STE100 rules above). No history in the card: what is asked now, and why.
 - **The detail is on the item and in its artifact:** put the path in `Link`.
