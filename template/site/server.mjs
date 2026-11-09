@@ -357,11 +357,27 @@ async function rails(req, apiPath, data) {
   return null
 }
 
+// Closing an item removes needs-you (sy-e234; bin/bd does the same for bd close): the board's Close (POST :close, or a
+// PATCH to status closed) is followed, once bd serve said yes, by one PATCH that removes needs-you, as the same actor,
+// when the item is closed now and still has it. A closed item waits on nobody.
+function closedBy(method, apiPath, data) {
+  const m = /^\/v0\/beads\/issues\/([\w.-]+)(:close)?$/.exec(apiPath)
+  if (!m) return null
+  if (method === 'POST' && m[2]) return m[1]
+  return method === 'PATCH' && !m[2] && data?.patch?.status === 'closed' ? m[1] : null
+}
+async function dropNeedsYou(id, actor) {
+  const it = await fetch(new URL(`/v0/beads/issues/${encodeURIComponent(id)}`, BD)).then((x) => x.json()).catch(() => null)
+  if (it?.status !== 'closed' || !Array.isArray(it.labels) || !it.labels.includes('needs-you')) return
+  const ok = await bdLabels(id, actor, { remove_labels: ['needs-you'] })
+  log(ok ? 'info' : 'warn', `${id} closed by ${actor}: needs-you ${ok ? 'removed' : 'could not be removed'}`, { op: 'close', actor, item: id })
+}
+
 async function proxy(req, res, apiPath, search) {
   if (!ALLOW.some(([m, re]) => m === req.method && re.test(apiPath))) {
     return send(res, 403, { title: 'Not allowed from the board', path: apiPath })
   }
-  let body
+  let body, closing = null, actorOf = null
   if (req.method !== 'GET') {
     let data = {}
     try { data = JSON.parse((await readBody(req)) || '{}') } catch { return send(res, 400, { title: 'Bad JSON' }) }
@@ -370,6 +386,7 @@ async function proxy(req, res, apiPath, search) {
     if (refused) { log('info', `refused on the ${req.gateway ? 'public' : 'local'} side: ${refused}`, { op: 'rails', actor, role: req.gateway?.r, path: apiPath }); return send(res, 403, { title: `Not allowed: ${refused}.` }) }
     if (apiPath.endsWith('/comments')) { data.author = actor; delete data.actor } else { data.actor = actor }
     if (req.method === 'POST' && apiPath === '/v0/beads/issues') data.owner = actor
+    closing = closedBy(req.method, apiPath, data); actorOf = actor
     body = JSON.stringify(data)
   }
   const ps = startSpan(`${req.method} bd-serve${routeOf(apiPath)}`, { 'http.method': req.method, 'url.path': apiPath }, undefined, 3, req.method === 'GET' ? { minMs: 300 } : {})
@@ -384,6 +401,7 @@ async function proxy(req, res, apiPath, search) {
     ps.set('http.status_code', r.statusCode)
     r.on('close', () => ((r.statusCode || 502) >= 500 ? ps.fail(`HTTP ${r.statusCode}`) : ps.end()))
     r.pipe(res)
+    if (closing && r.statusCode >= 200 && r.statusCode < 300) r.on('end', () => dropNeedsYou(closing, actorOf))
   })
   up.on('error', (e) => { ps.fail(e); send(res, 502, { title: 'bd serve unreachable', detail: e.message }) })
   req.on('close', () => up.destroy())
