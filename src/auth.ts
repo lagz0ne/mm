@@ -51,6 +51,15 @@ const short = (s: string) => h(s).slice(0, 6) // what logs carry instead of a to
 const now = () => Date.now()
 const log = (level: string, msg: string, attrs: Record<string, unknown> = {}) =>
   console.log(JSON.stringify({ time: new Date().toISOString(), level, msg, project: 'mm', service: 'auth', ...attrs }))
+// the start, one line per step, so a start that hangs says where (sy-u4oo)
+const START_TIMEOUT_MS = 60e3, BUSY_MS = 5000
+let step = 'starting', watchdog: Worker | undefined
+const startStep = (s: string) => { step = s; watchdog?.postMessage(s); log('info', `mm.auth start: ${s}`, { step: s }) }
+/** The backstop for a start that blocks the thread itself (no timer of ours can run then): a worker that, `ms` after
+ *  it starts, logs the last step it was told and kills the process (a worker's exit ends only the worker). */
+const startWatchdog = (ms: number) => new Worker(URL.createObjectURL(new Blob([`let step = 'starting'; self.onmessage = (e) => { step = e.data }
+setTimeout(() => { console.log(JSON.stringify({ time: new Date().toISOString(), level: 'error', msg: 'mm.auth start blocked for ${ms} ms while ' + step + '; killed', project: 'mm', service: 'auth', step }))
+  process.kill(process.pid, 'SIGKILL') }, ${ms})`], { type: 'application/javascript' })))
 
 // ---------- the folder, the signing key (boards verify assertions with its public half) ----------
 function ensureStore() {
@@ -249,13 +258,20 @@ export async function gateway() {
     const cf = req.headers.get('cf-connecting-ip')?.trim()
     return peer && trusted.has(peer) && cf ? cf : peer || 'unknown'
   }
+  startStep('opening the accounts db')
   const db = new Database(join(AUTH_DIR, 'accounts.db'), { create: true })
+  // a lock held by another process waits this long, then errors (SQLITE_BUSY), instead of failing or hanging (sy-u4oo)
+  db.exec(`PRAGMA busy_timeout = ${BUSY_MS}`)
   db.exec('PRAGMA journal_mode = WAL')
   const links = new Map<string, string>()
   const auth: Auth = makeAuth(db, authHost, links)
+  startStep('migrating')
   const { runMigrations } = await getMigrations(auth.options); await runMigrations()
+  startStep('migrated')
   for (const f of readdirSync(AUTH_DIR)) { const p = join(AUTH_DIR, f); if ((statSync(p).mode & 0o077) !== 0) chmodSync(p, 0o600) }
+  startStep('waiting for the auth context')
   const ctx = await auth.$context
+  startStep('context ready')
   // mm's own: tool tokens (each for one project) and board sessions (each under its person's session)
   db.exec(`CREATE TABLE IF NOT EXISTS mm_token (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, project TEXT NOT NULL, label TEXT, created INTEGER NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS mm_board_session (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, parent TEXT NOT NULL, host TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL)`)
@@ -796,14 +812,30 @@ export async function gateway() {
 }
 
 export async function serve() {
-  const g = await gateway(), c = loadConfig()
-  const port = Number(getPath(c, 'auth_port') ?? 9440), bind = String(getPath(c, 'bind_host') ?? '127.0.0.1')
-  const hosts = [...new Set(['127.0.0.1', bind])]
-  for (const hostname of hosts) Bun.serve({ hostname, port, fetch: (req, srv) => g.http(req, srv) })
-  rmSync(AUTH_SOCK, { force: true })
-  Bun.serve({ unix: AUTH_SOCK, fetch: (req) => g.api(req) })
-  chmodSync(AUTH_SOCK, 0o600)
-  log('info', `mm.auth on ${hosts.map((x) => `${x}:${port}`).join(', ')}; api ${AUTH_SOCK}; sign-in host ${g.authHost}`)
+  // a start that is not listening in time says the step it waits on and exits, so the supervisor restarts it and
+  // the log says where it hung (sy-u4oo). A locked db errors at its busy timeout; a step that blocks the thread past
+  // the limit (no timer here can run then) is ended by the watchdog worker, 2 s later.
+  const limit = Number(process.env.MM_AUTH_START_TIMEOUT_MS) || START_TIMEOUT_MS
+  const timer = setTimeout(() => { log('error', `mm.auth start timed out after ${limit} ms while ${step}`, { step }); process.exit(1) }, limit)
+  watchdog = startWatchdog(limit + 2000)
+  const started = () => { clearTimeout(timer); watchdog?.terminate(); watchdog = undefined }
+  try {
+    startStep('starting')
+    const g = await gateway(), c = loadConfig()
+    const port = Number(getPath(c, 'auth_port') ?? 9440), bind = String(getPath(c, 'bind_host') ?? '127.0.0.1')
+    const hosts = [...new Set(['127.0.0.1', bind])]
+    startStep('binding')
+    for (const hostname of hosts) Bun.serve({ hostname, port, fetch: (req, srv) => g.http(req, srv) })
+    rmSync(AUTH_SOCK, { force: true })
+    Bun.serve({ unix: AUTH_SOCK, fetch: (req) => g.api(req) })
+    chmodSync(AUTH_SOCK, 0o600)
+    started()
+    log('info', `mm.auth listening on ${hosts.map((x) => `${x}:${port}`).join(', ')}; api ${AUTH_SOCK}; sign-in host ${g.authHost}`)
+  } catch (e) {
+    started()
+    log('error', `mm.auth start failed while ${step}: ${(e as Error)?.message || e}`, { step, code: (e as { code?: string })?.code })
+    process.exit(1)
+  }
 }
 
 /** Call the running gateway's socket API (mm user|grant|revoke|token). */

@@ -132,10 +132,11 @@ suite test/wake-start.mjs         hermetic
 suite test/wake-twoleads.mjs      hermetic
 suite test/wake-workers.mjs       hermetic
 
-# ports: fixed ranges (39100-43800, 20000-40000) without a check, or real Dolt / bd serve
+# ports: fixed ranges (39100-44700, 20000-40000) without a check, or real Dolt / bd serve
 suite test/ai.sh                  ports
 suite test/api.sh                 ports
 suite test/auth.sh                ports
+suite test/auth-start.sh          ports
 suite test/board-approve.sh       ports
 suite test/box-person-runs.sh     ports
 suite test/person-run.sh          ports
@@ -168,7 +169,7 @@ suite test/paseo-lib.mjs          live
 # --- sets ---------------------------------------------------------------------------------------------------------
 
 # the suites that run mm's CLI (bun src/cli.ts, or a built mm) or import its modules
-set cli test/ai.sh test/api.sh test/auth.sh test/bd-proxy-stop.sh test/board-approve.sh test/box-boot.sh test/box-doop.sh
+set cli test/ai.sh test/api.sh test/auth.sh test/auth-start.sh test/bd-proxy-stop.sh test/board-approve.sh test/box-boot.sh test/box-doop.sh
 set cli test/box-pc.sh test/box-person-runs.sh test/box-slot.sh test/box-stamp.sh test/box-trust.sh test/boxreg.sh
 set cli test/brain-deny.sh test/denies.sh test/engine-drift.sh test/front.sh test/guard.sh test/memory-links.sh
 set cli test/mm-approve.sh test/mm-docker.sh test/mm-home-modes.sh test/mm-paseo.sh test/names.sh test/needs-fill.sh
@@ -208,7 +209,7 @@ rule src/**                       @cli test/clean-box.sh test/lifecycle.sh
 rule src/box.ts                   test/box-*.sh test/boxreg.sh test/mm-docker-container.sh test/doop-container.sh test/box.sh
 rule src/boxreg.ts                test/boxreg.sh test/api.sh test/ai.sh
 rule src/boxruns.ts               test/wake-box-person-runs.mjs test/box-person-runs.sh
-rule src/auth.ts                  test/auth.sh test/board-approve.sh test/board-owner-card.mjs test/board-phone.mjs test/waiting-phone.mjs test/doop-gateway.sh test/auth-e2e.sh test/box-gateway.sh test/ba-spike.ts
+rule src/auth.ts                  test/auth.sh test/auth-start.sh test/board-approve.sh test/board-owner-card.mjs test/board-phone.mjs test/waiting-phone.mjs test/doop-gateway.sh test/auth-e2e.sh test/box-gateway.sh test/ba-spike.ts
 rule src/flow.ts                  test/flow.mjs test/board-pull.mjs
 rule src/doctor.ts                test/doctor-docker.sh
 rule src/personasks.ts            test/wake-person-runs.mjs test/box-person-runs.sh
