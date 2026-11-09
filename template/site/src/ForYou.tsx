@@ -5,7 +5,7 @@
 //              then What and Why (a go: If yes, If no, Risk) in smaller text; the link to the item last. A t2 non-go
 //              ask gets its Reply or Done, never Approve. The server checks the owner and the item again. Send reply
 //              and Done post the owner's comment (sy-e234: the one answer path, as a comment on the item); the card
-//              leaves the list at once, and wake removes needs-you.
+//              leaves the list and its count at once (App: answered), and wake removes needs-you.
 //   To review  the items closed or handed over since this person's start mark (/api/to-review: with an artifact or a
 //              card), newest first, with their artifacts' thumbnails; a tap opens the item, Seen clears it.
 // "Seen" and the start mark live in this browser (localStorage, per board and person): the start mark is the first
@@ -20,7 +20,6 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 
 const DAY = 86400e3
-const ANSWERED_MS = 120e3 // an answered item stays out of Needs you this long while wake removes its needs-you
 // the URL of a file the board shows (Markdown.tsx fileUrl; not imported: Markdown is a heavy part, loaded on demand)
 const fileUrl = (p: string) => `/files/${p.split('/').map(encodeURIComponent).join('/')}`
 const head = 'px-4 pt-5 pb-2 text-[11px] font-bold tracking-[0.1em] uppercase md:px-0'
@@ -49,9 +48,9 @@ function useMarks(key: string) {
  *  would also move the board's fixed frame, and the bar with it). */
 export const showNeedsYou = () => document.getElementById('needs-you')?.closest('main')?.scrollTo({ top: 0 })
 
-export function ForYou({ waiting, owner, approval, storeKey, tick, onOpen, onChanged }: {
+export function ForYou({ waiting, owner, approval, storeKey, tick, onOpen, onChanged, onAnswered }: {
   waiting: WaitingEntry[] | null; owner: boolean; approval?: 'label' | 'telegram'; storeKey: string; tick: number
-  onOpen: (id: string) => void; onChanged: () => void
+  onOpen: (id: string) => void; onChanged: () => void; onAnswered: (id: string) => void
 }) {
   const { since, seen, markSeen } = useMarks(storeKey)
   const [review, setReview] = useState<ReviewEntry[] | null>(null)
@@ -64,19 +63,15 @@ export function ForYou({ waiting, owner, approval, storeKey, tick, onOpen, onCha
   // the bar's Needs you button (#needs-you): this list at the top, also on a first load with that address
   useEffect(() => { if (window.location.hash === '#needs-you') showNeedsYou() }, [])
   const toReview = useMemo(() => (review || []).filter((r) => !(seen[r.id] >= Date.parse(r.at))), [review, seen])
-  // an item answered here (Send reply, Done: the owner's comment, sy-e234) leaves the list at once; wake removes its
-  // needs-you a moment later. Kept out for ANSWERED_MS only: an item still labelled after that shows again.
-  const [answered, setAnswered] = useState<Record<string, number>>({})
-  const shown = useMemo(() => waiting && waiting.filter((w) => !(Date.now() - (answered[w.id] || 0) < ANSWERED_MS)), [waiting, answered, tick])
 
   return (
     <div data-for-you className="mx-auto w-full max-w-3xl pb-10 md:px-6">
       <section id="needs-you" aria-labelledby="fy-needs">
-        <h2 id="fy-needs" className={head}>Needs you{shown && shown.length > 0 && <span className="ml-1.5 bg-swiss px-1.5 text-white tabular-nums">{shown.length}</span>}</h2>
-        {shown === null ? <p className="px-4 text-sm text-muted-foreground md:px-0">Loading…</p>
-          : shown.length === 0 ? <p data-empty="needs-you" className="px-4 text-[15px] md:px-0">Nothing needs you.</p>
-          : <div className="grid grid-cols-[minmax(0,1fr)] gap-3 px-2 md:px-0">{shown.map((w) => <NeedsCard key={w.id} w={w} owner={owner} approval={approval} onOpen={onOpen} onChanged={onChanged}
-            onAnswered={() => setAnswered((a) => ({ ...a, [w.id]: Date.now() }))} />)}</div>}
+        <h2 id="fy-needs" className={head}>Needs you{waiting && waiting.length > 0 && <span className="ml-1.5 bg-swiss px-1.5 text-white tabular-nums">{waiting.length}</span>}</h2>
+        {waiting === null ? <p className="px-4 text-sm text-muted-foreground md:px-0">Loading…</p>
+          : waiting.length === 0 ? <p data-empty="needs-you" className="px-4 text-[15px] md:px-0">Nothing needs you.</p>
+          : <div className="grid grid-cols-[minmax(0,1fr)] gap-3 px-2 md:px-0">{waiting.map((w) => <NeedsCard key={w.id} w={w} owner={owner} approval={approval} onOpen={onOpen} onChanged={onChanged}
+            onAnswered={() => onAnswered(w.id)} />)}</div>}
       </section>
       <section aria-labelledby="fy-review" className="mt-4">
         <h2 id="fy-review" className={head}>To review</h2>

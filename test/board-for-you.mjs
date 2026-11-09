@@ -353,8 +353,8 @@ try {
     ok('Done: one comment "Done." as the owner (the same path as a reply)', await until(() => POSTED.length === p0 + 2) && POSTED.at(-1).item === 'fy-4' && POSTED.at(-1).text === '[owner] Done.' && POSTED.at(-1).author === 'boss', JSON.stringify(POSTED.slice(p0)))
     ok('...the card leaves Needs you at once', await page.locator('[data-needs-you="fy-4"]').waitFor({ state: 'detached', timeout: 5000 }).then(() => true, () => false))
     ok('...the board writes no label itself (wake removes needs-you)', WRITES.length === 0, WRITES.join(' | '))
-    ok('...the other asks stay, the count follows', (await page.locator('[data-needs-you]').evaluateAll((as) => as.map((a) => a.getAttribute('data-needs-you')))).join() === 'fy-1,fy-2,fy-11'
-      && /^Needs you3$/.test((await page.locator('#fy-needs').textContent()) || ''))
+    ok('...the other asks stay; the list\'s count and the bar\'s follow', (await page.locator('[data-needs-you]').evaluateAll((as) => as.map((a) => a.getAttribute('data-needs-you')))).join() === 'fy-1,fy-2,fy-11'
+      && /^Needs you3$/.test((await page.locator('#fy-needs').textContent()) || '') && (await page.locator('[data-bar="needs-you"]').textContent()) === 'Needs you3')
     await page.waitForTimeout(300)
     await page.screenshot({ path: path.join(SHOTS, 'for-you-answer-after-390.png'), fullPage: true })
     // wake removes needs-you (test/wake-owner-card.mjs): the list from the board then has neither
