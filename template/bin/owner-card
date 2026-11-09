@@ -13,7 +13,8 @@
 //                                  needs-you is checked the same way. When the card names a Head (sy-hzmu), review's
 //                                  sign-off must name that head too (label signed-head:<repo>@<sha>; headRefusal).
 //                                  A t2 go ask's Task also has a Rollback and a Safeguard line (sy-w5az; task.mjs
-//                                  goTaskRefusal); a non-go ask needs neither.
+//                                  goTaskRefusal); a non-go ask needs neither. A card whose You is "Nothing" asks
+//                                  the owner nothing: needs-you on it is refused (sy-e234).
 //                                  Removing needs-you, or any other call: exit 0.
 //   owner-card signoff -- <bd args> bin/bd runs it when its actor is not review and its arguments name signed-off or
 //                                  signed-head: (or set labels): refuses (exit 1) a call that adds or removes one
@@ -31,7 +32,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readGlossary } from './lib/glossary.mjs'
 import { signedHeadRefusal } from './lib/gates-file.mjs'
-import { FORMAT, SIGNED_HEAD, headRefusal, isGoAsk, parseCard } from './lib/owner-card.mjs'
+import { FORMAT, SIGNED_HEAD, headRefusal, isGoAsk, parseCard, youKind } from './lib/owner-card.mjs'
 import { goTaskRefusal } from './lib/task.mjs'
 import { sayWriting } from './lib/writing.mjs'
 
@@ -186,6 +187,8 @@ function gate(argv) {
     const r = parseCard(description, labels, id, { writing: lead ? W : undefined })
     if (!r.ok) refuse([who], null, r)
     warn(r, W, who)
+    // sy-e234: a card whose You is "Nothing" asks the owner nothing, so the item does not wait on them
+    if (youKind(r.card.You) === 'nothing') refuse([who], `its owner card's You is "Nothing": it asks the owner nothing, so it does not wait on them. Write what the owner does (You: Tap Approve | Reply: <question> | Check: <what, where>), or leave ${LABEL} off.`)
     // sy-t9tg: a t2 card that asks something other than the go (You: Reply:/Check:/Nothing) may wait on the owner
     // before review's sign-off and before any head exists; it never gets the go (headRefusal refuses it there)
     if (labels.includes(T2) && !isGoAsk(r.card)) return

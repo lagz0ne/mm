@@ -3,7 +3,7 @@
 # --add-label / -l / --set-labels, create / q -l / --labels are refused (exit 1, the reasons, the format; bd itself
 # never runs) when the item's description, or the one the call sets (-d, --description, --body-file), has no valid card;
 # t2 on a go ask (You: Tap Approve) asks for If yes, If no, Risk, Head, and review's sign-off first (signed-off; sy-l9uc;
-# a non-go ask, You: Reply:/Check:/Nothing, needs neither: sy-t9tg), also when t2 is added to an item
+# a non-go ask, You: Reply:/Check:, needs neither: sy-t9tg; You: Nothing never gets needs-you: sy-e234), also when t2 is added to an item
 # that has needs-you; a card that names its Head needs review's signed-head for that head (sy-hzmu). Allowed: a valid card, removing the label, any other label, any other command (and
 # those never read the item). bin/owner-card check <id> reads the item through bin/bd show. Hermetic: a copy of the
 # template's bin/bd, bin/owner-card and its lib in a throwaway folder; a stand-in bd (it records its arguments and
@@ -32,7 +32,7 @@ unset BD_ACTOR MM_TRACE_SELF; export BEADS_ACTOR=ops
 CARD='## Owner
 - **What:** Every item that needs you shows a fixed short card at the top; the board checks it.
 - **Why:** You see what is asked and why without reading the agents'"'"' threads.
-- **You:** Nothing
+- **You:** Check: the card on the board
 
 The rest of the text.'
 T2CARD='## Owner
@@ -56,7 +56,9 @@ T2NOROLL=$(printf '%s' "$T2CARD" | grep -v '^- \*\*Rollback:')
 T2NOSAFE=$(printf '%s' "$T2CARD" | grep -v '^- \*\*Safeguard:')
 T2NOTASK=$(printf '%s' "$T2CARD" | sed '/^## Task$/,$d')
 # a go ask (You: Tap Approve) without the t2 keys; a non-go ask (sy-t9tg: You: Check:) asks before any head exists
-GOCARD=$(printf '%s' "$CARD" | sed 's/^- \*\*You:\*\* Nothing$/- **You:** Tap Approve/')
+GOCARD=$(printf '%s' "$CARD" | sed 's/^- \*\*You:\*\* Check: the card on the board$/- **You:** Tap Approve/')
+# a card that asks the owner nothing (sy-e234: needs-you on it is refused)
+NOCARD=$(printf '%s' "$CARD" | sed 's/^- \*\*You:\*\* Check: the card on the board$/- **You:** Nothing/')
 NGCARD='## Owner
 - **What:** Check that the admin login works before the plan is written.
 - **Why:** The plan depends on sudo working for that account.
@@ -77,8 +79,9 @@ item sy-t2ok "$T2CARD" '["t2","signed-off","signed-head:mm@0a1b2c3"]'
 item sy-t2nohead "$(printf '%s' "$T2CARD" | grep -v '^- \*\*Head:')" '["t2","signed-off","signed-head:mm@0a1b2c3"]'
 item sy-t2full "$T2CARD" '["t2"]'
 item sy-nyfull "$T2CARD" '["needs-you"]'
-item sy-wrongitem "$(printf '%s' "$CARD" | sed 's|^- \*\*You:\*\* Nothing$|- **You:** Nothing\n- **Item:** https://board-shop.example.org/?item=sy-other|')" '[]'
-item sy-item "$(printf '%s' "$CARD" | sed 's|^- \*\*You:\*\* Nothing$|- **You:** Tap Approve in Telegram, or press Approve on this item\n- **Item:** https://board-shop.example.org/?item=sy-item|')" '[]'
+item sy-wrongitem "$(printf '%s' "$CARD" | sed 's|^- \*\*You:\*\* Check: the card on the board$|- **You:** Check: the card on the board\n- **Item:** https://board-shop.example.org/?item=sy-other|')" '[]'
+item sy-nothing "$NOCARD" '[]'
+item sy-item "$(printf '%s' "$CARD" | sed 's|^- \*\*You:\*\* Check: the card on the board$|- **You:** Tap Approve in Telegram, or press Approve on this item\n- **Item:** https://board-shop.example.org/?item=sy-item|')" '[]'
 printf '%s\n' "$CARD" >"$T/card.md"
 printf 'no card here\n' >"$T/nocard.md"
 printf '%s\n' "$T2CARD" >"$T/t2card.md"
@@ -130,6 +133,9 @@ call label add sy-missing needs-you;                    check "an item bd cannot
 call --json update sy-none --add-label needs-you;       check "a global flag first" refused
 call label add sy-wrongitem needs-you;                  check "an Item line to another item" refused
 check "...the reason" says "Item points to sy-other, not to this item (sy-wrongitem)"
+call label add sy-nothing needs-you;                    check "a card whose You is Nothing (it asks nothing; sy-e234)" refused
+check "...the reason" says 'its owner card'"'"'s You is "Nothing": it asks the owner nothing'
+call create "a title" -d "$NOCARD" -l needs-you;        check "create with a You: Nothing card -l needs-you" refused
 
 echo "== allowed"
 call label add sy-good needs-you;                       check "label add on an item with a valid card" passed
@@ -173,7 +179,7 @@ call label add sy-ng needs-you;                         check "t2, a Check: card
 call update sy-ng --add-label needs-you;                check "...update --add-label needs-you too" passed
 call create "a title" -d "$NGCARD" -l t2,needs-you;     check "create t2,needs-you with a non-go card" passed
 call label add sy-ngny t2;                              check "adding t2 to a non-go item with needs-you" passed
-call create "a title" -d "$CARD" -l t2,needs-you;       check "create t2,needs-you with You: Nothing" passed
+call create "a title" -d "$CARD" -l t2,needs-you;       check "create t2,needs-you with You: Check: (a non-go ask)" passed
 call label add sy-ngbad needs-you;                      check "a non-go card's optional keys are checked: a bad Risk refused" refused
 check "...the reason" says "Risk does not start with low, medium or high"
 call update sy-ng -d "$T2CARD" --add-label needs-you;   check "the same item, its card made a go ask in the call: refused (no signed-off)" refused
