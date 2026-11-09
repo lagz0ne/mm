@@ -13,3 +13,12 @@ declare module '*/ledger.mjs' {
   export function loadConf(o?: { etc?: string; env?: Record<string, string | undefined> }): ApproveConf
   export function problems(c: ApproveConf): string[]
 }
+// a gates file's verdict for a head (sy-n4f5) and the T2 go's head rule (sy-6gz6), read by mm ship (sy-sbjh)
+declare module '*/gates-file.mjs' {
+  export function parseSignedHead(label: string): { repo: string; sha: string } | null
+  export function gatesVerdict(text: string, sha: string, o?: { t2?: boolean; file?: string }): string | null
+}
+declare module '*/owner-card.mjs' {
+  export const APPROVED_HEAD: string
+  export function approvalRefusal(description: string, labels: Iterable<string>): string | null
+}

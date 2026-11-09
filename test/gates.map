@@ -81,6 +81,7 @@ suite test/root-leftover.sh       hermetic
 suite test/routes.sh              hermetic
 suite test/span-answers.sh        hermetic
 suite test/sync.sh                hermetic
+suite test/ship.sh                hermetic
 suite test/sysworkers.sh          hermetic
 suite test/template-base.sh       hermetic
 suite test/trace-refused.sh       hermetic
@@ -256,6 +257,7 @@ rule src/persontoken.ts           test/box-person-runs.sh test/person-run.sh
 rule src/portless-claim.mjs       test/portless-claim.sh test/pc-skipped.sh
 rule src/restore.ts               test/restore.sh test/sync.sh test/restore-drill.sh
 rule src/runas.ts                 test/person-run.sh test/box-person-runs.sh test/denies.sh test/wake-person-runs.mjs
+rule src/ship.ts                  test/ship.sh
 rule src/sync.ts                  test/sync.sh test/restore.sh test/in-box.sh test/restore-drill.sh
 rule src/template.ts              test/template-base.sh test/engine-drift.sh test/update-lock.sh test/writing-rule.sh test/denies.sh test/guard.sh test/sysworkers.sh test/lifecycle.sh
 rule src/updlock.ts               test/update-lock.sh test/lifecycle.sh
@@ -288,7 +290,7 @@ rule box/doop/README.md           -
 rule template/bin/lib/svc.mjs     @engine-smoke test/front.sh test/lead-workspace.sh test/paseo-refuse.mjs
 rule template/bin/lib/obs.mjs     @engine-smoke test/obs-home.sh test/trace-refused.sh
 rule template/bin/lib/message.mjs test/message.mjs test/bd-actor.sh test/owner-card-bd.sh test/board-message.mjs test/task.mjs test/writing.mjs test/structured.sh test/wake-signals.mjs
-rule template/bin/lib/owner-card.mjs test/owner-card.mjs test/owner-card-bd.sh test/bd-actor.sh test/board-owner-card.mjs test/board-approve.sh test/waiting-phone.mjs test/message.mjs test/task.mjs test/supervisor.mjs test/wake-owner-card.mjs test/wake-kept.mjs test/wake-reconcile.mjs
+rule template/bin/lib/owner-card.mjs test/owner-card.mjs test/owner-card-bd.sh test/bd-actor.sh test/board-owner-card.mjs test/board-approve.sh test/waiting-phone.mjs test/message.mjs test/task.mjs test/supervisor.mjs test/wake-owner-card.mjs test/wake-kept.mjs test/wake-reconcile.mjs test/ship.sh
 rule template/bin/lib/task.mjs    test/task.mjs test/owner-card.mjs test/owner-card-bd.sh test/bd-actor.sh test/message.mjs test/api.sh test/supervisor.mjs
 rule template/bin/lib/writing.mjs test/writing.mjs test/message.mjs test/owner-card.mjs test/bd-actor.sh test/owner-card-bd.sh test/task.mjs
 rule template/bin/lib/glossary.mjs test/glossary.mjs test/writing.mjs test/message.mjs test/board-glossary.mjs test/bd-actor.sh test/owner-card-bd.sh
@@ -300,7 +302,7 @@ rule template/bin/lib/schemas/**  test/schema.mjs test/structured.sh test/messag
 rule template/bin/lib/placements.mjs test/placements.mjs test/supervisor.mjs
 rule template/bin/lib/raci.mjs    test/raci.mjs test/supervisor-raci.mjs test/message.mjs test/task.mjs test/bd-actor.sh test/owner-card-bd.sh test/wake-hops.mjs
 rule template/bin/lib/to.mjs      test/wake-person-to.mjs test/board-thread.mjs test/message.mjs
-rule template/bin/lib/gates-file.mjs test/owner-card-bd.sh test/bd-actor.sh test/gates.mjs test/message.mjs test/structured.sh
+rule template/bin/lib/gates-file.mjs test/owner-card-bd.sh test/bd-actor.sh test/gates.mjs test/message.mjs test/structured.sh test/ship.sh
 rule template/bin/lib/paseo.mjs   test/paseo-refuse.mjs test/lead.sh test/lead-workspace.sh test/npm-lock.sh test/wake-start.mjs test/wake-twoleads.mjs test/wake-ondemand.mjs test/supervisor-workers.mjs test/paseo-lib.mjs
 rule template/bin/lib/run-as.mjs  test/wake-person-runs.mjs test/wake-box-person-runs.mjs test/person-run.sh test/box-person-runs.sh test/paseo-refuse.mjs
 rule template/bin/lib/claude.mjs  test/memory-links.sh test/lead.sh test/person-run.sh test/box-person-runs.sh test/assist.sh test/config-review.mjs
