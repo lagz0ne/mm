@@ -86,7 +86,7 @@ const issue = (id, f = {}) => ({ id, title: `${id} ${LONG}`, status: 'open', pri
 const issues = [
   // a t2 card names its head and review signed that head (sy-hzmu), so the item shows its Approve
   issue('sy-1', { priority: 0, labels: ['t2', 'signed-off', 'signed-head:mm@0a1b2c3'], assignee: 'ops', title: 'Rotate the gateway key (t2): plan, rollback, lockout safeguard',
-    description: '## Owner\n- **What:** Rotate the gateway key.\n- **Why:** The old one is a year old.\n- **You:** Tap Approve\n- **If yes:** Ops rotates it tonight.\n- **If no:** The old key stays.\n- **Risk:** medium, a minute without sign-in\n- **Head:** mm@0a1b2c3\n\nThe plan, the rollback and the lockout safeguard.' }),
+    description: '## Owner\n- **What:** Rotate the gateway key.\n- **Why:** The old one is a year old.\n- **You:** Tap Approve\n- **If yes:** Ops rotates it tonight.\n- **If no:** The old key stays.\n- **Risk:** medium, a minute without sign-in\n- **Head:** mm@0a1b2c3\n\n## Task\n- **Task:** Rotate the gateway key.\n- **Act:** t2-change\n- **Done when:** the new key signs in.\n- **Verify:** sign in → ok\n- **Rollback:** put the old key back.\n- **Safeguard:** a second admin session stays open.\n\nThe plan, the rollback and the lockout safeguard.' }),
   issue('sy-2', { status: 'in_progress', assignee: 'platform' }),
   // sy-t9tg: t2 cards that ask the owner something other than the go: their own action, never Approve or Not now
   issue('sy-10', { labels: ['t2', 'signed-off', 'needs-you', 'signed-head:mm@0a1b2c3'], assignee: 'ops', title: 'Check the admin login (t2)',
