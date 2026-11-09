@@ -143,7 +143,7 @@ ok('template/bin/lib/message.mjs -> message.mjs, bd-actor.sh, owner-card-bd.sh',
 // sy-sbjh.1: no catch-all; each path runs the suites it needs, and the heavy upgrade / box suites only for those paths
 ok('no catch-all rule (src/**, template/**, **)', !real.rules.some((r) => ['src/**', 'template/**', '**', 'src/', 'template/'].includes(r.glob)), real.rules.map((r) => r.glob).filter((g) => /^(src|template)\/\*\*$/.test(g)))
 ok('template/bin/wt -> only its suites (sysworkers, memory-links, lead)', [...pick('template/bin/wt')].sort().join(' ') === 'test/lead.sh test/memory-links.sh test/sysworkers.sh', pick('template/bin/wt'))
-ok('template/bin/lib/gates-file.mjs -> only its suites (bd-actor, owner-card-bd)', [...pick('template/bin/lib/gates-file.mjs')].sort().join(' ') === 'test/bd-actor.sh test/owner-card-bd.sh', pick('template/bin/lib/gates-file.mjs'))
+ok('template/bin/lib/gates-file.mjs -> only its suites (bd-actor, owner-card-bd, gates: it reads a flaky line)', [...pick('template/bin/lib/gates-file.mjs')].sort().join(' ') === 'test/bd-actor.sh test/gates.mjs test/owner-card-bd.sh', pick('template/bin/lib/gates-file.mjs'))
 ok('src/flow.ts -> flow.mjs and board-pull.mjs only', [...pick('src/flow.ts')].sort().join(' ') === 'test/board-pull.mjs test/flow.mjs', pick('src/flow.ts'))
 ok('a brief (CLAUDE.md) -> the writing rule and a rendered board, nothing else', [...pick('template/leads/CLAUDE.md')].sort().join(' ') === 'test/template-base.sh test/writing-rule.sh', pick('template/leads/CLAUDE.md'))
 ok('docs/**, README.md -> nothing', pick('docs/vault.md').length === 0 && pick('README.md').length === 0)
