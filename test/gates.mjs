@@ -11,14 +11,17 @@
 // before its first suite and says who holds it; a holder that is gone (dead or its pid reused) frees it; a run with
 // nothing to start takes no lock; the --jobs default under load; (5) the rerun (sy-sbjh.4): a suite that fails once
 // then passes alone is flaky and the run passes, one that fails twice is failed, --no-rerun; the history file and its
-// bound. Every test/gates it starts has a clean PATH and its own history file (MM_GATES_HISTORY).
+// bound; (6) the build cache (sy-sbjh.2): two runs of one head build mm once, a stamp that does not match is built
+// again, the suites get that mm (and its template), the result file's mm line, a failed build leaves nothing, the
+// bound keeps mm ship's current and previous. Every test/gates it starts has a clean PATH, its own history file
+// (MM_GATES_HISTORY) and its own build cache (MM_BUILDS).
 //   node test/gates.mjs          exit 0 = every check passed
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { CONFLICT_FILE, GROUPS, HISTORY_MAX, appendHistory, defaultJobs, fetchTool, gatesDir, globMatch, markRun, oldTemplateRef, parseMap, procStart, mapChanges, resolve, select, selectMapChange, waitLine } from './lib/gates.mjs'
+import { BUILD_STAMP, BUILDS_KEEP, CONFLICT_FILE, GROUPS, HISTORY_MAX, buildName, pruneBuilds, appendHistory, defaultJobs, fetchTool, gatesDir, globMatch, markRun, oldTemplateRef, parseMap, procStart, mapChanges, resolve, select, selectMapChange, waitLine } from './lib/gates.mjs'
 import { gatesVerdict } from '../template/bin/lib/gates-file.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
@@ -32,8 +35,12 @@ const GATES_DIR = path.join(T, 'gates-dir')
 // sy-sbjh.4: every test/gates run here (each inherits process.env) writes this suite's own history, never ~/.cache's
 const HISTORY = path.join(T, 'history.jsonl')
 process.env.MM_GATES_HISTORY = HISTORY
+// sy-sbjh.2: and its own build cache, never ~/.mm/builds
+const BUILDS = path.join(T, 'builds')
+process.env.MM_BUILDS = BUILDS
 let pass = 0, fail = 0
 const ok = (d, c, more = '') => { c ? pass++ : fail++; console.log(`  ${c ? '\x1b[32mok\x1b[0m  ' : '\x1b[31mFAIL\x1b[0m'} ${d}${c || !more ? '' : `\n        ${String(more).slice(0, 1500)}`}`) }
+const checkStamp = (d) => { try { return fs.readFileSync(path.join(d, 'mm.sha256'), 'utf8').split(/\s+/)[0] === crypto.createHash('sha256').update(fs.readFileSync(path.join(d, 'mm'))).digest('hex') } catch { return false } }
 const step = (s) => console.log(`\n\x1b[1m== ${s}\x1b[0m`)
 const sh = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', ...opts })
 process.on('exit', () => fs.rmSync(T, { recursive: true, force: true }))
@@ -539,6 +546,90 @@ step('the rerun and the history (sy-sbjh.4)')
   const hb = read(HB).trim().split('\n').map((l) => JSON.parse(l).i)
   ok('appendHistory: past its bound, the file is cut to its last lines (oldest dropped)', hb.join(',') === '3,4,5,6,7', hb.join(','))
   ok('...and leaves no temp file', fs.readdirSync(path.dirname(HB)).join() === 'history.jsonl', fs.readdirSync(path.dirname(HB)))
+}
+
+step('the build cache (sy-sbjh.2)')
+{
+  const R4 = path.join(T, 'repo4'), CALLS = path.join(T, 'build.calls'), SEEN4 = path.join(T, 'seen4')
+  const W4 = (f, x) => { fs.mkdirSync(path.dirname(path.join(R4, f)), { recursive: true }); fs.writeFileSync(path.join(R4, f), x) }
+  const g4 = (...a) => sh('git', ['-C', R4, ...a], { env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.org', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.org' } })
+  // m: takes {mm}; l: a live suite with needs=mm that finds mm on its PATH (as lifecycle does); both say what they got
+  W4('test/m.sh', `#!/usr/bin/env bash\necho "m arg=$1 tpl=\${MM_TEMPLATE_DIR:-} out=$("$1")" >>"${SEEN4}"\necho "  ok   m"\n`)
+  W4('test/l.sh', `#!/usr/bin/env bash\nexport PATH="\${MM_BIN_DIR:-/nowhere}:$PATH"\necho "l mm=$(readlink -f "$(command -v mm)") tpl=\${MM_TEMPLATE_DIR:-} out=$(mm)" >>"${SEEN4}"\necho "  ok   l"\n`)
+  W4('test/gates.map', 'suite test/m.sh hermetic -- {mm}\nsuite test/l.sh live needs=mm\nrule lib/** test/m.sh test/l.sh\nfallback test/m.sh\n')
+  W4('template/a.txt', 'tpl\n'); W4('lib/a', '1\n')
+  g4('init', '-q', '-b', 'main'); g4('add', '-A'); g4('commit', '-qm', 'base')
+  W4('lib/a', '2\n'); g4('add', '-A'); g4('commit', '-qm', 'one')
+  const head4 = g4('rev-parse', 'HEAD').stdout.trim()
+  // the stub build: records each call (its folder and args); its mm prints the head it was built from
+  const BUILD = path.join(T, 'stub-build')
+  fs.writeFileSync(BUILD, `#!/bin/sh\necho "$(pwd) $*" >>"${CALLS}"\nprintf '#!/bin/sh\\necho mm-of-%s\\n' "$(git rev-parse HEAD)" >"$1"\nchmod +x "$1"\n`, { mode: 0o755 })
+  const read = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '')
+  const calls = () => read(CALLS).split('\n').filter(Boolean).length
+  const run4 = (args, more = {}) => sh(GATES, args, { cwd: R4, env: { ...process.env, MM_GATES_LOCK: path.join(T, 'r4.lock'), MM_GATES_DIR: GATES_DIR, MM_GATES_BUILD: BUILD, PATH: CLEAN_PATH, ...more } })
+  const shas = () => fs.readdirSync(BUILDS).filter((n) => /^[0-9a-f]{40}$/.test(n))
+  const sum = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex')
+  // the cache already holds 23 older builds; mm ship's current links to the oldest, previous is a copy of the second
+  const fake = Array.from({ length: BUILDS_KEEP + 3 }, (_, i) => crypto.createHash('sha1').update(`fake${i}`).digest('hex'))
+  fake.forEach((f, i) => { const d = path.join(BUILDS, f); fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'mm'), 'x'); const t = new Date(Date.now() - (100 - i) * 3600_000); fs.utimesSync(d, t, t) })
+  fs.symlinkSync(fake[0], path.join(BUILDS, 'current'))
+  fs.mkdirSync(path.join(BUILDS, 'previous')); fs.writeFileSync(path.join(BUILDS, 'previous', 'sha'), fake[1] + '\n')
+  const B = path.join(BUILDS, head4)
+
+  // 1. the first run builds
+  const O1 = path.join(T, 'b1.txt')
+  let x = run4(['main~1..main', '--out', O1])
+  const t1 = read(O1), seen1 = read(SEEN4)
+  ok("a run that needs mm: passes, one build, in the worktree (not the caller's checkout)", x.status === 0 && calls() === 1 && !read(CALLS).startsWith(R4) && /mm built: /.test(x.stdout), x.stdout + x.stderr + read(CALLS))
+  ok("...into <builds>/<full sha>/: mm, template/ (the head's), and the stamp (mm's sha256)", fs.existsSync(path.join(B, 'mm')) && read(path.join(B, 'template', 'a.txt')) === 'tpl\n' && checkStamp(B), fs.existsSync(B) ? fs.readdirSync(B) : 'no ' + B)
+  ok('...no dist/, no temp folder left in the cache', !fs.existsSync(path.join(R4, 'dist')) && !fs.readdirSync(BUILDS).some((n) => n.startsWith('.')), fs.readdirSync(BUILDS))
+  const mmLine = `mm: ${BUILDS}/${head4.slice(0, 7)}…/mm (sha256 ${fs.existsSync(B) ? sum(path.join(B, 'mm')).slice(0, 12) : '?'})`
+  ok(`the result file names the build: ${mmLine.replace(BUILDS, '<builds>')}`, t1.split('\n').includes(mmLine) && buildName(B) === mmLine.slice(4, mmLine.indexOf(' (')), t1)
+  ok('{mm} is that build, with its template (MM_TEMPLATE_DIR)', seen1.includes(`m arg=${B}/mm tpl=${B}/template out=mm-of-${head4}`), seen1)
+  ok("a needs=mm suite (lifecycle's way: MM_BIN_DIR on PATH) runs that same binary, with its template", seen1.includes(`l mm=${B}/mm tpl=${B}/template out=mm-of-${head4}`), seen1)
+  const left = shas()
+  ok(`the bound: the ${BUILDS_KEEP} newest kept, plus current's and previous's; the other old ones removed`, left.length === BUILDS_KEEP + 2 && left.includes(head4) && left.includes(fake[0]) && left.includes(fake[1]) && !left.includes(fake[2]) && !left.includes(fake[3]) && left.includes(fake[4]), left.length + ' ' + JSON.stringify(fake.map((f) => left.includes(f))))
+  ok('...it says which it removed; current and previous are left as they are', /build cache keeps 20: removed /.test(x.stdout) && fs.readlinkSync(path.join(BUILDS, 'current')) === fake[0] && read(path.join(BUILDS, 'previous', 'sha')).trim() === fake[1], x.stdout)
+
+  // 2. a second run of the same head: no build
+  fs.rmSync(SEEN4, { force: true })
+  const O2 = path.join(T, 'b2.txt')
+  x = run4(['main~1..main', '--out', O2])
+  ok('two runs of one head: one build (the second takes the cache)', x.status === 0 && calls() === 1 && /mm from the cache: /.test(x.stdout) && !/mm built/.test(x.stdout), x.stdout + x.stderr)
+  ok('...its result file names the same build', read(O2).split('\n').includes(mmLine), read(O2))
+  ok('...its suites ran that same binary', read(SEEN4).includes(`m arg=${B}/mm`) && read(SEEN4).includes(`l mm=${B}/mm`), read(SEEN4))
+
+  // 3. a stamp that is not the binary's, or none: built again
+  fs.writeFileSync(path.join(B, BUILD_STAMP), `${'0'.repeat(64)}  mm\n`)
+  x = run4(['main~1..main', '--out', path.join(T, 'b3.txt')])
+  ok('a stamp that does not match the binary: built again (and it says why)', x.status === 0 && calls() === 2 && /does not count \(its mm's sha256 .* is not the stamp's/.test(x.stdout), x.stdout + x.stderr)
+  ok('...the new stamp matches again', checkStamp(B))
+  fs.rmSync(path.join(B, BUILD_STAMP))
+  x = run4(['main~1..main', '--out', path.join(T, 'b4.txt')])
+  ok('no stamp: built again', x.status === 0 && calls() === 3 && checkStamp(B), x.stdout + x.stderr)
+
+  // 4. --bin: no build; the result names it with its sha256
+  const fm = path.join(T, 'fake-mm4'); fs.writeFileSync(fm, '#!/bin/sh\necho fake\n', { mode: 0o755 })
+  x = run4(['main~1..main', '--bin', fm, '--out', path.join(T, 'b5.txt')])
+  ok('--bin: no build, the result names it with its sha256', x.status === 0 && calls() === 3 && read(path.join(T, 'b5.txt')).includes(`mm: --bin ${fm} (sha256 ${sum(fm).slice(0, 12)})`), read(path.join(T, 'b5.txt')))
+
+  // 5. a build that fails: the suites that need mm are not prepared; nothing is left in the cache
+  W4('lib/a', '3\n'); g4('add', '-A'); g4('commit', '-qm', 'two')
+  const head5 = g4('rev-parse', 'HEAD').stdout.trim()
+  x = run4(['main~1..main', '--out', path.join(T, 'b6.txt')], { MM_GATES_BUILD: path.join('/bin', 'false') })
+  ok('a failed build: exit 1, the suites not prepared, no build and no temp folder left', x.status === 1 && /test\/m\.sh\s+hermetic\s+failed \(not prepared\)/.test(read(path.join(T, 'b6.txt'))) && !fs.existsSync(path.join(BUILDS, head5)) && !fs.readdirSync(BUILDS).some((n) => n.startsWith('.')), x.stdout + read(path.join(T, 'b6.txt')))
+}
+{
+  // pruneBuilds on its own: an absolute link with a trailing slash, a relative one; leftovers a day old
+  const P = path.join(T, 'prune'); fs.mkdirSync(P)
+  const ids = Array.from({ length: 6 }, (_, i) => crypto.createHash('sha1').update(`p${i}`).digest('hex'))
+  ids.forEach((f, i) => { const d = path.join(P, f); fs.mkdirSync(d); const t = new Date(Date.now() - (10 - i) * 60_000); fs.utimesSync(d, t, t) })
+  fs.symlinkSync(path.join(P, ids[0]) + '/', path.join(P, 'current')); fs.symlinkSync(ids[1], path.join(P, 'previous'))
+  for (const [n, days] of [['.tmp-old', 2], ['.tmp-new', 0]]) { const d = path.join(P, n); fs.mkdirSync(d); const t = new Date(Date.now() - days * 86_400_000 - 1000); fs.utimesSync(d, t, t) }
+  const gone = pruneBuilds(P, 2, [ids[2]])
+  ok("pruneBuilds: keeps the newest n, current (absolute link), previous (relative link) and the run's own", gone.join() === ids[3] && [0, 1, 2, 4, 5].every((i) => fs.existsSync(path.join(P, ids[i]))), gone)
+  ok('...a temp folder a day old goes, a fresh one stays', !fs.existsSync(path.join(P, '.tmp-old')) && fs.existsSync(path.join(P, '.tmp-new')))
+  ok('...no cache folder: nothing to do', pruneBuilds(path.join(T, 'none')).length === 0)
 }
 
 step('usage and map errors')
