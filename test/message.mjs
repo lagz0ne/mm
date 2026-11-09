@@ -175,7 +175,7 @@ step('bin/message check and gate')
 const D = fs.mkdtempSync(path.join(os.tmpdir(), 'message-'))
 fs.mkdirSync(path.join(D, 'bin', 'lib'), { recursive: true }); fs.mkdirSync(path.join(D, 'leads'))
 fs.copyFileSync(path.join(SRC, 'template/bin/message'), path.join(D, 'bin/message'))
-for (const f of ['message.mjs', 'owner-card.mjs', 'writing.mjs', 'glossary.mjs']) fs.copyFileSync(path.join(SRC, 'template/bin/lib', f), path.join(D, 'bin/lib', f))
+for (const f of ['message.mjs', 'owner-card.mjs', 'writing.mjs', 'glossary.mjs', 'raci.mjs']) fs.copyFileSync(path.join(SRC, 'template/bin/lib', f), path.join(D, 'bin/lib', f))
 fs.writeFileSync(path.join(D, 'leads/roles.json'), JSON.stringify({ roles: ROLES.map((id) => ({ id })) }))
 const run = (args, input, env = {}) => spawnSync(process.execPath, [path.join(D, 'bin/message'), ...args], { input, encoding: 'utf8', env: { PATH: process.env.PATH, ...env } })
 {
@@ -216,6 +216,22 @@ const run = (args, input, env = {}) => spawnSync(process.execPath, [path.join(D,
   ok('gate: a call that writes no comment passes', r.status === 0, r.stderr)
   r = gate('platform', ['comments', 'sy-1'])
   ok('gate: reading comments passes', r.status === 0, r.stderr)
+
+  // message waits and the RACI (sy-lusk): an ASK to a role that is only C in the item's row, past its By, is "no input"
+  const old = new Date(Date.now() - 48 * 3600e3).toISOString()
+  const show = (labels) => fs.writeFileSync(path.join(D, 'item.json'), JSON.stringify([{ id: 'sy-9', labels, comments: [{ author: 'platform', text: EX.ask, created_at: old }] }]))
+  fs.writeFileSync(path.join(D, 'bin/bd'), `#!/bin/sh\ncat "${D}/item.json"\n`, { mode: 0o755 })
+  fs.writeFileSync(path.join(D, 'leads/raci.json'), JSON.stringify({ activities: [{ id: 'chg', title: 'A change', raci: { platform: 'R', review: 'VA', ops: 'C' }, consult: ['ops: x'] },
+    { id: 'run', title: 'A run', raci: { ops: 'R', platform: 'A' } }] }))
+  show(['act:chg'])
+  r = run(['waits', 'sy-9'])
+  ok('waits: an ASK to ops (C in act:chg) after its By: no input, nothing waits on it', r.status === 0 && /sy-9: nothing waits/.test(r.stdout) && /#1 ASK platform → ops \(C\): no answer by .*: no input/.test(r.stdout) && !/LATE/.test(r.stdout), r.stdout + r.stderr)
+  show(['act:run'])
+  r = run(['waits', 'sy-9'])
+  ok('waits: the same ASK to ops where ops is R: LATE', /#1 ASK platform → ops: .* · LATE/.test(r.stdout), r.stdout + r.stderr)
+  show([])
+  r = run(['waits', 'sy-9'])
+  ok('waits: no activity: LATE, as before', /· LATE/.test(r.stdout), r.stdout + r.stderr)
 }
 fs.rmSync(D, { recursive: true, force: true })
 

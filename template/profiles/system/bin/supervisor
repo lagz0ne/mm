@@ -18,8 +18,14 @@
 //                        file (docs/, plans/, ... .md) in its description or comments: the substance belongs in an
 //                        artifact (sy-kmhx; the leads' brief, "Short comments, the work in artifacts"). Low, as blocked
 //       no answer after By   an ASK or HANDOFF message (bin/lib/message.mjs, sy-0gsw) that no later message answers
-//                        (re #<n>) after its By ("next wake": minutes.answer, 60); to the role its Expect names
+//                        (re #<n>) after its By ("next wake": minutes.answer, 60); to the role its Expect names. An
+//                        ASK to a role that is only C in the item's RACI row (act:<id>, sy-lusk) is never one: no
+//                        answer by By = "no input"
+//       no VERDICT after By   a HANDOFF to the row's V with no VERDICT after it (re #<n>, or on its Head); to V
+//       ASK outside the RACI  an ASK to a role that is not C, V, R or A in the row; to its writer. Low, as blocked
 //                        (stall:<item>, handoff:<item>, idle:<role>: the keys of earlier Supervisors, closed as cleared)
+//     task:open          one list: open items whose description has no valid Task (sy-lusk; bin/lib/task.mjs, Act an
+//                        activity of leads/raci.json), edited in place; to ops                                     P3
 //     card:<item>        an open item labelled needs-you whose description has no valid owner card (sy-z5lz; the
 //                        format: bin/lib/owner-card.mjs), with the reasons; to the item's role (its assignee), else ops.
 //                        A comment when the reasons change; clears when the card is fixed or needs-you goes     P2
@@ -75,7 +81,9 @@ import * as paseo from './lib/paseo.mjs'
 import { loadConf as approveConf, migrationSubject, readLedger } from './lib/ledger.mjs'
 import { places, projectCap, total, workersOf } from './lib/places.mjs'
 import { SIGNED_HEAD, parseCard } from './lib/owner-card.mjs'
-import { openWaits } from './lib/message.mjs'
+import { dueAt, openWaits, parseMessage } from './lib/message.mjs'
+import { actOf, lettersOf, mayAsk, noInputOk, rowOf } from './lib/raci.mjs'
+import { parseTask } from './lib/task.mjs'
 
 cli('supervisor')
 const E = process.env
@@ -134,6 +142,9 @@ const roleOf = (actor) => ROLES.find((r) => actor === r || String(actor || '').s
 // review's sign-off labels (sy-9bss): only the actor review (or review/<worker>) adds them
 const isSignoff = (l) => l === 'signed-off' || String(l).startsWith(SIGNED_HEAD)
 const isReview = (actor) => actor === 'review' || String(actor || '').startsWith('review/')
+// the RACI's rows (leads/raci.json, sy-lusk); none when the file is missing (then no row shapes a message)
+let raciRows = null
+const raci = () => (raciRows ||= (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'leads', 'raci.json'), 'utf8')).activities || [] } catch { return [] } })())
 
 // ---------- shared reads (once per run; a check that needs one that failed fails with it) ----------
 const once = (fn) => { let p; return () => (p ||= fn()) }
@@ -326,28 +337,80 @@ async function wordy() {
 
 // "no answer after By" (sy-0gsw; bin/lib/message.mjs): an ASK or HANDOFF message on an open item that no later message
 // answers (re #<n>) once its By passed ("next wake": CONF.minutes.answer, 60 min). Its line goes to the role it expects
-// to act. The comments of an item are read again only when it changed (updated_at, comment_count; state.waits keeps them).
+// to act. The RACI (sy-lusk; bin/lib/raci.mjs, the item's act:<activity> row) shapes it:
+//   - an ASK to a role that is only C in the row is never late: no answer by By is "no input", and the work goes on
+//   - a HANDOFF to the row's V waits for a VERDICT (re #<n>, or one on the same Head), not just any answer: "no VERDICT
+//     after By", to V
+//   - an ASK to a role that is not C, V, R or A in the row (an I, or no letter): "ASK outside the RACI", to its writer (low)
+// The comments of an item are read again only when it changed (updated_at, comment_count; state.waits keeps what was
+// read of them, before the RACI is applied).
+function messageFacts(comments) {
+  const w = openWaits(comments, { roles: ROLES, nextWakeMin: MIN.answer, now: NOW }).map(({ n, intent, from, role, action, by, due }) => ({ n, intent, from, role, action, by, due }))
+  const msgs = comments.map((c, k) => ({ c, n: k + 1, m: parseMessage(c?.text, { roles: ROLES, author: String(c?.author ?? '') }) }))
+  const ho = [], asks = []
+  for (const { c, n, m } of msgs) {
+    if (!m.ok || !m.expect) continue
+    if (m.intent === 'ASK') asks.push({ n, from: String(c.author ?? ''), role: m.expect.role })
+    if (m.intent !== 'HANDOFF') continue
+    const head = m.keys.Head || null
+    const verdict = msgs.some((x) => x.n > n && x.m.ok && x.m.intent === 'VERDICT' && (x.m.re === n || (head && x.m.keys.Head === head)))
+    ho.push({ n, from: String(c.author ?? ''), role: m.expect.role, head, by: m.by, due: dueAt(m.by, c.created_at, MIN.answer), verdict })
+  }
+  return { w, ho, asks }
+}
 async function unanswered() {
-  const lines = [], seen = {}, prev = state.waits || {}
+  const lines = [], seen = {}, prev = state.waits || {}, acts = raci()
   for (const i of await issues()) {
     if (i.status === 'closed' || mine(i) || !(i.comment_count > 0)) continue
     const u = `${i.updated_at}|${i.comment_count}` // a comment may leave updated_at as it was
-    let w = prev[i.id]?.u === u ? prev[i.id].w : null
-    if (!w) {
+    let f = prev[i.id]?.u === u && prev[i.id].ho ? prev[i.id] : null
+    if (!f) {
       const full = await bd('GET', `/v0/beads/issues/${encodeURIComponent(i.id)}?include_comments=true`)
-      w = openWaits(full.comments || [], { roles: ROLES, nextWakeMin: MIN.answer, now: NOW }).map(({ n, intent, from, role, action, by, due }) => ({ n, intent, from, role, action, by, due }))
+      f = messageFacts(full.comments || [])
     }
-    seen[i.id] = { u, w }
-    for (const x of w) if (x.due !== null && NOW > x.due)
+    seen[i.id] = { u, w: f.w, ho: f.ho, asks: f.asks }
+    const act = actOf(i.labels), row = rowOf(acts, act), isV = (r) => /V/.test(lettersOf(row, r))
+    for (const x of f.w) {
+      if (x.due === null || NOW <= x.due || noInputOk(row, x.role, x.intent)) continue // C: no answer = no input
+      if (x.intent === 'ASK' && !mayAsk(row, x.role)) continue // not this role's to answer: "ASK outside the RACI", below
+      if (x.intent === 'HANDOFF' && isV(x.role)) continue // V owes a VERDICT: the line below
       lines.push({ role: ROLES.includes(x.role) ? x.role : ASSIGNEE, k: `waits:${i.id}#${x.n}`,
         line: `no answer after By: ${i.id} #${x.n} ${x.intent} from ${x.from || 'nobody'} → ${x.role} (by ${x.by}): ${x.action.slice(0, 120)}` })
+    }
+    for (const h of f.ho) if (isV(h.role) && !h.verdict && h.due !== null && NOW > h.due)
+      lines.push({ role: h.role, k: `verdict:${i.id}#${h.n}`,
+        line: `no VERDICT after By: ${i.id} #${h.n} HANDOFF from ${h.from || 'nobody'} → ${h.role}${h.head ? ` (head ${h.head})` : ''} (by ${h.by}): ${h.role} is V in ${act}` })
+    for (const a of f.asks) if (row && !mayAsk(row, a.role))
+      lines.push({ role: roleOf(a.from) || ASSIGNEE, k: `askrole:${i.id}#${a.n}`, low: true,
+        line: `ASK outside the RACI: ${i.id} #${a.n} from ${a.from || 'nobody'} → ${a.role}, who is ${lettersOf(row, a.role) || 'not'} in ${act} (ask only C, V, R or A; tell I once, at DONE)` })
   }
   state.waits = seen
   return lines
 }
 
+// The Task (sy-lusk; bin/lib/task.mjs): every item's description starts (after the owner card) with a valid one, its
+// Act an activity of leads/raci.json. bin/bd refuses a lead's item without one; items made before, by a person, or by
+// the system are listed here: one item, edited in place, closed when the list is empty.
+async function tasks() {
+  if (!fs.existsSync(path.join(ROOT, 'leads', 'raci.json'))) return { prefix: 'task:', problems: [] } // no RACI: no Act to check
+  const acts = raci().map((a) => a.id), bad = []
+  for (const i of await issues()) {
+    if (i.status === 'closed' || mine(i)) continue
+    const r = parseTask(i.description || '', { acts })
+    if (!r.ok) bad.push({ id: i.id, who: i.assignee || 'nobody', why: r.errors[0] })
+  }
+  bad.sort((a, b) => a.id.localeCompare(b.id))
+  if (!bad.length) return { prefix: 'task:', problems: [] }
+  const ls = bad.map((b) => `${b.id} (${b.who}): ${b.why}`)
+  return { prefix: 'task:', problems: [{ key: 'task:open', priority: 3, parts: bad.map((b) => b.id), title: `Open items without a valid Task (${bad.length})`, note: ls.join('\n'),
+    body: `Open items whose description does not start (after the owner card) with a valid Task (the leads' brief, "The Task"; \`task check <id>\`):\n\n` +
+      `${ls.slice(0, 80).map((l) => `- ${l}`).join('\n')}${ls.length > 80 ? `\n- ... ${ls.length - 80} more` : ''}\n\n` +
+      'Its role writes the Task at the top of the description (`bd update <id> --body-file <file>`). This item is edited in place and closes itself when none is left.' }] }
+}
+
 const HOW = {
-  unanswered: 'no answer after By: answer the message (re #<n>: an ANSWER, a VERDICT or a DONE), or say on the item why it waits, with a new By',
+  unanswered: 'no answer after By: answer the message (re #<n>: an ANSWER, a VERDICT or a DONE), or say on the item why it waits, with a new By. ' +
+    'No VERDICT after By: V writes the VERDICT on that head. ASK outside the RACI: ask a role that is C, V, R or A in the item\'s row (an I is told once, at DONE), or fix the item\'s act:',
   wordy: 'long thread, no artifact: ask its role to put the substance in a file (a design, plan or review in docs/ or plans/, diagrams in it), link it, and keep the description as the current state',
   stall:'stalled: find out why (ask on the item, look at the lead), and get it moving or set it back to open or blocked',
   handoff: 'handoff waits: check that the role was woken and can work (its lead, wake)',
@@ -376,7 +439,7 @@ async function digest() {
         `handoff waits: no reply ${MIN.handoff} min after a handover; idle: a lead not working for ${MIN.idle} min while ready P0 work waits; ` +
         `blocked with nothing it waits on: blocked by hand for ${MIN.blocked} min, with no open blocker and no needs-you; two leads: two lead agents of the role on two passes in a row; ` +
         `long thread, no artifact: more than ${WORDY} comments and no linked file; ` +
-        `no answer after By: an ASK or HANDOFF message with no answer (re #n) after its By):\n\n` +
+        `no answer after By: an ASK or HANDOFF message with no answer (re #n) after its By, an ASK to a C excepted (no input); no VERDICT after By: a HANDOFF to the V of the item's RACI row with no VERDICT; ASK outside the RACI: an ASK to a role the row does not ask):\n\n` +
         `${ls.map((l) => `- ${l.line}`).join('\n')}\n\nWhat to do:\n\n${kinds.map((c) => `- ${HOW[c]}`).join('\n')}\n\n` +
         'One item for the role, edited in place: a line drops off when it clears, and the item closes itself when none is left. ' +
         'Items that wait by design (blocked by an open item, or labelled needs-you) are left out.' })
@@ -664,7 +727,7 @@ for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')
 }
 const results = [], failed = []
 const failure = (name, e) => ({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) })
-for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card, signoff })) {
+for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card, signoff, tasks })) {
   try { results.push(...[await fn()].flat()) } catch (e) { failed.push(failure(name, e)) }
 }
 await paseo.close()

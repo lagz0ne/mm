@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { readGlossary } from './lib/glossary.mjs'
 import { FORMAT, openWaits, parseMessage } from './lib/message.mjs'
 import { sayWriting } from './lib/writing.mjs'
+import { actOf, noInputOk, rowOf } from './lib/raci.mjs'
 
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const die = (m, code = 2) => { console.error(`message: ${m}`); process.exit(code) }
@@ -37,6 +38,11 @@ function warn(r, w) {
   console.error(`message: writing (ASD-STE100): ${r.writing.length} warning(s); the comment goes through${w.refuseFrom ? ` (from ${w.refuseFrom} the hard ones are refused)` : ''}:\n${sayWriting(r.writing)}\nOnly approved words (bin/lib/words.txt) and glossary terms (glossary.yaml); to add a term, see the leads' brief, "Glossary".`)
 }
 const say = (r) => r.errors.map((e) => `  - ${e}`).join('\n')
+const shown = { labels: [] } // the labels of the item comments() read last
+/** The item's RACI row (leads/raci.json, its act:<id> label; sy-lusk), or null. */
+function row(labels) {
+  try { return rowOf(JSON.parse(fs.readFileSync(path.join(P, 'leads', 'raci.json'), 'utf8')).activities, actOf(labels)) } catch { return null }
+}
 function comments(id) {
   let out
   try { out = execFileSync(path.join(P, 'bin', 'bd'), ['show', id, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000, maxBuffer: 16 << 20 }) }
@@ -44,6 +50,7 @@ function comments(id) {
   let j; try { j = JSON.parse(out) } catch { die(`cannot read ${id} (bd show gave no JSON)`) }
   const i = Array.isArray(j) ? j[0] : j
   if (!i) die(`no item ${id}`)
+  shown.labels = Array.isArray(i.labels) ? i.labels : []
   if (Array.isArray(i.comments)) return i.comments
   try { return JSON.parse(execFileSync(path.join(P, 'bin', 'bd'), ['comments', id, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000, maxBuffer: 16 << 20 })) || [] }
   catch { return [] }
@@ -100,9 +107,12 @@ if (cmd === 'check') {
   process.exit(1)
 } else if (cmd === 'waits') {
   if (rest.length !== 1) die('usage: message waits <id>')
-  const w = openWaits(comments(rest[0]), { roles: roles() })
+  const all = openWaits(comments(rest[0]), { roles: roles() }), r = row(shown.labels)
+  // an ASK to a role that is only C in the item's RACI row (sy-lusk): no answer by By is "no input"; it blocks nothing
+  const w = all.filter((x) => !(x.late && noInputOk(r, x.role, x.intent)))
   if (!w.length) console.log(`${rest[0]}: nothing waits`)
   for (const x of w) console.log(`#${x.n} ${x.intent} ${x.from} → ${x.role}: ${x.action}${x.by ? ` · by ${x.by}` : ''}${x.late ? ' · LATE' : ''}`)
+  for (const x of all.filter((y) => !w.includes(y))) console.log(`#${x.n} ASK ${x.from} → ${x.role} (C): no answer by ${x.by}: no input; nothing waits on it`)
 } else if (cmd === 'gate') {
   const [actor, ...more] = rest
   if (!actor) die('usage: message gate <actor> -- <bd args>')
