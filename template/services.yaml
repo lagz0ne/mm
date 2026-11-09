@@ -41,9 +41,10 @@ services:
   app:
     about: Optional app slot, served from release/ (moved only by bin/deploy). Starts once release/ exists.
     optional: true
-    command: "HOST=$${MM_BIND:-$$HOST} node server.js"   # loopback (portless); mm forwards a public app from the machine's bind_host
+    # the release's start command (package.json "mm": {"app": {"command": ...}}, default `node server.js`; bin/app-run)
+    command: "HOST=$${MM_BIND:-$$HOST} exec {root}/bin/app-run"   # loopback (portless); mm forwards a public app from the machine's bind_host
     workdir: "{root}/release"
-    env: { HOST: 127.0.0.1 }
+    env: { HOST: 127.0.0.1, DATA_DIR: "{root}/data/app" }   # DATA_DIR: the app's data outside release/ (in the daily backup)
     port: http
     public: { name: "{{name}}-{{client}}", auth: none }
     ready: { http: / }
