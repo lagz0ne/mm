@@ -190,13 +190,13 @@ step('the Head key and headRefusal (sy-hzmu)')
   ok('...headRefusal reads that item as not approved: a new go may be given for the signed H2 (null)', headRefusal(D2, [...SG(H2), 'approved', `approved-head:${H}`]) === null)
   ok('...and when review signed only the old head: headRefusal gives the head check\'s reason (no fall-through to the old go)',
     headRefusal(D2, [...SG(H), 'approved', `approved-head:${H}`]) === `the head changed since review's sign-off (card: ${H2}, signed: ${H})`)
-  // review #3: an approved with no approved-head (a go from before heads were recorded, or the bot before it records
-  // one) counts as before, but only for a Head review signed
-  ok('approvalRefusal: an old approved with no approved-head, on the signed Head: it counts (as before)',
-    approvalRefusal(D, [...SG(H), 'approved']) === null)
-  ok('...but not when the card moved past the signed head: a new sign-off and a new go',
-    /review's sign-off does not name mm@9f8e7d6c5b4a/.test(approvalRefusal(D2, [...SG(H), 'approved']) || ''))
-  ok('approvalRefusal: approved-head for H, but review signed another head: no go', /^approved for mm@0a1b2c3, but review's sign-off does not name mm@0a1b2c3 \(signed: mm@9f8e7d6c5b4a\)/.test(approvalRefusal(D, [...SG(H2), 'approved', `approved-head:${H}`]) || ''))
+  ok('approvalRefusal (review #6, sy-c7mh\'s case): an old approved, no approved-head, a new Head that review signed: no go',
+    /approved names no head/.test(approvalRefusal(D2, [...SG(H2), 'approved']) || ''))
+  ok('approvalRefusal: an old approved with no approved-head: no go (a new tap), with the reason',
+    /^approved names no head \(no approved-head:<repo>@<sha>.*\); the Head is mm@0a1b2c3: a new go is needed$/.test(approvalRefusal(D, [...SG(H), 'approved']) || ''))
+  ok('...headRefusal reads it as not approved: the head check (was: null, the old tap read as a go)',
+    headRefusal(D2, [...SG(H), 'approved']) === `the head changed since review's sign-off (card: ${H2}, signed: ${H})`)
+  ok('approvalRefusal: approved-head for H, but review signed another head: no go', /^approved for mm@0a1b2c3, but review's sign-off does not name it \(signed: mm@9f8e7d6c5b4a\)/.test(approvalRefusal(D, [...SG(H2), 'approved', `approved-head:${H}`]) || ''))
   ok('approvalRefusal: two approved-head:*: no go (fail closed)', /approved names more than one head/.test(approvalRefusal(D, [...SG(H), 'approved', `approved-head:${H}`, `approved-head:${H2}`]) || ''))
   ok('approvalRefusal: a prefix of the head is not the head', /^approved for mm@0a1b2c;/.test(approvalRefusal(D, [...SG(H), 'approved', 'approved-head:mm@0a1b2c']) || ''))
   ok('approvalRefusal: approved on a t2 card with no Head: no go', /names no valid Head/.test(approvalRefusal(T2NH, ['t2', 'signed-off', 'approved', `approved-head:${H}`]) || ''))

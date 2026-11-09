@@ -675,12 +675,12 @@ const liveSteps = once(async () => {
 /** Why an approver's `approved` on this item does not count for its head (sy-6gz6), or null: the rule
  *  (owner-card.mjs approvalRefusal, on the labels as a t2 item's), then the journal's setter of its approved-head:*. */
 function headless(i, s) {
+  // a closed item runs nothing more: its old approved (from before heads were recorded) is no finding (review #5)
+  if (i.status === 'closed') return null
   const labels = [...new Set([...(i.labels || []), 't2'])]
   const why = approvalRefusal(i.description || '', labels)
   if (why) return why
-  const l = labels.find((x) => String(x).startsWith(APPROVED_HEAD))
-  if (!l) return null // no head recorded (an old go, or the bot before it records one): approved counts as before (review #3)
-  const by = s?.ah?.[l] ?? ''
+  const l = labels.find((x) => String(x).startsWith(APPROVED_HEAD)), by = s?.ah?.[l] ?? ''
   return APPROVERS.has(by) ? null : `${l} was added by ${by || 'an unknown actor'}, who is not an approver: a new go is needed`
 }
 async function t2() {
