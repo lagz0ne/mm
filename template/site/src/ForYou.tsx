@@ -3,7 +3,9 @@
 //              leads with the action: its You line as the headline, then the one action it asks, large: Approve and
 //              Not now (a T2 go; its head refused: why, in Approve's place), a Reply box (Reply:) or Done (Check:);
 //              then What and Why (a go: If yes, If no, Risk) in smaller text; the link to the item last. A t2 non-go
-//              ask gets its Reply or Done, never Approve. The server checks the owner and the item again.
+//              ask gets its Reply or Done, never Approve. The server checks the owner and the item again. Send reply
+//              and Done post the owner's comment (sy-e234: the one answer path, as a comment on the item); the card
+//              leaves the list at once, and wake removes needs-you.
 //   To review  the items closed or handed over since this person's start mark (/api/to-review: with an artifact or a
 //              card), newest first, with their artifacts' thumbnails; a tap opens the item, Seen clears it.
 // "Seen" and the start mark live in this browser (localStorage, per board and person): the start mark is the first
@@ -18,6 +20,7 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 
 const DAY = 86400e3
+const ANSWERED_MS = 120e3 // an answered item stays out of Needs you this long while wake removes its needs-you
 // the URL of a file the board shows (Markdown.tsx fileUrl; not imported: Markdown is a heavy part, loaded on demand)
 const fileUrl = (p: string) => `/files/${p.split('/').map(encodeURIComponent).join('/')}`
 const head = 'px-4 pt-5 pb-2 text-[11px] font-bold tracking-[0.1em] uppercase md:px-0'
@@ -61,14 +64,19 @@ export function ForYou({ waiting, owner, approval, storeKey, tick, onOpen, onCha
   // the bar's Needs you button (#needs-you): this list at the top, also on a first load with that address
   useEffect(() => { if (window.location.hash === '#needs-you') showNeedsYou() }, [])
   const toReview = useMemo(() => (review || []).filter((r) => !(seen[r.id] >= Date.parse(r.at))), [review, seen])
+  // an item answered here (Send reply, Done: the owner's comment, sy-e234) leaves the list at once; wake removes its
+  // needs-you a moment later. Kept out for ANSWERED_MS only: an item still labelled after that shows again.
+  const [answered, setAnswered] = useState<Record<string, number>>({})
+  const shown = useMemo(() => waiting && waiting.filter((w) => !(Date.now() - (answered[w.id] || 0) < ANSWERED_MS)), [waiting, answered, tick])
 
   return (
     <div data-for-you className="mx-auto w-full max-w-3xl pb-10 md:px-6">
       <section id="needs-you" aria-labelledby="fy-needs">
-        <h2 id="fy-needs" className={head}>Needs you{waiting && waiting.length > 0 && <span className="ml-1.5 bg-swiss px-1.5 text-white tabular-nums">{waiting.length}</span>}</h2>
-        {waiting === null ? <p className="px-4 text-sm text-muted-foreground md:px-0">Loading…</p>
-          : waiting.length === 0 ? <p data-empty="needs-you" className="px-4 text-[15px] md:px-0">Nothing needs you.</p>
-          : <div className="grid grid-cols-[minmax(0,1fr)] gap-3 px-2 md:px-0">{waiting.map((w) => <NeedsCard key={w.id} w={w} owner={owner} approval={approval} onOpen={onOpen} onChanged={onChanged} />)}</div>}
+        <h2 id="fy-needs" className={head}>Needs you{shown && shown.length > 0 && <span className="ml-1.5 bg-swiss px-1.5 text-white tabular-nums">{shown.length}</span>}</h2>
+        {shown === null ? <p className="px-4 text-sm text-muted-foreground md:px-0">Loading…</p>
+          : shown.length === 0 ? <p data-empty="needs-you" className="px-4 text-[15px] md:px-0">Nothing needs you.</p>
+          : <div className="grid grid-cols-[minmax(0,1fr)] gap-3 px-2 md:px-0">{shown.map((w) => <NeedsCard key={w.id} w={w} owner={owner} approval={approval} onOpen={onOpen} onChanged={onChanged}
+            onAnswered={() => setAnswered((a) => ({ ...a, [w.id]: Date.now() }))} />)}</div>}
       </section>
       <section aria-labelledby="fy-review" className="mt-4">
         <h2 id="fy-review" className={head}>To review</h2>
@@ -102,8 +110,8 @@ const age = (m: number) => (m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}
 /** One Needs you card, the action first (the owner, 2026-11-09: "more appealing on what should be done"): the You line
  *  as the headline, its one button large under it (Approve; a refused go: why, in its place; a Reply box; Done), then
  *  What and Why (and a go's If yes, If no, Risk) in smaller text, the link to the item last. Same order at every width. */
-function NeedsCard({ w, owner, approval, onOpen, onChanged }: {
-  w: WaitingEntry; owner: boolean; approval?: 'label' | 'telegram'; onOpen: (id: string) => void; onChanged: () => void
+function NeedsCard({ w, owner, approval, onOpen, onChanged, onAnswered }: {
+  w: WaitingEntry; owner: boolean; approval?: 'label' | 'telegram'; onOpen: (id: string) => void; onChanged: () => void; onAnswered: () => void
 }) {
   const [busy, setBusy] = useState(false), [text, setText] = useState(''), [sent, setSent] = useState<string | null>(null)
   const you = (w.card?.you ?? w.you ?? '').trim()
@@ -112,9 +120,9 @@ function NeedsCard({ w, owner, approval, onOpen, onChanged }: {
   // Approve; a t2 card without its keys still counts as a go ask, and the server refuses it with its reason)
   const go = w.labels.includes('t2') && w.labels.includes('signed-off') && !isNonGoAsk({ You: you })
   const missing = owner && !w.card
-  async function run(what: () => Promise<{ title: string }>, after?: string) {
+  async function run(what: () => Promise<{ title: string }>, after?: string, answer = false) {
     setBusy(true)
-    try { const d = await what(); toast.success(d.title); setText(''); if (after) setSent(after); onChanged() } catch (e) { toast.error((e as Error).message) } finally { setBusy(false) }
+    try { const d = await what(); toast.success(d.title); setText(''); if (after) setSent(after); if (answer) onAnswered(); onChanged() } catch (e) { toast.error((e as Error).message) } finally { setBusy(false) }
   }
   const big = 'h-12 w-full px-6 text-[17px] font-bold sm:w-auto'
   return (
@@ -142,9 +150,9 @@ function NeedsCard({ w, owner, approval, onOpen, onChanged }: {
             <label htmlFor={`fy-reply-${w.id}`} className="sr-only">Your reply</label>
             <Textarea id={`fy-reply-${w.id}`} data-act="reply-text" value={text} onChange={(e) => setText(e.target.value)} rows={3} maxLength={1000}
               placeholder="Your reply" className="min-h-20 w-full text-base" />
-            <Button data-act="reply" className={big} disabled={busy || !text.trim()} onClick={() => run(() => api.reply(w.id, text))}>Send reply</Button>
+            <Button data-act="reply" className={big} disabled={busy || !text.trim()} onClick={() => run(() => api.reply(w.id, text), undefined, true)}>Send reply</Button>
           </>) : kind === 'check' ? (
-            <Button data-act="done" className={big} disabled={busy} title="Done: a comment on the item, and it no longer waits for you" onClick={() => run(() => api.done(w.id))}>Done</Button>
+            <Button data-act="done" className={big} disabled={busy} title="Done: a comment on the item, and it no longer waits for you" onClick={() => run(() => api.done(w.id), undefined, true)}>Done</Button>
           ) : (
             <p data-card-missing className="text-[13px] font-semibold text-swiss">Card missing: open the item to read the thread.</p>
           )}
