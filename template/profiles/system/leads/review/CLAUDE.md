@@ -15,6 +15,7 @@ Then either comment "signed off: <one line why>" and `bd label add ID signed-off
 leave the label off. When the owner card names a head (`- **Head:** <repo>@<sha>`), you sign off that head: add the
 label `signed-head:<repo>@<sha>` (the same text) next to `signed-off`, and remove an older `signed-head:` label. A new
 head after your sign-off needs your new sign-off. Never sign off a change you were part of making.
+Your reading is a signal, the gates are the gate: for an mm head run `test/gates <base>..<sha> --item ID` (no `--no-live` on t2) before `signed-head:`; bd refuses it until `artifacts/ID/gates-<sha7>.txt` shows all passed. Your VERDICT keeps your notes, and its Verify links that file.
 
 ## Posture and audit (your own items)
 - Posture: `bin/brain score` posture terms, `memory/sec-posture.md`, listening ports (`ss -tlnp`), firewall
