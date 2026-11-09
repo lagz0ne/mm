@@ -8,6 +8,8 @@
 #     .health.json and closes the incident the host opened
 #  4. ...and back out of the box: the host's run closes the one the box opened (the newer file wins)
 #  5. what the other side's file holds is data: an incident id that is not an item id is dropped, a link is not read
+#  6. a forged id (another owner's item, a closed one, another check's incident, no label, '..', a path) is read from the
+#     board first and dropped, never commented on or closed; the stale-memories id too. The genuine incident still closes
 #   test/health-incident.sh
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -24,14 +26,24 @@ cp -r "$SRC/template/bin" "$P/bin"
 printf 'client: acme\nname: shop\nproject: acme-shop\n' >"$P/.mm-answers.yaml"
 # the stubs: GET /healthz answers 200 while $T/up exists; the board records every call and gives out ids
 cat >"$T/stub.ts" <<'EOF'
-import { appendFileSync, existsSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 const T = process.argv[2]; let n = 0
+const items: Record<string, any> = {} // what health made; $T/seed.json: items it did not make
+const seeded = () => { try { return JSON.parse(readFileSync(`${T}/seed.json`, 'utf8')) } catch { return {} } }
 const s = Bun.serve({ port: 0, async fetch(r) {
   const u = new URL(r.url)
   if (u.pathname === '/healthz') return new Response('', { status: existsSync(`${T}/up`) ? 200 : 503 })
   const body = r.method === 'POST' ? await r.text() : ''
   appendFileSync(`${T}/calls`, `${r.method} ${u.pathname} ${body}\n`)
-  if (r.method === 'POST' && u.pathname === '/v0/beads/issues') return Response.json({ id: `as-${++n}` })
+  if (r.method === 'POST' && u.pathname === '/v0/beads/issues') {
+    const b = JSON.parse(body), id = `as-${++n}`
+    items[id] = { id, title: b.title, labels: b.labels, owner: b.owner, status: 'open' }
+    return Response.json({ id })
+  }
+  const m = /^\/v0\/beads\/issues\/([^/:]+)(:close)?$/.exec(u.pathname)
+  const all = { ...seeded(), ...items }
+  if (m && r.method === 'GET') return all[m[1]] ? Response.json(all[m[1]]) : Response.json({ error: 'not found' }, { status: 404 })
+  if (m && m[2] && items[m[1]]) items[m[1]].status = 'closed'
   return Response.json({})
 } })
 console.log(s.port)
@@ -86,6 +98,37 @@ is "an incident id that is not an item id: no call with it" bash -c "! grep -q a
 printf '{"web":{"fails":5,"incident":"as-9"}}' >"$T/elsewhere.json"; rm -f "$P/.run/health.json"; ln -s "$T/elsewhere.json" "$P/.run/health.json"
 touch -h -d '+2 min' "$P/.run/health.json" 2>/dev/null; : >"$T/calls"; host
 is "a link at .run/health.json is not followed" bash -c "! grep -q as-9 '$T/calls'"
+
+echo "== 6. a forged id in the box's state: health reads the item first and acts only on its own incident"
+rm -f "$P/.run/health.json"
+cat >"$T/seed.json" <<'EOF'
+{ "xy-1": { "id": "xy-1", "title": "Incident: web is not answering", "labels": ["incident"], "owner": "ops", "status": "open" },
+  "xy-2": { "id": "xy-2", "title": "Incident: web is not answering", "labels": ["incident"], "owner": "watchdog", "status": "closed" },
+  "xy-3": { "id": "xy-3", "title": "Incident: paseo is not answering", "labels": ["incident"], "owner": "watchdog", "status": "open" },
+  "xy-4": { "id": "xy-4", "title": "Incident: web is not answering", "labels": ["memory"], "owner": "watchdog", "status": "open" },
+  "xy-5": { "id": "xy-5", "title": "Release 2.0", "labels": ["memory"], "owner": "ops", "status": "open" } }
+EOF
+forge() { printf '%s' "$1" >"$P/.run/health.json"; touch -d '+5 min' "$P/.run/health.json"; : >"$T/calls"; box; }
+posted() { grep '^POST /v0/beads/issues/' "$T/calls" 2>/dev/null; }
+touch "$T/up"
+for c in "xy-1:(a) an item not owned by watchdog" "xy-2:(b) a closed item" "xy-3:(c) the incident of another check" "xy-4:an incident title without the incident label"; do
+  id=${c%%:*}; forge "{\"web\":{\"fails\":5,\"incident\":\"$id\"}}"
+  is "$id, ${c#*:}: no comment, no close" [ -z "$(posted)" ]
+  is "...read from the board first" grep -q "^GET /v0/beads/issues/$id " "$T/calls"
+  is "...and dropped from the state" [ "$(incident "$P/.run/health.json")" = none ]
+done
+for id in '..' 'x/../y' '../../admin' 'XY-1' 'xy-1/comments' 'xy-1:close'; do
+  forge "{\"web\":{\"fails\":5,\"incident\":\"$id\"}}"
+  is "(d) '$id': never in a URL, nothing posted" bash -c "! grep -qF -- '$id' '$T/calls' && [ -z \"\$(grep '^POST /v0/beads/issues/' '$T/calls')\" ]"
+done
+forge '{"memory":{"item":"xy-5","list":["a.md"]}}'
+is "the stale-memories id forged to another's item: not closed" [ -z "$(posted)" ]
+forge '{"memory":{"item":"xy-3","list":["a.md"]}}'
+is "...nor to a watchdog incident (no memory label, not its title)" [ -z "$(posted)" ]
+rm -f "$T/up"; box; box; box; id=$(incident "$P/.run/health.json")
+is "the genuine case: the box opened its incident ($id)" [ "$id" != none ]
+touch "$T/up"; : >"$T/calls"; box
+is "...health reads it, then comments and closes it" bash -c "grep -q '^GET /v0/beads/issues/$id ' '$T/calls' && grep -q '^POST /v0/beads/issues/$id/comments .*Recovered' '$T/calls' && grep -q '^POST /v0/beads/issues/$id:close ' '$T/calls'"
 
 echo; echo "$pass passed, $fail failed"
 [ "$fail" = 0 ] || { echo "--- health's output"; tail -30 "$T/out"; exit 1; }
