@@ -400,7 +400,22 @@ git(MMR, ['commit', '-q', '--allow-empty', '-m', 'land', '-m', 'sy-32'])
 clock = T0 + 141 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('a commit naming it on mm\'s main opens one (sy-32)', openKeys() === `${DIRTY} ${T2('sy-31')} ${T2('sy-32')}` && openOf(T2('sy-32'))?.priority === 1)
-update('sy-31', { labels: ['t2', 'approved'] }, 'bridge'); update('sy-32', { labels: ['t2', 'approved'] }, 'bridge')
+// sy-donx: a commit that names a t2 item but changes only tests, docs (mm) or plans, the journal, memory (the brain) runs
+// nothing: no finding. One that changes code does.
+item('sy-39', { title: 't2, only a test fix and a plan name it', priority: 2, assignee: 'platform', labels: ['t2'] }); update('sy-39', { status: 'in_progress' }, 'platform')
+fs.mkdirSync(path.join(MMR, 'test'), { recursive: true }); fs.writeFileSync(path.join(MMR, 'test', 'x.sh'), 'x\n'); fs.writeFileSync(path.join(MMR, 'README.md'), 'x\n')
+git(MMR, ['add', 'test/x.sh', 'README.md']); git(MMR, ['commit', '-q', '-m', 'tests: a fixture', '-m', 'found on sy-39'])
+fs.mkdirSync(path.join(BRAIN_REPO, 'plans'), { recursive: true }); fs.writeFileSync(path.join(BRAIN_REPO, 'plans', 'p.md'), 'x\n')
+git(BRAIN_REPO, ['add', 'plans/p.md']); git(BRAIN_REPO, ['commit', '-q', '-m', 'plan', '-m', 'sy-39'])
+clock = T0 + 142 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('a test-only commit on mm\'s main and a plans-only one on the brain\'s, naming a t2 item: no finding (sy-39)', openKeys() === `${DIRTY} ${T2('sy-31')} ${T2('sy-32')}`)
+fs.mkdirSync(path.join(MMR, 'src'), { recursive: true }); fs.writeFileSync(path.join(MMR, 'src', 'a.ts'), 'x\n')
+git(MMR, ['add', 'src/a.ts']); git(MMR, ['commit', '-q', '-m', 'the change', '-m', 'sy-39'])
+clock = T0 + 143 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('...a commit with code naming it: the finding opens', openKeys() === `${DIRTY} ${T2('sy-31')} ${T2('sy-32')} ${T2('sy-39')}`)
+update('sy-31', { labels: ['t2', 'approved'] }, 'bridge'); update('sy-32', { labels: ['t2', 'approved'] }, 'bridge'); update('sy-39', { labels: ['t2', 'approved'] }, 'bridge')
 
 step('run 9i (+377..441 min): unapproved t2 items in progress over 4 h with nothing live: one P3 list, refreshed')
 clock = T0 + 200 * MIN

@@ -572,12 +572,18 @@ const ID = /\b[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*\b/g
 /** (b) commits on a live main whose message names an item: mm's main (the machine runs main's build) and the brain's
  * main (moved only by bin/brain promote). A branch, a worktree or a brain run branch is not read here.
  * { id: [{ repo, hash, subject, at }] } */
+/** A path that does not run (sy-donx): mm's tests, docs and README.md (a brief is not one: leads act on it), the brain's plans, journal and memory. */
+const notLive = (f) => /^(?:test|docs|plans|journal|memory)\//.test(f) || f === 'README.md'
 const mainCommits = once(async () => {
   const out = {}, since = Math.floor((NOW - LOOKBACK) / 1000)
   for (const d of [path.join(HOME, 'mm'), dirs().brain]) {
-    let log; try { log = git(d, ['log', 'refs/heads/main', `--since=@${since}`, '--format=%x1e%ct%x1f%h%x1f%s%x1f%B']) } catch { continue } // no repo, no main
+    let log; try { log = git(d, ['log', 'refs/heads/main', `--since=@${since}`, '--name-only', '--format=%x1e%ct%x1f%h%x1f%s%x1f%B%x1d']) } catch { continue } // no repo, no main
     for (const rec of log.split('\x1e').slice(1)) {
-      const [ct, hash, subject, msg = ''] = rec.split('\x1f')
+      const [head, names = ''] = rec.split('\x1d'), [ct, hash, subject, msg = ''] = head.split('\x1f')
+      // only a commit that changes what runs is a live step (sy-donx): one that touches only tests, docs or (the brain)
+      // plans, the journal and memory names its item without running it, e.g. a test fix found while building it
+      const files = names.split('\n').map((f) => f.trim()).filter(Boolean)
+      if (files.length && files.every(notLive)) continue
       for (const id of new Set([...msg.matchAll(ID)].map((m) => m[0]))) (out[id] ||= []).push({ repo: tilde(d), hash, subject: subject.slice(0, 80), at: Number(ct) * 1000 })
     }
   }
