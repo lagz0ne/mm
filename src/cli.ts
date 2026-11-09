@@ -489,9 +489,16 @@ program.command('sync').description('seal what can\'t be rebuilt into the master
 program.command('cron').description('(run by mm-pc) run every project\'s schedules (health, backup, ...)')
   .option('--run <project/job>', 'run one job now, once (e.g. acme-shop/backup), and exit with its code')
   .action(async (opts) => { if (opts.run) process.exit(await runOnce(opts.run)); await cron() })
-program.command('ship').description('(run by mm-pc) ship service log files to VictoriaLogs')
-  .option('--dry-run', 'one pass from the start of every file: print the records, send nothing')
-  .action(async (opts) => { await ship(2000, !!opts.dryRun) })
+program.command('ship [sha]').description('mm ship <sha> --item <id>: roll a signed head of mm out to the boards (checks, cached build, dry run, each board checked; ops runs it). With no sha: (run by mm-pc) ship service log files to VictoriaLogs')
+  .option('--dry-run', 'with a sha: the checks, the build and the dry run on every board only; with none: one pass from the start of every log file, print the records, send nothing')
+  .option('--item <id>', 'the board item that carries the head (signed-off, signed-head:mm@<sha>; t2: approved-head:mm@<sha>; its gates file)')
+  .option('--board <name...>', 'only these boards (default: every project mm ls lists, throwaways left out)')
+  .option('--repo <dir>', 'mm\'s repo, to read main and build from (default: config ship.repo, else the source this mm runs from)')
+  .action(async (sha: string | undefined, opts) => {
+    if (!sha) { if (opts.item || opts.board || opts.repo) { console.error('mm ship: --item, --board and --repo need a <sha>'); process.exit(2) } return await ship(2000, !!opts.dryRun) }
+    const { ship: shipHead } = await import('./ship')
+    process.exit(shipHead(sha, { item: opts.item, dryRun: !!opts.dryRun, boards: opts.board, repo: opts.repo }))
+  })
 
 const vaultCmd = program.command('vault').description('sealed secrets (age): two keys, opened only into memory-backed files at start (docs/vault.md)')
 // `vault run` opens secrets and runs any command; `vault init` would replace the machine's key. Never from an agent's shell
@@ -625,7 +632,7 @@ obs.command('ui').description('where the UIs are (loopback: open them through an
 const API_BY_ID = new Set(['api show', 'api approve', 'api code', 'api deny', 'api undo'])   // their argument is a request's id
 program.hook('preAction', (_p, cmd) => {
   const name = [cmd.parent?.name() !== 'mm' ? cmd.parent?.name() : '', cmd.name()].filter(Boolean).join(' ')
-  if (name === 'ship' || name === 'cron' || name.startsWith('obs')) return
+  if ((name === 'ship' && !cmd.args[0]) || name === 'cron' || name.startsWith('obs')) return   // mm ship <sha> (a rollout) is a trace
   // fill: the name only, never what follows it (a secret typed on the command line by mistake must not reach a trace).
   // (user, grant, revoke and token take no secret: a sign-in link or token is only ever printed, never an argument)
   const args = name === 'fill' ? String(cmd.args[0] ?? '') : cmd.args.join(' ')
