@@ -6,8 +6,10 @@
 #   bin/lead start <role> --as <person>             a run for one person, on their own Claude token: only from mm run-as
 #                                                   (the token on stdin; never in an agent's shell)
 #   bin/lead stop <role>                            archive the lead
-#   bin/lead worker start|stop|report|ls ...        a lead's workers, where roles.json says what they are (the system
-#                                                   board; bin/lib/workers.mjs): start one, stop it, read its report
+#   bin/lead worker start|stop|report|ls|sweep ...  a lead's workers, where roles.json says what they are (the system
+#                                                   board; bin/lib/workers.mjs): start one (its workspace in this
+#                                                   project's Paseo project), stop it (and its workspace), read its
+#                                                   report, sweep the role's leftovers (dry run; --apply)
 #   bin/lead ls                                     list leads
 #   bin/lead tidy                                   archive this project's old Paseo workspaces and empty projects
 # In Paseo, the project is one project (rooted here) and each role has one workspace in it, reused across restarts
