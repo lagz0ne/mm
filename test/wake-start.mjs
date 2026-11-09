@@ -51,7 +51,8 @@ for (let i = 0; i < 597; i++) emit({ op: 'update', issue_id: 'f-1', actor: 'ops'
 comment('a-1', 'platform', 'done, see the commit')    // ...the lead answered a-1 (past the first page)
 comment('a-3', 'alex', 'late question on a-3')        // a human, past the first page, and past 500 after SAVED
 const HEAD = records.length
-fs.writeFileSync(path.join(T, 'proj', '.wake-state.json'), JSON.stringify({ _seq: SAVED }))
+fs.mkdirSync(path.join(T, 'proj', '.run'), { recursive: true }) // wake's state (sy-965o); the old root file is not replayed
+fs.writeFileSync(path.join(T, 'proj', '.run', 'wake-state.json'), JSON.stringify({ _seq: SAVED }))
 
 const reads = []
 const srv = http.createServer((req, res) => {
