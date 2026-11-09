@@ -77,6 +77,10 @@ function loadRoles() {
 loadRoles()
 const raci = () => { try { return JSON.parse(fs.readFileSync(path.join(P, 'leads', 'raci.json'), 'utf8')).activities || [] } catch { return [] } }
 const hops = new Map() // issue id -> lead-to-lead wakes sent with no progress (and no human) in between (hopsOf())
+// a hard cap (review sy-ydoe #3): a Head or an artifact path is text a lead writes, so a loop that posts new ones would
+// never count a hop; after MAX_WAKES lead-to-lead wakes since a human, the item pauses whatever moved
+const MAX_WAKES = Number(process.env.WAKE_MAX_WAKES || 12)
+const wakesSince = new Map() // issue id -> lead-to-lead wakes sent since a human (progress does not reset it)
 const paused = new Set() // items paused (the hop limit, or the label `paused`): no lead wakes for them until resumed
 const pauseOn = new Set() // ...those whose label `paused` wake has seen on the board
 const PAUSED = 'paused'
@@ -164,7 +168,7 @@ function pauseSeen(e) {
     if (ls.includes(PAUSED)) { pauseOn.add(id); paused.add(id) }
     else if (pauseOn.has(id)) {
       // only the board's Lead itself or a human resumes it (review sy-0omb #4): a looping lead must not unpause itself
-      if (isHuman(e.actor) || (BOARD_LEAD && e.actor === BOARD_LEAD)) { pauseOn.delete(id); paused.delete(id); hops.delete(id); log(`${id}: ${PAUSED} removed (by ${actorName(e.actor)}): resumed`); return }
+      if (isHuman(e.actor) || (BOARD_LEAD && e.actor === BOARD_LEAD)) { pauseOn.delete(id); paused.delete(id); hops.delete(id); wakesSince.delete(id); log(`${id}: ${PAUSED} removed (by ${actorName(e.actor)}): resumed`); return }
       log(`${id}: ${PAUSED} removed by ${actorName(e.actor)}, who is not the Lead (${BOARD_LEAD || 'none'}) or a human: labelled again`)
       labelQ(['label', 'add', id, PAUSED], `label ${id}`)
       if (BOARD_LEAD) note(BOARD_LEAD, id, `PAUSED: ${actorName(e.actor)} removed \`${PAUSED}\` from ${id}; only you (the board's Lead) or a human resume it, so wake put it back. Resume it yourself if the loop is settled.`, false, 'talk', [boardLine(id, e.issue?.title)], true)
@@ -172,7 +176,7 @@ function pauseSeen(e) {
     }
   }
   if (was && isHuman(e.actor)) {
-    paused.delete(id); hops.delete(id)
+    paused.delete(id); hops.delete(id); wakesSince.delete(id)
     log(`${id}: a human (${actorName(e.actor)}) acted on it: resumed`)
     if (pauseOn.delete(id)) labelQ(['label', 'remove', id, PAUSED], `unlabel ${id}`)
   }
@@ -374,6 +378,7 @@ function hopsOf(id) {
 function hopSent(id) {
   const n = hopsOf(id) + 1, m = marksOf(id), h = n === 1 ? null : lastHop.get(id)
   hops.set(id, n)
+  wakesSince.set(id, (wakesSince.get(id) || 0) + 1)
   lastHop.set(id, { mark: markKey(m), asg: [...(h?.asg || []), m.assignee].slice(-2) })
 }
 
@@ -384,11 +389,12 @@ function onEvent(e) {
 }
 function onEvent1(e) {
   if (e.actor === 'wake') return // its own pause notes
-  if (isHuman(e.actor)) { hops.delete(e.issue_id); lastHop.delete(e.issue_id) } // a human in the loop resets the count (and resumes a pause: pauseSeen())
+  if (isHuman(e.actor)) { hops.delete(e.issue_id); lastHop.delete(e.issue_id); wakesSince.delete(e.issue_id) } // a human in the loop resets the counts (and resumes a pause: pauseSeen())
   if (paused.has(e.issue_id)) return // paused: no lead is woken for it
   const byLead = !!leadOf(e.actor)
-  if (byLead && hopsOf(e.issue_id) >= MAX_HOPS) { // at the limit: pause it, visibly, once
-    paused.add(e.issue_id); log(`hop limit on ${e.issue_id}: paused`); count('mm_wake_paused_total', {}); stopLoop(e.issue_id, e.issue?.title)
+  const capped = (wakesSince.get(e.issue_id) || 0) >= MAX_WAKES
+  if (byLead && (hopsOf(e.issue_id) >= MAX_HOPS || capped)) { // at the limit: pause it, visibly, once
+    paused.add(e.issue_id); log(`hop limit on ${e.issue_id}: paused${capped ? ` (the cap: ${MAX_WAKES} lead-to-lead wakes since a human)` : ''}`); count('mm_wake_paused_total', {}); stopLoop(e.issue_id, e.issue?.title)
     return
   }
   raciRoute(e, byLead)
