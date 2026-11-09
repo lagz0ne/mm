@@ -162,7 +162,7 @@ const savePj = () => fs.writeFileSync(PJ, JSON.stringify(pj))
 if (process.env.STUB_PASEO_FAIL && ['project', 'ls'].includes(a[0])) { console.error('connect ECONNREFUSED'); process.exit(1) }
 if (a[0] === 'ls') console.log(JSON.stringify(st.filter((x) => (a.includes('-a') || !x.archived) && Object.entries(lab).every(([k, v]) => x.labels[k] === v)).map(({ labels, ...x }) => x)))
 else if (a[0] === 'run') { const id = `ag${st.length + 1}`, cwd = a[a.indexOf('--cwd') + 1]; st.push({ id, shortId: id, title: a[a.indexOf('--title') + 1], status: 'running', cwd, labels: lab }); save(); console.log(id)
-  if (!pj.some((p) => p.path === cwd)) { pj.push({ projectId: `pj${pj.length + 1}`, path: cwd }); savePj() } }
+  if (!pj.some((p) => p.path === cwd)) { pj.push({ projectId: `pj${Math.max(0, ...pj.map((p) => Number(String(p.projectId).slice(2)) || 0)) + 1}`, path: cwd }); savePj() } }
 else if (a[0] === 'project' && a[1] === 'ls') console.log(JSON.stringify(pj))
 else if (a[0] === 'project' && a[1] === 'delete') { // archives every agent in it, as Paseo does
   const p = pj.find((x) => x.projectId === a[2]); if (!p) { console.error('Project not found'); process.exit(1) }
@@ -228,12 +228,16 @@ check "...the archived agent stays (its report is still there)" bash -c "jq -e '
 out=$("$SYS/bin/wt" rm platform-w3 2>&1); rc=$?
 check "wt rm platform-w3, its agent live: the folder goes (exit $rc), the project is left, said in one line" bash -c "[ $rc = 0 ] && [ ! -e '$W/platform-w3' ] && grep -q 'was left: a live agent is in it (ag' <<<'$out'"
 check "...its project is there and its agent still runs" bash -c "jq -e --arg p '$W/platform-w3' 'any(.[]; .path == \$p)' '$PJ' >/dev/null && jq -e '[.[] | select(.cwd == \"$W/platform-w3\") | .archived] | all | not' '$STUB_PASEO' >/dev/null"
-LW stop platform w3 >/dev/null
+out=$(LW stop platform w3)
+check "lead worker stop platform w3 deletes the project it left (sy-7f7i), and says no folder stays" bash -c "grep -q 'deleted its Paseo project' <<<'$out' && ! grep -q 'folder stays' <<<'$out' && ! jq -e --arg p '$W/platform-w3' 'any(.[]; .path == \$p)' '$PJ' >/dev/null"
+jq --arg a "$W/platform-w3" '. + [{projectId: "pjw3", path: $a}]' "$PJ" >"$T/pj" && cp "$T/pj" "$PJ" # as if stop had not reached Paseo
 out=$("$SYS/bin/wt" rm platform-w3 2>&1); rc=$?
 check "stopped, wt rm platform-w3 again (folder gone) deletes only its project (exit $rc)" bash -c "[ $rc = 0 ] && grep -q 'deleted its Paseo project' <<<'$out' && ! jq -e --arg p '$W/platform-w3' 'any(.[]; .path == \$p)' '$PJ' >/dev/null"
-LW stop review r2 >/dev/null
+out=$(LW stop review r2)
+check "lead worker stop review r2 also deletes its folder's project (the old layout; sy-7f7i), its folder stays" bash -c "grep -q 'deleted its Paseo project' <<<'$out' && ! jq -e --arg p '$W/review-r2' 'any(.[]; .path == \$p)' '$PJ' >/dev/null && [ -d '$W/review-r2' ]"
+jq --arg a "$W/review-r2" '. + [{projectId: "pjr", path: $a}]' "$PJ" >"$T/pj" && cp "$T/pj" "$PJ" # one more, made after the stop
 out=$(STUB_PASEO_FAIL=1 "$SYS/bin/wt" rm review-r2 2>&1); rc=$?
-check "Paseo not answering: wt rm review-r2 still succeeds (exit $rc), says the project was left" bash -c "[ $rc = 0 ] && [ ! -e '$W/review-r2' ] && grep -q 'removed review-r2' <<<'$out' && [ \$(grep -c 'its Paseo project was left: Paseo did not answer' <<<'$out') = 1 ]"
+check "Paseo not answering: wt rm review-r2 still succeeds (exit $rc), says the project was left" bash -c "[ $rc = 0 ] && [ ! -e '$W/review-r2' ] && grep -q 'removed review-r2' <<<'$out' && [ \$(grep -c 'its Paseo workspace and project were left: Paseo did not answer' <<<'$out') = 1 ]"
 check "...and it is there" pjat "$W/review-r2"
 out=$("$SYS/bin/wt" rm review-r2 2>&1); rc=$?
 check "...wt rm review-r2 again deletes it (exit $rc)" bash -c "[ $rc = 0 ] && ! jq -e --arg p '$W/review-r2' 'any(.[]; .path == \$p)' '$PJ' >/dev/null"
