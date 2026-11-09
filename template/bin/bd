@@ -45,6 +45,14 @@ esac
 case "$cmd:$sub" in
   comments:add|comment:*) "$P/bin/message" gate "$actor" -- "$@" || exit 1 ;;
 esac
+# A lead's item has a Task (sy-lusk): bd create / q / new, and bd update / edit that sets a description, by a role (or
+# its worker) is checked by bin/task gate, which refuses a description with no valid Task (Act: an activity of
+# leads/raci.json). Other actors pass unread there; an update that names no description costs only this loop.
+case "$cmd" in
+  create|q|new) "$P/bin/task" gate "$actor" -- "$@" || exit 1 ;;
+  update|edit)
+    for a in "$@"; do case "$a" in --) break ;; -d|--description|--description=*|--body-file|--body-file=*|--stdin) "$P/bin/task" gate "$actor" -- "$@" || exit 1; break ;; esac; done ;;
+esac
 unset actor cmd sub next
 export BEADS_DIR="$P/control/.beads" XDG_CONFIG_HOME="$P/.config" DOLT_ROOT_PATH="$P/.dolt-root" PATH="$P/tools:$PATH"
 # Talk to Dolt through its Unix socket when it runs with one (services.json); otherwise the TCP port in metadata.

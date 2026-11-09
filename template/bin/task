@@ -1,0 +1,90 @@
+#!/usr/bin/env node
+// task — check the Task of an item (sy-lusk; the format: bin/lib/task.mjs, the leads' brief "The Task"). Every item a
+// lead (a role of leads/roles.json, or its worker <role>/<name>) creates, or whose description it sets, has one, and
+// its Act is an activity of leads/raci.json.
+//   task check <id>                 the item's Task, read with this project's bin/bd show --json: exit 0 ok, 1 invalid
+//   task check -                    a description on stdin
+//   task gate <actor> -- <bd args>  bin/bd runs it on bd create / q / new, and on bd update / edit that sets a
+//                                   description (-d, --description, --body-file): refuses (exit 1, the reasons) a lead's
+//                                   call whose description has no valid Task. A lead's create from a file of many items
+//                                   (-f, --file) and a description on stdin (--body-file -, --stdin) are refused: they
+//                                   cannot be checked before bd reads them. Any other actor (wake, watchdog, bridge,
+//                                   mm-upstream, a person) and any other call: exit 0. Existing items are not read.
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { FORMAT, parseTask } from './lib/task.mjs'
+
+const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const die = (m, code = 2) => { console.error(`task: ${m}`); process.exit(code) }
+const read = (f) => { try { return JSON.parse(fs.readFileSync(path.join(P, 'leads', f), 'utf8')) } catch { return null } }
+/** The board's role ids (leads/roles.json); none when the file is missing (then nobody is a lead here). */
+const roles = () => (read('roles.json')?.roles || []).map((r) => r?.id).filter((x) => typeof x === 'string')
+/** The activity ids of leads/raci.json; null when there is no RACI (then Act is not checked against it). */
+const acts = () => { const j = read('raci.json'); return j ? (j.activities || []).map((a) => a?.id).filter((x) => typeof x === 'string') : null }
+const say = (r) => r.errors.map((e) => `  - ${e}`).join('\n')
+
+// bd's flags that take a value (everything else is a switch)
+const VALUED = new Set(['--actor', '--db', '-d', '--description', '--body-file', '-l', '--labels', '--add-label', '--remove-label', '--set-labels',
+  '-p', '--priority', '-t', '--type', '-a', '--assignee', '-s', '--status', '--title', '--parent', '--notes', '--design', '--acceptance',
+  '-e', '--estimate', '--due', '--defer', '--external-ref', '--id', '--deps', '-f', '--file', '--reason', '--if-status', '--if-assignee',
+  '--owner', '--spec-id', '--metadata', '--append-notes', '--repo', '--rig', '--prefix', '--waits-for', '--waits-for-gate', '--sandbox-dir'])
+
+function gate(actor, argv) {
+  if (!roles().includes(String(actor).split('/')[0])) process.exit(0) // not a lead: wake, watchdog, bridge, a person
+  const pos = [], flags = []
+  for (let k = 0; k < argv.length; k++) {
+    const a = argv[k]
+    if (a === '--') break
+    if (a.startsWith('-') && a.length > 1) {
+      const eq = a.indexOf('=')
+      if (a.startsWith('--') && eq > 0) flags.push([a.slice(0, eq), a.slice(eq + 1)])
+      else if (VALUED.has(a)) flags.push([a, argv[++k] ?? ''])
+      else flags.push([a, true])
+      continue
+    }
+    pos.push(a)
+  }
+  const cmd = pos[0], value = (...ns) => flags.filter(([f, v]) => ns.includes(f) && typeof v === 'string').map(([, v]) => v).pop()
+  const has = (...ns) => flags.some(([f]) => ns.includes(f))
+  const creating = ['create', 'q', 'new'].includes(cmd)
+  if (!creating && cmd !== 'update' && cmd !== 'edit') process.exit(0)
+  const no = (why) => { console.error(`bd: refused: a lead's item has a valid Task (${actor}): ${why}\nThe format: ${FORMAT}. Act: one of ${(acts() || []).join(', ') || '(no leads/raci.json)'}.`); process.exit(1) }
+  if (creating && has('-f', '--file')) no('a create from a file of items cannot be checked here: create each item with -d or --body-file <file>')
+  if (has('--stdin')) no('--stdin cannot be checked before bd reads it: write the description to a file and pass --body-file <file>')
+  const f = value('--body-file'), d = value('-d', '--description')
+  if (!creating && f === undefined && d === undefined) process.exit(0) // an update that sets no description
+  let desc
+  if (f !== undefined) {
+    if (f === '-') no('--body-file - cannot be checked before bd reads it: write the description to a file')
+    try { desc = fs.readFileSync(f, 'utf8') } catch { no(`cannot read --body-file ${f}`) }
+  } else desc = d ?? ''
+  const r = parseTask(desc, { acts: acts() ?? undefined })
+  if (!r.ok) no(`${creating ? 'the new item' : 'the description'} ${r.found ? 'has an invalid Task' : 'has no Task'}:\n${say(r)}`)
+  process.exit(0)
+}
+
+const [cmd, ...rest] = process.argv.slice(2)
+if (cmd === 'check') {
+  if (rest.length !== 1) die('usage: task check <id> | task check -')
+  let desc, what
+  if (rest[0] === '-') { desc = fs.readFileSync(0, 'utf8'); what = 'the description' }
+  else {
+    let out
+    try { out = execFileSync(path.join(P, 'bin', 'bd'), ['show', rest[0], '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000, maxBuffer: 16 << 20 }) }
+    catch (e) { die(`cannot read ${rest[0]} (bd show: ${String(e.stderr || e.message).trim().split('\n').pop().slice(0, 200)})`) }
+    let j; try { j = JSON.parse(out) } catch { die(`cannot read ${rest[0]} (bd show gave no JSON)`) }
+    const i = Array.isArray(j) ? j[0] : j
+    if (!i) die(`no item ${rest[0]}`)
+    desc = typeof i.description === 'string' ? i.description : ''; what = rest[0]
+  }
+  const r = parseTask(desc, { acts: acts() ?? undefined })
+  if (r.ok) { console.log(`task ok (act:${r.task.Act})`); process.exit(0) }
+  console.error(`task: ${what} ${r.found ? 'has an invalid Task' : 'has no Task'}:\n${say(r)}\nThe format: ${FORMAT}.`)
+  process.exit(1)
+} else if (cmd === 'gate') {
+  const [actor, ...more] = rest
+  if (!actor) die('usage: task gate <actor> -- <bd args>')
+  gate(actor, more[0] === '--' ? more.slice(1) : more)
+} else die('usage: task check <id> | task check - | task gate <actor> -- <bd args>')
