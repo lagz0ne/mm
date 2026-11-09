@@ -46,8 +46,10 @@ port() { echo $((20000 + RANDOM % 20000)); }
 # a project as mm new lays it out: the template's engine for bd, the pinned tools in tools/
 project() {
   P="$MM_HOME/projects/acme/shop"
-  mkdir -p "$P/bin" "$P/tools"
-  cp "$SRC/template/bin/init" "$SRC/template/bin/bd" "$SRC/template/bin/bd-quiet" "$P/bin/"
+  mkdir -p "$P/bin/lib" "$P/tools"
+  cp "$SRC/template/bin/init" "$SRC/template/bin/bd" "$SRC/template/bin/bd-quiet" "$SRC/template/bin/message" "$SRC/template/bin/task" "$P/bin/"
+  # bin/bd's gates (bin/message, bin/task) and their libs: without them bd refuses the comment and the create below
+  for f in message owner-card task raci; do cp "$SRC/template/bin/lib/$f.mjs" "$P/bin/lib/"; done
   cp "$SRC/template/tools.json" "$P/"
   printf '#!/bin/sh\n# stand-in for bin/trace: no span, just the command after --\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n' >"$P/bin/trace"
   chmod +x "$P/bin/"*; ln -s "$BD" "$P/tools/bd"; ln -s "$DOLT" "$P/tools/dolt"
