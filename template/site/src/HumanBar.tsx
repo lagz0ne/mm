@@ -1,15 +1,17 @@
-// The top bar for a person signed in through the gateway (sy-c7mh), at every width: one row, four controls. The
-// project's name (text), For you with the count of what needs this person, Board, and one menu (⋯) that holds the rest:
+// The top bar for a person signed in through the gateway (sy-c7mh), at every width: one row, five controls. The
+// project's name (text), For you, Board, Needs you (N: what waits on this person; it opens that list), and one menu (⋯)
+// that holds the rest:
 // search and the role filter (they apply to the board, so they open it), the goals, who is at work and Now/Activity,
 // Leads, Machine and the links, New item, the live state, the name and sign out (on the gateway's home page). No column
 // counts, no second row. The leads' local side keeps its own bars (App's header, PhoneBar).
-import { useEffect, useState, type Ref } from 'react'
+import { useEffect, useState, type MouseEvent, type Ref } from 'react'
 import { ArrowUpRightIcon, DotsThreeIcon, PlusIcon } from '@phosphor-icons/react'
 import type { Issue } from '@/lib/api'
 import { ROLES, ROLE_LABEL } from '@/lib/board'
 import { Avatar } from '@/lib/persona'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { goalsOf } from '@/Goals'
+import { showNeedsYou } from '@/ForYou'
 import { PresenceBar } from '@/Presence'
 import { cn } from '@/lib/utils'
 
@@ -36,6 +38,12 @@ export function HumanBar({ project, view, needs, panels, links, role, onRole, q,
   }, [])
   // an entry acts after the sheet is closed, so a dialog it opens (New item) gets the focus
   const then = (f: () => void) => () => { setOpen(false); window.setTimeout(f, 0) }
+  // the address says #needs-you (Back returns); no jump of the browser's own: it would move the board's fixed frame
+  const toNeedsYou = (e: MouseEvent) => {
+    e.preventDefault()
+    if (window.location.hash !== '#needs-you') { history.pushState(null, '', '#needs-you'); window.dispatchEvent(new HashChangeEvent('hashchange')) }
+    window.setTimeout(showNeedsYou, 60)
+  }
   const toBoard = () => { if (view !== 'board') window.location.hash = '#board' }
   const filtered = role !== 'all' || !!q.trim()
   const goals = goalsOf(epics, issues)
@@ -49,11 +57,17 @@ export function HumanBar({ project, view, needs, panels, links, role, onRole, q,
       <h1 className="min-w-0 flex-1 truncate text-[17px] leading-none font-bold tracking-tight md:flex-none md:text-xl" title={project}>{project || '…'}</h1>
       <nav aria-label="Views" className="flex shrink-0 items-center md:mr-auto">
         <a data-bar="for-you" href="#for-you" aria-current={view === 'foryou' ? 'page' : undefined} className={tab(view === 'foryou')}
-          aria-label={`For you, ${needs} need${needs === 1 ? 's' : ''} you`}>
-          For you{needs > 0 && <span aria-hidden className="min-w-5 bg-swiss px-1 text-center text-xs text-white tabular-nums">{needs}</span>}
-        </a>
+          >For you</a>
         <a data-bar="board" href="#board" aria-current={view === 'board' ? 'page' : undefined} className={tab(view === 'board')}>Board</a>
       </nav>
+      {/* Needs you (the owner, 2026-11-09): always here, at every width; it opens the Needs you list (For you, at its top).
+          The count is what waits on this person; none: "Needs you" with no number, still here. */}
+      <a data-bar="needs-you" href="#needs-you" onClick={toNeedsYou}
+        aria-label={needs ? `Needs you: ${needs}` : 'Needs you: nothing'}
+        className={cn('ml-1 flex h-9 shrink-0 items-center gap-1.5 px-2.5 text-[14px] font-bold whitespace-nowrap md:px-3 md:text-[15px]',
+          needs ? 'bg-swiss text-white hover:opacity-90' : 'border border-foreground hover:bg-muted')}>
+        Needs you{needs > 0 && <span aria-hidden className="min-w-5 bg-white px-1 text-center text-xs text-swiss tabular-nums">{needs}</span>}
+      </a>
       <button type="button" data-bar="menu" aria-label="Menu" aria-expanded={open} onClick={() => setOpen(true)}
         className="relative flex size-12 shrink-0 items-center justify-center md:-mr-3">
         <DotsThreeIcon weight="bold" className="size-6" />
@@ -98,6 +112,7 @@ export function HumanBar({ project, view, needs, panels, links, role, onRole, q,
             <h2 className={sectionHead}>Go to</h2>
             <a href="#leads" onClick={() => setOpen(false)} aria-current={view === 'leads' ? 'page' : undefined} className={cn(entry, view === 'leads' && 'font-bold')}>Leads</a>
             {panels.includes('machine') && <a href="#machine" onClick={() => setOpen(false)} aria-current={view === 'machine' ? 'page' : undefined} className={cn(entry, view === 'machine' && 'font-bold')}>Machine</a>}
+            <a href="#glossary" onClick={() => setOpen(false)} aria-current={view === 'glossary' ? 'page' : undefined} className={cn(entry, view === 'glossary' && 'font-bold')}>Glossary</a>
             {links.map((l) => (
               <a key={l.name} href={l.url} target="_blank" rel="noreferrer" className={cn(entry, 'text-swiss')}>
                 {l.label}<ArrowUpRightIcon weight="bold" className="size-3.5" />
