@@ -205,11 +205,13 @@ export function approvalRefusal(description, labels) {
   const given = ls.filter((l) => l.startsWith(APPROVED_HEAD)).map((l) => l.slice(APPROVED_HEAD.length))
   const head = parseCard(description, ls).card?.Head
   if (head === undefined || !HEAD.test(head)) return 'approved, but the card names no valid Head (- **Head:** <repo>@<sha>): a new go is needed for a head'
-  if (!given.length) return `approved names no head (no ${APPROVED_HEAD}<repo>@<sha>: a go from before the head was recorded); the Head is ${head}: a new go is needed`
+  // an approved with no approved-head: (review sy-6gz6 #3): a go from before heads were recorded, or from a writer that
+  // does not record one yet (the bot until it does): it counts as before; only a recorded head is held to the card's
   if (given.length > 1) return `approved names more than one head (${given.map(clip).join(', ')}); the Head is ${head}: a new go is needed`
-  if (given[0] !== head) return `approved for ${clip(given[0])}; the Head is now ${head}: a new go is needed`
+  if (given.length && given[0] !== head) return `approved for ${clip(given[0])}; the Head is now ${head}: a new go is needed`
+  // either way, the card's Head must be one review signed (a head that moved after the sign-off is never a go)
   const signed = ls.filter((l) => l.startsWith(SIGNED_HEAD)).map((l) => l.slice(SIGNED_HEAD.length))
-  if (!signed.includes(head)) return `approved for ${head}, but review's sign-off does not name it (${signed.length ? `signed: ${signed.map(clip).join(', ')}` : 'no signed-head'}): a new sign-off and a new go are needed`
+  if (!signed.includes(head)) return `approved for ${given.length ? head : 'a head not recorded'}, but review's sign-off does not name ${head} (${signed.length ? `signed: ${signed.map(clip).join(', ')}` : 'no signed-head'}): a new sign-off and a new go are needed`
   return null
 }
 /** `approved` counts (approvalRefusal is null). */
