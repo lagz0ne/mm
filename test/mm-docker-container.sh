@@ -33,7 +33,8 @@ w images -q >/dev/null 2>&1 || { echo "no wrapper (or it does not answer): $W"; 
 
 PR="$T/proj"
 mkdir -p "$PR" "$T/box/cfg" "$T/out" "$T/in"; printf 'project: %s\n' "$P" >"$PR/.mm-answers.yaml"
-echo hello >"$PR/hello"; chmod 2775 "$PR"
+# the box's uid reads it through the group: its mode is set, not left to the caller's umask (077 in an agent's shell)
+echo hello >"$PR/hello"; chmod 664 "$PR/hello"; chmod 2775 "$PR"
 
 echo "== build, network, run, exec through the wrapper"
 B="$T/mm-box-build-ct$$"; mkdir -p "$B"; chmod 700 "$B"; printf 'FROM %s\nRUN echo built >/built\n' "$BASE" >"$B/Dockerfile"
