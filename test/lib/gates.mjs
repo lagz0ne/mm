@@ -138,6 +138,21 @@ export function select(map, files) {
   return { files: out, suites }
 }
 
+// selectBoth(head, base, files): a range that changes test/gates.map itself must not choose its own gates (review
+// sy-v47f #3): the suites either map selects, the union. A suite both maps declare runs as the head declares it; one
+// only the base declares (the range dropped it) still runs, as the base declared it, and its why says so.
+export function selectBoth(head, base, files) {
+  const h = select(head, files), b = select(base, files), out = new Map(h.suites.map((s) => [s.path, s]))
+  for (const s of b.suites) {
+    const w = s.why.map((x) => ({ ...x, rule: `${x.rule} (the base's map)` }))
+    if (out.has(s.path)) { const o = out.get(s.path); o.why = [...o.why, ...w.filter((x) => !o.why.some((y) => y.file === x.file && y.rule.startsWith(x.rule.replace(/ \(the base's map\)$/, ''))))] }
+    else out.set(s.path, { ...(head.suites.find((x) => x.path === s.path) || s), why: w })
+  }
+  const order = (s) => [GROUPS.indexOf(s.group), (head.suites.find((x) => x.path === s.path) || { line: 1e6 + s.line }).line]
+  const suites = [...out.values()].sort((a, c) => { const [g1, l1] = order(a), [g2, l2] = order(c); return g1 - g2 || l1 - l2 })
+  return { files: h.files, suites }
+}
+
 // why(suite): its rules, each with its first file and how many more: "template/site/src/** (template/site/src/A.tsx +2)"
 export function why(s) {
   const by = new Map()
@@ -268,7 +283,17 @@ export async function main(argv, { stdout = process.stdout, stderr = process.std
   }
   const map = parseMap(mapText)
   if (map.errors.length) { for (const e of map.errors) warn(`${mapFrom}: ${e}`); return 2 }
-  const sel = select(map, files)
+  // the range changes the map itself: the base's map chooses too (selectBoth), unless --map names one
+  let baseMap = null
+  if (!o.map && files.includes('test/gates.map')) {
+    const t = git(repo, ['show', `${mergeBase}:test/gates.map`], { ok: true })
+    if (t != null) {
+      baseMap = parseMap(t)
+      if (baseMap.errors.length) { for (const e of baseMap.errors) warn(`test/gates.map at ${mergeBase.slice(0, 7)} (the base): ${e}`); return 2 }
+      mapFrom += ` and at ${mergeBase.slice(0, 7)} (the base's: this range changes the map)`
+    }
+  }
+  const sel = baseMap ? selectBoth(map, baseMap, files) : select(map, files)
   const skipLive = (s) => o.noLive && s.group === 'live'
 
   if (o.list) {
@@ -436,7 +461,7 @@ export async function main(argv, { stdout = process.stdout, stderr = process.std
 }
 
 // the release template/tools.json pins (as bin/init installs it): the download's sha256, then the binary's
-async function fetchTool(wt, t, T, note, step) {
+export async function fetchTool(wt, t, T, note, step) {
   const pin = JSON.parse(fs.readFileSync(path.join(wt, 'template', 'tools.json'), 'utf8'))[t]
   const plat = `${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch === 'arm64' ? 'arm64' : 'x64'}`
   const p = pin?.[plat]
@@ -445,10 +470,12 @@ async function fetchTool(wt, t, T, note, step) {
   const tgz = path.join(d, 'release.tgz')
   await step(`download ${t}`, 'curl', ['-fsSL', '-o', tgz, p.url], d)
   const sum = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex')
-  if (p.sha256 && sum(tgz) !== p.sha256) throw new Error(`${t}: the download's checksum is not the pinned one`)
+  // review sy-v47f #3: no pin, no run; a binary that is not the pinned one fails too (as bin/init would refuse it)
+  if (!p.sha256) throw new Error(`template/tools.json pins no sha256 for ${t} (${plat}): not run unchecked`)
+  if (sum(tgz) !== p.sha256) throw new Error(`${t}: the download's checksum is not the pinned one`)
   await step(`extract ${t}`, 'tar', ['-xzf', tgz, '-C', d, p.extract], d)
   const bin = path.join(d, p.extract)
-  if (p.installed_sha256 && sum(bin) !== p.installed_sha256) note(`${t}: the extracted binary is not the pinned one`)
+  if (p.installed_sha256 && sum(bin) !== p.installed_sha256) throw new Error(`${t}: the extracted binary is not the pinned one (installed_sha256)`)
   fs.chmodSync(bin, 0o755)
   return bin
 }
