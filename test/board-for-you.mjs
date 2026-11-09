@@ -3,12 +3,14 @@
 // Then the built site and the real site/server.mjs (copies, in a temp folder) against a stand-in bd serve (items and an
 // event log) and Paseo, opened with Playwright on the public side (the gateway's signed assertion) at 390x844 and
 // 1280x800:
-//   the bar   one row, exactly four controls: the project's name, For you (the count of what needs you), Board, ⋯
-//             (no column counts, no toolbar row); the menu holds the rest (search, roles, Now/Activity, Leads, links,
-//             New, the name and live state, sign out)
-//   For you   the start page, two parts only: Needs you (each owner card with its one action: Approve and Not now for a
-//             T2 go, why not for a refused head, a Reply box, Done) and To review (closed or handed over, with an
-//             artifact or a card, newest first, thumbnails; Seen clears it and it stays cleared); their empty states
+//   the bar   one row: the project's name, For you, Board, Needs you (N; always there, "Needs you" with no number at
+//             0; it opens the Needs you list), ⋯ (no column counts, no toolbar row); the menu holds the rest (search,
+//             roles, Now/Activity, Leads, Glossary, links, New, the name and live state, sign out)
+//   For you   the start page, two parts only: Needs you and To review (closed or handed over, with an artifact or a
+//             card, newest first, thumbnails; Seen clears it and it stays cleared); their empty states. Each Needs you
+//             card leads with the action, in this order at both widths: the You line as the headline, its one button
+//             large (Approve and Not now for a T2 go; why not, in Approve's place, for a refused head; a Reply box;
+//             Done; a t2 non-go ask: its Done, never Approve), then What and Why in smaller text, the link last
 //   Board     behind its tab, the full board; a filter set in the menu shows as a line with Clear
 // and a lead's local side (no assertion) unchanged: the old header and toolbar, no For you. No sideways scroll.
 //   node test/board-for-you.mjs        exit 0 = every check passed
@@ -54,6 +56,10 @@ const CHECK = `## Owner
 - **What:** The new board on your phone.
 - **Why:** You asked for it.
 - **You:** Check: open the board on your phone, at the link below.`
+const T2_CHECK = `## Owner
+- **What:** The new login works for the backup host.
+- **Why:** The backups move to it next.
+- **You:** Check: sign in on the backup host and say if it worked.`
 const DONE_CARD = `## Owner
 - **What:** The alerts now reach your Telegram.
 - **Why:** You asked for alerts on the phone.
@@ -64,6 +70,7 @@ const OPEN = [
   { ...base, id: 'fy-2', title: 'Open the web port', labels: ['t2', 'needs-you', 'signed-off', 'signed-head:brain@abc1234'], updated_at: iso(100), description: REFUSED },
   { ...base, id: 'fy-3', title: 'Name the new service', labels: ['needs-you'], updated_at: iso(80), description: REPLY },
   { ...base, id: 'fy-4', title: 'Check the new board', labels: ['needs-you'], updated_at: iso(60), description: CHECK },
+  { ...base, id: 'fy-11', title: 'Try the backup login', labels: ['t2', 'needs-you', 'signed-off'], updated_at: iso(50), description: T2_CHECK },
   { ...base, id: 'fy-6', title: 'Review the posture report', assignee: 'review', labels: [], updated_at: iso(30), description: DONE_CARD },
   { ...base, id: 'fy-8', title: 'Plain work handed on, no card, no artifact', assignee: 'review', labels: [], updated_at: iso(25), description: 'Refactor.' },
   { ...base, id: 'fy-9', title: 'Work for mia', assignee: 'mia', labels: [], updated_at: iso(15), description: 'Mia looks at it.' },
@@ -211,21 +218,45 @@ try {
     await page.goto(`${PUB}/`)
     await page.locator('[data-for-you] [data-needs-you]').first().waitFor({ timeout: 10000 }).catch(() => {})
     const bar = await barControls(page).catch(() => null)
-    ok('the bar: exactly four controls (the name, For you, Board, the menu)', !!bar && bar.h1 === 1 && bar.controls.join() === 'for-you,board,menu', JSON.stringify(bar))
+    ok('the bar: the name, For you, Board, Needs you, the menu: nothing else', !!bar && bar.h1 === 1 && bar.controls.join() === 'for-you,board,needs-you,menu', JSON.stringify(bar))
     ok('...one row (48 px), no column counts, no toolbar row', !!bar && bar.height <= 50 && (await page.locator('dl dt', { hasText: /^Ready$/ }).count()) === 0
       && (await page.getByRole('button', { name: /^New$/ }).count()) === 0 && (await page.getByPlaceholder('Search').count()) === 0)
-    ok('...For you is the start page (no hash) and says 4 need you', (await page.locator('[data-bar="for-you"]').getAttribute('aria-current')) === 'page'
-      && (await page.locator('[data-bar="for-you"]').textContent()) === 'For you4')
+    ok('...For you is the start page (no hash)', (await page.locator('[data-bar="for-you"]').getAttribute('aria-current')) === 'page'
+      && (await page.locator('[data-bar="for-you"]').textContent()) === 'For you')
+    const nb = page.locator('[data-bar="needs-you"]'), nbb = await nb.boundingBox()
+    ok('...Needs you, with its count: 5', (await nb.textContent()) === 'Needs you5' && (await nb.getAttribute('aria-label')) === 'Needs you: 5')
+    ok(`...in the bar, whole, on the screen at ${width} px (36 px+ high)`, !!nbb && nbb.x >= 0 && nbb.x + nbb.width <= width && nbb.y >= 0 && nbb.y + nbb.height <= 50 && nbb.height >= 36, JSON.stringify(nbb))
     const needs = await page.locator('[data-needs-you]').evaluateAll((as) => as.map((a) => a.getAttribute('data-needs-you')))
-    ok('Needs you: the four asks, oldest first', needs.join() === 'fy-1,fy-2,fy-3,fy-4', needs.join())
-    const card = page.locator('[data-needs-you="fy-1"]')
-    ok('...each as its owner card (What, Why, You, If yes, If no, Risk)', (await card.locator('dt').allTextContents()).join() === 'What,Why,You,If yes,If no,Risk')
-    ok('...a T2 go: Approve and Not now, nothing else', (await card.locator('button[data-act]').evaluateAll((bs) => bs.map((b) => b.getAttribute('data-act')))).join() === 'approve,not-now')
-    const ab = await card.locator('[data-act="approve"]').boundingBox()
-    ok('...Approve is a big target (44 px+)', !!ab && ab.height >= 44, JSON.stringify(ab))
-    ok('...a head review did not sign: why, no Approve', (await page.locator('[data-needs-you="fy-2"] [data-head-refused]').count()) === 1 && (await page.locator('[data-needs-you="fy-2"] [data-act="approve"]').count()) === 0)
-    ok('...Reply: a reply box and Send', (await page.locator('[data-needs-you="fy-3"] textarea').count()) === 1 && (await page.locator('[data-needs-you="fy-3"] [data-act="reply"]').count()) === 1 && (await page.locator('[data-needs-you="fy-3"] [data-act="approve"]').count()) === 0)
-    ok('...Check: Done', (await page.locator('[data-needs-you="fy-4"] [data-act]').evaluateAll((bs) => bs.map((b) => b.getAttribute('data-act')))).join() === 'done')
+    ok('Needs you: the five asks, oldest first', needs.join() === 'fy-1,fy-2,fy-3,fy-4,fy-11', needs.join())
+    // a card's parts, in the page's order and on the screen top to bottom; and the action's controls, in order
+    const shape = (id) => page.locator(`[data-needs-you="${id}"]`).evaluate((a) => {
+      const parts = [...a.querySelectorAll('[data-part]')]
+      const tops = parts.map((p) => p.getBoundingClientRect().top)
+      const you = a.querySelector('[data-you]'), dd = a.querySelector('[data-part="details"] dd')
+      return { parts: parts.map((p) => p.getAttribute('data-part')), down: tops.every((t, i) => i === 0 || t > tops[i - 1]),
+        you: you?.textContent || '', youPx: you ? parseFloat(getComputedStyle(you).fontSize) : 0, detailPx: dd ? parseFloat(getComputedStyle(dd).fontSize) : 0,
+        act: [...a.querySelectorAll('[data-part="act"] > *')].map((e) => e.getAttribute('data-act') || e.getAttribute('data-head-refused') !== null && 'refused' || e.tagName.toLowerCase()),
+        keys: [...a.querySelectorAll('[data-part="details"] dt')].map((e) => e.textContent), link: a.querySelector('[data-part="link"]')?.textContent || '' }
+    })
+    const s1 = await shape('fy-1')
+    ok('each card leads with the action: You, the action, What/Why, the link: in that order, top to bottom', s1.parts.join() === 'you,act,details,link' && s1.down, JSON.stringify(s1))
+    ok('...the headline is the You line, larger than the details', s1.you === 'Tap Approve in Telegram, or press Approve on this item' && s1.youPx >= 20 && s1.detailPx > 0 && s1.detailPx < s1.youPx, JSON.stringify(s1))
+    ok('...What and Why below it (and a go\'s If yes, If no, Risk), You not repeated', s1.keys.join() === 'What,Why,If yes,If no,Risk')
+    ok('...the link last: the item\'s title', /Open the mail port/.test(s1.link))
+    ok('...a T2 go: Approve first, then Not now, nothing else', s1.act.join() === 'approve,not-now', s1.act.join())
+    const ab = await page.locator('[data-needs-you="fy-1"] [data-act="approve"]').boundingBox(), nn = await page.locator('[data-needs-you="fy-1"] [data-act="not-now"]').boundingBox()
+    ok('...Approve is the large button (48 px+, larger than Not now)', !!ab && !!nn && ab.height >= 48 && ab.width * ab.height > nn.width * nn.height, JSON.stringify({ ab, nn }))
+    const s2 = await shape('fy-2')
+    ok('...a head review did not sign: its reason in Approve\'s place, no Approve, no Not now', s2.parts.join() === 'you,act,details,link' && s2.act.join() === 'refused'
+      && ((await page.locator('[data-needs-you="fy-2"] [data-head-refused]').textContent()) || '').startsWith('No go yet: '), JSON.stringify(s2))
+    const s3 = await shape('fy-3')
+    ok('...Reply: the headline, then a reply box and Send, then What/Why', s3.parts.join() === 'you,act,details,link' && s3.down && s3.act.join() === 'label,reply-text,reply' && s3.you.startsWith('Reply: '), JSON.stringify(s3))
+    const s4 = await shape('fy-4')
+    ok('...Check: Done', s4.parts.join() === 'you,act,details,link' && s4.act.join() === 'done', JSON.stringify(s4))
+    const s11 = await shape('fy-11')
+    ok('...a t2 non-go ask (Check:, signed off): Done, never Approve or Not now', s11.act.join() === 'done' && (await page.locator('[data-needs-you="fy-11"] [data-act="approve"], [data-needs-you="fy-11"] [data-act="not-now"]').count()) === 0, JSON.stringify(s11))
+    const db = await page.locator('[data-needs-you="fy-4"] [data-act="done"]').boundingBox()
+    ok('...Done is a large button too (48 px+)', !!db && db.height >= 48, JSON.stringify(db))
     await page.locator('[data-to-review]').first().waitFor({ timeout: 10000 }).catch(() => {})
     const rev = await page.locator('[data-to-review]').evaluateAll((as) => as.map((a) => a.getAttribute('data-to-review')))
     ok('To review: fy-7, fy-6, fy-5, newest first (the first visit: the last day)', rev.join() === 'fy-7,fy-6,fy-5', rev.join())
@@ -250,8 +281,8 @@ try {
     const sheet = page.locator('[data-slot="sheet-content"]')
     await sheet.waitFor({ timeout: 5000 }).catch(() => {})
     const txt = (await sheet.textContent()) || ''
-    ok('the menu holds the rest: search, roles, Now/Activity, Leads, New item, the name', (await sheet.locator('[data-menu-search]').count()) === 1 && /All roles/.test(txt) && /Activity/.test(txt)
-      && (await sheet.getByRole('link', { name: 'Leads' }).count()) === 1 && /New item/.test(txt) && /boss/.test(txt))
+    ok('the menu holds the rest: search, roles, Now/Activity, Leads, Glossary, New item, the name', (await sheet.locator('[data-menu-search]').count()) === 1 && /All roles/.test(txt) && /Activity/.test(txt)
+      && (await sheet.getByRole('link', { name: 'Leads' }).count()) === 1 && (await sheet.getByRole('link', { name: 'Glossary' }).count()) === 1 && /New item/.test(txt) && /boss/.test(txt))
     ok('...and sign out, on the gateway\'s home page', (await sheet.locator('[data-sign-out]').getAttribute('href').catch(() => null)) === 'https://auth.example.org/')
     const roleBtns =await sheet.locator('button[aria-pressed]').allTextContents()
     ok('...the roles in it: All roles, ops, review, platform, no role', roleBtns.length === 5, JSON.stringify(roleBtns))
@@ -262,13 +293,23 @@ try {
     ok('a role picked in the menu opens the board, filtered, with a line to clear it', page.url().endsWith('#board') && (await page.locator('[data-filter-line]').count()) === 1
       && (await page.locator('[data-bar="board"]').getAttribute('aria-current')) === 'page')
     const bar2 = await barControls(page).catch(() => null)
-    ok('...the bar on the board: still the same four controls', !!bar2 && bar2.controls.join() === 'for-you,board,menu', JSON.stringify(bar2))
+    ok('...the bar on the board: still the same controls', !!bar2 && bar2.controls.join() === 'for-you,board,needs-you,menu', JSON.stringify(bar2))
     await page.locator('[data-filter-line] button').click()
     ok('...Clear takes the filter away', (await page.locator('[data-filter-line]').count()) === 0)
     ok('the board shows the items', await page.getByText('Plain work handed on, no card, no artifact').first().waitFor({ timeout: 5000 }).then(() => true, () => false))
     ok('...no sideways scroll', !(await sideways(page)))
     await page.waitForTimeout(300)
     await page.screenshot({ path: path.join(SHOTS, `board-owner-${width}.png`) })
+    await page.locator('[data-bar="needs-you"]').click()
+    await page.waitForTimeout(400)
+    const top = await page.locator('#needs-you').boundingBox()
+    ok('Needs you from the board: opens the Needs you list, at the top of the screen', page.url().endsWith('#needs-you') && (await page.locator('[data-bar="for-you"]').getAttribute('aria-current')) === 'page'
+      && !!top && top.y >= 40 && top.y < 120 && (await page.locator('[data-needs-you]').count()) === 5, JSON.stringify({ url: page.url(), top }))
+    await page.locator('[data-for-you]').evaluate(() => document.querySelector('main')?.scrollTo(0, 99999))
+    await page.locator('[data-bar="needs-you"]').click()
+    await page.waitForTimeout(400)
+    const top2 = await page.locator('#needs-you').boundingBox()
+    ok('...again from For you, scrolled down: back at the list', !!top2 && top2.y >= 40 && top2.y < 120, JSON.stringify(top2))
     ok('no page error', errs.length === 0, errs.join(' | '))
     await ctx.close()
   }
@@ -280,7 +321,9 @@ try {
     await page.locator('[data-needs-you]').first().waitFor({ timeout: 10000 }).catch(() => {})
     ok('Needs you: the open item assigned to mia only', (await page.locator('[data-needs-you]').evaluateAll((as) => as.map((a) => a.getAttribute('data-needs-you')))).join() === 'fy-9')
     ok('...no owner actions for a member', (await page.locator('[data-needs-you] [data-act]').count()) === 0)
-    ok('...For you says 1', (await page.locator('[data-bar="for-you"]').textContent()) === 'For you1')
+    ok('...Needs you says 1', (await page.locator('[data-bar="needs-you"]').textContent()) === 'Needs you1')
+    const sm = await page.locator('[data-needs-you="fy-9"]').evaluate((a) => [...a.querySelectorAll('[data-part]')].map((p) => p.getAttribute('data-part')).join())
+    ok('...the card: its headline (the title: no card), the link; no action', sm === 'you,link', sm)
     ok('no page error', errs.length === 0, errs.join(' | '))
     await ctx.close()
   }
@@ -291,7 +334,7 @@ try {
     await page.goto(`${PUB}/`)
     await page.locator('[data-empty="to-review"]').waitFor({ timeout: 10000 }).catch(() => {})
     ok('"Nothing needs you." and "Nothing new."', (await page.locator('[data-empty="needs-you"]').textContent()) === 'Nothing needs you.' && (await page.locator('[data-empty="to-review"]').textContent()) === 'Nothing new.')
-    ok('...For you with no count', (await page.locator('[data-bar="for-you"]').textContent()) === 'For you')
+    ok('...Needs you still in the bar, with no number', (await page.locator('[data-bar="needs-you"]').textContent()) === 'Needs you' && (await page.locator('[data-bar="needs-you"]').isVisible()))
     await page.screenshot({ path: path.join(SHOTS, 'for-you-empty-390.png') })
     ok('no page error', errs.length === 0, errs.join(' | '))
     await ctx.close()
