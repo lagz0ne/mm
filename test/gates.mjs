@@ -9,14 +9,17 @@
 // run lock (sy-1nb8; the heavy lock of sy-gb26 before it), flock and mkdir both: two runs at once never run a suite
 // side by side (ports, docker, live or hermetic): one run's suites, then the other's; a run waits for another holder
 // before its first suite and says who holds it; a holder that is gone (dead or its pid reused) frees it; a run with
-// nothing to start takes no lock; the --jobs default under load. Every test/gates it starts has a clean PATH.
+// nothing to start takes no lock; the --jobs default under load; (5) the rerun (sy-sbjh.4): a suite that fails once
+// then passes alone is flaky and the run passes, one that fails twice is failed, --no-rerun; the history file and its
+// bound. Every test/gates it starts has a clean PATH and its own history file (MM_GATES_HISTORY).
 //   node test/gates.mjs          exit 0 = every check passed
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { CONFLICT_FILE, GROUPS, defaultJobs, fetchTool, gatesDir, globMatch, markRun, oldTemplateRef, parseMap, procStart, mapChanges, resolve, select, selectMapChange, waitLine } from './lib/gates.mjs'
+import { CONFLICT_FILE, GROUPS, HISTORY_MAX, appendHistory, defaultJobs, fetchTool, gatesDir, globMatch, markRun, oldTemplateRef, parseMap, procStart, mapChanges, resolve, select, selectMapChange, waitLine } from './lib/gates.mjs'
+import { gatesVerdict } from '../template/bin/lib/gates-file.mjs'
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const GATES = path.join(SRC, 'test', 'gates')
@@ -26,6 +29,9 @@ const T = fs.mkdtempSync(path.join(os.tmpdir(), 'gates-test-'))
 // and its own MM_GATES_DIR, so no run of it posts a result file (artifact) or a run mark to a real board.
 const CLEAN_PATH = [NODE_DIR, '/usr/local/bin', '/usr/bin', '/bin'].join(':')
 const GATES_DIR = path.join(T, 'gates-dir')
+// sy-sbjh.4: every test/gates run here (each inherits process.env) writes this suite's own history, never ~/.cache's
+const HISTORY = path.join(T, 'history.jsonl')
+process.env.MM_GATES_HISTORY = HISTORY
 let pass = 0, fail = 0
 const ok = (d, c, more = '') => { c ? pass++ : fail++; console.log(`  ${c ? '\x1b[32mok\x1b[0m  ' : '\x1b[31mFAIL\x1b[0m'} ${d}${c || !more ? '' : `\n        ${String(more).slice(0, 1500)}`}`) }
 const step = (s) => console.log(`\n\x1b[1m== ${s}\x1b[0m`)
@@ -252,7 +258,7 @@ ok('a failing suite: exit 1', r.status === 1, r.stdout + r.stderr)
 const def = path.join(R, `gates-${short}.txt`)
 const res2 = fs.existsSync(def) ? fs.readFileSync(def, 'utf8') : ''
 ok(`the default result file: gates-<short head>.txt (${path.basename(def)})`, res2.length > 0, fs.readdirSync(R))
-ok('result: the failed suite with its exit code and counts', /^test\/f\.sh\s+hermetic\s+failed \(exit 1\)\s+2 ok, 1 FAIL/m.test(res2) && /^result: failed: 1 passed, 1 failed, 0 skipped, of 2/m.test(res2), res2)
+ok('result: the failed suite with its exit code and counts (failed twice: again alone)', /^test\/f\.sh\s+hermetic\s+failed \(exit 1, again alone\)\s+2 ok, 1 FAIL/m.test(res2) && /^result: failed: 1 passed, 1 failed, 0 skipped, of 2/m.test(res2), res2)
 ok('{mm} is the --bin binary', fs.readFileSync(MARK, 'utf8').includes(`m.sh ${fakeMm} x`) && /^mm: --bin /m.test(res2), fs.readFileSync(MARK, 'utf8'))
 ok('--item: artifact <id> <result file>', fs.existsSync(`${T}/artifact.args`) && fs.readFileSync(`${T}/artifact.args`, 'utf8').trim() === `ab-1 ${def}` && /artifact: on ab-1/.test(r.stdout), r.stdout)
 const seen = fs.existsSync(SEEN) ? fs.readFileSync(SEEN, 'utf8') : ''
@@ -460,6 +466,79 @@ ok('the wait line', waitLine({ label: 'sy-x', pid: 42, since: '2026-01-02T03:04:
       }
     }
   }
+}
+
+step('the rerun and the history (sy-sbjh.4)')
+{
+  const R3 = path.join(T, 'repo3'), SP3 = path.join(T, 'spans3'), CNT = path.join(T, 'fl.count'), H3 = path.join(T, 'history3.jsonl')
+  const W3 = (f, x) => { fs.mkdirSync(path.dirname(path.join(R3, f)), { recursive: true }); fs.writeFileSync(path.join(R3, f), x) }
+  const span = (n) => `echo "${n} $(date +%s.%N) start" >>"${SP3}"`, end = (n) => `echo "${n} $(date +%s.%N) end" >>"${SP3}"`
+  // fl: fails its first run (the count file), passes after; bad: always fails; good: passes after a second
+  W3('test/fl.sh', `#!/usr/bin/env bash\n${span('fl')}\nn=$(cat "${CNT}" 2>/dev/null || echo 0); echo $((n+1)) >"${CNT}"\necho "  ok   one"\n${end('fl')}\nif [ "$n" -lt 1 ]; then echo "  FAIL two"; exit 3; fi\n`)
+  W3('test/bad.sh', `#!/usr/bin/env bash\n${span('bad')}\necho "  FAIL one"\n${end('bad')}\nexit 1\n`)
+  W3('test/good.sh', `#!/usr/bin/env bash\n${span('good')}\necho "  ok   one"\nsleep 1\n${end('good')}\n`)
+  W3('test/gates.map', 'suite test/fl.sh hermetic\nsuite test/bad.sh hermetic\nsuite test/good.sh hermetic\nrule a/** test/fl.sh test/good.sh\nrule b/** test/bad.sh test/good.sh\nfallback test/good.sh\n')
+  W3('a/x', '1\n'); W3('b/x', '1\n')
+  const g3 = (...a) => sh('git', ['-C', R3, ...a], { env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.org', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.org' } })
+  g3('init', '-q', '-b', 'main'); g3('add', '-A'); g3('commit', '-qm', 'base')
+  W3('a/x', '2\n'); g3('add', '-A'); g3('commit', '-qm', 'a') // main~2..main~1: fl + good
+  W3('b/x', '2\n'); g3('add', '-A'); g3('commit', '-qm', 'b') // main~1..main: bad + good
+  const aRange = 'main~2..main~1', bRange = 'main~1..main'
+  const run3 = (args) => sh(GATES, args, { cwd: R3, env: { ...process.env, MM_GATES_LOCK: path.join(T, 'r3.lock'), MM_GATES_DIR: GATES_DIR, MM_GATES_HISTORY: H3, PATH: CLEAN_PATH } })
+  const read = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '')
+  const spans3 = () => read(SP3).trim().split('\n').filter(Boolean).map((l) => l.split(' ')).map(([n, t, k]) => ({ n, t: Number(t), k }))
+  const hist = () => read(H3).trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+
+  // 1. fails once, then passes alone: flaky; the run passes
+  fs.rmSync(CNT, { force: true }); fs.rmSync(SP3, { force: true })
+  const O1 = path.join(T, 'r3-flaky.txt')
+  let x = run3([aRange, '--jobs', '2', '--out', O1])
+  const t1 = read(O1)
+  ok('a suite that fails, then passes alone: the run passes (exit 0)', x.status === 0, x.stdout + x.stderr)
+  ok("...its line: flaky (exit 3, then passed alone), and it stays in the result file", /^test\/fl\.sh\s+hermetic\s+flaky \(exit 3, then passed alone\)\s/m.test(t1), t1)
+  ok('...the result line counts it: passed: 1 passed, 0 failed, 1 flaky, 0 skipped, of 2', /^result: passed: 1 passed, 0 failed, 1 flaky, 0 skipped, of 2$/m.test(t1), t1)
+  const sp1 = spans3(), flStarts = sp1.filter((s) => s.n === 'fl' && s.k === 'start'), goodEnd = sp1.find((s) => s.n === 'good' && s.k === 'end')
+  ok('...it ran twice; the rerun started after every other suite ended (alone)', flStarts.length === 2 && goodEnd && flStarts[1].t >= goodEnd.t, JSON.stringify(sp1))
+  const flLog = (t1.split('\n').find((l) => l.startsWith('test/fl.sh')) || '').split(/\s+/).pop()
+  ok('...both runs in its one log, the rerun after "# gates: rerun alone"', /FAIL two[\s\S]*# gates: rerun alone \(the first run failed with exit 3\)[\s\S]*ok {3}one/.test(read(flLog)), read(flLog))
+  ok("...a review sign-off reads a flaky line as no failure (gates-file's verdict)", gatesVerdict(t1, g3('rev-parse', 'main~1').stdout.trim()) === null, t1)
+  let h = hist()
+  ok('the history: one line per suite of the run, with suite, head, group, status, secs, date', h.length === 2 &&
+    h.some((e) => e.suite === 'test/fl.sh' && e.status === 'flaky' && e.group === 'hermetic' && e.head === g3('rev-parse', 'main~1').stdout.trim() && typeof e.secs === 'number' && !isNaN(Date.parse(e.date))) &&
+    h.some((e) => e.suite === 'test/good.sh' && e.status === 'passed' && e.secs >= 1), JSON.stringify(h))
+
+  // 2. fails twice: failed; the run fails
+  fs.rmSync(SP3, { force: true })
+  const O2 = path.join(T, 'r3-bad.txt')
+  x = run3([bRange, '--out', O2])
+  const t2 = read(O2)
+  ok('a suite that fails twice: failed (exit 1, again alone); the run fails (exit 1)', x.status === 1 && /^test\/bad\.sh\s+hermetic\s+failed \(exit 1, again alone\)/m.test(t2) && /^result: failed: 1 passed, 1 failed, 0 skipped, of 2$/m.test(t2), x.stdout + t2)
+  ok('...it ran twice', spans3().filter((s) => s.n === 'bad' && s.k === 'start').length === 2, read(SP3))
+  h = hist()
+  ok('...the history grows by its two lines (bad: failed)', h.length === 4 && h.at(-1).suite !== h.at(-2).suite && h.some((e) => e.suite === 'test/bad.sh' && e.status === 'failed'), JSON.stringify(h))
+
+  // 3. --no-rerun: a fail is a fail, run once
+  fs.rmSync(CNT, { force: true }); fs.rmSync(SP3, { force: true })
+  const O3 = path.join(T, 'r3-norerun.txt')
+  x = run3([aRange, '--no-rerun', '--out', O3])
+  const t3 = read(O3)
+  ok('--no-rerun: the suite that fails once is failed (exit 3), run once; the run fails', x.status === 1 && /^test\/fl\.sh\s+hermetic\s+failed \(exit 3\)\s/m.test(t3) &&
+    spans3().filter((s) => s.n === 'fl' && s.k === 'start').length === 1 && !/rerun alone/.test(read(path.join(T, 'r3-norerun.logs', 'fl.sh.log'))), x.stdout + t3)
+  ok('...and its history line says failed', hist().at(-2)?.suite === 'test/fl.sh' && hist().at(-2)?.status === 'failed', JSON.stringify(hist().slice(-2)))
+
+  // 4. --list writes no history
+  const n = hist().length
+  run3([aRange, '--list'])
+  ok('--list: no history line', hist().length === n)
+
+  // 5. the bound
+  ok('the history keeps the last 5000 lines', HISTORY_MAX === 5000)
+  const HB = path.join(T, 'hb', 'history.jsonl')
+  appendHistory(HB, Array.from({ length: 4 }, (_, i) => ({ i })), 5)
+  appendHistory(HB, Array.from({ length: 4 }, (_, i) => ({ i: i + 4 })), 5)
+  const hb = read(HB).trim().split('\n').map((l) => JSON.parse(l).i)
+  ok('appendHistory: past its bound, the file is cut to its last lines (oldest dropped)', hb.join(',') === '3,4,5,6,7', hb.join(','))
+  ok('...and leaves no temp file', fs.readdirSync(path.dirname(HB)).join() === 'history.jsonl', fs.readdirSync(path.dirname(HB)))
 }
 
 step('usage and map errors')
