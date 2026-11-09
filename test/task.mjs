@@ -44,7 +44,7 @@ const T = fs.mkdtempSync(path.join(os.tmpdir(), 'task-'))
 try {
   for (const d of ['bin/lib', 'tools', 'control', 'leads']) fs.mkdirSync(path.join(T, d), { recursive: true })
   for (const f of ['bd', 'task', 'message', 'owner-card']) fs.copyFileSync(path.join(SRC, 'template/bin', f), path.join(T, 'bin', f))
-  for (const f of ['task.mjs', 'owner-card.mjs', 'message.mjs', 'raci.mjs']) fs.copyFileSync(path.join(SRC, 'template/bin/lib', f), path.join(T, 'bin/lib', f))
+  for (const f of ['task.mjs', 'owner-card.mjs', 'message.mjs', 'raci.mjs', 'writing.mjs', 'glossary.mjs']) fs.copyFileSync(path.join(SRC, 'template/bin/lib', f), path.join(T, 'bin/lib', f))
   fs.writeFileSync(path.join(T, 'leads/roles.json'), JSON.stringify({ roles: [{ id: 'ops' }, { id: 'review' }, { id: 'platform' }] }))
   fs.writeFileSync(path.join(T, 'leads/raci.json'), JSON.stringify({ activities: ACTS.map((id) => ({ id, title: id, raci: { platform: 'RA' } })) }))
   fs.writeFileSync(path.join(T, 'bin/trace'), '#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n')

@@ -90,7 +90,7 @@ const TASK = (act) => `## Task\n- **Task:** Add the port check.\n- **Act:** ${ac
 const msg = (head, lines) => [head, ...lines].join('\n')
 const EXP = (role) => [`Expect: ${role}: say if port 8080 is free.`, 'Done when: an ANSWER names it.', 'Verify: ss -ltn → no :8080', 'By: next wake · Else: platform picks another']
 const ASK = (role) => msg(`ASK → ${role}`, [...EXP(role), 'Why: the service needs a port'])
-const HO = (head) => msg('HANDOFF → review', [`Head: mm@${head}`, 'Expect: review: sign off or block this head.', `Done when: a VERDICT on mm@${head}.`, `Verify: bd show x → signed-head:mm@${head}`, 'By: next wake · Else: nothing rolls out', 'Ready: the gate'])
+const HO = (head) => msg('HANDOFF → review', [`Head: mm@${head}`, 'Expect: review: sign off or block this head.', `Done when: a VERDICT on mm@${head}.`, `Verify: bd show x → signed-head:mm@${head}`, 'By: next wake · Else: nothing rolls out', 'Ready: the gate', 'Surfaces: none'])
 const VERDICT = (head, re) => msg(`VERDICT → platform · re #${re}`, [`Head: mm@${head}`, 'Expect: platform: land this head.', 'Done when: main has it.', 'Verify: git log main → it', 'By: today · Else: it waits', 'Result: signed off'])
 const ANSWER = (re) => msg(`ANSWER → platform · re #${re}`, ['Expect: none', 'Verify: the thread → #1', 'Answer: looking at it'])
 try {
