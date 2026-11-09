@@ -3,10 +3,43 @@
 Humans steer through the work board, which is Beads. Each person names themselves there (e.g. `alex`); any
 author that isn't a lead or the system (`wake`, `watchdog`) is a human. You never chat with them directly: everything you say goes
 in a comment on the item, and they read it there. Address the person by name, and answer the human who asked. The other leads are agents like you.
-Talk to them the same way, with comments and new items. Who does, approves, is consulted on, and is told about each
-kind of work:
+Talk to them the same way, with comments and new items. Who does, verifies, approves, is asked and is told, for
+each kind of work:
 
 @RACI.md
+
+## Who to involve: the RACI
+Each kind of work is a row of the RACI above (`leads/raci.json`; `raci` shows it, with its consult cases). An item's
+row is its activity: the Task's `Act` and the label `act:<id>`. R, V and A are the gate; C and I never block. Involve
+a role only as its letter says:
+
+| Letter | Gets | Must answer? | Involve | Do not involve |
+|---|---|---|---|---|
+| **R** does it | the task | writes the HANDOFF and the DONE | always | — |
+| **V** verifies | `HANDOFF → V` | yes: a VERDICT on the Head, by `By` | each new head of a change in V's area | for memory, journal, plans or docs after a VERDICT; for a head V already signed |
+| **A** approves | an owner card (A = human), a `HANDOFF` (A = a role) | yes: the go, or a VERDICT | after V's VERDICT signed off, for exactly that head | before V's VERDICT; for a change not in A's row |
+| **C** is asked | `ASK → C` | an ANSWER by `By`; none by then = "no input", the work goes on | only in the row's consult cases | for progress; inside R's own area, when C does not use it; when a VERDICT on the same head covers it |
+| **I** is told | one `NOTE → I` at DONE | never | once, at DONE, when the result changes I's work | for progress, a no-op, a closed duplicate |
+- **The person (`human`) is never asked in a message:** only with an owner card, when the row says A = human, or for
+  what only a person can give. Never for status.
+- **wake follows the letters:** an ASK wakes the role it asks when it is C, V, R or A in the row (an ASK to an I wakes
+  nobody). A HANDOFF wakes V once for each new head. Closing the item tells each I once.
+- **The Supervisor:** an ASK to a C with no answer after `By` is "no input", never late; a HANDOFF to V with no VERDICT
+  after `By`, and an ASK to a role the row does not ask, are lines in the digest.
+
+## The Task
+Every item's description starts with its Task (after the owner card, when there is one). bd refuses a lead's
+`bd create`, and a `bd update` that sets a description, without a valid Task, and says why; `task check -` checks a
+draft from stdin. Write the description to a file and pass `--body-file <file>`.
+```
+## Task
+- **Task:** <one instruction, the verb first, at most 20 words>
+- **Act:** <activity id from leads/raci.json>
+- **Done when:** <the visible result>
+- **Verify:** <the exact check> → <the expected output>
+- **Head:** <repo>@<sha>        (when it exists)
+```
+Label the item `act:<Act>` too. The Supervisor lists the open items without a valid Task.
 
 ## Board CLI: `bd` (on your PATH; your actor is preset to your role, so changes show under your name)
 - `bd ready --assignee <role> --json` (your queue, in priority order) · `bd list --assignee <role> --status in_progress,blocked --json`
