@@ -97,7 +97,7 @@ gates() {
     [ -z "$c" ] || printf '%s\n' "$c"; } >"$T/artifacts/$id/$name"
 }
 FULL=0a1b2c3d4e5f60718293a4b5c6d7e8f901234567 # the head mm@0a1b2c3 of the cards above
-for i in sy-nyfull sy-hnone sy-plain sy-new1 sy-new2; do gates $i $FULL; done
+for i in sy-nyfull sy-hnone sy-plain sy-new1 sy-new2 sy-new3; do gates $i $FULL; done
 # as an actor other than ops (the default here): only review adds signed-off and signed-head:* (sy-9bss)
 as() { local who=$1; shift; (export BEADS_ACTOR="$who"; call "$@"); }
 refused() { [ "$(cat "$T/code")" = 1 ] && [ ! -s "$T/ran" ] && grep -q '^bd: refused: needs-you only with a valid owner card' "$T/err" && grep -q 'The format: the description starts with "## Owner"' "$T/err"; }
@@ -210,7 +210,7 @@ call label add sy-notask needs-you;                     check "signed head, no T
 check "...the reason names both" says "the item's Task has no Rollback and no Safeguard line"
 call update sy-notask --body-file "$T/t2card.md" --add-label needs-you; check "...the call's own description adds both: passed" passed
 call update sy-hmatch -d "$T2NOSAFE" --add-label needs-you; check "...the call's own description drops one: refused" refused
-as review create "a title" -d "$T2NOTASK" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create with the signed head, no Task lines: refused" refused
+as review create "a title" --id sy-new3 -d "$T2NOTASK" -l t2,signed-off,signed-head:mm@0a1b2c3,needs-you; check "create with the signed head, no Task lines: refused" refused
 item sy-ngnotask "$NGCARD" "$SIGNED_T2"
 call label add sy-ngnotask needs-you;                   check "a t2 non-go ask needs neither: passed" passed
 
