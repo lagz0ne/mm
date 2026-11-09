@@ -51,7 +51,7 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 interface SetupInfo { agent: RoleSettings['agent']; state?: LeadState; layers: Layer[]; start: string; settingsRaw: string | null }
 interface GovItem { id: string; title: string; status: string; updated_at: string; created_by?: string; owner?: string }
 
-export function Leads({ onOpen, items, raci }: { onOpen: (id: string) => void; items: GovItem[]; raci: { activities: { id: string; title: string; raci: Record<string, string> }[] } | null }) {
+export function Leads({ onOpen, items, raci }: { onOpen: (id: string) => void; items: GovItem[]; raci: { activities: { id: string; title: string; raci: Record<string, string>; consult?: string[] }[] } | null }) {
   const [roles, setRoles] = useState<RoleSettings[]>([])
   const [setup, setSetup] = useState<SetupInfo | null>(null)
   const [themes, setThemes] = useState<{ name: string; sample: string }[]>([])

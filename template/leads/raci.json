@@ -10,7 +10,12 @@
         "code": "C",
         "qa": "I",
         "architecture": "C"
-      }
+      },
+      "consult": [
+        "design: when the spec changes a screen or a user flow",
+        "code: when the spec changes an interface, or it is unclear if it can be built",
+        "architecture: when the spec adds a service, a data store or an integration"
+      ]
     },
     {
       "id": "design",
@@ -22,7 +27,12 @@
         "code": "C",
         "qa": "I",
         "architecture": "C"
-      }
+      },
+      "consult": [
+        "requirement: when the design changes what a requirement asks",
+        "code: when a screen needs new data or a new API",
+        "architecture: when the design needs a new component or service"
+      ]
     },
     {
       "id": "build",
@@ -34,7 +44,11 @@
         "qa": "I",
         "architecture": "C",
         "ops": "I"
-      }
+      },
+      "consult": [
+        "design: when the change alters a screen",
+        "architecture: when the change alters an interface, a dependency or the data model"
+      ]
     },
     {
       "id": "arch",
@@ -45,7 +59,11 @@
         "requirement": "C",
         "qa": "I",
         "architecture": "R"
-      }
+      },
+      "consult": [
+        "code: when the design changes code that is already built",
+        "requirement: when the design changes the scope or a requirement"
+      ]
     },
     {
       "id": "test",
@@ -55,7 +73,10 @@
         "human": "A",
         "code": "C",
         "requirement": "I"
-      }
+      },
+      "consult": [
+        "code: when a test fails and the cause is not clear"
+      ]
     },
     {
       "id": "release",
@@ -67,7 +88,11 @@
         "requirement": "I",
         "design": "I",
         "ops": "R"
-      }
+      },
+      "consult": [
+        "code: when the release holds a migration or a configuration change",
+        "qa: when the release holds work qa has not accepted"
+      ]
     },
     {
       "id": "epic",
