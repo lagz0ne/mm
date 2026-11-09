@@ -15,9 +15,11 @@
 //   lead worker stop <role> <name>      archive it, and its Paseo workspace (its folder stays: wt rm <role>-<name>)
 //   lead worker report <role> <name>    its final reply only (never its activity)
 //   lead worker ls [<role>]
-//   lead worker sweep <role> [--apply]  the role's leftovers: Paseo workspaces and projects of its worker folders with
-//       no live agent (archived, deleted), and its write workers' folders whose branch has no commit off main
-//       (git cherry: no "+"; wt rm --force). A dry run unless --apply; it prints each step
+//   lead worker sweep <role> [--apply] [--paseo-only]  the role's leftovers, never forced: the Paseo workspaces of its
+//       worker folders with no live agent (archived); their Paseo projects (deleted) only when the folder's item (the
+//       worker's item= label, or the folder's name) is closed and its branch landed; its write workers' clean folders
+//       whose branch is all on main (git cherry: no "+"; plain wt rm). --paseo-only: no folder is removed.
+//       A dry run unless --apply; each line says why
 // In Paseo (sy-7f7i) a worker's workspace sits in the board's one Paseo project (rooted at the board, the leads' one:
 // bin/lib/lead-workspace.mjs), not in a project of its own: Paseo makes a project per folder only when an agent is run
 // with no workspace. Stop archives the workspace; the folder may stay (a branch waiting for its rollout).
@@ -72,6 +74,13 @@ export function specProblem(P, s, { exists = false } = {}) {
     if (!top || real(top) !== r) return `repo ${s.repoRaw} is not the top of a git repo`
   }
   return null
+}
+/** How many commits of `branch` are not on main in `repo` (git cherry's "+" lines: one merged or cherry-picked onto
+ *  main is on it; sy-7f7i), or null when git cannot compare them (no such branch, no repo). wt rm and the sweep. */
+export function unlanded(repo, branch) {
+  const g = (args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 })
+  try { g(['merge-base', '--is-ancestor', branch, 'main']); return 0 } catch {}
+  try { return g(['cherry', 'main', branch]).split('\n').filter((l) => l.startsWith('+')).length } catch { return null }
 }
 /** The worker folders under worktrees/: [{ dir, path, role, name }] (the longest role id that prefixes the name). */
 export function folders(P = ROOT) {
@@ -250,16 +259,61 @@ async function stop(P, role, name) {
   for (const l of sayDropped(dropProjects([W, real(W)]), `lead worker stop ${role} ${name}`)) console.log(l)
   if (fs.existsSync(W)) console.log(`its folder stays: wt rm ${role}-${name} when its work is integrated`)
 }
-/** lead worker sweep <role> [--apply]: the role's leftovers (see the head of this file). */
-async function sweep(P, role, apply) {
+const ITEM = /^[a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*$/
+/** The items of each of a role's worker folders, by folder name (dir): the `item=` label, or the " on <item>" of the
+ *  title (Paseo's ls may not print labels), of each of its agents archived or not (a name may serve several items),
+ *  and the folder's name when it is an item id (platform-sy-1nb8). { dir: [ids] } */
+function itemsOf(P, role, dirs) {
+  const out = {}
+  try {
+    for (const a of jsonOf(pcli(['ls', '-g', '-a', '--label', `project=${projectName()}`, '--label', `role=${role}-worker`, '--json'], 20000)).filter(Boolean)) {
+      const name = a.labels?.worker || (/ worker ([a-z0-9][a-z0-9.-]*) on /.exec(a.title || a.name || '') || [])[1]
+      const item = a.labels?.item || (/ on ([a-z][a-z0-9]*-[a-z0-9]+(?:\.\d+)*)$/.exec(a.title || a.name || '') || [])[1]
+      if (name && item) (out[`${role}-${name}`] ||= new Set()).add(item)
+    }
+  } catch {}
+  for (const d of dirs) if (ITEM.test(d.slice(role.length + 1))) (out[d] ||= new Set()).add(d.slice(role.length + 1))
+  return Object.fromEntries(Object.entries(out).map(([d, s]) => [d, [...s].sort()]))
+}
+/** The board's status of each item id ({ id: status }; an id the board has not is missing). Throws when bd fails. */
+function statusOf(P, ids) {
+  if (!ids.length) return {}
+  const out = execFileSync(path.join(P, 'bin', 'bd'), ['list', '--all', '--id', ids.join(','), '--json', '--limit', '0'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000, cwd: P })
+  return Object.fromEntries(JSON.parse(out || '[]').filter((i) => ids.includes(i.id)).map((i) => [i.id, i.status]))
+}
+/** lead worker sweep <role> [--apply] [--paseo-only]: the role's leftovers (see the head of this file). Never forces:
+ *  a folder goes by plain wt rm (its branch landed, git cherry: no "+"), a project only when its item is closed. */
+async function sweep(P, role, apply, paseoOnly) {
   const s = need(P, role)
   const todo = [], kept = [], rel = (p) => { const w = workerOf(P, p); return w ? `worktrees/${w.dir}` : p }
   let st = null
   try { st = paseoState() } catch (e) { kept.push(`Paseo did not answer (${errOf(e)}): its workspaces and projects are not swept, nor folders (an agent may be in one)`) }
+  const left = st ? leftovers(P, st, role) : []
+  // a project's folder: its item (closed on the board) and its branch (no "+": landed, or gone with its folder)
+  const items = itemsOf(P, role, [...new Set(left.filter((x) => x.kind === 'project').map((x) => x.dir))])
+  let status = null, bdErr = ''
+  try { status = statusOf(P, [...new Set(Object.values(items).flat())]) } catch (e) { bdErr = errOf(e) }
+  const projectWhy = (x) => {
+    const ids = items[x.dir] || [], its = `its item${ids.length > 1 ? `s ${ids.join(', ')} are` : ` ${ids[0]} is`}`
+    if (!ids.length) return { keep: 'no item known for its folder (no worker label, its name is no item id)' }
+    if (!status) return { keep: `the board did not answer for ${ids.join(', ')} (${bdErr})` }
+    const gone = ids.filter((i) => !status[i]), open = ids.filter((i) => status[i] && status[i] !== 'closed')
+    if (gone.length) return { keep: `item ${gone.join(', ')} is not on the board` }
+    if (open.length) return { keep: open.map((i) => `its item ${i} is ${status[i]}`).join(', ') + ' (item open)' }
+    if (s.kind !== 'write') return { why: `no live agent, ${its} closed` }
+    let branch = true
+    try { execFileSync('git', ['-C', s.repo, 'rev-parse', '-q', '--verify', `refs/heads/${x.name}`], { stdio: 'ignore', timeout: 30000 }) } catch { branch = false }
+    const n = branch ? unlanded(s.repo, x.name) : 0
+    if (n === null) return { keep: `${its} closed but its branch ${x.name} cannot be compared with main` }
+    if (n) return { keep: `${its} closed but its branch ${x.name} has ${n} commit(s) not on main` }
+    return { why: `no live agent, ${its} closed, its branch ${x.name} ${branch ? 'is on main (git cherry: no "+")' : 'is gone'}` }
+  }
   // its Paseo leftovers: workspaces first, then projects (leftovers() lists them so)
-  if (st) for (const x of leftovers(P, st, role)) {
-    const ws = x.kind === 'workspace', verb = ws ? ['archive ', 'archived'] : ['delete  ', 'deleted']
-    todo.push({ say: `${verb[+apply]} ${x.kind} ${x.id} ${rel(x.at)}${apply ? '' : ': no live agent'}`,
+  for (const x of left) {
+    const ws = x.kind === 'workspace', verb = ws ? ['archive ', 'archived'] : ['delete  ', 'deleted ']
+    const r = ws ? { why: 'no live agent' } : projectWhy(x)
+    if (r.keep) { kept.push(`${x.kind} ${x.id} ${rel(x.at)}: ${r.keep}`); continue }
+    todo.push({ say: `${verb[+apply]} ${x.kind} ${x.id} ${rel(x.at)}: ${r.why}`,
       act: () => pcli(ws ? ['workspace', 'archive', x.id] : ['project', 'delete', x.id], 30000) })
   }
   for (const f of folders(P).filter((x) => x.role === role)) {
@@ -267,18 +321,17 @@ async function sweep(P, role, apply) {
     const why = (() => {
       if (st.live.some((a) => workerOf(P, a.cwd)?.dir === f.dir)) return 'a live agent is in it (lead worker stop it first)'
       if (s.kind !== 'write') return `a ${s.kind} worker has no branch to check (wt rm ${f.dir} when done)`
-      const g = (args) => execFileSync('git', ['-C', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 })
-      try { if (g([f.path, 'status', '--porcelain']).trim()) return 'it has uncommitted changes' } catch { return 'git cannot read it' }
-      let cherry
-      try { cherry = g([s.repo, 'cherry', 'main', f.name]) } catch { return `its branch ${f.name} cannot be compared with main` }
-      const n = cherry.split('\n').filter((l) => l.startsWith('+')).length
-      return n ? `its branch ${f.name} has ${n} commit(s) not on main` : null
+      try { if (execFileSync('git', ['-C', f.path, 'status', '--porcelain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 }).trim()) return 'it has uncommitted changes' } catch { return 'git cannot read it' }
+      const n = unlanded(s.repo, f.name)
+      if (n === null) return `its branch ${f.name} cannot be compared with main`
+      if (n) return `its branch ${f.name} has ${n} commit(s) not on main`
+      return paseoOnly ? `(--paseo-only) every commit of its branch ${f.name} is on main; no folder is removed now` : null
     })()
     if (why) { kept.push(`${f.dir}: ${why}`); continue }
-    todo.push({ say: apply ? `removed  ${f.dir}` : `rm       ${f.dir}: every commit of its branch ${f.name} is on main (wt rm --force)`,
-      act: () => execFileSync(path.join(P, 'bin', 'wt'), ['rm', f.dir, '--force'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], cwd: P, timeout: 120000 }) })
+    todo.push({ say: `${apply ? 'removed ' : 'rm      '} ${f.dir}: no live agent, clean, every commit of its branch ${f.name} is on main (git cherry: no "+"; plain wt rm)`,
+      act: () => execFileSync(path.join(P, 'bin', 'wt'), ['rm', f.dir], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], cwd: P, timeout: 120000 }) })
   }
-  console.log(`sweep ${role}${apply ? '' : ' (dry run: --apply to act)'}`)
+  console.log(`sweep ${role}${apply ? '' : ' (dry run: --apply to act)'}${paseoOnly ? ' (--paseo-only: no folder is removed)' : ''}`)
   let done = 0, failed = 0
   for (const t of todo) {
     if (!apply) { console.log(`  ${t.say}`); continue }
@@ -305,14 +358,18 @@ async function ls(P, only) {
 if (process.argv[1] && pathToFileURL(fs.realpathSync(process.argv[1])).href === import.meta.url) {
   const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
   const [cmd, role, name, ...rest] = process.argv.slice(2), o = {}
-  for (let k = 0; k < rest.length; k++) {
-    const m = /^--(item|brief|ref|model)$/.exec(rest[k])
-    if (!m || k + 1 >= rest.length) die(`unknown or incomplete option ${rest[k]}`, 2)
-    o[m[1]] = rest[++k]
+  if (cmd === 'sweep') {
+    const flags = process.argv.slice(4)
+    if (!role || role.startsWith('-') || flags.some((f) => !['--apply', '--paseo-only'].includes(f))) die('usage: lead worker sweep <role> [--apply] [--paseo-only]', 2)
+    sweep(P, role, flags.includes('--apply'), flags.includes('--paseo-only')).catch((e) => die(String(e.stderr || e.message || e).trim().slice(0, 500)))
+  } else {
+    for (let k = 0; k < rest.length; k++) {
+      const m = /^--(item|brief|ref|model)$/.exec(rest[k])
+      if (!m || k + 1 >= rest.length) die(`unknown or incomplete option ${rest[k]}`, 2)
+      o[m[1]] = rest[++k]
+    }
+    const run = { start: () => start(P, role, name, o), stop: () => stop(P, role, name), report: () => report(P, role, name), ls: () => ls(P, role) }[cmd]
+    if (!run || (cmd !== 'ls' && !name)) { console.error(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').filter((l) => /^\/\/   lead worker|^\/\/       /.test(l)).map((l) => l.slice(5)).join('\n')); process.exit(2) }
+    run().catch((e) => die(String(e.stderr || e.message || e).trim().slice(0, 500)))
   }
-  const run = { start: () => start(P, role, name, o), stop: () => stop(P, role, name), report: () => report(P, role, name), ls: () => ls(P, role),
-    sweep: () => sweep(P, role, name === '--apply') }[cmd]
-  if (cmd === 'sweep' && (!role || (name !== undefined && name !== '--apply'))) die('usage: lead worker sweep <role> [--apply]', 2)
-  if (!run || (!['ls', 'sweep'].includes(cmd) && !name)) { console.error(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').filter((l) => /^\/\/   lead worker|^\/\/       /.test(l)).map((l) => l.slice(5)).join('\n')); process.exit(2) }
-  run().catch((e) => die(String(e.stderr || e.message || e).trim().slice(0, 500)))
 }

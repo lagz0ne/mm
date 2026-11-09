@@ -6,10 +6,12 @@
 # workspace if Paseo has none), never a project of its own, and runs the agent there (--workspace); when Paseo refuses
 # the workspace it starts the worker anyway (Paseo places it); lead worker stop archives the agent and its workspace
 # (and a project of the old layout), the board's project and its other workspaces stay, the folder stays;
-# lead worker sweep <role> is a dry run that lists and changes nothing, and --apply archives the role's workspaces and
-# deletes its projects with no live agent and wt rm --force's its folders whose branch is all on main (git cherry: a
-# cherry-picked commit counts), and keeps a branch with commits not on main, a folder with a live agent, a dirty one,
-# and another role's.
+# wt rm removes a branch landed by cherry-pick (git cherry: no "+") without --force, and refuses a real unlanded commit
+# or a dirty tree; lead worker sweep <role> is a dry run that lists and changes nothing (each line says why), and
+# --apply never forces: it archives the role's workspaces with no live agent, deletes a project only when its folder's
+# item (label, title or folder name) is closed and its branch landed or gone (keeps an open item's, an unlanded one's,
+# one with no item), plain wt rm's its clean folders whose branch is all on main, and keeps a branch with commits not
+# on main, a folder with a live agent, a dirty one, and another role's; --paseo-only removes no folder at all.
 #   test/worker-cleanup.sh
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -42,7 +44,11 @@ jq '.roles |= map(.workers = true | .capacity = 9)' "$RJ" >"$T/r.json" && cp "$T
 cat >"$T/items.json" <<'EOF'
 [{"id":"ab-1","assignee":"platform","status":"in_progress","priority":2},{"id":"ab-3","assignee":"review","status":"in_progress","priority":2}]
 EOF
-printf '#!/bin/sh\ncase "$1" in list) cat %s ;; *) exit 0 ;; esac\n' "$T/items.json" >"$SYS/bin/bd"; chmod +x "$SYS/bin/bd"
+# the whole board (bd list --all): ab-5 open, ab-6 and ab-7 closed
+cat >"$T/all.json" <<'EOF'
+[{"id":"ab-1","status":"in_progress"},{"id":"ab-3","status":"in_progress"},{"id":"ab-5","status":"open"},{"id":"ab-6","status":"closed"},{"id":"ab-7","status":"closed"}]
+EOF
+printf '#!/bin/sh\necho "$*" >>%s\ncase "$1 $2" in "list --all") cat %s ;; list*) cat %s ;; *) exit 0 ;; esac\n' "$T/bd.log" "$T/all.json" "$T/items.json" >"$SYS/bin/bd"; chmod +x "$SYS/bin/bd"
 
 # the stub paseo, on PATH: state in $STUB (agents, projects, workspaces); STUB_WS_REFUSE: workspace create fails
 mkdir -p "$T/stubbin"
@@ -114,37 +120,70 @@ check "...Paseo made a project for its folder" test "$(q "s=>s.projects.some(p=>
 out=$(LW stop platform a2)
 check "stop platform a2 deletes that project and archives its workspace" bash -c "grep -q 'deleted its Paseo project' <<<'$out' && grep -q 'archived its Paseo workspace' <<<'$out' && [ \"\$(node -e \"const s=require('$STUB');process.stdout.write(String(s.projects.length))\")\" = 1 ]"
 
+echo "== wt rm: a branch landed by cherry-pick goes without --force; a real unlanded commit stays (sy-7f7i)"
+"$SYS/bin/wt" platform c1 >/dev/null 2>&1
+echo c >"$W/platform-c1/c.txt"; git -C "$W/platform-c1" add c.txt; git -C "$W/platform-c1" commit -qm c
+git -C "$MMR" cherry-pick "$(git -C "$W/platform-c1" rev-parse HEAD)" >/dev/null
+echo m >"$MMR/m.txt"; git -C "$MMR" add m.txt; git -C "$MMR" commit -qm "main moves on" # c1 is not an ancestor of main
+out=$("$SYS/bin/wt" rm platform-c1 2>&1); rc=$?
+check "wt rm platform-c1 (cherry-picked, no --force) removes it and its branch (exit $rc)" bash -c "[ $rc = 0 ] && [ ! -e '$W/platform-c1' ] && ! git -C '$MMR' rev-parse -q --verify refs/heads/c1 >/dev/null"
+"$SYS/bin/wt" platform c2 >/dev/null 2>&1
+echo c >"$W/platform-c2/c.txt"; git -C "$W/platform-c2" add c.txt; git -C "$W/platform-c2" commit -qm "c, other content"; echo d >>"$W/platform-c2/c.txt"; git -C "$W/platform-c2" commit -qam d
+out=$("$SYS/bin/wt" rm platform-c2 2>&1); rc=$?
+check "wt rm platform-c2 (a commit not on main) is refused (exit $rc), folder and branch stay" bash -c "[ $rc = 1 ] && grep -qF 'has commits not on main (git cherry: 1 \"+\"' <<<'$out' && [ -d '$W/platform-c2' ] && git -C '$MMR' rev-parse -q --verify refs/heads/c2 >/dev/null"
+git -C "$W/platform-c2" reset -q --hard main; echo dirty >"$W/platform-c2/d.txt"
+out=$("$SYS/bin/wt" rm platform-c2 2>&1); rc=$?
+check "wt rm platform-c2 (landed, uncommitted changes) is refused (exit $rc): no forced removal" bash -c "[ $rc = 1 ] && grep -q 'uncommitted changes' <<<'$out' && [ -f '$W/platform-c2/d.txt' ]"
+"$SYS/bin/wt" rm platform-c2 --force >/dev/null 2>&1
+
 echo "== sweep"
 # platform-a1: its commit cherry-picked onto main (all on main); platform-a2: a commit not on main; platform-a3: a live
-# agent; platform-a4: uncommitted changes; leftovers of a folder gone (a workspace) and of the old layout (a project)
+# agent; platform-a4: uncommitted changes; leftovers of a folder gone (a workspace) and projects of folders gone:
+# platform-old (its worker's agent, archived, was on ab-6: closed; its branch gone), platform-ab-5 (item open),
+# platform-ab-6 (closed, branch gone), platform-ab-7 (closed, its branch has a commit not on main), platform-x (no item)
+# and platform-two (its worker served ab-6, closed, then ab-5, open)
 echo one >"$W/platform-a1/one.txt"; git -C "$W/platform-a1" add one.txt; git -C "$W/platform-a1" commit -qm one
 git -C "$MMR" cherry-pick "$(git -C "$W/platform-a1" rev-parse HEAD)" >/dev/null
 echo two >"$W/platform-a2/two.txt"; git -C "$W/platform-a2" add two.txt; git -C "$W/platform-a2" commit -qm two
 LW start platform a3 --item ab-1 --brief "$T/brief.md" >/dev/null
 LW start platform a4 --item ab-1 --brief "$T/brief.md" >/dev/null; LW stop platform a4 >/dev/null; echo dirty >"$W/platform-a4/d.txt"
+git -C "$MMR" branch -q ab-7 main; git -C "$MMR" checkout -q ab-7; echo s >"$MMR/s.txt"; git -C "$MMR" add s.txt; git -C "$MMR" commit -qm s; git -C "$MMR" checkout -q main
 node -e "const f='$STUB',s=require(f);const b=s.projects[0].projectId
 s.workspaces.push({workspaceId:'wsgone',projectId:b,cwd:'$W/platform-gone',title:'x'},{workspaceId:'wsrev',projectId:b,cwd:'$W/review-old',title:'x'})
-s.projects.push({projectId:'pjold',name:'platform-old',path:'$W/platform-old'});require('fs').writeFileSync(f,JSON.stringify(s))"
+for (const n of ['old','ab-5','ab-6','ab-7','x','two']) s.projects.push({projectId:'pj'+n,name:'platform-'+n,path:'$W/platform-'+n})
+s.agents.push({id:'agold',shortId:'agold',title:'acme-b · platform worker old on ab-6',status:'idle',archived:true,cwd:'$W/platform-old',labels:{project:'acme-b',role:'platform-worker',worker:'old',item:'ab-6'}})
+for (const [i, it] of [[1,'ab-6'],[2,'ab-5']]) s.agents.push({id:'agtwo'+i,shortId:'agtwo'+i,title:'acme-b · platform worker two on '+it,status:'idle',archived:true,cwd:'$W/platform-two',labels:{project:'acme-b',role:'platform-worker',worker:'two',item:it}})
+require('fs').writeFileSync(f,JSON.stringify(s))"
 cp "$STUB" "$T/before.json"; n0=$(wc -l <"$STUB.log")
 out=$(LW sweep platform); rc=$?
 echo "$out" | sed 's/^/    | /'
 check "the dry run (exit $rc) says so, and changes nothing" bash -c "[ $rc = 0 ] && head -1 <<<'$out' | grep -qF 'sweep platform (dry run: --apply to act)' && cmp -s '$T/before.json' '$STUB' && [ -d '$W/platform-a1' ]"
 check "...and calls no archive, delete or wt rm" bash -c "! tail -n +$((n0 + 1)) '$STUB.log' | grep -qE '\"(archive|delete)\"'"
-for l in 'archive  workspace wsgone worktrees/platform-gone: no live agent' 'delete   project pjold worktrees/platform-old: no live agent' \
-  'rm       platform-a1: every commit of its branch a1 is on main (wt rm --force)' 'keep     platform-a2: its branch a2 has 1 commit(s) not on main' \
-  'keep     platform-a3: a live agent is in it' 'keep     platform-a4: it has uncommitted changes' '3 to do, 3 kept'; do
+for l in 'archive  workspace wsgone worktrees/platform-gone: no live agent' \
+  'delete   project pjold worktrees/platform-old: no live agent, its item ab-6 is closed, its branch old is gone' \
+  'delete   project pjab-6 worktrees/platform-ab-6: no live agent, its item ab-6 is closed, its branch ab-6 is gone' \
+  'keep     project pjab-5 worktrees/platform-ab-5: its item ab-5 is open (item open)' \
+  'keep     project pjab-7 worktrees/platform-ab-7: its item ab-7 is closed but its branch ab-7 has 1 commit(s) not on main' \
+  'keep     project pjx worktrees/platform-x: no item known for its folder' \
+  'rm       platform-a1: no live agent, clean, every commit of its branch a1 is on main (git cherry: no "+"; plain wt rm)' \
+  'keep     platform-a2: its branch a2 has 1 commit(s) not on main' \
+  'keep     platform-a3: a live agent is in it' 'keep     platform-a4: it has uncommitted changes' 'keep     project pjtwo worktrees/platform-two: its item ab-5 is open (item open)' '4 to do, 7 kept'; do
   check "...lists: $l" grep -qF -- "$l" <<<"$out"
 done
+check "...never --force" bash -c "! grep -q -- '--force' <<<'$out'"
 check "...never another role's (review-old) nor the board's own workspaces" bash -c "! grep -qE 'review-|worktrees/ |wsrev' <<<'$out'"
+out=$(LW sweep platform --apply --paseo-only); rc=$?
+echo "$out" | sed 's/^/    | /'
+check "--apply --paseo-only (exit $rc): 3 done, the landed platform-a1 kept (--paseo-only)" bash -c "[ $rc = 0 ] && grep -qF '3 done, 0 failed, 8 kept' <<<'$out' && grep -qF 'keep     platform-a1: (--paseo-only) every commit of its branch a1 is on main' <<<'$out' && [ -d '$W/platform-a1' ]"
+check "...the leftover workspace archived, the closed items' projects deleted, the others' stay" test "$(q "s=>!!s.workspaces.find(w=>w.workspaceId==='wsgone').archived+'/'+s.projects.filter(p=>p.path.startsWith('$W/')).map(p=>p.projectId).sort().join()")" = "true/pjab-5,pjab-7,pjtwo,pjx"
 out=$(LW sweep platform --apply); rc=$?
 echo "$out" | sed 's/^/    | /'
-check "--apply (exit $rc): 3 done" bash -c "[ $rc = 0 ] && grep -qF '3 done, 0 failed, 3 kept' <<<'$out'"
-check "...the leftover workspace archived, the old project deleted" test "$(q "s=>!!s.workspaces.find(w=>w.workspaceId==='wsgone').archived+'/'+s.projects.some(p=>p.projectId==='pjold')")" = "true/false"
+check "--apply (exit $rc): 1 done (platform-a1, plain wt rm)" bash -c "[ $rc = 0 ] && grep -qF '1 done, 0 failed, 7 kept' <<<'$out'"
 check "...platform-a1 removed, folder and branch" bash -c "[ ! -e '$W/platform-a1' ] && ! git -C '$MMR' rev-parse -q --verify refs/heads/a1 >/dev/null"
 check "...platform-a2 (unlanded), a3 (live), a4 (dirty) kept, a2's branch too" bash -c "[ -d '$W/platform-a2' ] && [ -d '$W/platform-a3' ] && [ -f '$W/platform-a4/d.txt' ] && git -C '$MMR' rev-parse -q --verify refs/heads/a2 >/dev/null"
 check "...a3's agent still runs and its workspace stays" test "$(q "s=>s.agents.find(a=>a.labels.worker==='a3').archived?'no':s.workspaces.find(w=>w.cwd==='$W/platform-a3'&&!w.archived)?'yes':'no'")" = yes
 check "...review's workspace and the board's project untouched" test "$(q "s=>!s.workspaces.find(w=>w.workspaceId==='wsrev').archived+'/'+s.projects.some(p=>p.path==='$SYS')")" = "true/true"
-out=$(LW sweep platform); check "a second dry run has nothing to do" grep -qF '0 to do, 3 kept' <<<"$out"
+out=$(LW sweep platform); check "a second dry run has nothing to do" grep -qF '0 to do, 7 kept' <<<"$out"
 out=$(LW sweep platform --bogus 2>&1); rc=$?; check "sweep refuses another option (exit $rc)" test "$rc" = 2
 out=$(PATH="$T/nopaseo:/usr/bin:/bin:$(dirname "$(command -v node)")" LW sweep platform --apply); rc=$?
 check "Paseo not there: sweep does nothing (exit $rc) and says why" bash -c "grep -q 'Paseo did not answer' <<<'$out' && grep -qF '0 done, 0 failed, 1 kept' <<<'$out' && [ -d '$W/platform-a2' ]"

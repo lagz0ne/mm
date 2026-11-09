@@ -6,9 +6,9 @@
 //                              read:  a detached, read-only checkout of the role's repo at <ref> (default main)
 //                              board: a plain folder (no repo)
 //   wt sync <role>-<name>      rebase a write worker's branch onto main (needs a clean tree); prints the new HEAD
-//   wt rm <role>-<name> [--force]   remove it (a write worker's branch too: refused while it has commits not on main),
-//                              then its Paseo workspace and project, unless a live agent is in it (lead worker stop
-//                              first); the folder gone, wt rm <role>-<name> again drops only what was left
+//   wt rm <role>-<name> [--force]   remove it, a write worker's branch too (refused while git cherry main <branch> has a
+//                              "+" line, or its tree is dirty), then its Paseo workspace and project, unless a live agent
+//                              is in it (lead worker stop first); the folder gone, wt rm again drops only what was left
 //   wt ls                     list them
 // Refused: a role whose workers are not switched on (roles.json "workers": true: setup, after the owner's yes), and
 // any repo that is the brain or holds it (only ops writes the brain, one run branch at a time), this board, or (to
@@ -19,7 +19,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cli } from './lib/obs.mjs'
 import { projectName } from './lib/svc.mjs'
-import { dropProjects, folders, sayDropped, spec, specProblem, validName } from './lib/workers.mjs'
+import { dropProjects, folders, sayDropped, spec, specProblem, unlanded, validName } from './lib/workers.mjs'
 
 cli('wt')
 const P = path.resolve(path.dirname(fs.realpathSync(fileURLToPath(import.meta.url))), '..')
@@ -100,8 +100,14 @@ switch (a) {
     const where = [f.path, (() => { try { return fs.realpathSync(f.path) } catch { return null } })()]
     if (f.s?.kind === 'write' && f.s.repo) {
       const branch = f.name
-      if (!force && tryGit(f.s.repo, ['merge-base', '--is-ancestor', branch, 'main']) === null) die(`branch ${branch} has commits not on main (land it, or: wt rm ${b} --force)`)
-      if (tryGit(f.s.repo, ['worktree', 'remove', ...(force ? ['--force'] : []), f.path]) === null && tryGit(f.s.repo, ['worktree', 'remove', '--force', f.path]) === null) die(`could not remove the worktree ${f.path}`)
+      if (!force) {
+        // landed: every commit of the branch is on main, merged or cherry-picked (git cherry: no "+" line; sy-7f7i)
+        const n = unlanded(f.s.repo, branch)
+        if (n === null) die(`branch ${branch} cannot be compared with main (wt rm ${b} --force drops it anyway)`)
+        if (n) die(`branch ${branch} has commits not on main (git cherry: ${n} "+"; land it, or: wt rm ${b} --force)`)
+        if (tryGit(f.path, ['status', '--porcelain'])) die(`${b} has uncommitted changes (commit or drop them, or: wt rm ${b} --force)`)
+        if (tryGit(f.s.repo, ['worktree', 'remove', f.path]) === null) die(`git would not remove the worktree ${f.path} (wt rm ${b} --force removes it anyway)`)
+      } else if (tryGit(f.s.repo, ['worktree', 'remove', '--force', f.path]) === null) die(`could not remove the worktree ${f.path}`)
       tryGit(f.s.repo, ['branch', '-D', '-q', branch])
     } else if (f.s?.kind === 'read' && f.s.repo) {
       if (tryGit(f.s.repo, ['worktree', 'remove', '--force', f.path]) === null) fs.rmSync(f.path, { recursive: true, force: true })
