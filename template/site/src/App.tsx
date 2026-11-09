@@ -315,7 +315,8 @@ export default function App() {
 
       {human && hview === 'foryou' ? (
         <main className="min-h-0 flex-1 overflow-auto">
-          <ForYou waiting={waiting} owner={me.role === 'owner'} approval={me.approval} storeKey={`${meta.project || 'board'}:${actor}`} tick={tick}
+          {/* keyed by its marks' key: For you may mount before /api/meta names the project; it reads its marks again then */}
+          <ForYou key={`${meta.project || 'board'}:${actor}`} waiting={waiting} owner={me.role === 'owner'} approval={me.approval} storeKey={`${meta.project || 'board'}:${actor}`} tick={tick}
             onOpen={setOpenId} onChanged={load} />
         </main>
       ) : view === 'glossary' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Glossary /></Suspense> : view === 'machine' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Machine /></Suspense> : view === 'leads' ? <Suspense fallback={<div className="p-6 text-xs text-muted-foreground">Loading…</div>}><Leads onOpen={setOpenId} raci={meta.raci ?? null} items={issues.filter((i) => i.assignee === 'setup' || (i.labels || []).includes('governance'))} /></Suspense> : (<>
