@@ -28,9 +28,15 @@ fs.cpSync(path.join(SRC, 'template/bin/lib'), path.join(SYS, 'bin/lib'), { recur
 fs.writeFileSync(path.join(SYS, 'leads/roles.json'), JSON.stringify({ roles: [{ id: 'ops' }, { id: 'review' }, { id: 'platform' }] }))
 // this timeline runs on shorter windows than the defaults (stall 60, handoff 30: test/supervisor-digest.mjs), through the
 // config; and its t2 items set blocked by hand (sy-12) are not about blocked lines (those: test/supervisor-digest.mjs), so
-// config ignore leaves them out (it applies to a digest line's key)
-const BASE_CONF = JSON.stringify({ minutes: { stall: 30, handoff: 10 }, ignore: ['^blocked:'] })
+// the table makes them routine (sy-mv69.2: a when case on a digest line's key; it replaced the config's ignore), and the
+// Task list too (its items carry no Task: test/supervisor-raci.mjs). A t2-unapproved case never makes one routine.
+const BASE_CONF = JSON.stringify({ minutes: { stall: 30, handoff: 10 } })
 fs.writeFileSync(path.join(SYS, 'supervisor.json'), BASE_CONF)
+const RACI = { activities: [{ id: 'incident', title: 'Incidents', raci: { ops: 'RA' }, when: [
+  { on: 'supervisor:blocked:*', next: 'none (this timeline sets t2 items blocked by hand)' },
+  { on: 'supervisor:task:open', next: 'none (this timeline\'s items carry no Task)' },
+  { on: 'supervisor:t2-unapproved:*', next: 'none (an agent wrote this case)' }] }] }
+fs.writeFileSync(path.join(SYS, 'leads/raci.json'), JSON.stringify(RACI))
 
 // ---------- stub paseo (agents/<role>.json = that lead; paseo.fail = it breaks) and stub mm (ls.json) ----------
 const AG = path.join(T, 'agents'); fs.mkdirSync(AG)
@@ -157,7 +163,7 @@ step('run 1 (+0 min): only the old uncommitted worktree')
 ok('exit 0', (await supervise()) === 0)
 ok(`open: ${DIRTY} (not p1: touched now; not p2: throwaway; not the board's own repo)`, openKeys() === DIRTY)
 const D = openOf(DIRTY)
-ok('item for ops, label supervisor, task, P2, by watchdog', D && D.assignee === 'ops' && D.labels.join() === 'supervisor' && D.priority === 2 && events.find((e) => e.issue_id === D.id).actor === 'watchdog')
+ok('item for ops, labels supervisor and unexpected (no when case: sy-mv69.2), task, P2, by watchdog', D && D.assignee === 'ops' && D.labels.join() === 'supervisor,unexpected' && /\*\*Unexpected:\*\* no row of leads\/raci\.json/.test(D.description) && D.priority === 2 && events.find((e) => e.issue_id === D.id).actor === 'watchdog')
 ok('it names the file', D && D.description.includes('src.ts') && D.description.includes('feat'))
 ok('box projects are never read: no dirty finding for p3 (answers box) or p4 (host box folder) (review sy-futg)', !openKeys().includes('p3') && !openKeys().includes('p4'))
 ok('no repo config ran: no core.fsmonitor command in p3, p4 or p5 (review sy-futg)', [P3, P4, P5].every((p) => !fs.existsSync(canary(p))))
@@ -303,15 +309,16 @@ item('sy-20', { title: 't2, its migration has no tier line', priority: 2, assign
 migration('1800000005-fw', 'open a port (sy-20)', true, 0)
 // sy-0cvx: in progress alone is not live; a commit naming them on mm's main is (sy-11, sy-12, sy-18)
 git(MMR, ['commit', '-q', '--allow-empty', '-m', 'landed t2 work', '-m', 'sy-11 sy-12 sy-18'])
-// sy-1jmi: a supervisor.json an agent wrote, naming a lead as an approver and ignoring the t2 keys, changes nothing
+// sy-1jmi: a supervisor.json an agent wrote, naming a lead as an approver, changes nothing; nor does the routine case on
+// the t2 keys in the table (RACI above, sy-mv69.2)
 const CONFIG = path.join(SYS, 'supervisor.json')
-fs.writeFileSync(CONFIG, JSON.stringify({ approvers: ['platform'], ignore: ['^t2-unapproved:'] }))
+fs.writeFileSync(CONFIG, JSON.stringify({ approvers: ['platform'] }))
 ok('exit 0', (await supervise()) === 0)
 fs.writeFileSync(CONFIG, BASE_CONF) // this timeline's own config again
 const T2 = (id) => `t2-unapproved:${id}`
 ok('open: t2-unapproved for sy-11 (claimed), sy-12 and sy-18 (approved by a lead), sy-14 (migration applied), sy-17 (applied, then closed), sy-20 (no tier line: tier 2); not sy-13 (bridge), sy-15 (not applied), sy-16 (t1), sy-19 (tier-1 migration)',
   openKeys() === `${DIRTY} ${T2('sy-11')} ${T2('sy-12')} ${T2('sy-14')} ${T2('sy-17')} ${T2('sy-18')} ${T2('sy-20')}`)
-ok('...with a supervisor.json naming platform an approver and ignoring t2 keys: sy-12 (approved by platform) still open (sy-1jmi)', !!openOf(T2('sy-12')))
+ok('...with a supervisor.json naming platform an approver and a routine when case on the t2 keys: sy-12 (approved by platform) still open (sy-1jmi)', !!openOf(T2('sy-12')))
 const U = openOf(T2('sy-12'))
 ok('the item is for ops, P1, and says a lead\'s approved does not count', U?.assignee === 'ops' && U.priority === 1 && /added by platform/.test(U.description) && /not an approver/.test(U.description))
 ok('the migration finding names the migration', /1800000001-fw\.sh/.test(openOf(T2('sy-14'))?.description || ''))

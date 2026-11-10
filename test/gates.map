@@ -111,6 +111,7 @@ suite test/owner-card.mjs         hermetic
 suite test/paseo-refuse.mjs       hermetic
 suite test/project-item.mjs       hermetic
 suite test/sentinel-assist.mjs    hermetic
+suite test/sentinel-routine.mjs   hermetic
 suite test/supervisor.mjs         hermetic
 suite test/supervisor-digest.mjs  hermetic
 suite test/supervisor-workers.mjs hermetic
@@ -303,7 +304,7 @@ rule template/bin/lib/schema.mjs  test/schema.mjs test/structured.sh test/messag
 rule template/bin/lib/schemas.mjs test/schema.mjs test/structured.sh test/message.mjs test/task.mjs test/bd-actor.sh test/owner-card-bd.sh test/placements.mjs
 rule template/bin/lib/schemas/**  test/schema.mjs test/structured.sh test/message.mjs test/task.mjs test/bd-actor.sh test/owner-card-bd.sh test/placements.mjs test/board-structured.mjs
 rule template/bin/lib/placements.mjs test/placements.mjs test/supervisor.mjs
-rule template/bin/lib/raci.mjs    test/raci.mjs test/supervisor-raci.mjs test/message.mjs test/task.mjs test/bd-actor.sh test/owner-card-bd.sh test/wake-hops.mjs
+rule template/bin/lib/raci.mjs    test/raci.mjs test/supervisor-raci.mjs test/sentinel-routine.mjs test/message.mjs test/task.mjs test/bd-actor.sh test/owner-card-bd.sh test/wake-hops.mjs
 rule template/bin/lib/to.mjs      test/wake-person-to.mjs test/board-thread.mjs test/message.mjs
 rule template/bin/lib/gates-file.mjs test/owner-card-bd.sh test/bd-actor.sh test/gates.mjs test/message.mjs test/structured.sh test/ship.sh
 rule template/bin/lib/paseo.mjs   test/paseo-refuse.mjs test/lead.sh test/lead-workspace.sh test/npm-lock.sh test/wake-start.mjs test/wake-twoleads.mjs test/wake-ondemand.mjs test/supervisor-workers.mjs test/paseo-lib.mjs
@@ -444,14 +445,14 @@ rule template/worktrees/**        test/sysworkers.sh
 # the system profile
 rule template/profiles/system/bin/assist test/assist.sh test/sentinel-assist.mjs test/memory-links.sh
 rule template/profiles/system/bin/project-item test/project-item.mjs test/machine-panel.sh
-rule template/profiles/system/bin/sentinel test/sentinel-assist.mjs test/sentinel.sh test/task.mjs
+rule template/profiles/system/bin/sentinel test/sentinel-assist.mjs test/sentinel-routine.mjs test/sentinel.sh test/task.mjs
 rule template/profiles/system/bin/supervisor test/supervisor*.mjs
 rule template/profiles/system/bin/upstream test/upstream.mjs
 rule template/profiles/system/bin/nightly-gates test/nightly-gates.mjs test/supervisor.mjs
 rule template/profiles/system/bin/wt test/sysworkers.sh test/memory-links.sh test/lead.sh test/worker-cleanup.sh
 rule template/profiles/system/assistants/** test/assist.sh test/sentinel-assist.mjs
 rule template/profiles/system/leads/roles.json test/supervisor*.mjs test/upstream.mjs test/sysworkers.sh test/brain-deny.sh
-rule template/profiles/system/leads/raci.json test/supervisor-raci.mjs test/raci.mjs
+rule template/profiles/system/leads/raci.json test/supervisor-raci.mjs test/raci.mjs test/sentinel-routine.mjs
 rule template/profiles/system/governance.json test/supervisor.mjs test/sysworkers.sh test/artifact.sh
 rule template/profiles/system/profile.json test/sysworkers.sh test/brain-deny.sh test/guard.sh test/template-base.sh
 rule template/profiles/system/services.yaml test/sysworkers.sh test/sentinel-assist.mjs test/machine-panel.sh test/sentinel.sh

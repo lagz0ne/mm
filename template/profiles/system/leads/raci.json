@@ -11,6 +11,21 @@
       },
       "consult": [
         "platform: when the change touches mm's files or its services"
+      ],
+      "when": [
+        {
+          "on": "brain:ALERT *security update*",
+          "bounds": {
+            "tier": "t1",
+            "exclude": "kernel|openssh"
+          },
+          "next": "ops: dnf upgrade --security --exclude=kernel*,openssh*",
+          "verify": {
+            "check": "bin/brain status",
+            "expect": "the alert is gone at the next snapshot"
+          },
+          "correct": "dnf history undo <the transaction>"
+        }
       ]
     },
     {
@@ -24,6 +39,30 @@
       },
       "consult": [
         "platform: when the change touches mm's files or its services"
+      ],
+      "when": [
+        {
+          "on": "supervisor:t2-unapproved:*",
+          "bounds": {
+            "tier": "t2"
+          },
+          "next": "proceed, inside the bounds of an open frame",
+          "verify": {
+            "check": "bd show <the frame> --json",
+            "expect": "the frame has the tap of its A"
+          },
+          "correct": "unexpected: outside a frame it stays a t2-unapproved finding"
+        },
+        {
+          "on": "brain:*RAID*degraded*",
+          "next": "ops: an owner card",
+          "correct": "unexpected: the T2 steps of svc-storage"
+        },
+        {
+          "on": "brain:*reboot needed*",
+          "next": "ops: an owner card",
+          "correct": "unexpected: the T2 steps of svc-host"
+        }
       ]
     },
     {
@@ -37,6 +76,81 @@
       },
       "consult": [
         "platform: when mm or a board is the cause"
+      ],
+      "when": [
+        {
+          "on": "sentinel:drift",
+          "text": "user@1001|login_users.*\\badmin\\b",
+          "next": "none (the owner's admin login)",
+          "verify": {
+            "check": "last admin",
+            "expect": "a login that covers the time of the drift"
+          }
+        },
+        {
+          "on": "sentinel:drift",
+          "bounds": {
+            "within": {
+              "of": "migration",
+              "minutes": 60
+            }
+          },
+          "next": "none (the effect of the migration)",
+          "verify": {
+            "check": "bin/brain status",
+            "expect": "the marker of the migration, and a clean snapshot after it"
+          },
+          "correct": "the .rollback.sh of that migration"
+        },
+        {
+          "on": "sentinel:errors:mm/*",
+          "bounds": {
+            "within": {
+              "of": "gates",
+              "minutes": 10
+            }
+          },
+          "next": "none (test noise of a gates run)",
+          "verify": {
+            "check": "tail ~/.cache/mm-gates/history.jsonl",
+            "expect": "a gates run covers the time of the errors"
+          }
+        },
+        {
+          "on": "brain:*failed*mm-sync.service*",
+          "bounds": {
+            "times": 1,
+            "for_min": 30
+          },
+          "next": "ops: systemctl --user reset-failed mm-sync.service, then wait for the next run",
+          "verify": {
+            "check": "systemctl --user is-failed mm-sync.service",
+            "expect": "not failed"
+          }
+        },
+        {
+          "on": "sentinel:cron:*/supervisor",
+          "bounds": {
+            "within": {
+              "of": "boot",
+              "minutes": 10
+            },
+            "for_min": 15
+          },
+          "next": "none (the board was not up yet)",
+          "verify": {
+            "check": "tail .run/logs/cron.log",
+            "expect": "the next supervisor run exits 0"
+          }
+        },
+        {
+          "on": "board:claim-expired",
+          "next": "none (the item waits in the queue of its role, at capacity)",
+          "verify": {
+            "check": "bd ready -a <role> --json",
+            "expect": "it lists the item"
+          }
+        }
       ]
     },
     {
@@ -50,6 +164,27 @@
       },
       "consult": [
         "ops: for the machine's facts (what runs, listens, is installed or allowed)"
+      ],
+      "when": [
+        {
+          "on": "brain:*no backup in * for *",
+          "bounds": {
+            "for_min": 120
+          },
+          "next": "ops: run the backup of the project again",
+          "verify": {
+            "check": "bin/brain status",
+            "expect": "backups_age_h < 26"
+          }
+        },
+        {
+          "on": "brain:score *",
+          "next": "none (the debt: ops reads it in its run loop)",
+          "verify": {
+            "check": "bin/brain score",
+            "expect": "the score"
+          }
+        }
       ]
     },
     {

@@ -28,6 +28,32 @@ export const problems = rp
 /** A cell as the leads read it: RA -> R·A. */
 const cell = (l) => [...String(l || '')].join('·')
 
+/** A row's bounds as one line: tier, lists, end, within, for_min, times, exclude. */
+const boundsMd = (b) => Object.entries(b || {}).map(([k, v]) => k === 'within' ? `within ${v.minutes} min of the ${v.of}`
+  : Array.isArray(v) ? `${k}: ${v.join(', ')}` : k === 'for_min' ? `at most ${v} min present` : k === 'times' ? `at most ${v} times in 24 h`
+  : k === 'exclude' ? `not /${v}/` : `${k}: ${v}`).join(' · ')
+const tick = (s) => `\`${String(s).replaceAll('`', "'")}\``
+/** The routine (sy-mv69.2): each row's when cases, bounds, verify and correct, as the sentinel and the Supervisor match them. */
+function routineMd(acts) {
+  const rows = acts.filter((a) => a.when || a.bounds || a.verify || a.correct)
+  if (!rows.length) return []
+  const out = ['', '## Routine: when each row starts, its bounds, verify and correct', '',
+    'A finding that matches a case inside its bounds is routine: no item, R does next, V runs verify, on a fail R runs correct.',
+    'No case, outside the bounds, or a correct of `unexpected`: one item labelled `unexpected`, for ops.']
+  for (const a of rows) {
+    out.push('', `### \`${a.id}\``)
+    if (a.bounds) out.push(`- **bounds:** ${boundsMd(a.bounds)}`)
+    if (a.verify) out.push(`- **verify:** ${tick(a.verify.check)} → ${a.verify.expect}`)
+    if (a.correct) out.push(`- **correct:** ${a.correct}`)
+    for (const c of a.when || []) {
+      const x = typeof c === 'string' ? { on: c } : c
+      out.push(`- **when** ${tick(x.on)}${x.text ? ` (text /${x.text}/)` : ''}${x.next ? ` → ${x.next}` : ''}` +
+        `${x.bounds ? ` · bounds: ${boundsMd(x.bounds)}` : ''}${x.verify ? ` · verify: ${tick(x.verify.check)} → ${x.verify.expect}` : ''}${x.correct ? ` · correct: ${x.correct}` : ''}`)
+    }
+  }
+  return out
+}
+
 function render(d) {
   const ps = who()
   const title = Object.fromEntries([...roles().map((r) => [r.id, r.title]), ['human', 'Human']])
@@ -41,6 +67,7 @@ function render(d) {
     `| Activity | ${ps.map((p) => title[p]).join(' | ')} |`, `| --- | ${ps.map(() => ':-:').join(' | ')} |`,
     ...d.activities.map((a) => `| **${a.title}** \`act:${a.id}\` | ${ps.map((p) => cell(a.raci[p])).join(' | ')} |`),
     ...(cases.length ? ['', '## When C is asked (and only then)', '', ...cases.map((a) => `- \`${a.id}\`: ${a.consult.join('; ')}`)] : []),
+    ...routineMd(d.activities),
   ]
   fs.writeFileSync(MD, lines.join('\n') + '\n')
 }
@@ -52,6 +79,8 @@ if (!cmd || cmd === 'show') {
   for (const x of d.activities) console.log([x.id.padEnd(20), ...ps.map((p) => (cell(x.raci[p]) || '·').padEnd(12))].join(''))
   const cases = d.activities.filter((x) => (x.consult || []).length)
   if (cases.length) console.log(`\nconsult (when C is asked):\n${cases.map((x) => `- ${x.id}: ${x.consult.join('; ')}`).join('\n')}`)
+  const wh = d.activities.filter((x) => Array.isArray(x.when) && x.when.length)
+  if (wh.length) console.log(`\nwhen (routine cases; raci render shows them in full):\n${wh.map((x) => `- ${x.id}: ${x.when.map((c) => (typeof c === 'string' ? c : c?.on)).join('; ')}`).join('\n')}`)
   const pr = problems(d, ps); if (pr.length) console.log(`\nproblems:\n- ${pr.join('\n- ')}`)
 } else if (cmd === 'add') {
   const d = load(); const title = rest.join(' ').trim()

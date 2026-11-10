@@ -77,7 +77,7 @@
 // here.
 // The approvers (sy-44xa): the bridge's actor (`bridge`) and the owner's name (`owner_name` in .run/endpoints.json, when
 // mm writes it), never a list from this board's files (sy-1jmi 3: an agent could write one); env SUPERVISOR_APPROVERS
-// (comma list, tests) overrides both. Config `ignore` never silences a t2-unapproved finding. `approved` counts only
+// (comma list, tests) overrides both. The table never makes a t2-unapproved finding routine. `approved` counts only
 // from the journal record that added it, with an approver as its actor. A migration is applied when the brain's state
 // has its name (BRAIN_STATE, else $XDG_STATE_HOME/brain, else ~/.local/state/brain: <state>/migrations/<name>).
 // With /etc/mm-approve.conf `verifier = ledger` (sy-1jmi, docs/approvals.md) none of that counts: only lines mm-approve
@@ -86,8 +86,14 @@
 // An item someone closes while its finding is still there mutes that finding until it clears (not t2-unapproved).
 // The board is the truth for which items are open (label `supervisor`, line "supervisor key: `<key>`"); .supervisor.json
 // keeps the journal position and a summary per item, notes, mutes, and when leads were seen running or idle.
+// Every finding and every digest line goes through the table (sy-mv69.2; leads/raci.json, the when cases:
+// bin/lib/raci.mjs judge), as the event `supervisor:<key>` (a digest line: its key, stall:<item>, blocked:<item>, ...).
+// One that matches a case inside its bounds is routine: no item (no digest line), its next and verify logged once per
+// episode. A finding with no case, outside the bounds, or a correct of "unexpected" opens its item labelled
+// `unexpected`, for ops unless the check names its role; a digest line that is not routine stays in its role's digest.
+// t2-unapproved is never routine. (This replaces the config's `ignore` list.)
 // Optional config supervisor.json (this board's root):
-//   { "assignee": "ops", "ignore": ["<regex on a key>"], "minutes": { "stall": 60, "handoff": 30, "idle": 10, "blocked": 10, "dirty": 30, "answer": 60 },
+//   { "assignee": "ops", "minutes": { "stall": 60, "handoff": 30, "idle": 10, "blocked": 10, "dirty": 30, "answer": 60 },
 //     "repos": ["<more git repos to watch; the mm repo is ~/mm, the template's place for it>"] }
 // Env (tests): SUPERVISOR_STATE, SUPERVISOR_CONFIG, SUPERVISOR_NOW (ms), SUPERVISOR_APPROVERS, BRAIN_STATE, MM_BIN,
 // SVC_URL_BD_SERVE, PASEO_BIN, PASEO_NO_SDK, SUPERVISOR_ARTIFACT (the artifact command), MM_GATES_NIGHTLY.
@@ -103,7 +109,7 @@ import { places, projectCap, total, workersOf } from './lib/places.mjs'
 import { leftovers as paseoLeftovers, paseoState } from './lib/workers.mjs'
 import { APPROVED_HEAD, SIGNED_HEAD, approvalRefusal, parseCard, youKind } from './lib/owner-card.mjs'
 import { dueAt, openWaits, parseMessage } from './lib/message.mjs'
-import { actOf, lettersOf, mayAsk, noInputOk, rowOf } from './lib/raci.mjs'
+import { UNEXPECTED, actOf, caseLine, cases, judge, lettersOf, mayAsk, noInputOk, rowOf } from './lib/raci.mjs'
 import { formatTask, parseTask } from './lib/task.mjs'
 import { countPlacements, formatPlacements } from './lib/placements.mjs'
 
@@ -115,7 +121,6 @@ const MM = E.MM_BIN || 'mm'
 const HOME = E.HOME || os.homedir()
 const ASSIGNEE = CONF.assignee || 'ops'
 const MIN = { stall: 60, handoff: 30, idle: 10, blocked: 10, dirty: 30, answer: 60, ...(CONF.minutes || {}) }
-const IGNORE = (CONF.ignore || []).map((r) => new RegExp(r)) // never applied to t2-unapproved keys (sy-1jmi)
 const BD = requireUrl('bd-serve')
 const ACTOR = 'watchdog' // a system author for wake and the lead briefs (not a human, not a lead)
 const SYSTEM = new Set(['wake', 'watchdog', 'ui', 'smoke', 'beads'])
@@ -147,7 +152,7 @@ async function bd(method, p, body) {
 }
 
 const state = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } })()
-for (const k of ['muted', 'notes', 'items', 'running', 'idle', 'art']) state[k] ||= {}
+for (const k of ['muted', 'notes', 'items', 'running', 'idle', 'art', 'routine']) state[k] ||= {}
 state.seq ||= 0
 // the summary's version: when what is folded from the journal changes (approvals and t2 labels per item, sy-7xq0; closed
 // items kept), a summary from an older Supervisor misses what happened before the upgrade (sy-m5qr: an approval by the
@@ -167,6 +172,19 @@ const isReview = (actor) => actor === 'review' || String(actor || '').startsWith
 // the RACI's rows (leads/raci.json, sy-lusk); none when the file is missing (then no row shapes a message)
 let raciRows = null
 const raci = () => (raciRows ||= (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'leads', 'raci.json'), 'utf8')).activities || [] } catch { return [] } })())
+// the routine (sy-mv69.2): the rows' when cases; a finding's verdict with when it was first seen (this episode) and
+// its episodes in 24 h (state.routine). t2-unapproved is never routine (sy-1jmi: nothing written here silences it).
+let raciCases = null
+const seenKeys = new Set()
+function verdict(key, lines) {
+  seenKeys.add(key)
+  if (key.startsWith('t2-unapproved:')) return { routine: false, why: 'a t2-unapproved finding is never routine' }
+  const st = (state.routine[key] ||= { since: null, eps: [] })
+  if (st.since === null) { st.since = NOW; st.eps = [...st.eps.filter((t) => NOW - t < 24 * 3600e3), NOW] }
+  const v = judge((raciCases ||= cases(raci())), { events: [`supervisor:${key}`], lines }, { now: NOW, since: st.since, times: st.eps.length })
+  if (v.routine && st.since === NOW) console.log(`${key}: routine, no item: ${caseLine(v.case)}`)
+  return v
+}
 
 // ---------- shared reads (once per run; a check that needs one that failed fails with it) ----------
 const once = (fn) => { let p; return () => (p ||= fn()) }
@@ -483,7 +501,7 @@ async function digest() {
     let got
     try { got = (await fn()).map((l) => ({ ...l, check: name })) } catch (e) { failed.push(failure(name, e)); got = prev[name] || [] }
     state.lines[name] = got
-    for (const l of got) if (!IGNORE.some((re) => re.test(l.k))) (byRole[l.role] ||= []).push(l) // config ignore: on a line's key (stall:<item> ...)
+    for (const l of got) if (!verdict(l.k, [l.line]).routine) (byRole[l.role] ||= []).push(l) // the table: on a line's key (stall:<item> ...)
   }
   const problems = []
   for (const role of Object.keys(byRole).sort()) {
@@ -902,7 +920,10 @@ results.push({ prefix: 'supervisor:', problems: failed.map((f) => ({ key: `super
 
 let opened = 0, updated = 0, closed = 0, keyFailed = 0
 for (const src of results) {
-  const present = new Map(src.problems.filter((p) => p.key.startsWith('t2-unapproved:') || !IGNORE.some((re) => re.test(p.key))).map((p) => [p.key, p]))
+  // through the table (sy-mv69.2): a routine finding is not present (no item; an open one clears); a digest's lines went
+  // through it in digest(); a list edited in place (task:open, t2-waiting) gets no label: its text is rewritten each run
+  const verdicts = new Map(src.problems.map((p) => [p.key, p.key.startsWith('digest:') ? { routine: false } : verdict(p.key, String(p.note ?? '').split('\n'))]))
+  const present = new Map(src.problems.filter((p) => !verdicts.get(p.key).routine).map((p) => [p.key, p]))
   for (const p of present.values()) try { // one key's failed call never ends the run (sy-pp2a)
     // its Task first (sy-n3r5): the act of its labels, else incident; a digest gets it on its next edit in place
     const task = formatTask({ task: p.parts ? 'Clear each line of this digest: act on it, or answer why not.' : 'Settle this finding: fix its cause, or record why it stands.',
@@ -934,8 +955,11 @@ for (const src of results) {
     if (unmutable || fresh) delete state.muted[p.key]
     else if (state.muted[p.key]) continue
     else if (again) { state.muted[p.key] = p.parts ? { at: now, parts: p.parts } : now; console.log(`${p.key}: closed by someone while still there; quiet until it clears`); continue }
-    const r = await bd('POST', '/v0/beads/issues', { title: p.title.slice(0, 200), issue_type: 'task', priority: p.priority, assignee: p.assignee || ASSIGNEE, labels: ['supervisor', ...(p.labels || [])],
-      actor: ACTOR, owner: ACTOR, description: p.parts || !again ? desc : `${task}\n\n${p.body}\n\nIts earlier item was closed while the finding was still there; a closed item does not end this finding.\n\nsupervisor key: \`${p.key}\`` })
+    // an unexpected finding (sy-mv69.2): labelled so, and it says why the table did not make it routine
+    const v = verdicts.get(p.key), why = p.parts ? '' : `\n\n**Unexpected:** ${v.why}.${v.case ? `\n\nIts case: ${caseLine(v.case)}` : ''}`
+    const body = p.parts || !again ? desc : `${task}\n\n${p.body}\n\nIts earlier item was closed while the finding was still there; a closed item does not end this finding.\n\nsupervisor key: \`${p.key}\``
+    const r = await bd('POST', '/v0/beads/issues', { title: p.title.slice(0, 200), issue_type: 'task', priority: p.priority, assignee: p.assignee || ASSIGNEE, labels: ['supervisor', ...(p.labels || []), ...(p.parts ? [] : [UNEXPECTED])],
+      actor: ACTOR, owner: ACTOR, description: why ? body.replace(/\n\nsupervisor key: `/, `${why}\n\nsupervisor key: \``) : body })
     if (again && r.id) console.log(`${p.key}: closed by someone while still there; opened again`)
     if (r.id) { state.notes[p.key] = p.note; opened++; console.log(`${p.key}: opened ${r.id}`); delete state.art[p.key]; attach(p, r.id) }
   } catch (e) { keyFailed++; console.error(`${p.key}: its item could not be opened or updated (tried again next run): ${e.message}`) }
@@ -966,6 +990,12 @@ if (known.size) for (const id of Object.keys(state.items)) {
   if (!known.has(id) || (known.get(id) === 'closed' && !keep)) delete state.items[id]
 }
 for (const [r, t] of Object.entries(state.running)) if (NOW - t > 24 * 3600e3) delete state.running[r]
+// a finding not seen this run ends its episode (its count in 24 h stays, for bounds.times)
+for (const [k, st] of Object.entries(state.routine)) {
+  if (seenKeys.has(k)) continue
+  st.since = null; st.eps = st.eps.filter((t) => NOW - t < 24 * 3600e3)
+  if (!st.eps.length) delete state.routine[k]
+}
 fs.writeFileSync(STATE, JSON.stringify(state, null, 1))
 // a failed check is on the board (supervisor:<check>); exit 0 so it is not reported twice
 console.log(`supervisor: ${Object.keys(open).length + opened - closed} open, ${opened} opened, ${updated} updated, ${closed} closed${keyFailed ? `, ${keyFailed} board call(s) failed (tried again next run)` : ''}${failed.length ? `; could not run: ${failed.map((f) => `${f.name} (${f.err.slice(0, 120)})`).join(', ')}` : ''}`)

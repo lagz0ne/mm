@@ -3,7 +3,9 @@
 // is never late (no answer by By = "no input"); a HANDOFF to the row's V waits for a VERDICT (re #n or on its Head), an
 // ANSWER is not one ("no VERDICT after By", in V's digest); an ASK to a role that is only I is "ASK outside the RACI"
 // (in its writer's digest); an item with no activity keeps "no answer after By"; open items without a valid Task are one
-// list (task:open), edited in place, closed when none is left.
+// list (task:open), edited in place, closed when none is left. The routine (sy-mv69.2): a finding a when case matches
+// inside its bounds opens no item (its next and verify logged once); one with no case, outside its bounds (end, for_min)
+// or whose correct says unexpected opens one item labelled unexpected, for ops, that says why.
 // Hermetic: temp folder, a fake bd-serve, a stub paseo and mm; a fake clock (SUPERVISOR_NOW). The harness is
 // test/supervisor-digest.mjs's.
 //   node test/supervisor-raci.mjs            exit 0 = every check passed
@@ -114,6 +116,30 @@ try {
   update('sy-6', { description: TASK('sec') }, 'ops'); update('sy-7', { status: 'closed' }, 'ops')
   at(95); await supervise()
   ok('...the Tasks fixed (or the item closed): task:open closes itself', !openOf('task:open') && byKey('task:open').length === 1)
+
+  // sy-mv69.2: each finding through the table (the rows' when cases). Findings here: card:<item> (needs-you, no card).
+  const rows = JSON.parse(fs.readFileSync(path.join(SYS, 'leads/raci.json'), 'utf8'))
+  rows.activities[1].when = [
+    { on: 'supervisor:card:sy-9', next: 'none (a test card)', verify: { check: 'bd show sy-9 --json', expect: 'needs-you' } },
+    { on: 'supervisor:card:sy-10', bounds: { for_min: 10 }, next: 'ops: write the card' },
+    { on: 'supervisor:card:sy-11', next: 'ops: an owner card', correct: 'unexpected: a person decides' },
+    { on: 'supervisor:card:sy-12', bounds: { end: '2020-01-01T00:00:00Z' } }]
+  fs.writeFileSync(path.join(SYS, 'leads/raci.json'), JSON.stringify(rows))
+  for (const id of ['sy-8', 'sy-9', 'sy-10', 'sy-11', 'sy-12']) item(id, { assignee: 'ops', labels: ['needs-you'], description: TASK('sec') }, 'ops')
+  out = ''; at(100); await supervise()
+  const c8 = openOf('card:sy-8')
+  ok('a finding no when case matches: one item, labelled unexpected, for ops, that says why', byKey('card:sy-8').length === 1 && c8?.assignee === 'ops' &&
+    c8.labels.includes('unexpected') && /\*\*Unexpected:\*\* no row of leads\/raci\.json has a when case for it/.test(c8.description))
+  ok('a finding a case matches inside its bounds: no item; its next and verify are logged', byKey('card:sy-9').length === 0 &&
+    /card:sy-9: routine, no item: sec \(when #1: supervisor:card:sy-9\); next: none \(a test card\); verify: bd show sy-9 --json → needs-you/.test(out))
+  ok('a case with bounds.for_min 10, first seen now: no item yet', byKey('card:sy-10').length === 0)
+  ok('a case whose correct says unexpected: an unexpected item with its case', /says: unexpected: a person decides/.test(openOf('card:sy-11')?.description || '') &&
+    /next: ops: an owner card/.test(openOf('card:sy-11')?.description || ''))
+  ok('a case whose row ended (bounds.end): an unexpected item, outside its bounds', /outside the bounds of sec \(when #4\): the row ended at 2020-01-01/.test(openOf('card:sy-12')?.description || ''))
+  out = ''; at(105); await supervise()
+  ok('...the routine one again: no item, and not logged again (once per episode)', byKey('card:sy-9').length === 0 && !/card:sy-9/.test(out))
+  at(115); await supervise()
+  ok('...present for more than its for_min: now an unexpected item', /present for more than 10 min/.test(openOf('card:sy-10')?.description || ''))
 } finally {
   srv.close()
   if (fail) console.log(out.slice(-3000))

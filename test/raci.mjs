@@ -3,14 +3,16 @@
 // least one R per row, C and I never with R, A or V, a person only A or I, a row with a C lists its consult cases (a case
 // "<role>: ..." names a C of the row); the helpers wake, bin/message and the Supervisor use (mayAsk, noInputOk); both
 // templates' raci.json are valid against their roles.json, and the system board's t2-change row has V for review;
-// bin/raci shows V and the cases, renders them, and `raci consult` sets a row's cases.
+// bin/raci shows V and the cases, renders them, and `raci consult` sets a row's cases. The routine fields (sy-mv69.2):
+// when, bounds, verify, correct valid and invalid; cases/judge/outside; render and show list them.
 // Hermetic: a throwaway folder with a copy of bin/raci and its libs.
 //   node test/raci.mjs        exit 0 = every check passed
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { actOf, lettersOf, mayAsk, noInputOk, problems, rowOf, withLetter } from '../template/bin/lib/raci.mjs'
+import { actOf, cases, judge, lettersOf, mayAsk, noInputOk, outside, problems, rowOf, withLetter } from '../template/bin/lib/raci.mjs'
+const MIN0 = 60000
 
 const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 let pass = 0, fail = 0
@@ -32,6 +34,39 @@ ok('a C with no consult cases: refused', one({ ops: 'C', platform: 'R', human: '
 ok('a case that names a role that is not C in the row: refused', one({ ops: 'C', platform: 'R', human: 'A' }, ['review: when x']).some((m) => /names review, which is not C/.test(m)))
 ok('consult not a list of lines: refused', one({ ops: 'RA' }, 'when x').some((m) => /consult is a list of cases/.test(m)) && one({ ops: 'RA' }, ['']).some((m) => /consult is a list/.test(m)))
 ok('an unknown participant: refused', one({ ops: 'RA', qa: 'I' }).some((m) => /unknown participant qa/.test(m)))
+
+console.log('== the routine fields: when, bounds, verify, correct (sy-mv69.2)')
+const rt = (f) => problems({ activities: [{ id: 'x', title: 'X', raci: { ops: 'RA' }, ...f }] }, P)
+ok('an old row without them: fine', rt({}).length === 0)
+ok('all four, valid: fine', rt({ bounds: { tier: 't1', paths: ['bin/'], end: '2026-11-11T18:00:00Z' }, verify: { check: 'bin/brain status', expect: 'no ALERT' }, correct: 'the .rollback.sh',
+  when: ['sentinel:drift', { on: 'brain:score *', text: '^score', next: 'none', bounds: { within: { of: 'migration', minutes: 60 }, for_min: 30, times: 1, exclude: 'kernel' },
+    verify: { check: 'a', expect: 'b' }, correct: 'unexpected: a person decides' }] }).length === 0)
+ok('when: an unknown event kind, a case with no kind, not a list, an unknown key: refused',
+  rt({ when: ['mail:x'] }).some((m) => /when #1: unknown event kind mail/.test(m)) && rt({ when: ['drift'] }).some((m) => /a when case is "<kind>:<pattern>"/.test(m)) &&
+  rt({ when: 'sentinel:drift' }).some((m) => /when is a list of cases/.test(m)) && rt({ when: [{ on: 'sentinel:x', run: 'rm -rf /' }] }).some((m) => /unknown key run/.test(m)) &&
+  rt({ when: [{ on: 'sentinel:x', text: '(' }] }).some((m) => /text is a regex/.test(m)))
+ok('bounds: an unknown tier, bound, end, within, for_min, times: refused', rt({ bounds: { tier: 't9' } }).some((m) => /bounds\.tier/.test(m)) &&
+  rt({ bounds: { size: 1 } }).some((m) => /unknown bound size/.test(m)) && rt({ bounds: { end: 'soon' } }).some((m) => /bounds\.end is an ISO time/.test(m)) &&
+  rt({ bounds: { within: { of: 'lunch', minutes: 5 } } }).some((m) => /bounds\.within/.test(m)) && rt({ bounds: { for_min: -1 } }).some((m) => /for_min/.test(m)) &&
+  rt({ bounds: { times: 1.5 } }).some((m) => /bounds\.times/.test(m)) && rt({ when: [{ on: 'sentinel:x', bounds: { paths: [] } }] }).some((m) => /when #1: bounds\.paths is a list/.test(m)))
+ok('verify: no expect, or an extra key: refused', rt({ verify: { check: 'a' } }).some((m) => /verify is \{ "check"/.test(m)) && rt({ verify: { check: 'a', expect: 'b', run: 'c' } }).some((m) => /verify is/.test(m)))
+ok('correct: empty, or more than one line: refused', rt({ correct: '' }).some((m) => /correct is one line/.test(m)) && rt({ correct: 'a\nb' }).some((m) => /correct is one line/.test(m)))
+const cs = cases([{ id: 'inc', raci: { ops: 'RA' }, verify: { check: 'row check', expect: 'ok' }, when: [
+  { on: 'sentinel:drift', text: 'admin', next: 'none' },
+  { on: 'sentinel:drift', bounds: { within: { of: 'migration', minutes: 60 } } },
+  { on: 'brain:ALERT *RAID*', correct: 'unexpected: a person decides' }] }, { id: 'bad', raci: {}, when: ['nope:x'] }])
+ok('cases(): flat, the row\'s verify filled in, a row with a problem left out', cs.length === 3 && cs[1].verify.check === 'row check' && cs.every((c) => c.row === 'inc'))
+const now = Date.parse('2026-11-10T12:00:00Z')
+ok('judge: a case with text, every line matches: routine', judge(cs, { events: ['sentinel:drift'], lines: ['+ login admin'] }, { now }).routine)
+ok('judge: no case: unexpected, "no row"', /no row/.test(judge(cs, { events: ['sentinel:alert:x'] }, { now }).why))
+ok('judge: within 60 min of a migration: routine; 70 min: outside, with the bound', judge(cs, { events: ['sentinel:drift'], lines: ['x'] }, { now, last: { migration: now - 10 * MIN0 } }).routine &&
+  /not within 60 min after the last migration/.test(judge(cs, { events: ['sentinel:drift'], lines: ['x'] }, { now, last: { migration: now - 70 * MIN0 } }).why))
+ok('judge: a glob on a status line, correct "unexpected": unexpected, with the case', (() => { const v = judge(cs, { events: ['brain:ALERT RAID md0 degraded'] }, { now }); return !v.routine && v.case?.n === 3 && /says: unexpected: a person decides/.test(v.why) })())
+ok('outside(): end, exclude, gates, for_min, times', /ended/.test(outside({ end: '2026-01-01T00:00:00Z' }, {}, { now })) && /exclude/.test(outside({ exclude: 'kernel' }, { lines: ['kernel-6'] }, { now })) &&
+  outside({ within: { of: 'gates', minutes: 5 } }, {}, { now, gates: [[now - 30 * MIN0, now - 2 * MIN0]] }) === null && /gates run/.test(outside({ within: { of: 'gates', minutes: 5 } }, {}, { now, gates: [] })) &&
+  /more than 10 min/.test(outside({ for_min: 10 }, {}, { now, since: now - 11 * MIN0 })) && /episode 2/.test(outside({ times: 1 }, {}, { now, times: 2 })) && outside({ times: 1 }, {}, { now, times: 1 }) === null)
+ok('the system board\'s first when rows: 10 cases or more, each on a known kind, and the RAID one escalates',
+  (() => { const s = cases(JSON.parse(fs.readFileSync(path.join(SRC, 'template/profiles/system/leads/raci.json'), 'utf8')).activities); return s.length >= 10 && s.some((c) => /RAID/.test(c.on) && /^unexpected/.test(c.correct)) })())
 
 console.log('== the helpers')
 const rows = [{ id: 'chg', title: 'A change', raci: { platform: 'R', review: 'VA', ops: 'C', human: 'I' }, consult: ['ops: when it changes a port'] }]
@@ -70,6 +105,10 @@ try {
   raci('render')
   const md = fs.readFileSync(path.join(T, 'leads/RACI.md'), 'utf8')
   ok('render: the letters, V in the table, the cases', /- \*\*V\*\* verifies/.test(md) && /`act:t2-change` \| R \| V \| C·I \| A \|/.test(md) && /## When C is asked \(and only then\)/.test(md))
+  ok('render: the routine (sy-mv69.2): each row\'s when cases with next, bounds, verify and correct', /## Routine: when each row starts, its bounds, verify and correct/.test(md) &&
+    /### `incident`/.test(md) && /- \*\*when\*\* `sentinel:drift` → none \(the effect of the migration\) · bounds: within 60 min of the migration · verify: `bin\/brain status` → .* · correct: the \.rollback\.sh of that migration/.test(md) &&
+    /`brain:ALERT \*security update\*` → ops: dnf upgrade .* · bounds: tier: t1 · not \/kernel\|openssh\//.test(md))
+  ok('show: the when cases, one line per row', /when \(routine cases; raci render shows them in full\):\n(?:- .*\n)*- incident: sentinel:drift; sentinel:drift; sentinel:errors:mm\/\*/.test(show.stdout))
   const c = raci('consult', 'sync', 'platform: when the push holds an mm file')
   ok('raci consult: names a role that is not C there: saved, with the problem', /saved, but: sync: the consult case .* names platform, which is not C/.test(c.stdout))
   raci('set', 'sync', 'platform=C')
