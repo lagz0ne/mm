@@ -80,7 +80,7 @@
       "when": [
         {
           "on": "sentinel:drift",
-          "text": "user@1001|login_users.*\\badmin\\b",
+          "text": "^(?:[-+] services_system: user@1001\\.service|[-+] login_users: admin)$",
           "next": "none (the owner's admin login)",
           "verify": {
             "check": "last admin",
@@ -183,6 +183,44 @@
           "verify": {
             "check": "bin/brain score",
             "expect": "the score"
+          }
+        },
+        {
+          "on": "brain:* memories: *",
+          "text": "^\\d+ memories: \\d+ fresh, \\d+ due, 0 stale; lint 0 error\\(s\\) \\d+ warning\\(s\\)$",
+          "next": "none (no stale memory, no lint error)",
+          "verify": {
+            "check": "bin/brain status",
+            "expect": "0 stale; lint 0 error(s)"
+          }
+        },
+        {
+          "on": "brain:snapshot *",
+          "text": "^snapshot (?:\\d+[sm]|(?:1?\\d|2[0-5])h) old(?:;|$)",
+          "next": "none (the snapshot is under 26 h old)",
+          "verify": {
+            "check": "bin/brain status",
+            "expect": "snapshot under 26 h old"
+          }
+        },
+        {
+          "on": "brain:ACTIVE RUN *",
+          "bounds": {
+            "for_min": 1440
+          },
+          "next": "none (ops keeps or discards it in its run loop)",
+          "verify": {
+            "check": "bin/brain run status",
+            "expect": "the run and its baseline"
+          }
+        },
+        {
+          "on": "brain:tidy-as-you-go *",
+          "text": "^tidy-as-you-go \\([^)]*\\): [\\w ,./()-]+$",
+          "next": "none (re-verify those areas at a natural pause)",
+          "verify": {
+            "check": "bin/brain status",
+            "expect": "the areas to re-verify"
           }
         }
       ]

@@ -71,19 +71,30 @@ const key = (k) => [...items.values()].filter((i) => (i.description || '').inclu
 const openK = (k) => key(k).find((i) => i.status !== 'closed')
 const keys = () => [...items.values()].filter((i) => i.status !== 'closed').map((i) => /sentinel key: `([^`]+)`/.exec(i.description)?.[1]).sort()
 
+// the real lines of a system board's `bin/brain status` (without "[brain] "), each routine by a case of the table
+const MEM = '30 memories: 29 fresh, 1 due, 0 stale; lint 0 error(s) 0 warning(s)'
+const SNAP = 'snapshot 1h old; 24 updates pending; ssh bad-auth/24h 79; firewall firewalld; selinux permissive'
+const SCORE = 'score 8.5 (debt, lower is better; `bin/brain score` for breakdown)'
+const RUN = 'ACTIVE RUN run/20261110-bridge-v22-mmapi (baseline 3.5); `bin/brain run status`'
+const TIDY = 'tidy-as-you-go (re-verify if you touch these areas, or at a natural pause): project-cowork-research (14d/14d)'
+const REAL = [MEM, SNAP, SCORE, RUN, TIDY]
+const brainKey = (l) => `brain:${l.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().slice(0, 120)}`
+
 try {
   console.log('== run 1 (+0 min)')
-  status('score 3', 'ALERT 4 security updates available', 'LINT ERROR memory/svc-x.md: no ttl_days', 'failed units: user:mm-sync.service',
-    'no backup in 27 h for p1', 'ALERT RAID md0 degraded', 'last drift (2026-11-10T11:00:00+00:00): + services_system: a.service')
+  status(...REAL, 'ALERT 4 security updates available', 'LINT ERROR memory/svc-x.md: no ttl_days', 'failed units: user:mm-sync.service',
+    'no backup in 27 h for p1', 'ALERT RAID md0 degraded', 'last drift (2026-11-10T00:17:38+00:00): - services_system: user@1001.service')
   cronlog('supervisor', 1, 'supervisor failed (exit 1): bd-serve not up', T0 - 1 * MIN) // 4 min after the boot
   errs([['mm', 'board', T0 - 1 * MIN], ['p1', 'board', T0 - 1 * MIN]])
   ok('exit 0', (await sentinel(0)) === 0, out)
   const lint = openK('brain:LINT ERROR memory/svc-x.md: no ttl_days')
   ok('a status line that is not ALERT or drift, with no when case: one item, labelled unexpected, for ops, that says why', !!lint && lint.assignee === 'ops' &&
     lint.labels.includes('unexpected') && lint.labels.includes('act:incident') && /\*\*Unexpected:\*\* no row of leads\/raci\.json has a when case for it/.test(lint.description), JSON.stringify(keys()))
-  ok('a status line that is not ALERT or drift, with a case: routine (score; the failed mm-sync unit; no backup in 27 h): no item',
-    !key('brain:score #').length && !key('brain:failed units: user:mm-sync.service').length && !key('brain:no backup in # h for p#').length)
-  ok('...its next and verify are logged', /brain:score #: routine, no item: posture \(when #2: brain:score \*\); next: none/.test(out) &&
+  ok('the real status lines (memories, snapshot, score, ACTIVE RUN, tidy-as-you-go): routine, no item, each logged',
+    REAL.every((l) => !key(brainKey(l)).length && out.includes(`${brainKey(l)}: routine, no item: posture`)), `${JSON.stringify(keys())}\n${out}`)
+  ok('a status line that is not ALERT or drift, with a case: routine (the failed mm-sync unit; no backup in 27 h): no item',
+    !key('brain:failed units: user:mm-sync.service').length && !key('brain:no backup in # h for p#').length)
+  ok('...its next and verify are logged', /brain:score #\.# \(debt.*: routine, no item: posture \(when #2: brain:score \*\); next: none/.test(out) &&
     /brain:failed units: user:mm-sync\.service: routine, no item: incident .*next: ops: systemctl --user reset-failed mm-sync\.service.*verify: systemctl --user is-failed mm-sync\.service → not failed/.test(out), out)
   ok('an ALERT of security updates, no kernel or openssh (t1-change): routine, no item', !key('alert:# security updates available').length)
   const raid = openK('alert:RAID md# degraded')
@@ -93,15 +104,15 @@ try {
   ok('the first run records the drift, no item (as before)', !key('drift').length)
 
   console.log('== runs 2, 3 (+5, +10 min)')
-  status('score 3', 'ALERT 2 security updates available: kernel, openssh', 'last drift (2026-11-10T12:04:00+00:00): + login_users: admin')
+  status(...REAL, 'ALERT 2 security updates available: kernel, openssh', 'last drift (2026-11-10T12:04:00+00:00): - services_system: user@1001.service')
   errs([['mm', 'board', T0 + 4 * MIN], ['p1', 'board', T0 + 4 * MIN]])
   await sentinel(5)
   const sec = openK('alert:# security updates available: kernel, openssh')
   ok('an ALERT the case matches but bounds.exclude names (kernel): an unexpected item, outside the bounds', !!sec && sec.labels.includes('unexpected') &&
     /outside the bounds of t1-change \(when #1\): "2 security updates available: kernel, openssh" matches bounds\.exclude/.test(sec.description), sec?.description)
-  ok('drift of the owner\'s admin login: routine, no drift item', !key('drift').length && /drift: routine, no item: incident \(when #1/.test(out), out)
+  ok('drift of the owner\'s login session (- services_system: user@1001.service): routine, no drift item', !key('drift').length && /drift: routine, no item: incident \(when #1/.test(out), out)
   ok('the lines gone (the unit, the backup line): no item ever', !key('brain:failed units: user:mm-sync.service').length && !key('brain:no backup in # h for p#').length)
-  status('score 3', 'last drift (2026-11-10T12:09:00+00:00): + services_system: b.service', 'no backup in 27 h for p1')
+  status(...REAL, 'last drift (2026-11-10T12:09:00+00:00): + services_system: b.service', 'no backup in 27 h for p1')
   errs([['mm', 'board', T0 + 9 * MIN], ['p1', 'board', T0 + 9 * MIN]])
   await sentinel(10)
   ok('drift 7 min after an applied migration: routine, no item', !key('drift').length && /drift: routine, no item: incident \(when #2/.test(out), out)
@@ -111,7 +122,8 @@ try {
   ok('the alerts gone: their items closed (as before)', !openK('alert:# security updates available: kernel, openssh') && !openK('alert:RAID md# degraded'))
 
   console.log('== runs 4, 5 (+80, +135 min)')
-  status('score 4', 'last drift (2026-11-10T13:19:00+00:00): + services_system: c.service', 'failed units: user:mm-sync.service', 'no backup in 27 h for p1')
+  status(SCORE.replace('8.5', '9'), RUN, TIDY, MEM.replace('0 stale', '2 stale'), SNAP.replace('1h old', '27h old'), 'last drift (2026-11-10T13:19:00+00:00): + services_system: user@1001.service; + services_system: c.service',
+    'failed units: user:mm-sync.service', 'no backup in 27 h for p1')
   cronlog('supervisor', 1, 'supervisor failed (exit 1): bd-serve not up', T0 + 79 * MIN)
   errs([])
   await sentinel(80)
@@ -121,7 +133,9 @@ try {
   ok('a failed supervisor run 84 min after the boot: an unexpected item', !!openK('cron:p1/supervisor') && /not within 10 min after the last boot/.test(openK('cron:p1/supervisor')?.description || ''))
   ok('the mm-sync unit failed a 2nd time in 24 h (bounds.times 1): an unexpected item', /episode 2 in 24 h \(at most 1\)/.test(openK('brain:failed units: user:mm-sync.service')?.description || ''), JSON.stringify(keys()))
   ok('no backup, present 70 min (bounds.for_min 120): still routine', !key('brain:no backup in # h for p#').length)
-  ok('the score changed (#: the same key): still routine', !key('brain:score #').length)
+  ok('the score changed (#: the same key): still routine', !key(brainKey(SCORE)).length)
+  ok('memories with 2 stale, a snapshot 27 h old: no case matches the text: unexpected items', !!openK(brainKey(MEM.replace('0 stale', '2 stale'))) &&
+    !!openK(brainKey(SNAP.replace('1h old', '27h old'))) && openK(brainKey(SNAP.replace('1h old', '27h old'))).labels.includes('unexpected'), JSON.stringify(keys()))
   await sentinel(135)
   ok('no backup, present 125 min: now an unexpected item', /present for more than 120 min/.test(openK('brain:no backup in # h for p#')?.description || ''), JSON.stringify(keys()))
   ok('each item is one per key (no duplicate)', new Set(keys()).size === keys().length)
