@@ -15,10 +15,21 @@
 # package.json has dependencies, as before.
 # How the app starts and its health path are the release's own settings (package.json "mm": {"app": {...}}; see
 # bin/app-run); DEPLOY_HEALTH_PATH still wins. The app's data outside release/ (DATA_DIR: data/app) is made when missing.
+# The first deploy: mm registers the app slot only once release/ exists, so a project whose services.yaml declares
+# `app` but whose services.json has none yet is deployed too: release/ is made, installed and built (no restart, no
+# health check; .releases says `staged`), and deploy says the slot starts at the next `mm up` (it never runs mm).
 [ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" deploy -- "$0" "$@"
 set -eu
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
-{ grep -q '"app"' "$P/.run/services.json" 2>/dev/null || grep -q '"app"' "$P/services.json" 2>/dev/null; } || { echo "deploy: this project has no app slot (services.json: app)" >&2; exit 2; }
+# declared: services.yaml has an `app` service (a key of services:, at its first indent)
+declared() { awk '/^services:[ \t]*$/{s=1; next} s && /^[^ \t#]/{s=0} s && /^[ \t]+[^ \t#]/{ match($0, /^[ \t]+/); if (!i) i=RLENGTH; if (RLENGTH==i && $0 ~ /^[ \t]+app:/) {f=1; exit} } END{exit !f}' "$P/services.yaml" 2>/dev/null; }
+pname() { [ -z "${MM_PROJECT:-}" ] || { echo "$MM_PROJECT"; return; }
+  n=$(sed -n "s/^project:[ \t]*[\"']*\([A-Za-z0-9_.-]*\).*/\1/p" "$P/.mm-answers.yaml" 2>/dev/null | head -1); echo "${n:-$(basename "$P")}"; }
+STARTED=1
+if ! { grep -q '"app"' "$P/.run/services.json" 2>/dev/null || grep -q '"app"' "$P/services.json" 2>/dev/null; }; then
+  declared || { echo "deploy: this project has no app slot (services.json: app)" >&2; exit 2; }
+  STARTED=0; NEXT="the app slot starts at the next mm up of $(pname)"
+fi
 REL=$P/release LOG=$P/.releases B=$P/.deploy-build BLOG=$P/.deploy-build.log DATA=$P/data/app
 G="git -C $P/code"
 
@@ -42,7 +53,7 @@ switch() { git -C "$REL" checkout -q --detach "$1" || return 1
   [ -d "$DATA" ] || { mkdir -p "$DATA" && chmod 700 "$DATA"; } || echo "deploy: warn: could not make $DATA (the app's DATA_DIR)" >&2
   if isbun "$REL"; then bunbuild "$REL" || return 1
   elif [ -f "$REL/package.json" ] && grep -q '"dependencies"' "$REL/package.json"; then (cd "$REL" && npm ci --omit=dev --silent --no-audit --no-fund) || return 1; fi
-  "$P/bin/svc" restart app; }
+  [ "$STARTED" = 0 ] || "$P/bin/svc" restart app; }
 
 [ $# -gt 0 ] || set -- main
 exec 9>"$P/.deploy.lock"; flock -w 120 9 || { echo "deploy: another deploy is running" >&2; exit 1; }
@@ -50,6 +61,10 @@ exec 9>"$P/.deploy.lock"; flock -w 120 9 || { echo "deploy: another deploy is ru
 # git -C on a plain folder falls through to the repo above it (the project root's). An empty folder is replaced by a
 # worktree; anything else is refused, untouched.
 isrel() { [ -e "$REL/.git" ] && [ "$(git -C "$REL" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$REL" && pwd -P)" ]; }
+# not started yet: status says so (and makes nothing: release/ is what makes mm start the slot)
+if [ "$1" = status ] && [ "$STARTED" = 0 ]; then
+  if isrel; then r="release/ is at $(git -C "$REL" log -1 --format='%h %s')"; else r="nothing deployed yet"; fi
+  echo "app: declared, not started yet ($r): $NEXT"; tail -5 "$LOG" 2>/dev/null; exit 0; fi
 if ! isrel; then
   if [ -d "$REL" ] && [ -n "$(ls -A "$REL" 2>/dev/null)" ]; then
     echo "deploy: release/ is not a worktree of code/ (no release/.git) and is not empty: move it away, then deploy again" >&2; exit 1; fi
@@ -70,6 +85,15 @@ short=$(git -C "$P/code" rev-parse --short "$want")
 if ! trybuild "$want"; then
   echo "$(date -u +%FT%TZ) $short build-failed ${BEADS_ACTOR:-${USER:-?}}" >> "$LOG"
   echo "deploy: $short not deployed: its build failed; production stays on $(git -C "$P/code" rev-parse --short "$cur")" >&2
+  exit 1
+fi
+if [ "$STARTED" = 0 ]; then
+  if switch "$want"; then
+    echo "$(date -u +%FT%TZ) $short staged ${BEADS_ACTOR:-${USER:-?}}" >> "$LOG"
+    echo "deployed $short into release/: $(git -C "$REL" log -1 --format=%s) (not started: no health check); $NEXT"; exit 0; fi
+  echo "$(date -u +%FT%TZ) $short failed ${BEADS_ACTOR:-${USER:-?}}" >> "$LOG"
+  echo "deploy: $short: its install or build in release/ failed; release/ back to $(git -C "$P/code" rev-parse --short "$cur"); $NEXT" >&2
+  switch "$cur" || echo "deploy: release/ could not go back to $(git -C "$P/code" rev-parse --short "$cur") either" >&2
   exit 1
 fi
 if switch "$want" && healthy; then

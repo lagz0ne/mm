@@ -2,8 +2,8 @@
 # Land a worktree branch on main: rebase it onto main, then fast-forward code/ (the deployed checkout).
 # Serialised with a lock, so two agents landing at once can't interleave. Never merges, never rewrites main.
 #   land <name>   prints the new main commit (short hash) on success
-# After the fast-forward, a project with an app slot (services.json: app, deploy's own check) deploys main by itself:
-# `deploy main` starts detached, its output appended to .run/logs/deploy-land.log (headed by the land's hash and time);
+# After the fast-forward, a project with an app slot (services.json or services.yaml: app, deploy's own check)
+# deploys main by itself: `deploy main` starts detached, its output appended to .run/logs/deploy-land.log (headed by the land's hash and time);
 # land says so in one line on stderr and never fails for the deploy. Off with deploy.on_land false: in the project's
 # services.yaml (deploy: / on_land: false), or for the machine in mm's config.yaml (mm config set deploy.on_land false);
 # DEPLOY_ON_LAND=0|1 overrides both.
@@ -30,7 +30,9 @@ onland() { case "${DEPLOY_ON_LAND:-}" in 0|false|no|off) return 1 ;; 1|true|yes|
     v=$(awk '/^deploy:[ \t]*$/{d=1; next} d && /^[^ \t#]/{d=0} d && /^[ \t]+on_land:/{sub(/^[ \t]+on_land:[ \t]*/, ""); gsub(/["\047 \t]|#.*/, ""); print; exit}' "$f" 2>/dev/null)
     case "$v" in false|no|off|0) return 1 ;; true|yes|on|1) return 0 ;; esac; done; return 0; }
 if onland; then
-  if grep -q '"app"' "$P/.run/services.json" 2>/dev/null || grep -q '"app"' "$P/services.json" 2>/dev/null; then
+  # deploy's own check: services.json has app, or services.yaml declares it (the first deploy, before mm up starts it)
+  if grep -q '"app"' "$P/.run/services.json" 2>/dev/null || grep -q '"app"' "$P/services.json" 2>/dev/null ||
+     awk '/^services:[ \t]*$/{s=1; next} s && /^[^ \t#]/{s=0} s && /^[ \t]+[^ \t#]/{ match($0, /^[ \t]+/); if (!i) i=RLENGTH; if (RLENGTH==i && $0 ~ /^[ \t]+app:/) {f=1; exit} } END{exit !f}' "$P/services.yaml" 2>/dev/null; then
     DL=$P/.run/logs/deploy-land.log
     if mkdir -p "$P/.run/logs" 2>/dev/null && echo "== $(date -u +%FT%TZ) land $name -> $h: deploy main" >>"$DL" 2>/dev/null; then
       # detached (its own session, no terminal), and without fd 9: the land lock is not held while it deploys

@@ -59,6 +59,16 @@ check "the land exits 0 and prints its hash" sh -c "[ $RC = 0 ] && [ '$OUT' = \"
 check "the deploy's error is in the log" grep -qx 'deploy: it broke' "$DL"
 rm -f "$T/FAIL"
 
+echo "== the first deploy: services.yaml declares app, services.json has none yet: land deploys too"
+printf '{"processes": {"board": {}}}\n' >"$P/.run/services.json"
+printf 'version: 1\nservices:\n  board:\n    command: x\n  app:\n    optional: true\n' >"$P/services.yaml"
+lnd; touch "$T/go"; waitfor "$T/deploy.done"
+check "declared only: the deploy started (its line), deploy main ran" sh -c "[ $RC = 0 ] && echo '$ERR' | grep -q '^land: deploying ' && grep -qx 'deploy main in $P' '$T/deploy.calls'"
+printf 'version: 1\nservices:\n  board:\n    env:\n      app: nested\n' >"$P/services.yaml"
+lnd; sleep 0.3
+check "an app: key deeper down is no app slot: the line, no deploy" sh -c "[ '$ERR' = 'land: no app slot, no deploy' ] && [ ! -s '$T/deploy.calls' ]"
+printf '{"processes": {"board": {}, "app": {}}}\n' >"$P/.run/services.json"
+
 echo "== deploy.on_land off: nothing"
 printf 'version: 1\ndeploy:\n  on_land: false   # the owner deploys by hand\nservices: {}\n' >"$P/services.yaml"
 lnd; sleep 0.3

@@ -96,6 +96,28 @@ check "...touched nothing: its file stays, no .git, no restart, no install, the 
 dep status
 check "...deploy status is refused too (no git log of the root's repo as 'live')" sh -c "[ $RC = 1 ] && ! echo '$OUT' | grep -q root-repo"
 
+echo "== the first deploy: services.yaml declares app, services.json has none yet (mm starts it once release/ exists)"
+rm -rf "$P/release"; git -C "$C" worktree prune
+printf '{"processes": {"board": {}}}\n' >"$P/.run/services.json"
+printf 'version: 1\nservices:\n  board:\n    command: x\n  app:\n    optional: true\n    command: y\n' >"$P/services.yaml"
+printf 'project: acme-shop\n' >"$P/.mm-answers.yaml"
+dep status
+check "deploy status: declared, not started yet, nothing deployed; the next mm up of the project (exit 0)" sh -c "[ $RC = 0 ] && echo '$OUT' | grep -qx 'app: declared, not started yet (nothing deployed yet): the app slot starts at the next mm up of acme-shop'"
+check "...and it makes no release/ (that is what starts the slot)" test ! -e "$P/release"
+echo /api/health >"$T/ok-path"; dep "$(rev c-bun)"
+check "deploy: exit 0, release/ made a worktree at c-bun, built" sh -c "[ $RC = 0 ] && [ -e '$P/release/.git' ] && [ \"\$(git -C '$P/release' log -1 --format=%s)\" = c-bun ] && grep -qx 'built from bun' '$P/release/.output/server/index.mjs'"
+check "...one clear line: the app slot starts at the next mm up of the project" sh -c "echo '$OUT' | grep -q 'the app slot starts at the next mm up of acme-shop\$'"
+check "...no restart, no health check (nothing runs it yet)" sh -c "[ ! -s '$T/svc.log' ] && [ ! -s '$T/curl.log' ]"
+check "...the release log says staged" sh -c "tail -1 '$P/.releases' | grep -q \" $(rev c-bun) staged \""
+dep status
+check "deploy status: declared, not started yet, release/ at c-bun" sh -c "[ $RC = 0 ] && echo '$OUT' | grep -q \"^app: declared, not started yet (release/ is at $(rev c-bun) c-bun): the app slot starts at the next mm up of acme-shop\$\""
+MM_PROJECT=other-one dep status
+check "...the project's id: MM_PROJECT wins" sh -c "echo '$OUT' | grep -q 'next mm up of other-one\$'"
+printf 'version: 1\nservices:\n  board:\n    command: x\n    env:\n      app: nested\n' >"$P/services.yaml"
+dep status
+check "no app in services.yaml (an app: key deeper down is not one): no app slot, exit 2" sh -c "[ $RC = 2 ] && grep -q 'has no app slot' '$T/err'"
+rm "$P/services.yaml" "$P/.mm-answers.yaml"
+
 echo "== the template's app slot"
 check "services.yaml: the app runs bin/app-run, DATA_DIR is data/app" sh -c "grep -q 'command: \"HOST=\$\${MM_BIND:-\$\$HOST} exec {root}/bin/app-run\"' '$SRC/template/services.yaml' && grep -q 'DATA_DIR: \"{root}/data/app\"' '$SRC/template/services.yaml'"
 
