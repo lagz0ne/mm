@@ -145,6 +145,12 @@ export const RULES = // BEGIN RULES
       "why": "an owner-only mm command (people, grants, sign-in links, tokens, sign-in approval, AI budgets, project API decisions, the vault's opener, filling secrets): the owner runs it in their own terminal."
     },
     {
+      "id": "mm-egress-open",
+      "on": "bash",
+      "re": "{{MM}}config\\s+set\\s+['\"]?egress\\.open(?![\\w-])(?:\\.[\\w.-]*)?['\"]?\\s+(?!['\"]?false['\"]?(?:$|[\\s;&|)]))",
+      "why": "turns egress mode open on for a project (any public host on :443): only the owner does, with mm.api's egress-open request (review signs off, then the owner's tap) or in their own terminal. Off is anyone's: set it to false."
+    },
+    {
       "id": "mm-socket",
       "on": "bash",
       "re": "{{SEG}}\\b(?:auth|ai|approve)\\.sock\\b",

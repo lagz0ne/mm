@@ -6,7 +6,8 @@
 # agent's shell) applies a request, and only the one its hash names; egress needs review's sign-off and then the
 # owner; a route only under the box's own project, behind the sign-in by default, never a host the gateway's map has;
 # a release only from a real folder in release/; a secret only a new name, never a value; the rate and open limits;
-# every call logged with the socket's project; undo.
+# every call logged with the socket's project; undo. egress-open (sy-cpyo): a date up to 30 days, review's sign-off
+# then the owner; the config and the allow file set, undone, and past its end the list again by mm.api's next pass.
 #   test/api.sh [mm command]       default: bun <repo>/src/cli.ts
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd); MMC=${1:-"bun $SRC/src/cli.ts"}
@@ -104,7 +105,7 @@ check "...not one just made (a run opening it now)" test -e "$RUND/freshrun"
 check "...a link there goes, its target stays" bash -c "! test -L '$RUND/oldlink' && test -e '$T/keepme/x'"
 check "no TCP port: mm.api listens on nothing else" bash -c "! /usr/sbin/ss -Hltnp 2>/dev/null | grep -q \"pid=$SV,\""
 
-echo '== only the four calls, each in its fixed format (nothing filed for a refusal)'
+echo '== only the five calls, each in its fixed format (nothing filed for a refusal)'
 check "another call (/exec), or a GET: refused (404, unknown-call)" bash -c "[ \"\$(code '$S1' exec '{}')\" = 404 ] && [ \"\$(code '$S1' route '{}' GET)\" = 404 ] && call '$S1' exec '{}' | jq -e '.status == \"refused\" and .why == \"unknown-call\"'"
 for v in Shop -shop shop- 'a b' '' '../x' 'shop.acme-other' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; do
   check "route '$v': refused (format)" bash -c "call '$S1' route '{\"name\":\"$v\"}' | jq -e '.status == \"refused\" and .why == \"format\"'"
@@ -185,6 +186,27 @@ check "...then the owner approves (the same code: the refusal for the sign-off d
 check "...only for acme-shop (acme-other's list doesn't have it)" bash -c "cd '$SRC' && bun -e \"import { egressList } from './src/box.ts'; process.exit(egressList('$HOME/projects/acme/other').includes('api.stripe.com') || !egressList('$HOME/projects/acme/shop').includes('api.stripe.com') ? 1 : 0)\""
 check "a site on the list already (github.com): done, nothing filed" bash -c "n=\$(items); call '$S1' egress '{\"site\":\"github.com\"}' | jq -e '.status == \"done\"' && [ \"\$(items)\" = \$n ]"
 check "mm api undo: the site goes, the proxy restarted again" bash -c "mm api undo $RE && [ \"\$(st $RE)\" = undone ] && ! grep -q stripe '$MM_HOME/egress/acme-shop/allow' && [ \"\$(grep -cx 'restart -t 2 mm-egress-acme-shop' '$T/docker.log')\" = 2 ]"
+
+echo '== egress-open (sy-cpyo): egress mode open until a date; review signs off on the item, then the owner'
+ANY='^[^/]+(:443)?$'; D10=$(date -u -d '+10 days' +%F); D20=$(date -u -d '+20 days' +%F); D31=$(date -u -d '+31 days' +%F); YDAY=$(date -u -d '-1 day' +%F)
+for v in "$D31" "$YDAY" 2026-02-30 tomorrow "$D10 " ''; do
+  check "egress-open until '$v': refused, nothing filed" bash -c "n=\$(items); call '$S1' egress-open '{\"until\":\"$v\"}' | jq -e '.status == \"refused\" and (.why == \"format\" or .why == \"until\")' && [ \"\$(items)\" = \$n ]"
+done
+OUT=$(call "$S1" egress-open "{\"until\":\"$D10\",\"project\":\"acme-other\"}"); RX=$(echo "$OUT" | jq -r .id); IX=$(echo "$OUT" | jq -r .item); HX=$(mm api show "$RX" -o json | jq -r .hash)
+check "egress-open until <10 days>: pending; the item is acme-shop's (the socket's), review's, labelled t2, and says what can leave" bash -c "echo '$OUT' | jq -e '.status == \"pending\"' && grep '\"create\"' '$T/bd.jsonl' | tail -1 | jq -e --arg d '$D10' 'index(\"mm-api,t2\") and index(\"review\") and .[1] == \"mm.api: acme-shop asks for egress-open until \(\$d)\" and (.[3] | test(\"any public host on HTTPS\")) and (.[3] | test(\"link-local\")) and (.[3] | test(\"acme-other\") | not)'"
+check "...the owner told, review first; the code in the Allow button (no no-login choice)" bash -c "c=\$(codeof $RX) && grep \"mmapi:allow:$RX:\$c\" '$T/tg.jsonl' | jq -e '(.text | test(\"egress-open $D10\")) and (.text | test(\"Review signs off first\")) and (.reply_markup.inline_keyboard[0] | length) == 2'"
+check "the owner approves before review signed off: refused, nothing set" bash -c "! codeof $RX | mm api approve $RX --hash ${HX:0:12} && [ \"\$(st $RX)\" = pending ] && ! mm config get egress.open.acme-shop && ! grep -qxF '$ANY' '$MM_HOME/egress/acme-shop/allow'"
+"$T/bin/fakebd" label add "$IX" signed-off; sleep 1
+check "review's signed-off alone decides nothing: still pending" bash -c "[ \"\$(st $RX)\" = pending ] && ! mm config get egress.open.acme-shop"
+check "...then the owner approves: done; config egress.open.acme-shop is the date; the allow file the any-host pattern; the proxy restarted" bash -c "n=\$(grep -cx 'restart -t 2 mm-egress-acme-shop' '$T/docker.log'); codeof $RX | mm api approve $RX --hash ${HX:0:12} && [ \"\$(st $RX)\" = done ] && [ \"\$(mm config get egress.open.acme-shop)\" = '$D10' ] && [ \"\$(cat '$MM_HOME/egress/acme-shop/allow')\" = '$ANY' ] && [ \"\$(grep -cx 'restart -t 2 mm-egress-acme-shop' '$T/docker.log')\" = \$((n+1)) ]"
+check "...the item says what was done and the undo; the box sees done; the record is in mm api show" bash -c "grep '\"comments\"' '$T/bd.jsonl' | jq -e 'select(.[2] == \"$IX\" and (.[3] | test(\"egress open for acme-shop until $D10\")) and (.[3] | test(\"mm api undo $RX\")))' && call '$S1' egress-open '{\"until\":\"$D10\"}' | jq -e '.status == \"done\"' && mm api show $RX -o json | jq -e '.call == \"egress-open\" and .value == \"$D10\" and .status == \"done\"'"
+check "...an earlier end while it is open: done, nothing filed; acme-other's box stays on its list" bash -c "n=\$(items); call '$S1' egress-open '{\"until\":\"$(date -u -d '+3 days' +%F)\"}' | jq -e '.status == \"done\"' && [ \"\$(items)\" = \$n ] && ! mm config get egress.open.acme-other"
+check "mm ls says it for acme-shop (egress_until)" bash -c "mm ls -o json | jq -e '.[] | select(.project == \"acme-shop\") | .egress_until == \"$D10\"'"
+check "mm api undo: off (config false), the list again, the proxy restarted" bash -c "mm api undo $RX && [ \"\$(st $RX)\" = undone ] && [ \"\$(mm config get egress.open.acme-shop)\" = false ] && grep -qxF '^github\\.com(:443)?\$' '$MM_HOME/egress/acme-shop/allow' && ! grep -qxF '$ANY' '$MM_HOME/egress/acme-shop/allow'"
+OUT=$(call "$S1" egress-open "{\"until\":\"$D20\"}"); RY=$(echo "$OUT" | jq -r .id); IY=$(echo "$OUT" | jq -r .item); HY=$(mm api show "$RY" -o json | jq -r .hash)
+"$T/bin/fakebd" label add "$IY" signed-off; codeof "$RY" | mm api approve "$RY" --hash "${HY:0:12}" >/dev/null
+check "past its end, the proxy's file still the any-host pattern: mm.api's next pass writes the list, restarts the proxy, tells the owner once" bash -c "grep -qxF '$ANY' '$MM_HOME/egress/acme-shop/allow' && cd '$SRC' && bun -e \"import { loadConfig, saveConfig, setPath } from './src/config.ts'; const c = loadConfig(); setPath(c, 'egress.open.acme-shop', '$YDAY'); saveConfig(c)\" && for i in \$(seq 1 50); do grep -qxF '^github\\.com(:443)?\$' '$MM_HOME/egress/acme-shop/allow' && break; sleep 0.2; done; ! grep -qxF '$ANY' '$MM_HOME/egress/acme-shop/allow' && sleep 1 && [ \"\$(grep -c '\"msg\":\"egress open ended: the list again\"' '$T/api.log')\" = 1 ] && for i in \$(seq 1 30); do [ \"\$(grep -c 'egress open ended ($YDAY)' '$T/tg.jsonl')\" = 1 ] && exit 0; sleep 0.1; done; exit 1"
+check "...a lead's mm config set egress.open.* with any value but false: denied by the guard (test/guard.sh EGRESS_OPEN); and refused in an agent's shell here" bash -c "grep -q 'export const EGRESS_OPEN' '$SRC/test/lib/guard-cases.mjs' && ! CLAUDECODE=1 mm config set egress.open.acme-shop $D10 2>/dev/null && CLAUDECODE=1 mm config set egress.open.acme-shop false"
 
 echo '== release: a real folder in release/, run in the box'
 echo mm-box-acme-shop >>"$T/running"

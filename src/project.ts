@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { boxApi } from './apistate'
 import { getPath, held, loadConfig } from './config'
+import { allowOpen, egressOpen, egressShown } from './egressopen'
 import { DIRS, engineDirs, HOME, portlessDir, run, servicePath, toolPath, which, within } from './env'
 import { obsEndpoints } from './obs'
 import { writeSecretPaths } from './inputs'
@@ -996,7 +997,8 @@ export function leaveHost(root: string, project: string, waitMs = 10_000): { ok:
 }
 
 export function listProjects() {
-  const out: { project: string; root: string; processes: string; ready: string; throwaway?: boolean; box?: boolean }[] = []
+  const out: { project: string; root: string; processes: string; ready: string; throwaway?: boolean; box?: boolean; egress?: string; egress_until?: string; egress_ended?: string }[] = []
+  const cfg = loadConfig()
   // projects on the host's process manager, and project boxes (registered by mm: they run in their own container)
   for (const [dir, box] of [[PROJECTS_PC, false], [BOXES, true]] as const) for (const f of existsSync(dir) ? readdirSync(dir).filter((x) => x.endsWith('.yaml')) : []) {
     const project = f.replace(/\.yaml$/, '')
@@ -1005,7 +1007,10 @@ export function listProjects() {
     const ps = box ? (boxHook.processes ? boxHook.processes(root) : []) : processes(project)
     let throwaway = false // a short-lived test project (mm new --throwaway): the system's sentinel raises nothing for it
     try { throwaway = !!readAnswers(root).throwaway } catch {}
-    out.push({ project, root: m ? m[1] : '?', processes: `${ps.filter((p) => p.status === 'Running').length}/${ps.length} running`, ready: `${ps.filter((p) => p.is_ready === 'Ready').length} ready`, ...(throwaway ? { throwaway } : {}), ...(box ? { box } : {}) })
+    // a box's egress (sy-cpyo S1): "open until <date>" while egress mode open holds, so it is never forgotten
+    const eg = box ? egressOpen(project, cfg) : null
+    out.push({ project, root: m ? m[1] : '?', processes: `${ps.filter((p) => p.status === 'Running').length}/${ps.length} running`, ready: `${ps.filter((p) => p.is_ready === 'Ready').length} ready`, ...(throwaway ? { throwaway } : {}), ...(box ? { box } : {}),
+      ...(eg ? { egress: egressShown(eg), ...(eg.on ? { egress_until: eg.until! } : {}), ...(eg.ended && allowOpen(project) ? { egress_ended: eg.until! } : {}) } : {}) })
   }
   return out
 }

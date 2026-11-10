@@ -5,7 +5,10 @@
 # it; the machine's config has it off). Proves: the mm with that environment puts the approved build on the slot; an mm
 # without it (another mm up, mm update, box on on the machine) keeps the slot on that build too, and the granted sites
 # on the egress list, never release/; after an undo, both write no app; the test's store gone, or only the machine's
-# own store noted (the owner turned the API off): the app slot runs release/ as before the API.
+# own store noted (the owner turned the API off): the app slot runs release/ as before the API. Egress mode open
+# (sy-cpyo): with egress.open.<project> an end date ahead, the allow file is one any-host pattern; off, past or at its
+# end, more than 30 days ahead or no date: the list; mm config set takes only a date up to 30 days or false, on never
+# from an agent's shell; mm ls says it.
 #   test/box-slot.sh
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -38,7 +41,9 @@ PCY="$MM_HOME/box/acme-shop/cfg/pc.yaml"
 # gives the app slot: its workdir, or "none"), egress (the box's list)
 cat >"$T/w.ts" <<EOF
 import { saveGranted } from '$SRC/src/apistate'
-import { appReload, archiveHostAgents, carryHostApp, egressList, uncarryHostApp } from '$SRC/src/box'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { appReload, archiveHostAgents, carryHostApp, egressList, uncarryHostApp, writeAllow } from '$SRC/src/box'
 import { resolve } from '$SRC/src/project'
 const [what, x, y] = process.argv.slice(2), root = '$R'
 if (what === 'hostagents') console.log(JSON.stringify(archiveHostAgents(root)))
@@ -47,6 +52,8 @@ if (what === 'grant') saveGranted('acme-shop', { routes: [], egress: y ? [{ site
 if (what === 'reload') { const st = appReload(root); if (st.some((s) => s.status === 'fail')) { console.error(JSON.stringify(st)); process.exit(1) } }
 if (what === 'slot') console.log(resolve(root).services.app?.workdir ?? 'none')
 if (what === 'egress') console.log(egressList(root).join('\n'))
+if (what === 'allow') { const w = writeAllow(root); process.stdout.write(readFileSync(join(w.edir, 'allow'), 'utf8')) }
+if (what === 'expired') { const { egressOpen } = await import('$SRC/src/egressopen'); console.log(JSON.stringify(egressOpen('acme-shop', undefined, Date.parse(x)))) }
 EOF
 TESTAPI() { MM_API_ENABLED=1 MM_API_DIR="$T/store" bun "$T/w.ts" "$@"; }   # the test's mm (its own mm.api's environment)
 OTHER() { bun "$T/w.ts" "$@"; }                                              # another mm on the machine: no such environment
@@ -103,5 +110,25 @@ exit 0
 EOF
 chmod +x "$T/bin/paseo"
 check "its two agents archived, the other one left alone" sh -c "OTHER hostagents | jq -e '.status == \"ok\" and (.detail | test(\"2/2\"))' && grep -qx 'archive --force a1' '$T/paseo.log' && grep -qx 'archive --force a2' '$T/paseo.log' && ! grep -q 'archive --force b1' '$T/paseo.log'"
+
+echo "== egress mode open (sy-cpyo): the allow file is one any-host pattern on :443 until the end date, else the list"
+MMC="bun $SRC/src/cli.ts"; CFG="$MM_HOME/config.yaml"; ANY='^[^/]+(:443)?$'
+D10=$(date -u -d '+10 days' +%F); D30=$(date -u -d '+30 days' +%F); D31=$(date -u -d '+31 days' +%F); D45=$(date -u -d '+45 days' +%F); TODAY=$(date -u +%F); YDAY=$(date -u -d '-1 day' +%F)
+export MMC CFG ANY D10 D30 D31 D45 TODAY YDAY
+cfg() { printf 'egress:\n  open:\n    acme-shop: %s\n' "$1" >"$CFG"; }
+export -f cfg
+check "no egress.open: the list as before (github.com, no any-host pattern)" sh -c "rm -f '$CFG'; OTHER allow >'$T/allow' && grep -qxF '^github\\.com(:443)?\$' '$T/allow' && ! grep -qxF '$ANY' '$T/allow'"
+check "the owner's terminal: mm config set egress.open.acme-shop <10 days ahead>: the allow file is exactly the any-host pattern" sh -c "$MMC config set egress.open.acme-shop $D10 && [ \"\$(OTHER allow)\" = '$ANY' ]"
+check "...mm ls says it (egress open until <date>; json egress_until), and its table has an egress column" sh -c "$MMC ls -o json | jq -e --arg d '$D10' '.[] | select(.project == \"acme-shop\") | .egress == \"open until \(\$d) 00:00 UTC\" and .egress_until == \$d and (has(\"egress_ended\") | not)' && $MMC ls | head -1 | grep -q EGRESS && $MMC ls | grep acme-shop | grep -q \"open until $D10\""
+check "...past its end (the same setting, a clock 11 days on): off, ended" sh -c "OTHER expired \"\$(date -u -d '+11 days' +%FT%TZ)\" | jq -e --arg d '$D10' '.on == false and .ended == true and .until == \$d'"
+check "...its end reached, the proxy's file still open: mm ls says ended (egress_ended); writeAllow then writes the list" bash -c "cfg $YDAY && $MMC ls -o json | jq -e --arg d '$YDAY' '.[] | select(.project == \"acme-shop\") | .egress_ended == \$d and (has(\"egress_until\") | not)' && OTHER allow | grep -qxF '^github\\.com(:443)?\$' && ! OTHER allow | grep -qxF '$ANY' && $MMC ls -o json | jq -e '.[] | select(.project == \"acme-shop\") | has(\"egress_ended\") | not'"
+check "today as the end (the day has started): off" bash -c "cfg $TODAY && ! OTHER allow | grep -qxF '$ANY'"
+check "a date written by hand more than 30 days ahead: off (the mode holds at most 30 days)" bash -c "cfg $D45 && ! OTHER allow | grep -qxF '$ANY' && $MMC ls -o json | jq -e '.[] | select(.project == \"acme-shop\") | .egress | test(\"more than 30 days\")'"
+check "true written by hand (no end date): off" bash -c "cfg true && ! OTHER allow | grep -qxF '$ANY'"
+check "mm config set refuses true, a past date, 31 days, and egress.open with no project; the config stays" bash -c "cfg false && for v in true $YDAY $D31 not-a-date 2026-02-30; do ! $MMC config set egress.open.acme-shop \$v 2>/dev/null || exit 1; done && ! $MMC config set egress.open x 2>/dev/null && ! OTHER allow | grep -qxF '$ANY' && [ \"\$($MMC config get egress.open.acme-shop)\" = false ]"
+check "...30 days ahead is the most it takes" sh -c "$MMC config set egress.open.acme-shop $D30 && [ \"\$(OTHER allow)\" = '$ANY' ]"
+check "an agent's shell (CLAUDECODE, PASEO_AGENT_ID): on is refused; false (off) is anyone's" bash -c "cfg false && ! CLAUDECODE=1 $MMC config set egress.open.acme-shop $D10 2>/dev/null && ! PASEO_AGENT_ID=x $MMC config set egress.open.acme-shop $D10 2>/dev/null && ! OTHER allow | grep -qxF '$ANY' && cfg $D10 && CLAUDECODE=1 $MMC config set egress.open.acme-shop false && ! OTHER allow | grep -qxF '$ANY'"
+check "another project's setting opens nothing here" sh -c "printf 'egress:\n  open:\n    acme-other: %s\n' $D10 >'$CFG' && ! OTHER allow | grep -qxF '$ANY'"
+rm -f "$CFG"
 
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]

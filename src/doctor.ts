@@ -7,6 +7,7 @@ import { machineSecretPaths, needs, secretOnlyDirs } from './inputs'
 import { AI_DIR } from './ai'
 import { API_DIR } from './apistate'
 import { boxish, engineRefusal, listProjects } from './project'
+import { allowOpen, egressOpenAll, egressShown } from './egressopen'
 import { engineDrift } from './lifecycle'
 import { manifest, type Tool } from './manifest'
 import { directDeps, installedProblem, lockBin, shipped } from './npmlock'
@@ -270,6 +271,15 @@ export function doctor(): Check[] {
 
   // zero side effects (sy-8w1): every path of mm's outside $MM_HOME (src/env.ts outsidePaths), allowed or to move
   out.push(...outsideChecks())
+
+  // egress mode open (sy-cpyo): each project with egress.open set says so; past its end with the proxy still open fails
+  const boxNames = new Set(listProjects().filter((p) => p.box).map((p) => p.project))
+  for (const e of egressOpenAll(c)) {
+    const item = `egress ${e.project}`, still = allowOpen(e.project)
+    if (e.on) out.push({ layer: 'projects', item, status: 'warn', detail: `egress: ${egressShown(e)}: the box may reach any public HTTPS host${boxNames.has(e.project) ? '' : ' (not a box now)'}`, fix: `mm config set egress.open.${e.project} false, then mm up (the list again)` })
+    else if (still) out.push({ layer: 'projects', item, status: 'fail', detail: `egress: ${egressShown(e)}, but the box's proxy still has the any-host pattern`, fix: `mm up for ${e.project} (or mm.api's next pass) writes the list again` })
+    else out.push({ layer: 'projects', item, status: e.bad ? 'warn' : 'ok', detail: `egress: ${egressShown(e)}`, fix: e.bad ? `mm config set egress.open.${e.project} false` : undefined })
+  }
 
   // engine drift (sy-h5se): an engine file the three-way merge kept behind the template, which no project commit changed
   for (const p of listProjects()) {

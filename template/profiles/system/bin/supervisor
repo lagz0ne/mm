@@ -68,6 +68,11 @@
 //                        item to platform, "Nightly gates failed on main@<sha7>: <suites>", retitled and commented when
 //                        another night fails otherwise; its result file and failed logs attached (bin/artifact, once
 //                        per night); closed when a night passes                                                    P1
+//     egress:open        each box project whose egress mode is open (sy-cpyo S1: mm ls egress_until, config
+//                        egress.open.<project>): it may reach any public HTTPS host until that date. One item, to
+//                        review; a comment when the list changes (a mode ended or a new one); closed when none is
+//                        left. A mode past its end while the proxy still has the any-host pattern (egress_ended) is a
+//                        line too, until mm up or mm.api writes the list again                                     P3
 //     supervisor:<check> the supervisor could not read a source (that check's items are left as they are)     P2
 // Sources, all read-only: the board (bd serve: items, ready, the event journal), Paseo (leads by label project/role),
 // `mm ls` (project roots), git (log, status, worktree list). A reply, a comment or a change means one by a lead, its
@@ -463,6 +468,22 @@ async function placements() {
   return { prefix: 'placements:', problems: problem ? [problem] : [] }
 }
 
+// Egress mode open (sy-cpyo S1): the projects whose box may reach any public HTTPS host, with the end of each, so it
+// is never forgotten. From mm ls (throwaway projects left out, as everywhere here).
+function egress() {
+  const ls = listed(), lines = []
+  for (const p of ls) {
+    const name = String(p.project).replace(/[^\w.-]/g, '').slice(0, 64)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(p.egress_until || ''))) lines.push(`${name}: egress open until ${p.egress_until} 00:00 UTC (any public host on :443)`)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(p.egress_ended || ''))) lines.push(`${name}: egress open ended ${p.egress_ended}, but its proxy still has the any-host pattern: mm up for it writes the list again`)
+  }
+  const problem = lines.length ? { key: 'egress:open', priority: 3, assignee: 'review', title: `Egress open: ${lines.length} project(s)`, note: lines.join('\n'),
+    body: `The boxes whose egress proxy lets them reach any public HTTPS host, not only their list (config \`egress.open.<project>\`, set only by the owner: mm.api's egress-open, or their own terminal):\n\n` +
+      `${lines.map((l) => `- ${l}`).join('\n')}\n\nEach ends by itself at its date (mm.api writes the list again). To end one now: \`mm config set egress.open.<project> false\`, then mm up for it (or the owner's \`mm api undo <request>\`). ` +
+      'This item is commented when the list changes and closes itself when no project is open.' } : null
+  return { prefix: 'egress:', problems: problem ? [problem] : [] }
+}
+
 const HOW = {
   unanswered: 'no answer after By: answer the message (re #<n>: an ANSWER, a VERDICT or a DONE), or say on the item why it waits, with a new By. ' +
     'No VERDICT after By: V writes the VERDICT on that head. ASK outside the RACI: ask a role that is C, V, R or A in the item\'s row (an I is told once, at DONE), or fix the item\'s act:',
@@ -653,7 +674,7 @@ const mainCommits = once(async () => {
 // (op, args, ok; cli.ts), its line per route it adds or removes (op route add|rm, args project name ...; project.ts), and what the owner's sockets do without the CLI: mm.api's "request applied" (the bridge's
 // Allow) and mm.auth's "granted" (the web), in their process logs <mm>/pc/api.log and auth.log. Only what succeeded, not
 // on a throwaway project. A config value is never read into a finding: only its key.
-const T2_KEY = /^(?:(?:api|ai|box\.docker)(?:\.|$)|wake\.person_runs$|names$)/
+const T2_KEY = /^(?:(?:api|ai|box\.docker|egress\.open)(?:\.|$)|wake\.person_runs$|names$)/
 const TAIL = 8 << 20 // the last 8 MB of each log
 function lines(file) {
   let fd; try { fd = fs.openSync(file, 'r') } catch (e) { if (e.code === 'ENOENT') return []; throw e }
@@ -893,7 +914,7 @@ for (const it of (await bd('GET', '/v0/beads/issues?label=supervisor&limit=500')
 }
 const results = [], failed = []
 const failure = (name, e) => ({ name, err: String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' | ').slice(0, 500) })
-for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card, signoff, tasks, placements, suites, nightly })) {
+for (const [name, fn] of Object.entries({ digest, dirty, t2, overcap, card, signoff, tasks, placements, suites, nightly, egress })) {
   try { results.push(...[await fn()].flat()) } catch (e) { failed.push(failure(name, e)) }
 }
 await paseo.close()

@@ -102,6 +102,8 @@ sed -n 's/^\(SYSTEM\|NORMAL\): /       /p' "$T/check.out"
 check "the ledger's files (sy-4py1): /etc/mm-approve.conf, /var/lib/mm-approve/, bin/lib/ledger.mjs, every spelling; on a project" node "$SRC/test/lib/guard-run.mjs" "$PROJ" LEDGER
 sed -n 's/^LEDGER: /       /p' "$T/check.out"
 check "...and on the system board, where its ops run sudo" node "$SRC/test/lib/guard-run.mjs" "$SYS" LEDGER
+check "egress mode open (sy-cpyo): a lead never turns it on (any value but false), on the system board; off is anyone's" node "$SRC/test/lib/guard-run.mjs" "$SYS" EGRESS_OPEN
+check "...and on a project" node "$SRC/test/lib/guard-run.mjs" "$PROJ" EGRESS_OPEN
 sed -n 's/^\(FAIL\|LEDGER\)/       &/p' "$T/check.out"
 cp -r "$PROJ" "$T/boxed"; printf 'profile: system\nbox: true\n' >"$T/boxed/.mm-answers.yaml"
 check "a box that says it is the system profile gets the project's rule (sudo denied)" bash -c "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sudo -n true\"}}' | '$T/boxed/bin/guard' | grep -q '\"deny\"'"

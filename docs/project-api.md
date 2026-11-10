@@ -14,10 +14,10 @@ load `mm.api`): a t2 change, after review's sign-off and the owner's approval.
   the folder, read-only, at `/run/mm/api/`. There is no TCP port.
 - **The project is the socket the call came in on.** A project name in the call is never read.
 - The box sees only a status (`pending`, `done`, `refused`), the request's id, its item's id, and for a refusal one
-  fixed word (`format`, `rate`, `open-limit`, `exists`, `taken`, `no-build`, `no-app-slot`, `no-domain`,
+  fixed word (`format`, `rate`, `open-limit`, `exists`, `taken`, `no-build`, `no-app-slot`, `no-domain`, `until`,
   `unknown-call`).
 
-## The four calls (anything else: refused)
+## The five calls (anything else: refused)
 `POST` with a JSON body that has exactly the one field below. Example, from the box:
 `curl -s --unix-socket /run/mm/api/api.sock -X POST -d '{"site":"api.stripe.com"}' http://api/egress`
 
@@ -27,6 +27,7 @@ load `mm.api`): a t2 change, after review's sign-off and the owner's approval.
 | `/egress` | `{"site": …}` | an exact host name: no wildcard, no address, no port | review signs off, then the owner |
 | `/release` | `{"build": …}` | a folder name under `release/` (`[a-z0-9][a-z0-9_.-]{0,63}`, no `..`) | the owner |
 | `/secret` | `{"name": …}` | `[a-z0-9-]{1,40}`: a NEW name in this project's vault namespace | the owner |
+| `/egress-open` | `{"until": …}` | a date `YYYY-MM-DD` (UTC), after today, at most 30 days ahead | review signs off, then the owner |
 
 - **Route:** always `<name>.<project>.<domain>`, so one project can't claim another's name. The target is only the
   box's app slot (its own service, forwarded from the host to the box's address; Traefik never joins the box network).
@@ -36,6 +37,15 @@ load `mm.api`): a t2 change, after review's sign-off and the owner's approval.
   password, as a board's would.
 - **Egress:** the exact site joins the box's egress list (`$MM_HOME/egress/<project>/allow`); its proxy restarts to read
   it. Review signs off on the item (`signed-off` and a comment), then the owner approves (review's option (a)).
+- **Egress open** (sy-cpyo): until the date's start (00:00 UTC) the box's egress proxy lets it reach any public host on
+  HTTPS, not only its list: mm sets `egress.open.<project>: <date>` in its own config (never the project's
+  services.yaml) and the allow file becomes one pattern, any host on :443. The proxy's own checks stay: port 443 only,
+  and the resolved address is never this machine, a private or link-local address (cloud metadata) or a docker network.
+  From that day on the list is back by itself (mm.api's next pass writes it and restarts the proxy, and tells the
+  owner); undo turns it off at once (`false`). The egress log records each connection. Besides this request only the
+  owner's own terminal turns it on (`mm config set egress.open.<project> <date>`; refused in an agent's shell, and the
+  template's guard denies a lead any value but `false`); off is anyone's. `mm ls` and `mm doctor` show it, and the
+  system board's Supervisor keeps one item (`egress:open`, to review) listing each project open and its end.
 - **Release:** while the API is on, a box's app slot runs only the build the owner approved: `release/<build>/`, inside
   the box, as the box user, loaded by the box's own process manager. mm copies nothing from `release/` to a host path
   and follows no link there (`release/` and `release/<build>` must be real folders: `lstat`). The box can still change

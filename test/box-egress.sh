@@ -7,7 +7,9 @@
 # Proves: an allowed site works; a site off the list, plain http and port 80 are refused; an allowed name that
 # resolves to loopback, a private address, the metadata address, a docker bridge, or a network mm names is refused
 # and logged with the name and the address, also when the name changes after it was allowed (rebinding); without the
-# proxy nothing gets out (no route, no DNS); the box can't reach the host's services.
+# proxy nothing gets out (no route, no DNS); the box can't reach the host's services. With egress mode open (sy-cpyo:
+# the allow file one any-host pattern) a public site off the list works, and the host, private, metadata, loopback
+# and docker addresses, port 80 and plain http are still refused; the list again refuses it again.
 # Through mm's Docker wrapper only (sy-e6t3; test/lib/docker.sh: the installed one, MM_DOCKER_BIN for this checkout's
 # copy), shaped as mm runs them: mm's names and labels, the project's own network (10.231.<n>.0/24), its own uids, the
 # folders in the tests' area. The box is an image built here with curl (BOX_IMAGE=<mm-box:tag> to skip that build).
@@ -130,6 +132,19 @@ check "without the proxy: nothing gets out (by address, 1.1.1.1)" eval "! IN 'cu
 echo "== in: the host"
 check "the box can't reach the host's services (docker bridge $HOST_IP: names proxy 1355, VictoriaMetrics 8428)" eval "! IN 'curl -s -o /dev/null --max-time 5 http://$HOST_IP:1355/' && ! IN 'curl -s -o /dev/null --max-time 5 http://$HOST_IP:8428/'"
 check "...nor through the proxy (it isn't a way back in)" eval "[ \"\$(IN \"curl -s -o /dev/null -w '%{http_code}' --max-time 10 --proxy $P http://$HOST_IP:8428/\")\" = 403 ]"
+echo "== egress mode open (sy-cpyo): the allow file is one any-host pattern; the proxy's own checks still refuse what is inside"
+# as src/box.ts writeAllow writes it with egress.open.<project> set (src/egressopen.ts ANY_HOST; test/box-slot.sh checks
+# mm writes exactly this), in place (the mount keeps the file), then the proxy restarted as mm.api's egressReload does
+cp "$TMP/allow" "$TMP/allow.list"; printf '%s\n' '^[^/]+(:443)?$' >"$TMP/allow.new"; cat "$TMP/allow.new" >"$TMP/allow"
+D restart -t 2 "$PX" >/dev/null; for i in $(seq 1 20); do [ "$(grep -c ' start ' "$ELOG")" -ge 2 ] && break; sleep 0.5; done
+check "a public site off the list works now (example.com), and is logged as allowed" eval "c=\$($DOCKER exec $BOX curl -s -o /dev/null -w '%{http_code}' --max-time 20 --proxy $P https://example.com/); echo \$c; [ \"\$c\" -ge 200 ] && [ \"\$c\" -lt 400 ] && grep -E ' allowed .*name=example.com port=443 address=' '$ELOG'"
+check "...a private address by name (10.20.30.40): still refused" eval "[ \"\$(code ten.mm-test)\" = 403 ]"
+check "...the metadata address, by name and as a literal (169.254.169.254): still refused" eval "[ \"\$(code meta.mm-test)\" = 403 ] && [ \"\$(code 169.254.169.254)\" = 403 ]"
+check "...the host (the docker bridge $HOST_IP), by name and as a literal: still refused" eval "[ \"\$(code bridge.mm-test)\" = 403 ] && [ \"\$(code $HOST_IP)\" = 403 ]"
+check "...loopback, a docker network mm names, the box's own network: still refused" eval "[ \"\$(code loop.mm-test)\" = 403 ] && [ \"\$(code pooled.mm-test)\" = 403 ] && [ \"\$(code ${SUBNET%.0/*}.1)\" = 403 ]"
+check "...port 80 and plain http: still refused" eval "[ \"\$(IN \"curl -s -o /dev/null -w '%{http_connect}' -p --max-time 20 --proxy $P http://example.com:80/\")\" = 403 ] && [ \"\$(IN \"curl -s -o /dev/null -w '%{http_code}' --max-time 20 --proxy $P http://example.com/\")\" = 403 ]"
+cat "$TMP/allow.list" >"$TMP/allow"; D restart -t 2 "$PX" >/dev/null; for i in $(seq 1 20); do [ "$(grep -c ' start ' "$ELOG")" -ge 3 ] && break; sleep 0.5; done
+check "the mode off (the list again, the proxy restarted): example.com is refused again" eval "[ \"\$(code example.com)\" = 403 ]"
 echo "== the log"
 check "one line per decision, every refusal with a reason" eval "n=\$(grep -c ' refused ' '$ELOG'); echo \$n refusals; [ \"\$n\" -ge 10 ] && ! grep ' refused ' '$ELOG' | grep -vq ' why='"
 { [ -n "$KEEP" ] || [ "$fail" != 0 ] || [ -n "${SHOW_LOG:-}" ]; } && { echo "== the egress log"; cat "$ELOG"; }

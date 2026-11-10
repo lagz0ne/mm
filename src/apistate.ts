@@ -6,6 +6,7 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { getPath, loadConfig } from './config'
+import { UNTIL } from './egressopen'
 import { DIRS } from './env'
 
 // MM_API_DIR is for tests (a throwaway store; the machine's is untouched)
@@ -32,12 +33,16 @@ export const SITE = /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](
 export const BUILD = /^[a-z0-9][a-z0-9_.-]{0,63}$/
 /** A secret: a NEW name in this project's vault namespace (<project>.<name>); no dot, so never another namespace. */
 export const SECRET_NAME = /^[a-z0-9-]{1,40}$/
-export const CALLS = ['route', 'egress', 'release', 'secret'] as const
+export const CALLS = ['route', 'egress', 'release', 'secret', 'egress-open'] as const
 export type Call = typeof CALLS[number]
 /** The one field each call takes, and its format. */
 export const FIELD: Record<Call, { key: string; re: RegExp }> = {
   route: { key: 'name', re: ROUTE_NAME }, egress: { key: 'site', re: SITE }, release: { key: 'build', re: BUILD }, secret: { key: 'name', re: SECRET_NAME },
+  // egress mode open until a date (sy-cpyo, src/egressopen.ts): the end, YYYY-MM-DD; its range is checked on the host
+  'egress-open': { key: 'until', re: UNTIL },
 }
+/** The calls review signs off on before the owner's tap (t2: what can leave the box). */
+export const reviewed = (c: Call) => c === 'egress' || c === 'egress-open'
 export const formatOk = (call: string, value: string) => (CALLS as readonly string[]).includes(call) && FIELD[call as Call].re.test(value) && !value.includes('..')
 
 export type Granted = {

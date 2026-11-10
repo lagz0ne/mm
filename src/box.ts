@@ -12,6 +12,8 @@ import { AI_PORT, aiEnabled, aiSocket, mintKey, revokeKeys, store as aiStore } f
 import { mkdtempSync, rmSync } from 'node:fs'
 import { apiEnabled, apiSocketDir, boxApi, granted, noteBoxApi, saveGranted } from './apistate'
 import { getPath, held, loadConfig } from './config'
+import { ANY_HOST, egressOpen } from './egressopen'
+export { allowOpen } from './egressopen'
 import { DIRS, HOME, run, servicePath, which, within } from './env'
 import { MM_LOG_CONFIG } from './obs'
 import { personRunsOn } from './personruns'
@@ -262,18 +264,25 @@ export function egressList(root: string): string[] {
   return [...new Set([...BASE_EGRESS, ...extra.map((x) => String(x).toLowerCase()).filter(ok), ...api])].sort()
 }
 const allowPatterns = (hosts: string[]) => hosts.map((h) => `^${h.startsWith('*.') ? '(.+\\.)?' + h.slice(2).replace(/\./g, '\\.') : h.replace(/\./g, '\\.')}(:443)?$`).join('\n') + '\n'
-const writeAllow = (root: string) => {
-  const edir = join(DIRS.mm, 'egress', readAnswers(root).project); mkdirSync(edir, { recursive: true, mode: 0o700 })
-  const hosts = egressList(root); writeFileSync(join(edir, 'allow'), allowPatterns(hosts), { mode: 0o644 })
-  return { edir, hosts }
+/** The box's allow file (egress/<project>/allow under mm's folder, read-only to its proxy), written at mm up, a
+ *  restart, a rollout and each mm.api change. With egress mode open (sy-cpyo, src/egressopen.ts: `egress.open.<project>`,
+ *  an end date not yet reached) it is one pattern, any host on :443; else the list. The proxy's deny and 443-only
+ *  checks (box/egress/main.go) hold either way. */
+export const writeAllow = (root: string) => {
+  const project = readAnswers(root).project, edir = join(DIRS.mm, 'egress', project); mkdirSync(edir, { recursive: true, mode: 0o700 })
+  const hosts = egressList(root), mode = egressOpen(project)
+  writeFileSync(join(edir, 'allow'), mode.on ? `${ANY_HOST}\n` : allowPatterns(hosts), { mode: 0o644 })
+  return { edir, hosts, open: mode }
 }
+/** What the proxy is told, for a step's detail. */
+const allowShown = (w: ReturnType<typeof writeAllow>) => (w.open.on ? `egress open until ${w.open.until} 00:00 UTC (any public host on :443)` : `${w.hosts.length} name(s)`)
 /** The project API granted (or undid) a site: the list again, and the proxy restarted to read it (its networks, its
  *  address and its AI forwarder stay; the box's connections out break for a moment). */
 export function egressReload(root: string): Step {
-  const { hosts } = writeAllow(root), px = names(readAnswers(root).project).proxy
+  const w = writeAllow(root), px = names(readAnswers(root).project).proxy
   if (!exists('container', px)) return { step: 'egress proxy', status: 'skip', detail: `${px} is not running: the list is used at the next mm up` }
   const r = docker('restart', '-t', '2', px)
-  return { step: 'egress proxy', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `${px}: ${hosts.length} name(s), restarted` : short(r) }
+  return { step: 'egress proxy', status: r.ok ? 'ok' : 'fail', detail: r.ok ? `${px}: ${allowShown(w)}, restarted` : short(r) }
 }
 
 /** What every program in the box gets (its services, and the jobs mm cron runs there): its names, its Paseo, its proxy. */
@@ -468,7 +477,7 @@ function upUnder022(root: string): Step[] {
   const net = netOf(a.project, n.net); if (!net) return fail('network', `could not make ${n.net}`)
   steps.push({ step: 'network', status: 'ok', detail: `${n.net} (internal, ${net.subnet}; the box at ${net.ip})` })
   // 2. the egress proxy: on the bridge (out) and on the box's network; its list is read-only to it
-  const { edir, hosts } = writeAllow(root)
+  const allow = writeAllow(root), { edir, hosts } = allow
   if (exists('container', n.proxy)) docker('rm', '-f', n.proxy)
   // ...and the way to mm's AI gateway: its port AI_PORT, on the box's network only (a fixed address, .2), forwards to
   // this box's own socket of mm.ai (the folder mounted here, nowhere else). The socket names the project to the gateway.
@@ -492,7 +501,7 @@ function upUnder022(root: string): Step[] {
     '-v', `${join(edir, 'allow')}:/etc/mm/allow:ro`, '-v', `${aiDir}:/run/mm/ai`, '-v', `${elog}:/run/mm/log`, EGRESS_IMAGE(), 'sh', '-c', fwd)
   if (!px.ok) return fail('egress proxy', short(px))
   const cn = docker('network', 'connect', '--ip', pip, n.net, n.proxy); if (!cn.ok) return fail('egress proxy', short(cn))
-  steps.push({ step: 'egress proxy', status: 'ok', detail: `${n.proxy}: ${hosts.length} name(s) (${hosts.slice(0, 4).join(', ')}${hosts.length > 4 ? ', …' : ''})` })
+  steps.push({ step: 'egress proxy', status: 'ok', detail: allow.open.on ? `${n.proxy}: ${allowShown(allow)}` : `${n.proxy}: ${hosts.length} name(s) (${hosts.slice(0, 4).join(', ')}${hosts.length > 4 ? ', …' : ''})` })
   // 3. the box's process-compose file, read-only to the box
   const hd = hostDir(a.project), cfg = join(hd, 'cfg'), sock = join(hd, 'sock'), stage = join(hd, 'backup')
   mkdirSync(cfg, { recursive: true, mode: 0o755 }); for (const d of [sock, stage]) { mkdirSync(d, { recursive: true }); chmodSync(d, 0o2770) } // the box writes these two (its group)

@@ -765,6 +765,26 @@ out=$4; logs=\${out%.txt}.logs; mkdir -p "$logs"; h=$(git rev-parse main); rc=0
   delete ENV.MM_GATES_NIGHTLY; delete ENV.SUPERVISOR_ARTIFACT
 }
 
+step('egress mode open (sy-cpyo S1): each box with egress open, with its end, on one item to review')
+{
+  const LS = path.join(T, 'ls.json'), keep = fs.readFileSync(LS, 'utf8'), base = JSON.parse(keep)
+  const withEgress = (m) => fs.writeFileSync(LS, JSON.stringify(base.map((p) => ({ ...p, ...(m[p.project] || {}) }))))
+  withEgress({ p3: { box: true, egress: 'open until 2026-12-01 00:00 UTC', egress_until: '2026-12-01' }, p2: { box: true, egress_until: '2026-12-02' } })
+  clock += MIN
+  ok('exit 0', (await supervise()) === 0)
+  const E1 = openOf('egress:open')
+  ok('egress:open: P3, to review, it names p3 and its end; not p2 (throwaway)', E1 && E1.assignee === 'review' && E1.priority === 3 && /^- p3: egress open until 2026-12-01 00:00 UTC/m.test(E1.description) && !/p2:/.test(E1.description) && E1.title === 'Egress open: 1 project(s)', E1)
+  withEgress({ p3: { box: true, egress_ended: '2026-12-01' } })
+  clock += MIN
+  ok('exit 0', (await supervise()) === 0)
+  const E2 = openOf('egress:open')
+  ok('its end passed, the proxy still open: the same item, one comment saying so', E2?.id === E1?.id && E2.comments.length === 1 && /p3: egress open ended 2026-12-01, but its proxy still has the any-host pattern/.test(E2.comments[0].text))
+  fs.writeFileSync(LS, keep)
+  clock += MIN
+  ok('exit 0', (await supervise()) === 0)
+  ok('...the list again: cleared and closed', !openOf('egress:open') && byKey('egress:open').length === 1 && /Cleared/.test(byKey('egress:open')[0].comments.at(-1).text))
+}
+
 step('run 10: the board is down: exit non-zero, nothing written')
 fs.writeFileSync(path.join(T, 'bd.fail'), '')
 const n = sup().length

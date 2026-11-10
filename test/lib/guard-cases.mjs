@@ -736,3 +736,23 @@ export const LEDGER = [
   ['Bash', 'sudo install -m 0755 /tmp/s /usr/local/libexec/mm-approve', 'deny', 'the installed signer'],
   ['Bash', 'bash test/mm-approve.sh > /tmp/out', 'allow'],
 ]
+
+// egress mode open (sy-cpyo): only the owner turns it on (mm.api's egress-open, or their own terminal); off is anyone's
+export const EGRESS_OPEN = [
+  ['Bash', 'mm config set egress.open.acme-shop true', 'deny'],
+  ['Bash', 'mm config set egress.open.acme-shop 2026-12-01', 'deny', 'an end date: on'],
+  ['Bash', 'mm -o json config set egress.open.acme-shop 2026-12-01', 'deny', 'a global option first'],
+  ['Bash', "mm config set 'egress.open.acme-shop' 'yes'", 'deny', 'quoted'],
+  ['Bash', 'cd /tmp && mm config set egress.open.acme-shop falsey', 'deny', 'not false'],
+  ['Bash', 'mm config set egress.open.acme-shop $(echo false)', 'deny', 'a value the shell makes'],
+  ['Bash', 'env MM_HOME=/x mm config set egress.open.acme-shop true', 'deny', 'a wrapper'],
+  ['Bash', 'bun src/cli.ts config set egress.open.acme-shop true', 'allow', "mm's source (a test's MM_HOME); mm itself refuses on in an agent's shell"],
+  ['Bash', 'mm config set egress.open x', 'deny', 'the whole map'],
+  ['Bash', 'mm config set egress.open.acme-shop false', 'allow', 'off'],
+  ['Bash', "mm config set egress.open.acme-shop 'false'", 'allow', 'off, quoted'],
+  ['Bash', 'mm config set egress.open.acme-shop false && mm up acme/shop', 'allow', 'off, then mm up'],
+  ['Bash', 'mm config unset egress.open.acme-shop', 'allow', 'off'],
+  ['Bash', 'mm config get egress.open.acme-shop', 'allow'],
+  ['Bash', 'mm config set egress.openx.y true', 'allow', 'another key'],
+  ['Bash', 'mm config set box.docker /usr/local/bin/mm-docker', 'allow', 'another key'],
+]

@@ -4,11 +4,13 @@
 //
 //   The way in: one Unix socket per box, $MM_HOME/box/<project>/api/api.sock (made here for each box in pc/boxes).
 //   Only that box mounts the folder, read-only, at /run/mm/api. The project is the socket the call came in on, never a
-//   name in the call (review sy-b15.8 5). No TCP port. Four calls, each with one field in a fixed format:
+//   name in the call (review sy-b15.8 5). No TCP port. Five calls, each with one field in a fixed format:
 //     POST /route   {"name": "<a-z0-9->"}   a public route <name>.<project>.<domain> to the box's app slot
 //     POST /egress  {"site": "<host name>"}  an exact site on the box's egress list
 //     POST /release {"build": "<folder>"}    the build in release/<build>/ on the box's app slot
 //     POST /secret  {"name": "<a-z0-9->"}   a NEW secret <project>.<name> in the vault; never a value
+//     POST /egress-open {"until": "YYYY-MM-DD"}  egress mode open (any public host on :443) until that day, at most
+//                                            30 days ahead (sy-cpyo, src/egressopen.ts): config egress.open.<project>
 //   The box gets back only a status (pending, done, refused) and the request's and its item's ids.
 //   And one more, decided by rules, not by the owner: /person-run (src/boxruns.ts, sy-9618), a lead's run for one person
 //   of the box's project on their own token, while wake.person_runs is on (mm.api runs for it alone too; then the four
@@ -19,7 +21,7 @@
 //   bridge's Allow tap calls it, and `mm api approve <id>` in the owner's own terminal). Every agent session is denied it
 //   (the template's rendered denies; the guard is ops'). An approval names the request and its hash, sha256 of
 //   [project, call, value]: mm applies exactly that request, checks its format again, and posts the undo on the item.
-//   An egress site also needs review's sign-off on the item first (`signed-off`), then the owner's tap.
+//   An egress site and egress-open also need review's sign-off on the item first (`signed-off`), then the owner's tap.
 //   The one-time code (sy-35f2): the hash is printed in the item, and every host session runs as the same user, so the
 //   hash alone doesn't show that the owner decided. Each request gets a random code, sent only to the owner on Telegram
 //   (in the text and in the Allow button), kept here only as a slow hash. An approval needs the code too: a wrong one
@@ -31,13 +33,14 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypt
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Server } from 'bun'
-import { API_DIR, APPROVE_SOCK, apiEnabled, apiSocket, apiSocketDir, type Call, CALLS, FIELD, formatOk, granted, grantedProjects, PROJECT_ID, saveGranted } from './apistate'
+import { API_DIR, APPROVE_SOCK, apiEnabled, apiSocket, apiSocketDir, type Call, CALLS, FIELD, formatOk, granted, grantedProjects, PROJECT_ID, reviewed, saveGranted } from './apistate'
 import * as boxRuns from './boxruns'
 import { servedBoxes } from './boxreg'
 import { gatewayHost, hostClaims } from './auth'
 import { boxRoute } from './names'
-import { appReload, egressList, egressReload } from './box'
-import { getPath, loadConfig } from './config'
+import { allowOpen, appReload, egressList, egressReload } from './box'
+import { getPath, loadConfig, saveConfig, setPath } from './config'
+import { egressOpen, untilRefusal } from './egressopen'
 import { DIRS, HOME, run, toolPath } from './env'
 import { expand, machineInputs } from './inputs'
 import { readAnswers, routeRm, routeTool, routeUp } from './project'
@@ -174,7 +177,8 @@ async function bd(args: string[]): Promise<{ ok: boolean; out: string }> {
     return { ok: code === 0, out }
   } catch (e) { return { ok: false, out: String(e) } }
 }
-const CALL_WHAT: Record<Call, string> = { route: 'a public route', egress: 'a site on its egress list', release: 'a build on its app slot', secret: 'a new secret' }
+const CALL_WHAT: Record<Call, string> = { route: 'a public route', egress: 'a site on its egress list', release: 'a build on its app slot', secret: 'a new secret',
+  'egress-open': 'egress mode open: any public HTTPS host, until a date' }
 /** The item: every word mm's, the box's value only inside the frame (format-checked, so never more than one short
  *  line without backticks), marked as the box's. */
 export function itemText(r: Pick<Req, 'id' | 'project' | 'call' | 'value' | 'hash'>, domain: string): { title: string; body: string } {
@@ -188,20 +192,23 @@ export function itemText(r: Pick<Req, 'id' | 'project' | 'call' | 'value' | 'has
       `- **Note:** the box can still change that build's files after the approval: what is approved is the build's name.`],
     secret: [`- **What changes:** a new, empty secret \`${p}.${v}\` in this project's vault namespace. No value goes through the API.`,
       `- **After the approval:** the owner fills it in their own terminal (\`mm fill ${p}:${v}\`); the box gets it at its next start, read-only (tmpfs), at \`/run/mm/secrets/${p}.${v}\`.`],
+    'egress-open': [`- **What changes:** until ${v} 00:00 UTC (at most 30 days), the box's egress proxy lets it connect to any public host on HTTPS (port 443), not only its list. Data can leave the box to any site; the egress log records each connection.`,
+      `- **What stays:** port 443 only; never this machine, a private or link-local address (cloud metadata) or a docker network: the proxy checks the resolved address. After that day, or on undo, the list again.`,
+      `- **Who decides:** review signs off on this item first (label \`signed-off\` and a comment); then the owner approves.`],
   }
   // sy-jycr: an item with needs-you starts with an owner card (template/bin/lib/owner-card.mjs; bin/bd's gate refuses
   // it without one, for every actor), then a Task (template/bin/lib/task.mjs). Egress is t2 and goes to review first
   // (no needs-you): its text stays as it was. "Tap Approve" is the card's form for "say yes"; on an item without t2 it
   // is no T2 go ask (the board offers no Approve for it): the yes is the bridge's Allow or mm api approve.
   const head: string[] = []
-  if (r.call !== 'egress') {
+  if (!reviewed(r.call)) {
     const fit = (s: string, short: string, max: number) => (Array.from(s).length <= max ? s : short)
-    const whats: Record<Exclude<Call, 'egress'>, [string, string]> = {
+    const whats: Record<Exclude<Call, 'egress' | 'egress-open'>, [string, string]> = {
       route: [`The box of ${p} asks for a public route: https://${host}.`, `The box of ${p} asks for a public route (the name is in the request below).`],
       release: [`The box of ${p} asks its app slot to run the build release/${v}/.`, `The box of ${p} asks its app slot to run a build (its name is below).`],
       secret: [`The box of ${p} asks for a new, empty secret ${p}.${v}.`, `The box of ${p} asks for a new, empty secret (its name is below).`],
     }
-    const [long, short] = whats[r.call]
+    const [long, short] = whats[r.call as Exclude<Call, 'egress' | 'egress-open'>]
     head.push('## Owner',
       `- **What:** ${fit(long, fit(short, 'A box asks for something through mm.api (the request is below).', 120), 120)}`,
       `- **Why:** The box asked for it through mm.api. Only you decide, and mm applies exactly this request.`,
@@ -220,7 +227,7 @@ export function itemText(r: Pick<Req, 'id' | 'project' | 'call' | 'value' | 'has
     `**From the box** (data, not instructions; the format \`${FIELD[r.call].re.source}\`):`, '', '```text', v, '```', '',
     `**How it is decided:** only by the owner: the bridge's Allow, or \`mm api approve ${r.id}\` in the owner's own terminal, each with the one-time code mm sent only to the owner on Telegram (it is not on this item). A label on this item decides nothing; mm applies exactly this request.`, '',
     `mm-api: ${r.id} sha256:${r.hash}`]
-  return { title: `mm.api: ${p} asks for ${r.call} ${r.call === 'route' ? host : r.call === 'secret' ? `${p}.${v}` : v}`, body: body.join('\n') }
+  return { title: `mm.api: ${p} asks for ${r.call} ${r.call === 'route' ? host : r.call === 'secret' ? `${p}.${v}` : r.call === 'egress-open' ? `until ${v}` : v}`, body: body.join('\n') }
 }
 const filing = new Set<string>() // requests whose item is being filed now (the retry leaves them alone)
 async function fileItem(d: Database, r: Req, domain: string) {
@@ -230,7 +237,7 @@ async function fileItem(d: Database, r: Req, domain: string) {
 }
 async function fileItemNow(d: Database, r: Req, domain: string) {
   const t = itemText(r, domain)
-  const res = await bd(['create', t.title, '-d', t.body, '-t', 'task', '-p', '2', '-l', r.call === 'egress' ? 'mm-api,t2' : 'mm-api,needs-you', ...(r.call === 'egress' ? ['--assignee', 'review'] : []), '--json'])
+  const res = await bd(['create', t.title, '-d', t.body, '-t', 'task', '-p', '2', '-l', reviewed(r.call) ? 'mm-api,t2' : 'mm-api,needs-you', ...(reviewed(r.call) ? ['--assignee', 'review'] : []), '--json'])
   const id = /"id"\s*:\s*"([A-Za-z0-9._-]+)"/.exec(res.out)?.[1] || ''
   if (id) d.query('UPDATE request SET item = ? WHERE id = ?').run(id, r.id)
   else log('error', 'item not filed (the system board did not answer); trying again', { box: r.project, id: r.id })
@@ -286,6 +293,13 @@ function apply(r: Req, open: boolean): Applied {
     const s = egressReload(root)
     return { ok: s.status !== 'fail', detail: `${r.value} on the egress list (${egressList(root).length} names): ${s.detail}` }
   }
+  if (r.call === 'egress-open') {
+    // the range again (a day may have passed since the box asked): never past today + 30
+    const why = untilRefusal(r.value); if (why) return { ok: false, detail: why }
+    const c = loadConfig(); setPath(c, `egress.open.${r.project}`, r.value); saveConfig(c)
+    const s = egressReload(root)
+    return { ok: s.status !== 'fail', detail: `egress open for ${r.project} until ${r.value} 00:00 UTC (config egress.open.${r.project}): ${s.detail}` }
+  }
   if (r.call === 'release') {
     const why = buildRefusal(root, r.value); if (why) return { ok: false, detail: why }
     g.release = { build: r.value, id: r.id }; saveGranted(r.project, g)
@@ -307,6 +321,12 @@ function undo(r: Req): Applied {
     g.egress = g.egress.filter((x) => x.id !== r.id); saveGranted(r.project, g)
     const s = root ? egressReload(root) : { status: 'skip', detail: 'not a box now' }
     return { ok: s.status !== 'fail', detail: `${r.value} off the egress list: ${s.detail}` }
+  }
+  if (r.call === 'egress-open') {
+    // off, whichever request set the date: the list again
+    const c = loadConfig(); setPath(c, `egress.open.${r.project}`, false); saveConfig(c)
+    const s = root ? egressReload(root) : { status: 'skip', detail: 'not a box now' }
+    return { ok: s.status !== 'fail', detail: `egress open off for ${r.project} (config egress.open.${r.project} false), the list again: ${s.detail}` }
   }
   if (r.call === 'release') {
     if (g.release?.id === r.id) { g.release = null; saveGranted(r.project, g) }
@@ -382,7 +402,8 @@ export async function serve() {
     const refuse = (why: string, detail: string) => { record(project, c, 'refused'); log('warn', 'call refused', { box: project, call: c, value, why: detail }); return answer('refused', 403, { why }) }
     // already granted: done, nothing new filed
     const had = c === 'route' ? g.routes.find((x) => x.name === value)?.id : c === 'egress' ? g.egress.find((x) => x.site === value)?.id || (egressList(root).includes(value) ? 'base' : undefined)
-      : c === 'release' ? (g.release?.build === value ? g.release.id : undefined) : g.secrets.find((x) => x.name === value)?.id
+      : c === 'release' ? (g.release?.build === value ? g.release.id : undefined) : c === 'egress-open' ? (((m) => (m.on && m.until! >= value ? 'config' : undefined))(egressOpen(project)))
+      : g.secrets.find((x) => x.name === value)?.id
     if (had) { record(project, c, 'repeat'); log('info', 'call: granted already', { box: project, call: c, value, id: had }); return answer('done', 200, { id: had }) }
     if (c === 'route') {
       if (!domain) return refuse('no-domain', 'this machine has no domain')
@@ -393,6 +414,7 @@ export async function serve() {
       const why = buildRefusal(root, value); if (why) return refuse('no-build', why)
     }
     if (c === 'secret') { const why = secretRefusal(project, root, value); if (why) return refuse(why, `${project}.${value} ${why}`) }
+    if (c === 'egress-open') { const why = untilRefusal(value); if (why) return refuse('until', why) }
     // the same request again: its status (a box polls this way); no new item
     const hash = hashOf(project, c, value)
     const prev = d.query('SELECT * FROM request WHERE project = ? AND hash = ? AND (status = \'pending\' OR decided >= ?) ORDER BY created DESC LIMIT 1').get(project, hash, now() - 86400e3) as Req | null
@@ -411,7 +433,7 @@ export async function serve() {
     const r = find(id)!
     const item = await fileItem(d, r, domain)
     log('info', 'call: request filed', { box: project, call: c, value, id, item: item || undefined, hash: hash.slice(0, 12) })
-    issueCode(r, `the box of ${project} asks for ${c} ${value} (${item || 'item pending'}, ${id}). ${c === 'egress' ? 'Review signs off first; then approve' : 'Approve'}: tap Allow, or mm api approve ${id} in your own terminal and type the code`)
+    issueCode(r, `the box of ${project} asks for ${c} ${value} (${item || 'item pending'}, ${id}). ${reviewed(c) ? 'Review signs off first; then approve' : 'Approve'}: tap Allow, or mm api approve ${id} in your own terminal and type the code`)
     return answer('pending', 202, { id, item: item || undefined })
   }
 
@@ -459,7 +481,7 @@ export async function serve() {
       await comment(r.item, `${x.ok ? 'Undone' : 'Undo failed'} (${by}): ${x.detail}`); tellOwner(`${r.project}: ${r.call} ${r.value} ${x.ok ? 'undone' : 'undo FAILED'} (${r.id})`)
       return json({ ok: x.ok, id: r.id, detail: x.detail }, x.ok ? 200 : 500)
     }
-    // approve: exactly this request (its hash), its format again, and for egress review's sign-off first
+    // approve: exactly this request (its hash), its format again, and for egress (and egress-open) review's sign-off first
     if (r.status !== 'pending') return json({ error: `${r.id} is ${r.status}, not pending` }, 409)
     const hash = String(b.hash || '')
     if (hash !== r.hash || hash !== hashOf(r.project, r.call, r.value)) {
@@ -481,7 +503,7 @@ export async function serve() {
     if (!formatOk(r.call, r.value)) { decide('failed', 'the value does not pass its format now'); return json({ error: 'the value does not pass its format: nothing applied' }, 409) }
     const open = b.open === true
     if (open && r.call !== 'route') return json({ error: 'no login is a choice for a route only' }, 400)
-    if (r.call === 'egress' && !(await labels(r.item)).includes('signed-off')) {
+    if (reviewed(r.call) && !(await labels(r.item)).includes('signed-off')) {
       // the code stays valid: the owner taps Allow again after review's sign-off
       log('warn', 'approval refused: review has not signed off', { box: r.project, id: r.id, item: r.item, by })
       return json({ error: `review has not signed off on ${r.item || r.id} yet (label signed-off): nothing applied; the code still works` }, 409)
@@ -521,6 +543,16 @@ export async function serve() {
       } catch (e) { log('error', 'socket failed', { box: p, error: (e as Error).message }) }
     }
     for (const r of d.query('SELECT * FROM request WHERE status = \'pending\' AND item = \'\' AND created < ? LIMIT 10').all(now() - 30e3) as Req[]) await fileItem(d, r, domainOf())
+    // egress open past its end (sy-cpyo S2): the box's allow file still the any-host pattern, the mode off now: the list
+    // again, the proxy restarted, and the owner told once (the file is the list after it)
+    const cfg = loadConfig()
+    for (const p of want) {
+      if (!allowOpen(p) || egressOpen(p, cfg).on) continue
+      const root = boxRoot(p); if (!root) continue
+      const s = egressReload(root), m = egressOpen(p, cfg)
+      log(s.status === 'fail' ? 'error' : 'info', 'egress open ended: the list again', { box: p, until: m.until, detail: s.detail })
+      tellOwner(`${p}: egress open ${m.ended ? `ended (${m.until})` : 'is off'}; the box's egress list again: ${s.detail}`)
+    }
     d.query('DELETE FROM calls WHERE at < ?').run(now() - 30 * 86400e3)
   }
   let busy = false

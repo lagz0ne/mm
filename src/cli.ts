@@ -4,6 +4,7 @@ import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { Command, Option } from 'commander'
 import { getPath, loadConfig, saveConfig, setPath, unsetPath } from './config'
+import { egressOpen, egressShown, OPEN_MAX_DAYS, untilRefusal } from './egressopen'
 import { doctor, throwawayOnly } from './doctor'
 import { DIRS, HOME, run, tilde } from './env'
 import { expand as expandHome, fill, machineInputs, needs, unmet } from './inputs'
@@ -88,7 +89,22 @@ config.command('get [path]').action((p?: string) => {
   if (v === undefined) { spanNote.answer = { code: 1, outcome: 'not set' }; process.exit(1) }
   console.log(typeof v === 'object' ? Bun.YAML.stringify(v, null, 2) : String(v))
 })
-config.command('set <path> <value>').action((p: string, v: string) => { const c = loadConfig(); setPath(c, p, v); saveConfig(c) })
+config.command('set <path> <value>').action((p: string, v: string) => {
+  // egress mode open (sy-cpyo, src/egressopen.ts): egress.open.<project> takes an end date (at most 30 days) or false.
+  // On is the owner's: refused in an agent's shell (the guard denies it to a lead too); off is anyone's.
+  if (/^egress\.open(?:\.|$)/.test(p)) {
+    const m = /^egress\.open\.([a-z][a-z0-9-]{0,62})$/.exec(p)
+    if (!m) { console.error(`mm config set: egress.open takes one project: egress.open.<project> <date|false>`); process.exit(1) }
+    if (v !== 'false') {
+      const why = untilRefusal(v); if (why) { console.error(`mm config set ${p}: ${why}; give an end date (YYYY-MM-DD, at most ${OPEN_MAX_DAYS} days ahead) or false`); process.exit(1) }
+      if (process.env.CLAUDECODE || process.env.PASEO_AGENT_ID) { console.error('mm: egress open is the owner\'s to turn on: run it yourself, in your own terminal (or approve the box\'s egress-open request); false (off) is anyone\'s'); process.exit(1) }
+    }
+    const c = loadConfig(); setPath(c, p, v === 'false' ? false : v); saveConfig(c)
+    console.error(`mm: ${p} ${v === 'false' ? 'off' : `open until ${v} 00:00 UTC`}: the box's proxy reads it at its next mm up (or mm.api's next change)`)
+    return
+  }
+  const c = loadConfig(); setPath(c, p, v); saveConfig(c)
+})
 config.command('unset <path>').action((p: string) => { const c = loadConfig(); unsetPath(c, p); saveConfig(c) })
 
 const projectRoots = () => listProjects().map((p) => ({ project: p.project, root: expandHome(p.root) }))
@@ -164,7 +180,11 @@ program.command('names').description("each project's public hosts under both nam
     if (p.nested.length) console.log(`  names two labels deep: DNS and the certificate must cover ${p.nested.map((x) => `*.${x}.${p.domain}`).join(', ')}`)
     if (p.rows.some((r) => r.note.includes(`${p.switch_to}:`))) console.log(`  refused under ${p.switch_to}: see the notes above`)
   })
-program.command('ls').description('list projects').action(() => { const o = fmt(); print(listProjects(), o, 'project') })
+program.command('ls').description('list projects').action(() => {
+  const o = fmt(), rows = listProjects()
+  // the table: an egress column for every row while any box is listed (sy-cpyo S1: "open until <date>" stays visible)
+  print(o.format === 'table' && rows.some((r) => r.box) ? rows.map(({ egress_until: _u, egress_ended: _e, ...r }) => ({ ...r, egress: r.egress ?? '' })) : rows, o, 'project')
+})
 program.command('inspect <project>').description('a project: answers, services, URLs').action((ref: string) => {
   const o = fmt(), root = findRoot(ref)
   const { answers, services } = resolve(root), ps = answers.box ? boxMod.processes(root) : processes(answers.project)

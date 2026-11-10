@@ -235,6 +235,7 @@ rule src/assets.d.ts              @build
 rule src/ai.ts                    test/ai.sh test/person-run.sh test/box-person-runs.sh
 rule src/api.ts                   test/api.sh test/span-answers.sh test/names.sh test/box-person-runs.sh
 rule src/apistate.ts              test/api.sh test/auth.sh test/box-slot.sh test/board-approve.sh test/mm-approve.sh
+rule src/egressopen.ts            test/box-slot.sh test/api.sh test/box-egress.sh test/doctor-docker.sh
 rule src/auth.ts                  test/auth.sh test/auth-start.sh test/board-approve.sh test/board-owner-card.mjs test/board-phone.mjs test/waiting-phone.mjs test/names.sh test/api.sh test/doop-gateway.sh test/auth-e2e.sh test/box-gateway.sh test/ba-spike.ts
 rule src/box.ts                   test/box-*.sh test/boxreg.sh test/mm-docker.sh test/portless-claim.sh test/mm-docker-container.sh test/doop-container.sh test/box.sh test/clean-box.sh
 rule src/boxreg.ts                test/boxreg.sh test/api.sh test/ai.sh
