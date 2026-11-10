@@ -34,9 +34,17 @@ ok('when(): "1 hours ago", "2 days ago", "an hour ago", "just now"', W('1 hours 
 ok('when(): nothing, or words it can\'t read, give null', W(null) === null && W('') === null && W('sometime') === null)
 const isDate = (x) => x.every((y) => y.created === null || !Number.isNaN(Date.parse(y.created)))
 ok('created is a date (or null) both ways', isDate(a) && isDate(b), `sdk ${a[0]?.created}, cli ${b[0]?.created}`)
-const order = (x) => [...x].filter((y) => y.created).sort((p, q) => Date.parse(q.created) - Date.parse(p.created))
-const far = (x) => order(x).filter((y, k, s) => k === 0 || Date.parse(s[k - 1].created) - Date.parse(y.created) > 2 * 864e5).map((y) => y.id).join(',')
-ok('agents days apart are in the same order both ways (newest first)', far(a) === far(b))
+// The CLI's date is its words floored to their unit ("3 days ago" for 3.99 days), so it can be up to one unit newer
+// than the SDK's exact one (sy-9uxr: a chain of "> 2 days from the previous" split differently both ways). The order
+// must agree for every pair of agents whose real (SDK) gap is more than both CLI dates' units: those it can't flip.
+const unit = (iso) => { const age = Date.now() - Date.parse(iso); return 5e3 + (age < 36e5 ? 6e4 : age < 864e5 ? 36e5 : age < 6048e5 ? 864e5 : age < 2592e6 ? 6048e5 : age < 31536e6 ? 2592e6 : 31536e6) }
+const cliOf = new Map(b.map((y) => [y.id, y.created]))
+const both = a.filter((y) => y.created && cliOf.get(y.id))
+const pairs = both.flatMap((p, i) => both.slice(i + 1).map((q) => [p, q]))
+  .filter(([p, q]) => Math.abs(Date.parse(p.created) - Date.parse(q.created)) > unit(cliOf.get(p.id)) + unit(cliOf.get(q.id)))
+const flipped = pairs.filter(([p, q]) => Math.sign(Date.parse(p.created) - Date.parse(q.created)) !== Math.sign(Date.parse(cliOf.get(p.id)) - Date.parse(cliOf.get(q.id))))
+ok('agents far apart are in the same order both ways (newest first)', flipped.length === 0,
+  `${pairs.length} pairs far apart${flipped.length ? `; flipped: ${flipped.map(([p, q]) => `${p.shortId}/${q.shortId}`).join(' ')}` : ''}`)
 // sy-aaq3: a daemon not up yet at the first call (a reboot) is tried again after the backoff, not left to the CLI for good.
 // The "daemon" here is a forwarder to the real one (at its own address: REAL) on a free port, opened only after the first
 // try failed.
