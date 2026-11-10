@@ -14,7 +14,10 @@
 // failedLogs: the last lines of each failed suite's log, one file. The Supervisor reads last.json (key nightly:gates):
 // a failed night opens or updates ONE P1 item for platform, with both files as its artifacts; a passing night closes it.
 // <dir>: $MM_GATES_NIGHTLY, else ~/.cache/mm-gates/nightly; state.json there: { last (ms), pid, start }. The last 14
-// nights' files are kept. Env (tests): NIGHTLY_NOW (ms), MM_BIN.
+// nights' files are kept. test/gates runs with bun on its PATH (under the process manager it may not be: the first of
+// $HOME/.bun/bin, /usr/local/bin that holds one is added; none: last.json says so, nothing runs), umask 022 (a suite's
+// files must be readable by a container's uid), and GATES_DOOP_IMAGE = mm's doop.image when set (the live Doop image,
+// for the doop-* suites). Env (tests): NIGHTLY_NOW (ms), MM_BIN, NIGHTLY_BUN_DIRS (the fallback folders, ':').
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -69,9 +72,26 @@ function run() {
   const date = new Date(Number(E.NIGHTLY_NOW) || Date.now()).toISOString().slice(0, 10)
   const sha = spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', 'main^{commit}'], { encoding: 'utf8' }).stdout.trim()
   if (!sha) { writeJson(LAST, { date: new Date().toISOString(), code: 2, failed: [], error: `${repo} has no main` }); say(`${repo} has no main`); return 2 }
+  const env = { ...E }
+  // bun: test/gates prepares with it (bun install, the mm build); not on PATH, the first fallback folder that has it
+  const hasBun = (d) => { try { fs.accessSync(path.join(d, 'bun'), fs.constants.X_OK); return fs.statSync(path.join(d, 'bun')).isFile() } catch { return false } }
+  const onPath = (env.PATH || '').split(':').filter(Boolean)
+  if (!onPath.some(hasBun)) {
+    const dirs = (E.NIGHTLY_BUN_DIRS ?? `${path.join(HOME, '.bun', 'bin')}:/usr/local/bin`).split(':').filter(Boolean)
+    const d = dirs.find(hasBun)
+    if (!d) {
+      const error = `no bun: not on PATH, nor in ${dirs.join(', ')} (test/gates needs it to prepare)`
+      writeJson(LAST, { head: sha, sha7: sha.slice(0, 7), date: new Date().toISOString(), code: 2, failed: [], result: null, failedLogs: null, error })
+      say(error); return 2
+    }
+    env.PATH = [d, ...onPath].join(':'); say(`bun: ${d}/bun (added to PATH)`)
+  }
+  const img = conf('doop.image')
+  if (img) { env.GATES_DOOP_IMAGE = img; say(`GATES_DOOP_IMAGE: ${img} (mm config doop.image)`) }
+  process.umask(0o022) // the child's files: readable by a container's uid (umask 077 broke mm-docker-container)
   const out = path.join(DIR, `nightly-${date}-${sha.slice(0, 7)}.txt`)
   say(`test/gates --all main (${sha.slice(0, 7)}) -> ${out}`)
-  const r = spawnSync('sh', [path.join(repo, 'test', 'gates'), '--all', 'main', '--out', out], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 })
+  const r = spawnSync('sh', [path.join(repo, 'test', 'gates'), '--all', 'main', '--out', out], { cwd: repo, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 })
   process.stdout.write(r.stdout || ''); process.stderr.write(r.stderr || '')
   const code = r.status ?? 1
   const res = fs.existsSync(out) ? fs.readFileSync(out, 'utf8') : ''

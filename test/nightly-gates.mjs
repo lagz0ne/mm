@@ -3,7 +3,9 @@
 // a stub, a fake clock (NIGHTLY_NOW). gates.repo unset: a log line, nothing runs; gates.nightly off or not HH:MM; the
 // first pass waits for the next slot; before the slot nothing; after it one detached run (the pass exits at once) and
 // never a second the same night, nor one beside a run still going; --run: test/gates --all main in the repo, last.json
-// with the failed suites and their logs' last lines; a passing run: code 0, no failed file; the last 14 nights kept.
+// with the failed suites and their logs' last lines; a passing run: code 0, no failed file; the last 14 nights kept;
+// test/gates gets bun on PATH (not there: the first fallback folder that has it; none: last.json says so, no run),
+// umask 022 (from a parent's 077) and GATES_DOOP_IMAGE = mm's doop.image (only when set) (sy-czyo).
 // The Supervisor's side (one item, closed by a passing night): test/supervisor.mjs. Clean PATH; temp folder only.
 //   node test/nightly-gates.mjs        exit 0 = every check passed
 import { spawnSync } from 'node:child_process'
@@ -18,7 +20,14 @@ let pass = 0, fail = 0
 const ok = (d, c, more = '') => { c ? pass++ : fail++; console.log(`  ${c ? '\x1b[32mok\x1b[0m  ' : '\x1b[31mFAIL\x1b[0m'} ${d}${c || !more ? '' : `\n        ${String(more).slice(0, 1500)}`}`) }
 const step = (s) => console.log(`\n\x1b[1m== ${s}\x1b[0m`)
 const NODE_DIR = path.dirname(spawnSync('sh', ['-c', 'command -v node'], { encoding: 'utf8' }).stdout.trim())
-const CLEAN_PATH = [NODE_DIR, '/usr/local/bin', '/usr/bin', '/bin'].join(':')
+const hasBun = (d) => { try { fs.accessSync(path.join(d, 'bun'), fs.constants.X_OK); return true } catch { return false } }
+// no folder of the job's PATH has a bun (node alone, linked, if its folder has one)
+let CLEAN_PATH = [NODE_DIR, '/usr/local/bin', '/usr/bin', '/bin'].filter((d) => !hasBun(d))
+if (!CLEAN_PATH.includes(NODE_DIR)) { const nb = path.join(T, 'nodebin'); fs.mkdirSync(nb); fs.symlinkSync(process.execPath, path.join(nb, 'node')); CLEAN_PATH.unshift(nb) }
+CLEAN_PATH = CLEAN_PATH.join(':')
+// fake buns: one in a fallback folder of the tests (BUNS), and later one in $HOME/.bun/bin
+const BUNS = path.join(T, 'buns'), NOBUN = path.join(T, 'nobun')
+fs.mkdirSync(BUNS); fs.mkdirSync(NOBUN); fs.writeFileSync(path.join(BUNS, 'bun'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
 
 // the board folder: <sys>/bin/nightly-gates + bin/lib
 const SYS = path.join(T, 'sys'), HOME = path.join(T, 'home'), DIR = path.join(T, 'nightly')
@@ -35,6 +44,7 @@ const R = path.join(T, 'repo'), CALLS = path.join(T, 'calls')
 fs.mkdirSync(path.join(R, 'test'), { recursive: true })
 fs.writeFileSync(path.join(R, 'test/gates'), `#!/bin/sh
 echo "$*" >>"${CALLS}"
+{ echo "PATH=$PATH"; echo "umask=$(umask)"; echo "doop=\${GATES_DOOP_IMAGE-unset}"; } >"${T}/gates.env"
 [ -f "${T}/gates.sleep" ] && sleep "$(cat "${T}/gates.sleep")"
 out=$4; logs=\${out%.txt}.logs; mkdir -p "$logs"
 for i in $(seq 1 100); do echo "box line $i"; done >"$logs/box.sh.log"
@@ -51,8 +61,9 @@ g('init', '-q', '-b', 'main'); g('add', '-A'); g('commit', '-qm', 'init')
 const SHA7 = g('rev-parse', '--short=7', 'main').stdout.trim()
 
 const at = (h, m = 0, day = 9) => new Date(2026, 10, day, h, m).getTime() // local time
-const job = (now, args = []) => spawnSync('node', [path.join(SYS, 'bin/nightly-gates'), ...args], { encoding: 'utf8', cwd: SYS,
-  env: { PATH: CLEAN_PATH, HOME, MM_PROJECT: 'sysqa', MM_OBS_TRACES: '', MM_OBS_METRICS: '', MM_BIN: path.join(T, 'mm'), MM_GATES_NIGHTLY: DIR, NIGHTLY_NOW: String(now), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } })
+const job = (now, args = [], more = { NIGHTLY_BUN_DIRS: BUNS }) => spawnSync('node', [path.join(SYS, 'bin/nightly-gates'), ...args], { encoding: 'utf8', cwd: SYS,
+  env: { PATH: CLEAN_PATH, HOME, MM_PROJECT: 'sysqa', MM_OBS_TRACES: '', MM_OBS_METRICS: '', MM_BIN: path.join(T, 'mm'), MM_GATES_NIGHTLY: DIR, NIGHTLY_NOW: String(now), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', ...more } })
+const genv = () => { try { return Object.fromEntries(fs.readFileSync(path.join(T, 'gates.env'), 'utf8').trim().split('\n').map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)])) } catch { return {} } }
 const calls = () => (fs.existsSync(CALLS) ? fs.readFileSync(CALLS, 'utf8').trim().split('\n').filter(Boolean) : [])
 const last = () => { try { return JSON.parse(fs.readFileSync(path.join(DIR, 'last.json'), 'utf8')) } catch { return null } }
 const wait = async (fn, ms = 15000) => { const t = Date.now(); while (!fn() && Date.now() - t < ms) await new Promise((r) => setTimeout(r, 100)); return fn() }
@@ -111,6 +122,28 @@ r = job(at(12, 0, 10), ['--run'])
 ok('--run: runs at once, in the foreground (exit 0)', r.status === 0 && /passed/.test(r.stdout), r.stdout + r.stderr)
 const nights = [...new Set(fs.readdirSync(DIR).map((f) => /^nightly-(\d{4}-\d\d-\d\d)/.exec(f)?.[1]).filter(Boolean))]
 ok('only the last 14 nights are kept', nights.length === 14 && !nights.includes('2026-10-01'), nights)
+
+step('what test/gates runs with: bun on PATH, umask 022, the live Doop image (sy-czyo)')
+fs.rmSync(path.join(T, 'gates.env'), { force: true })
+r = job(at(12, 0, 10), ['--run'])
+let ge = genv()
+ok('no bun on PATH: the fallback folder that has one goes first, and the log names it', ge.PATH?.split(':')[0] === BUNS && ge.PATH.endsWith(CLEAN_PATH) && r.stdout.includes(`bun: ${BUNS}/bun`), r.stdout + JSON.stringify(ge))
+ok('doop.image unset: no GATES_DOOP_IMAGE', ge.doop === 'unset', ge)
+fs.mkdirSync(path.join(HOME, '.bun', 'bin'), { recursive: true }); fs.copyFileSync(path.join(BUNS, 'bun'), path.join(HOME, '.bun', 'bin', 'bun'))
+set('doop.image', 'sha256:feed')
+const um = process.umask(0o077)
+r = job(at(12, 0, 10), ['--run'], {})
+process.umask(um)
+ge = genv()
+ok('the default fallbacks: $HOME/.bun/bin first', r.status === 0 && ge.PATH?.split(':')[0] === path.join(HOME, '.bun', 'bin'), r.stdout + r.stderr + JSON.stringify(ge))
+ok('a parent with umask 077: test/gates runs with 022', ge.umask === '0022', ge)
+ok('GATES_DOOP_IMAGE: mm config doop.image', ge.doop === 'sha256:feed' && /GATES_DOOP_IMAGE: sha256:feed/.test(r.stdout), ge)
+set('doop.image')
+r = job(at(12, 0, 10), ['--run'], { PATH: `${BUNS}:${CLEAN_PATH}`, NIGHTLY_BUN_DIRS: NOBUN })
+ok('bun already on PATH: PATH as it was, nothing added', genv().PATH === `${BUNS}:${CLEAN_PATH}` && !/added to PATH/.test(r.stdout), r.stdout + JSON.stringify(genv()))
+fs.rmSync(path.join(T, 'gates.env')); fs.rmSync(path.join(DIR, 'last.json')); const n0 = calls().length
+r = job(at(12, 0, 10), ['--run'], { NIGHTLY_BUN_DIRS: NOBUN })
+ok('no bun anywhere: exit 2, last.json says so, test/gates does not run', r.status === 2 && /^no bun: not on PATH, nor in /.test(last()?.error) && last().code === 2 && last().failed.length === 0 && calls().length === n0 && !fs.existsSync(path.join(T, 'gates.env')), r.stdout + JSON.stringify(last()))
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
