@@ -3,7 +3,9 @@
 #   deploy [rev]        deploy rev (default: main) into release/, restart the app, health-check; on failure roll back
 #   deploy rollback     go back to the previous release
 #   deploy status       what runs now, and the recent releases
-# The app runs from release/ (a detached worktree of code/), so main can move without touching production.
+# The app runs from release/ (a detached worktree of code/), so main can move without touching production. An empty
+# release/ (no .git) is made a worktree; a non-empty one that is not a worktree is refused (git -C would reach the
+# project root's repo). After each land, bin/land runs `deploy main` by itself (deploy.on_land; see bin/land).
 # The app slot is the `app` service in services.json; where it runs and how to restart it come from the process
 # manager (.run/endpoints.json, via bin/svc).
 # A release with bun.lock (or bun.lockb) is built with Bun: `bun install --frozen-lockfile` (dev deps too: the build
@@ -44,7 +46,16 @@ switch() { git -C "$REL" checkout -q --detach "$1" || return 1
 
 [ $# -gt 0 ] || set -- main
 exec 9>"$P/.deploy.lock"; flock -w 120 9 || { echo "deploy: another deploy is running" >&2; exit 1; }
-[ -d "$REL" ] || $G worktree add -q --detach "$REL" main
+# release/ is the release worktree only when it is a worktree of its own (release/.git, its top level release/ itself):
+# git -C on a plain folder falls through to the repo above it (the project root's). An empty folder is replaced by a
+# worktree; anything else is refused, untouched.
+isrel() { [ -e "$REL/.git" ] && [ "$(git -C "$REL" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$REL" && pwd -P)" ]; }
+if ! isrel; then
+  if [ -d "$REL" ] && [ -n "$(ls -A "$REL" 2>/dev/null)" ]; then
+    echo "deploy: release/ is not a worktree of code/ (no release/.git) and is not empty: move it away, then deploy again" >&2; exit 1; fi
+  { [ ! -e "$REL" ] && [ ! -L "$REL" ]; } || rmdir "$REL" || { echo "deploy: release/ is not a worktree and could not be removed" >&2; exit 1; }
+  $G worktree prune; $G worktree add -q --detach "$REL" main || { echo "deploy: could not make release/ a worktree of code/" >&2; exit 1; }
+fi
 
 case "${1:-main}" in
   status) echo "live: $(git -C "$REL" log -1 --format='%h %s')  ($("$P/bin/svc" url app))"; tail -5 "$LOG" 2>/dev/null; exit 0 ;;

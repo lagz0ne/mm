@@ -53,6 +53,7 @@ suite test/box-trust.sh           hermetic
 suite test/brain-deny.sh          hermetic
 suite test/denies.sh              hermetic
 suite test/deploy.sh              hermetic
+suite test/land.sh                hermetic
 suite test/doop-build.sh          hermetic
 suite test/dolt-run.sh            hermetic
 suite test/engine-drift.sh        hermetic
@@ -338,7 +339,7 @@ rule template/bin/doop-run        test/box-doop.sh test/mm-docker.sh test/auth.s
 rule template/bin/guard           test/guard.sh test/sysworkers.sh
 rule template/bin/health          test/engine-drift.sh test/template-base.sh test/task.mjs test/health-incident.sh
 rule template/bin/init            test/init-retry.sh test/bd-autostart.sh test/bd-home.sh test/clean-box.sh
-rule template/bin/land            test/trace-refused.sh test/box.sh
+rule template/bin/land            test/land.sh test/trace-refused.sh test/box.sh
 rule template/bin/lead            test/lead.sh test/worker-cleanup.sh test/lead-workspace.sh test/memory-links.sh test/paseo-refuse.mjs test/person-run.sh test/box-person-runs.sh test/wake-start.mjs test/wake-twoleads.mjs test/wake-ondemand.mjs test/wake-stale-lead.mjs test/sysworkers.sh
 rule template/bin/svc             test/upstream.mjs test/sockets.sh test/engine-drift.sh
 rule template/bin/trace           test/trace-refused.sh test/bd-actor.sh test/owner-card-bd.sh test/span-answers.sh test/bd-home.sh test/task.mjs
@@ -351,7 +352,7 @@ rule template/bin/persona         test/raci.mjs test/person-run.sh
 rule template/bin/skill           test/raci.mjs test/lead.sh
 rule template/bin/smoke-beads     test/bd-autostart.sh
 rule template/bin/purge           test/engine-drift.sh test/template-base.sh
-rule template/bin/deploy          test/trace-refused.sh test/deploy.sh
+rule template/bin/deploy          test/trace-refused.sh test/deploy.sh test/land.sh
 rule template/bin/app-run         test/deploy.sh
 rule template/ops/land-check      test/trace-refused.sh
 rule template/ops/githooks/**     test/artifact.sh test/sync.sh test/template-base.sh

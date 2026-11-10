@@ -84,6 +84,18 @@ echo "== deploy rollback: back to the previous ok release (c-bun), rebuilt"
 echo /api/health >"$T/ok-path"; dep rollback
 check "it deploys c-bun again, built apart and in release/" sh -c "[ $RC = 0 ] && [ \"\$(git -C '$P/release' log -1 --format=%s)\" = c-bun ] && [ \$(grep -c ' run build\$' '$T/bun.log') = 2 ]"
 
+echo "== release/ is a worktree or nothing (sy-gxws): the project root is a repo, so git -C on a plain folder reaches it"
+git -C "$C" worktree remove --force "$P/release"; git init -q "$P"; git -C "$P" commit -q --allow-empty -m root-repo
+mkdir "$P/release"; echo / >"$T/ok-path"; dep "$(rev c-npm)"
+check "an empty release/ (no .git): made a worktree of code/, and it deploys (exit 0)" sh -c "[ $RC = 0 ] && [ -e '$P/release/.git' ] && [ \"\$(git -C '$P/release' rev-parse --show-toplevel)\" = '$P/release' ] && [ \"\$(git -C '$P/release' log -1 --format=%s)\" = c-npm ]"
+check "...the root's repo untouched (still its own commit, nothing checked out there)" sh -c "[ \"\$(git -C '$P' log -1 --format=%s)\" = root-repo ] && [ ! -e '$P/version' ]"
+git -C "$C" worktree remove --force "$P/release"; mkdir "$P/release"; echo keep >"$P/release/mine.txt"
+dep "$(rev c-npm)"
+check "a non-empty release/ that is not a worktree: refused (exit 1), says so" sh -c "[ $RC = 1 ] && grep -q 'release/ is not a worktree of code/' '$T/err'"
+check "...touched nothing: its file stays, no .git, no restart, no install, the root's repo as it was" sh -c "[ \"\$(cat '$P/release/mine.txt')\" = keep ] && [ ! -e '$P/release/.git' ] && [ ! -s '$T/svc.log' ] && [ ! -s '$T/npm.log' ] && [ \"\$(git -C '$P' log -1 --format=%s)\" = root-repo ] && [ -z \"\$(git -C '$P' status --porcelain --untracked-files=no)\" ]"
+dep status
+check "...deploy status is refused too (no git log of the root's repo as 'live')" sh -c "[ $RC = 1 ] && ! echo '$OUT' | grep -q root-repo"
+
 echo "== the template's app slot"
 check "services.yaml: the app runs bin/app-run, DATA_DIR is data/app" sh -c "grep -q 'command: \"HOST=\$\${MM_BIND:-\$\$HOST} exec {root}/bin/app-run\"' '$SRC/template/services.yaml' && grep -q 'DATA_DIR: \"{root}/data/app\"' '$SRC/template/services.yaml'"
 
