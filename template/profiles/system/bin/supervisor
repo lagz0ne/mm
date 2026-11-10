@@ -81,8 +81,9 @@
 // from the journal record that added it, with an approver as its actor. A migration is applied when the brain's state
 // has its name (BRAIN_STATE, else $XDG_STATE_HOME/brain, else ~/.local/state/brain: <state>/migrations/<name>).
 // An mm.api request (sy-q2sd): mm.api's own record (<mm>/api/api.db, read-only) of a request it applied on the owner's
-// decision (the one-time code) is the go for that request's item; the item's labels alone are not. mm's record of an
-// approve (`mm api` in mm.log, "request applied" in api.log) is a live step of that request's item only.
+// decision (the one-time code) clears that request's own live step on its item (its approve line in mm.log, its
+// "request applied" in api.log) and nothing else there: a migration or a commit on main naming the item still needs an
+// approver's approved. The item's labels alone count for nothing. An mm.api step is a live step of its request's item only.
 // With /etc/mm-approve.conf `verifier = ledger` (sy-1jmi, docs/approvals.md) none of that counts: only lines mm-approve
 // signed in its ledger, one of the item naming each applied migration's subject; an `approved` label with no line of
 // its item is a finding (t2-unapproved:<item>), and a ledger of the wrong owner or mode one more (t2-unapproved:ledger).
@@ -695,8 +696,8 @@ const liveSteps = once(async () => {
 
 // mm.api's own record of its requests (sy-q2sd): <mm>/api/api.db, which mm.api writes when the owner approves a request
 // with its one-time code (src/api.ts: the bridge's Allow, or the owner's terminal). Read-only, never from the board. A
-// request mm.api applied (done, or done and undone since) on the owner's decision is the owner's go for its own item:
-// it counts there as an approver's approved does (not with the ledger on: then only the ledger counts). Its hash is
+// request mm.api applied (done, or done and undone since) on the owner's decision clears that request's own step on its
+// item, nothing else on it (not with the ledger on: then only the ledger counts). Its hash is
 // checked again (sha256 of [project, call, value], as mm.api's). The store has mm's shape or it counts for nothing: a
 // real folder of this user's, 0700 (no link on its way), and api.db a file of this user's, 0600.
 // { ok: { item: [{ id, by, at }] }, itemOf: { request id: its item ('' not filed yet) }, items: Set, why }
@@ -753,8 +754,17 @@ function headless(i, s) {
 async function t2() {
   const [all, sum, main, steps, api] = await Promise.all([issues(), journal(), mainCommits(), liveSteps(), apiRecord()])
   // an mm.api step is its request's item's only (sy-q2sd); a step whose request the record doesn't know: every item's
-  const stepItem = (s) => s.req === undefined ? undefined : s.req in api.itemOf ? api.itemOf[s.req] : api.items.has(s.req) ? s.req : undefined
+  const stepItem = (s) => s.req === undefined ? undefined : Object.hasOwn(api.itemOf, s.req) ? api.itemOf[s.req] : api.items.has(s.req) ? s.req : undefined
   const stepOf = (s, id) => { const it = stepItem(s); return it === undefined || it === id }
+  // the owner's approval in mm.api's record clears its own request's step, nothing else on the item (no migration, no
+  // commit, no other step): the step of a request it applied on the owner's decision, or of the item's id when every
+  // request of the item in the record is one (not with the ledger on)
+  const apiOk = (s, id) => {
+    const ok = led ? [] : (api.ok[id] || []).map((r) => r.id)
+    if (!ok.length || s.req === undefined || stepItem(s) !== id) return false
+    if (s.req !== id) return ok.includes(s.req)
+    return Object.entries(api.itemOf).every(([r, it]) => it !== id || ok.includes(r))
+  }
   const mig = migrations(), problems = [], waiting = [], led = LEDGER ? readLedger(APPROVE) : null
   if (led && !led.ok) problems.push({ key: 't2-unapproved:ledger', priority: 1, title: 'The approval ledger can\'t be trusted: no t2 approval counts', note: led.problems.join('; '),
     body: `The Supervisor reads approvals from mm-approve's signed ledger (${APPROVE.path}: verifier = ledger), and it refuses it:\n\n${fence(led.problems.join('\n'))}\n\n` +
@@ -768,14 +778,13 @@ async function t2() {
     // as t2: the item is t2 for this check), and only with an approved-head:* an approver added
     const stale = !led && ap?.ok ? headless(i, sum[i.id]) : null
     if (!led && ap?.ok && !stale) continue
-    if (!led && api.ok[i.id]?.length) continue // the owner approved its mm.api request: mm.api's own record (sy-q2sd)
     const applied = (mig[i.id] || []).filter((m) => i.status !== 'closed' || m.at >= state.t2since)
     const going = labelled && i.status === 'in_progress', since = Math.max(ms(i.started_at), sum[i.id]?.ip || 0)
     const unsigned = led ? applied.filter((m) => !led.has(i.id, m.subject)) : applied
     if (led && !stray && !unsigned.length && (!going || led.has(i.id))) continue // signed for all of it
-    const landed = going ? main[i.id] || [] : [], ran = going && since ? steps.filter((s) => s.at >= since && stepOf(s, i.id)) : []
+    const landed = going ? main[i.id] || [] : [], ran = going && since ? steps.filter((s) => s.at >= since && stepOf(s, i.id) && !apiOk(s, i.id)) : []
     if (!unsigned.length && !landed.length && !ran.length && !stray) {
-      if (going && since && NOW - since > WAIT) waiting.push({ i, since })
+      if (going && since && NOW - since > WAIT && !(!led && api.ok[i.id]?.length)) waiting.push({ i, since }) // mm.api's go: not waiting
       continue
     }
     const off = !labelled && sum[i.id]?.t2off
@@ -790,7 +799,7 @@ async function t2() {
         (tagged ? `; its approved label${ap?.by ? ` (added by ${ap.by})` : ''} does not count without one` : '')
       : stale ? `approved from ${ap.by} at ${at(ap.at)} that does not count: ${stale}`
       : ap ? `approved was added by ${ap.by || 'an unknown actor'} at ${at(ap.at)}, who is not an approver` : 'no approved from an approver'
-    const apiNote = !led && (i.labels || []).includes('mm-api') ? `; mm.api's record ${api.why ? `counts for nothing (${api.why})` : 'has no owner approval of a request for it'}` : ''
+    const apiNote = !led && (i.labels || []).includes('mm-api') ? `; mm.api's record ${api.why ? `counts for nothing (${api.why})` : api.ok[i.id]?.length ? `has the owner's approval of ${api.ok[i.id].map((r) => r.id).join(', ')}, which clears that request's own step only` : 'has no owner approval of a request for it'}` : ''
     problems.push({ key: `t2-unapproved:${i.id}`, priority: 1, title: `Unapproved t2: ${i.id} (${i.assignee || 'nobody'}) ${why} without the owner's ${led ? 'signed ' : ''}approval${off ? `; ${off.by || 'someone'} removed its t2 label` : ''}`,
       note: `${i.status}; ${what.join('; ')}; ${label}${apiNote}`,
       body: `**${i.id}** "${i.title}" is ${labelled ? 'labelled t2' : mig[i.id] ? 'not labelled t2, but a tier-2 migration names it' : 'not labelled t2'}, and ${what.join(', and ')}. ` +

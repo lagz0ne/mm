@@ -484,13 +484,29 @@ clock = T0 + 453 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('the owner\'s approval in mm.api\'s record: no finding on sy-a1; its steps are not sy-a4\'s (an unrelated t2 item in progress)', openKeys() === DIRTY)
 go('sy-a4', ['t2', 'approved'], 'bridge')
+// review VERDICT #5: the record clears its own request's step only, nothing else on the item
+apiItem('sy-b1'); apiReq('r-b1', 'sy-b1'); mmLine('mm api approve', 'r-b1', clock); migration('1800000091-api', 'egress rule (sy-b1)', true)
+apiItem('sy-b2'); apiReq('r-b2', 'sy-b2'); mmLine('mm api approve', 'r-b2', clock)
+fs.mkdirSync(path.join(MMR, 'src'), { recursive: true }); fs.writeFileSync(path.join(MMR, 'src', 'b2.ts'), 'x\n')
+git(MMR, ['add', 'src/b2.ts']); git(MMR, ['commit', '-q', '-m', 'the api change', '-m', 'sy-b2'])
+clock = T0 + 453.5 * MIN
+ok('exit 0', (await supervise()) === 0)
+ok('an approved record but no go: a migration naming sy-b1, a commit on main naming sy-b2: a finding each', openKeys() === `${DIRTY} ${T2('sy-b1')} ${T2('sy-b2')}` &&
+  /migration 1800000091-api/.test(openOf(T2('sy-b1'))?.description || '') && !/live step/.test(openOf(T2('sy-b1'))?.note || openOf(T2('sy-b1'))?.description || '') &&
+  /commit [0-9a-f]+ "the api change"/.test(openOf(T2('sy-b2'))?.description || '') && /approval of r-b2, which clears that request's own step only/.test(openOf(T2('sy-b2'))?.description || ''))
+fs.rmSync(path.join(DONE, '1800000091-api.sh')) // rolled back
+for (const id of ['sy-b1', 'sy-b2']) { update(id, { labels: ['t2', 'mm-api'] }, 'ops'); go(id, ['t2', 'mm-api', 'approved'], 'bridge') }
 apiItem('sy-a2'); mmLine('mm api approve', 'r-a2', clock) // the same labels, and no record of it
 clock = T0 + 454 * MIN
 ok('exit 0', (await supervise()) === 0)
-ok('the same labels with no record: a finding on sy-a2, which says the record has no approval of it', openKeys() === `${DIRTY} ${T2('sy-a2')}` &&
+ok('the same labels with no record: a finding on sy-a2, which says the record has no approval of it', openKeys() === `${DIRTY} ${T2('sy-a1')} ${T2('sy-a2')}` &&
   /mm\.api's record has no owner approval/.test(openOf(T2('sy-a2'))?.description || '') && /added by watchdog/.test(openOf(T2('sy-a2'))?.description || ''))
+// sy-a1's record clears its own request's step only: r-a2's, a request the record doesn't know, is every item's (sy-a1's too)
+const a1 = () => openOf(T2('sy-a1'))?.description || ''
+ok('...and on sy-a1: the step of a request the record does not know, not its own r-a1', /approve r-a2"/.test(a1()) && !/approve r-a1"/.test(a1()) &&
+  /approval of r-a1, r-a5, which clears that request's own step only/.test(a1()))
 const regoApi = (id) => { update(id, { labels: ['t2', 'mm-api'] }, 'ops'); go(id, ['t2', 'mm-api', 'approved'], 'bridge') } // the bridge's approved counts once watchdog's is off
-regoApi('sy-a2')
+regoApi('sy-a1'); regoApi('sy-a2')
 apiItem('sy-a3'); apiReq('r-a3', 'sy-a9') // a record of another item's request
 apiItem('sy-a6'); apiReq('r-a6', 'sy-a6', { hash: '0'.repeat(64) }) // a record whose hash is not its request's
 apiItem('sy-a7'); apiReq('r-a7', 'sy-a7', { status: 'pending' }) // a request the owner has not approved
@@ -499,7 +515,7 @@ clock = T0 + 455 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('a record for another item (sy-a3), a record with a wrong hash (sy-a6), a pending one (sy-a7): a finding each', openKeys() === `${DIRTY} ${T2('sy-a3')} ${T2('sy-a6')} ${T2('sy-a7')}`)
 for (const id of ['sy-a3', 'sy-a6', 'sy-a7']) regoApi(id)
-for (const id of ['sy-a1', 'sy-a2', 'sy-a3', 'sy-a4', 'sy-a6', 'sy-a7']) update(id, { status: 'closed' }, items.get(id).assignee)
+for (const id of ['sy-a1', 'sy-a2', 'sy-a3', 'sy-a4', 'sy-a6', 'sy-a7', 'sy-b1', 'sy-b2']) update(id, { status: 'closed' }, items.get(id).assignee)
 clock = T0 + 455.5 * MIN
 ok('exit 0', (await supervise()) === 0)
 ok('approved by the bridge and closed: cleared', openKeys() === DIRTY)
