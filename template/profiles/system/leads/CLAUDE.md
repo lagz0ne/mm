@@ -58,8 +58,8 @@ says which line is missing.
 2. **Answer every human comment on your items in this turn**, even if only "noted, doing X next".
 3. Pulling a ready item (within your capacity, see below): `bd update ID --claim`, then a `NOTE` with what you
    understood and your plan (2–4 lines). Never set `--status in_progress` by hand: your settings refuse it.
-4. Do the work. Post progress as comments at meaningful points, not every step, and at least every 30 min (that keeps
-   your claim).
+4. Do the work. Post progress as comments at meaningful points, not every step (what keeps your claim: "Lease"
+   below).
 5. Questions only the human can answer: comment the question, `label add needs-you`, `status blocked`, and stop working
    on that item. Prefer a stated, reasonable assumption over a question when the risk is low.
 6. Done: a `DONE` message (what you did, where it is: paths, commit ids, URLs; Verify: how to check it), then
@@ -76,9 +76,11 @@ says which line is missing.
 - **Workers** (roles that have them): claim the item yourself, then give it to one worker in its own folder (see
   "Your workers" below). The item stays yours: you frame it, integrate the result and end the unit of work. Never more
   workers than your free capacity.
-- **Lease:** a claim stays yours while the item moves (any comment or change). An item in progress with no update for
-  30 min goes back to your queue (status open, by `wake`), and the Supervisor reports it; the 3rd time, it goes to the
-  human (`needs-you`). Claim it again to go on.
+- **Lease:** a claim stays yours while it moves or waits on work: a comment or change, a live worker on it (until you
+  stop it), a gates run for it (`test/gates ... --item ID`, also while it waits for the run lock), or a new commit on
+  its branch (`ID`, `w-ID`, or its worker's name). None of these writes a comment. With none for 30 min, `wake` puts it
+  back in your queue (status open); claim it again to go on. The 3rd time it gets `paused` and goes to the board's
+  Lead, never `needs-you`.
 
 ## Your workers (only when your role has `"workers": true` in `leads/roles.json`)
 Workers are off until the owner says yes; then setup switches them on for a role. Until then `lead worker` and `wt`
@@ -110,8 +112,8 @@ and writes only comments, as `ops/<name>`. Never a worktree of the brain.
 you did and where (as in step 6), then make one of these changes:
 - **Hand over** to another role: `bd update ID -a <role> -s open --if-assignee <you> --if-status <its status now>`.
   The item lands in that role's queue (`bd ready -a <role>`), and wake wakes that role, also when you were the
-  assignee. Hand it to the human the same way, with their name (e.g. for an approval): wake labels it `needs-you` only
-  when you wrote its owner card first (wake never writes one for your act).
+  assignee. Hand it to the human the same way, with their name (e.g. for an approval): wake never adds `needs-you` and
+  never writes a card; it tells the board's Lead (`ID is yours: ...`), and only the Lead asks the owner.
   Exit code 13 means the item changed under you (someone else took or moved it). Read it again (`bd show ID --json`)
   and decide again; never force it.
 - **Blocked**: `bd update ID -s blocked`. wake wakes the role Accountable for the item's activity, else the board's
@@ -128,9 +130,9 @@ board's Lead with it. While `paused` is on, no lead is woken for it. **The Lead*
 (`bd label remove ID paused`), or, when a person must decide, writes the owner card and adds `needs-you`. A human
 comment or change resumes it too. Only the Lead or a human resumes it: when another lead removes `paused`, wake puts it
 back.
-Where wake asks the owner itself (`needs-you`: an upstream wait, its own failures), it writes a minimal owner card first
-when the item has none, above the description; it never writes over a card someone wrote: an invalid one goes to the
-Lead to fix. A claim that expires 3 times gets `paused` and goes to the Lead, never `needs-you`.
+wake never asks the owner: no `needs-you`, no owner card. Where a person may be needed (a hand-over to a person, an
+upstream wait of 24 h, its own failures, a kept role's agent gone), it tells the board's Lead once, in one line
+(`ID is yours: <why>`); the Lead asks the owner when one must decide. A `NOTE` wakes nobody.
 
 ## Your files: one writer per repo
 - ops writes `{{brain}}` (through the program's run loop: `bin/brain run start|keep|discard`, one idea per commit).
@@ -149,7 +151,7 @@ it), and so does your close reason; the project's lead then verifies and closes 
 the project may read: no secret, no other project's names or paths, no machine detail it doesn't need; your workers'
 briefs say the same. A machine change still follows the risk tiers here (`t1`/`t2`).
 The project's item waits blocked on your answer and gets no `needs-you` there; after 24 h with no comment from here
-it gets one, so the owner sees it. Answer within a day, even if only to say when.
+its board's Lead is told. Answer within a day, even if only to say when.
 
 ## Messages between roles: one intent, one expectation
 Its words follow "Writing to a person (ASD-STE100)" and the glossary, as every word you write does.
@@ -172,7 +174,7 @@ By: <next wake | today | hh:mm UTC> · Else: <what happens if it is not done>
 | `VERDICT` | review's result (only review writes one) | yes, and `Head` | `Result: signed off` or `Result: blocked` · `Must change` · `Notes` |
 | `ANSWER` | a reply to an ASK (`re #n` required) | `Expect: none` (Verify: the evidence), or a follow-up | `Answer` |
 | `DONE` | the unit is finished | `Expect: none`; Verify: the result | `Result` · `Follow-ups` · `Artifacts` |
-| `NOTE` | for the record (a plan, progress) | none | free text |
+| `NOTE` | for the record (a plan, progress); it wakes nobody | none | free text |
 - **One message, one intent.** Two intents are two messages. At most 600 characters: tables, logs and test output go
   in an artifact (below), linked.
 - **Verify is a check both sides can run**, with its expected output: a test and its case, a command and its line, a
@@ -184,7 +186,7 @@ By: <next wake | today | hh:mm UTC> · Else: <what happens if it is not done>
 - **A HANDOFF names its surfaces:** `Surfaces: <list>`, every place an mm change runs: the boards (template) ·
   the gateway (restart its service) · the bot (its copy of the owner card parser) · boxes (`mm box build`) · Doop ·
   the mm CLI · the brain's tools. `Surfaces: none` when nothing outside the repo changes.
-- **A HANDOFF → review brings its gates file:** run `test/gates <base>..<sha> --item ID` before a HANDOFF to review whose Head is `mm@<sha>`. The check (bd, `message check ID N`) refuses one without a passing `artifacts/ID/gates-<sha7>.txt`, and names the file.
+- **A HANDOFF to V brings its gates file:** run `test/gates <base>..<sha> --item ID` before a HANDOFF to review, or to the role that is V in the item's row, whose Head is `mm@<sha>`. The check (bd, `message check ID N`) refuses one without a passing `artifacts/ID/gates-<sha7>.txt`, and names the file.
 - **A message changes nothing on the board.** A HANDOFF still needs the handover (`bd update ID -a <role> ...`);
   a DONE still needs `bd close`.
 Example:

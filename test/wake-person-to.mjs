@@ -93,8 +93,8 @@ try {
   comment('p-4', 'alex', '→ nobody\nhello')
   ok('a pick that is no role of the board: the Lead', await until(() => /on p-4 \(quoted below\), to you as the board's Lead/.test(to('ops', q))))
   q = sent().length
-  comment('p-5', 'review', 'NOTE → platform\nlooked at it')
-  ok('a lead\'s comment: the assignee (platform), as before, with no routing words', await until(() => /review commented #?\d* ?on p-5 \(quoted below\)\n/.test(to('platform', q))))
+  comment('p-5', 'review', 'ANSWER → platform · re #1\nAnswer: looked at it\nExpect: none\nVerify: bd show p-5 → it is there')
+  ok('a lead\'s comment (an ANSWER): the assignee (platform), as before, with no routing words', await until(() => /review commented #?\d* ?on p-5 \(quoted below\)\n/.test(to('platform', q))))
   await sleep(800)
   ok('...not the Lead', !/p-5/.test(to('ops', q)))
   q = sent().length

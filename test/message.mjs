@@ -330,6 +330,33 @@ step('a HANDOFF → review brings its head\'s gates file (sy-6avk; bin/lib/gates
   ok('gate: a symlink to a passing file counts as none', r.status === 1 && r.stderr.includes(MISSING), r.stderr)
   r = gate('../x', HO)
   ok('gate: an id that is no item id: refused', r.status === 1 && r.stderr.includes('not an item id'), r.stderr)
+
+  // sy-mv69.1: evidence before a handoff to V: a HANDOFF to the role that is V in the item's RACI row needs the file too
+  fs.writeFileSync(path.join(D, 'leads/raci.json'), JSON.stringify({ activities: [{ id: 'opsv', title: 'Ops verifies', raci: { platform: 'R', ops: 'V', review: 'A' } },
+    { id: 'chg', title: 'A change', raci: { platform: 'R', review: 'VA', ops: 'C' } }] }))
+  const HO_OPS = HO.replace('HANDOFF → review', 'HANDOFF → ops').replace('Expect: review:', 'Expect: ops:')
+  const OPS_MISSING = `HANDOFF → ops needs the gates result for mm@${SHA}: no artifacts/sy-g1/gates-${SHA}.txt. Run test/gates <base>..${SHA} --item sy-g1 first`
+  item(['act:opsv'])
+  r = gate('sy-g1', HO_OPS)
+  ok('gate: HANDOFF → ops, V in the item\'s row (act:opsv), no gates file: refused, the file named', r.status === 1 && r.stderr.includes(`bd: refused (platform): ${OPS_MISSING}`), r.stderr)
+  r = run(['check', 'sy-g1', '1'])
+  ok('check <id> <n>: a HANDOFF → review on act:opsv still needs its file (review: as before)', r.status === 1 && r.stderr.includes(MISSING), r.stderr)
+  item(['act:chg'])
+  r = gate('sy-g1', HO_OPS)
+  ok('gate: HANDOFF → ops where ops is only C (act:chg): not checked', r.status === 0, r.stderr)
+  item([])
+  r = gate('sy-g1', HO_OPS)
+  ok('gate: HANDOFF → ops on an item with no activity: not checked', r.status === 0, r.stderr)
+  fs.rmSync(path.join(D, 'artifacts', 'sy-g1', `gates-${SHA}.txt`)); gatesFile('sy-g1', SHA, 'failed')
+  item(['act:opsv'])
+  r = gate('sy-g1', HO_OPS)
+  ok('gate: HANDOFF → ops (V) with a failed gates file: refused, the failed suite named', r.status === 1 && r.stderr.includes(`HANDOFF → ops needs a passing gates result for mm@${SHA}: the gates failed for ${SHA}: test/b.sh`), r.stderr)
+  gatesFile('sy-g1', SHA, 'passed')
+  r = gate('sy-g1', HO_OPS)
+  ok('gate: HANDOFF → ops (V) with a passing gates file: ok', r.status === 0, r.stderr)
+  gatesFile('sy-g1', SHA, 'live'); item(['act:opsv', 't2'])
+  r = gate('sy-g1', HO_OPS)
+  ok('gate: HANDOFF → ops (V), live skipped on a t2 item: refused', r.status === 1 && r.stderr.includes('without --no-live: the item is t2'), r.stderr)
 }
 
 step('messageRoles: the roles, and setup when the board has it')

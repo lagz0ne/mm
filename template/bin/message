@@ -2,7 +2,8 @@
 // message — check a message between roles (sy-0gsw; the format: bin/lib/message.mjs, the leads' brief "Messages
 // between roles"). Every comment a lead (a role of leads/roles.json, or its worker <role>/<name>) writes is one.
 //   message check - [--item <id>]   a message on stdin: exit 0 ok, 1 invalid (the reasons on stderr). With --item, a
-//                                   HANDOFF → review is checked for its gates file on that item too; without, not.
+//                                   HANDOFF → review (or → the item's V) is checked for its gates file on that item
+//                                   too; without, not.
 //   message check <id> <n>          comment #n of the item, read with this project's bin/bd (with the gates file check)
 //   message waits <id>              what waits on whom on the item: each ASK or HANDOFF with no answer (re #n)
 //   message gate <actor> -- <bd args>  bin/bd runs it on bd comments add / bd comment: refuses (exit 1, the reasons) a
@@ -11,7 +12,8 @@
 //                                   who writes. --stdin is refused for a lead: write the text to a file (-f).
 // A message may address a role, or setup when the board has its setup agent (setup/CLAUDE.md; messageRoles, sy-0ggd).
 // Setup is no lead: its own comments pass the gate unread.
-// A HANDOFF → review whose Head is <repo>@<sha> for a repo of gates.json (default mm) needs the item's passing gates file
+// A HANDOFF → review, or → the role that is V in the item's RACI row (sy-mv69.1: evidence before a handoff to V), whose
+// Head is <repo>@<sha> for a repo of gates.json (default mm) needs the item's passing gates file
 // artifacts/<id>/gates-<sha7>.txt (sy-6avk; bin/lib/gates-file.mjs, the rule review's signed-head: needs): the gate
 // and check <id> <n> refuse it without, naming the file. The live group skipped is refused only on a t2 item (bd show is
 // read only then). Any other intent, receiver or repo: not checked.
@@ -26,7 +28,7 @@ import { handoffRefusal } from './lib/gates-file.mjs'
 import { readGlossary } from './lib/glossary.mjs'
 import { FORMAT, REVIEWER, SETUP_BRIEF, messageRoles, openWaits, parseMessage } from './lib/message.mjs'
 import { sayWriting } from './lib/writing.mjs'
-import { actOf, noInputOk, rowOf } from './lib/raci.mjs'
+import { actOf, lettersOf, noInputOk, rowOf } from './lib/raci.mjs'
 
 const P = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const die = (m, code = 2) => { console.error(`message: ${m}`); process.exit(code) }
@@ -66,16 +68,37 @@ function comments(id) {
   catch { return [] }
 }
 
-/** sy-6avk: the reason a HANDOFF → review on item id may not be written (its Head's gates file), or null. labels: the
- *  item's labels when known; else bd show is read only when the file passed with the live group skipped (is it t2?). */
+/** Whether some activity of leads/raci.json has `role` as V. */
+function vSomewhere(role) {
+  try { return (JSON.parse(fs.readFileSync(path.join(P, 'leads', 'raci.json'), 'utf8')).activities || []).some((a) => /V/.test(lettersOf(a, role))) } catch { return false }
+}
+/** The item's labels (bd show), or null when bd can't show it. */
+function labelsOf(id) {
+  try { const j = JSON.parse(execFileSync(path.join(P, 'bin', 'bd'), ['show', id, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000, maxBuffer: 16 << 20 })); const i = Array.isArray(j) ? j[0] : j; return Array.isArray(i?.labels) ? i.labels : null }
+  catch { return null }
+}
+/** sy-6avk, sy-mv69.1: the reason a HANDOFF on item id may not be written (its Head's gates file), or null. The rule
+ *  holds for a HANDOFF → review and for one to the role that is V in the item's RACI row (leads/raci.json, its act:
+ *  label): evidence before a handoff to V. labels: the item's labels when known; else bd show is read only when the
+ *  rule could refuse (a Head of a gates.json repo with no passing file to another role than review, or one that passed
+ *  with the live group skipped: is it t2?). */
 function gatesWhy(r, id, labels = null) {
   if (r.intent !== 'HANDOFF' || !id) return null
-  const why = handoffRefusal(P, id, r.to, r.keys?.Head, { reviewer: REVIEWER })
+  const to = String(r.to ?? '').split('/')[0]
+  const read = () => { if (labels === null) { comments(id); labels = shown.labels } return labels }
+  // to review as before; to another role only when it is V in the item's row (the gates file is read first; the
+  // item's labels only when it would refuse and some row has that role as V; an item bd can't show: not checked)
+  if (to !== REVIEWER) {
+    if (!handoffRefusal(P, id, r.to, r.keys?.Head, { reviewer: to, t2: true })) return null
+    if (!vSomewhere(to)) return null
+    if (labels === null) { const ls = labelsOf(id); if (!ls) return null; labels = ls }
+    if (!/V/.test(lettersOf(row(labels), to))) return null
+  }
+  const why = handoffRefusal(P, id, r.to, r.keys?.Head, { reviewer: to })
   if (why) return why
-  const t2why = handoffRefusal(P, id, r.to, r.keys?.Head, { reviewer: REVIEWER, t2: true })
+  const t2why = handoffRefusal(P, id, r.to, r.keys?.Head, { reviewer: to, t2: true })
   if (!t2why) return null
-  if (labels === null) { comments(id); labels = shown.labels }
-  return labels.includes('t2') ? t2why : null
+  return read().includes('t2') ? t2why : null
 }
 
 // bd's flags that take a value (everything else is a switch)

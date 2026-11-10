@@ -3,7 +3,8 @@
 // within one check, and then gets the item; nothing starts while the restore hold is on; a failed start is said on the
 // item once and kept for the Leads page; a lead idle for WAKE_IDLE_CLOSE_MS with nothing of its own open is closed
 // (never one in a turn, or one with an item in progress or labelled needs-you), and the next request starts it again;
-// a kept role (roles.json `keep`, the owner's contact) is never closed and never started: its waiting items get needs-you.
+// a kept role (roles.json `keep`, the owner's contact) is never closed and never started, and wake never asks the owner
+// for it (sy-mv69.1): one error line, no needs-you.
 // Hermetic: temp folder and MM_HOME, stub paseo, bin/lead, bin/bd and bd-serve, no obs.
 //   node test/wake-ondemand.mjs            exit 0 = every check passed
 import { spawn } from 'node:child_process'
@@ -112,19 +113,18 @@ try {
   ok('a closed lead with nothing waiting is not started again', starts('rev') === 0)
   ok('a kept role (own) idle longer than WAKE_IDLE_CLOSE_MS is not archived', !/ARCHIVE own/.test(archived()))
 
-  console.log('== a kept role is never started: the human is asked')
+  console.log('== a kept role is never started, and the owner is never asked (sy-mv69.1)')
   ok('chat (kept) is closed with an item in progress: not started', starts('chat') === 0)
-  ok('...its P1 item gets needs-you instead, and it is logged', await until(() => /label add c-1 needs-you --actor wake/.test(bdlog()) && /chat is kept \(the owner's contact\): its agent is closed/.test(opsLog())))
-  ok('...with an owner card written first (sy-0omb: no card, no needs-you)', /^update c-1 --body-file \S+ --actor wake\nlabel add c-1 needs-you/m.test(bdlog()))
-  ok('...once, not on every check', (bdlog().match(/label add c-1 needs-you/g) || []).length === 1)
-  ok('...and one note for the owner (needs-you, kept:chat), made once', /^create The chat lead's agent can't be found: 1 item\(s\) wait for it [\s\S]*?-l needs-you,kept:chat/m.test(bdlog()) && (bdlog().match(/^create /gm) || []).length === 1)
-  ok('...its description starts with an owner card', /^create The chat lead's agent can't be found: 1 item\(s\) wait for it -d ## Owner\n- \*\*What:\*\* The chat lead's agent can't be found/m.test(bdlog()))
+  const keptLines = () => opsLog().split('\n').filter((l) => /"level":"error"/.test(l) && /chat is kept \(the owner's contact\) and its agent can't be found \(its agent chat is closed\)[^\n]*c-1[^\n]*asks no owner/.test(l)).length
+  ok('...said once as an error line (mm obs sees it), naming the item that waits', await until(() => keptLines() === 1))
+  ok('...no needs-you, no card, no note item: no bd write for it (this board has no Lead to tell)', !/c-1|kept:chat|^create /m.test(bdlog()))
   create('c-2', 'chat', 'a new request for the contact')
   await sleep(1500)
-  ok('a new P2 item for it: not labelled (only P0/P1 are), still not started', !/label add c-2 needs-you/.test(bdlog()) && starts('chat') === 0)
+  ok('a new item for it: nothing written, still not started, not said again', !/c-2/.test(bdlog()) && starts('chat') === 0 && keptLines() === 1)
   st('chat', 'none'); create('c-3', 'chat', 'the contact is gone', 0)
-  ok('its agent gone (none) and a P0 waits: still not started, needs-you', await until(() => /label add c-3 needs-you/.test(bdlog())) && starts('chat') === 0)
-  ok('...still one note', (bdlog().match(/^create /gm) || []).length === 1)
+  await sleep(1500)
+  ok('its agent gone (none) and a P0 waits: still not started, no needs-you', !/c-3 needs-you/.test(bdlog()) && starts('chat') === 0)
+  ok('...and no note', !/^create /m.test(bdlog()))
 
   console.log('== the next request starts it again')
   create('r-1', 'rev', 'a review for rev')

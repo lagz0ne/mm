@@ -99,7 +99,8 @@ else if (cmd === 'send') fs.appendFileSync(T + '/sent.log', 'TO ' + a[0] + '\\n'
       await sleep(2000)
       ok('a stale lead in a turn (busy) is left: not archived, not started, not sent to', !archived().includes('old-busy') && !started().includes('busy') && !/^TO old-busy$/m.test(sent()))
       ok('a kept role\'s stale lead (own) is not started, not archived, not sent to', !started().includes('own') && !archived().includes('old-own') && !/^TO old-own$/m.test(sent()))
-      ok('...the owner is told, as for a closed kept lead (one note)', /create .*own/.test(read(path.join(T, 'bd.log'))))
+      ok('...said once, as for a closed kept lead (an error line; sy-mv69.1: no note, no needs-you)', (out.match(/own is kept \(the owner's contact\) and its agent can't be found \(its agent old-own is closed\)/g) || []).length === 1
+        && !/create .*own|needs-you/.test(read(path.join(T, 'bd.log'))))
       ok('no other role is started (dev, ops keep their leads)', !started().includes('dev') && !started().includes('ops'))
       ok('each stale lead is said once in the log, what happens to it', (out.match(/qa's lead old-qa is stale .*: started again with bin\/lead start/g) || []).length === 1
         && /archived doc's stale lead old-doc/.test(out) && (out.match(/busy's lead old-busy is stale .*in a turn/g) || []).length === 1

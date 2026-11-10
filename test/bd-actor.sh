@@ -2,7 +2,8 @@
 # bin/bd refuses a board write with no actor (sy-28ev): comment(s add), update, close, create, reopen, label add|remove,
 # dep add|remove ... with no --actor and no BEADS_ACTOR / BD_ACTOR exit 1 with a clear message, and bd itself is never
 # run (it would record the machine user, `mm`, which reads as a person). With an actor they pass; reads need none; text
-# after `--` is never taken for an actor. Hermetic: a copy of the template's bin/bd in a throwaway folder, a stand-in
+# after `--` is never taken for an actor. A HANDOFF to review, or to the item's V (sy-mv69.1), needs its gates file.
+# Hermetic: a copy of the template's bin/bd in a throwaway folder, a stand-in
 # for bd (it records its arguments) and for bin/trace (no span).
 #   test/bd-actor.sh
 set -uo pipefail
@@ -75,6 +76,16 @@ mkdir -p "$T/artifacts/sy-g"
 printf 'head: 1122334 a subject\nresult: passed: 1 passed, 0 failed, 0 skipped, of 1\n\ntest/a.sh   hermetic  passed   1 ok   1s  logs/a.log\n' >"$T/artifacts/sy-g/gates-1122334.txt"
 call comments add sy-g --actor platform/w -- "$HO";        check "a passing gates file: passed" passed
 call comments add sy-h --actor platform -- "${HO//review/ops}"; check "the same HANDOFF → ops: not checked, passed" passed
+# sy-mv69.1: evidence before a handoff to V: a HANDOFF → the role that is V in the item's RACI row needs the file too
+printf '{"activities":[{"id":"opsv","title":"Ops verifies","raci":{"platform":"R","ops":"V","review":"A"}}]}\n' >"$T/leads/raci.json"
+printf '#!/bin/sh\ncase "$1" in show) case "$2" in sy-v) echo %s ;; *) echo %s ;; esac; exit 0 ;; esac\necho "$*" >>"%s"\n' \
+  "'[{\"id\":\"sy-v\",\"labels\":[\"act:opsv\"]}]'" "'[{\"id\":\"sy-h\",\"labels\":[]}]'" "$T/ran" >"$T/tools/bd"
+call comments add sy-v --actor platform -- "${HO//review/ops}"; check "a HANDOFF → ops, V in the item's row, no gates file: refused, bd never runs" test "$(cat "$T/code")" = 1 -a ! -s "$T/ran"
+check "...the reason names the file to make" grep -qF "bd: refused (platform): HANDOFF → ops needs the gates result for mm@1122334: no artifacts/sy-v/gates-1122334.txt" "$T/err"
+call comments add sy-h --actor platform -- "${HO//review/ops}"; check "...on an item with no activity: not checked, passed" passed
+mkdir -p "$T/artifacts/sy-v"; cp "$T/artifacts/sy-g/gates-1122334.txt" "$T/artifacts/sy-v/"
+call comments add sy-v --actor platform -- "${HO//review/ops}"; check "...with its passing gates file: passed" passed
+rm -f "$T/leads/raci.json"; printf '#!/bin/sh\necho "$*" >>"%s"\n' "$T/ran" >"$T/tools/bd"
 
 echo "== reads need no actor"
 for r in "list --json" "show sy-1 --json" "ready --json" "comments sy-1 --json" "label list sy-1" "dep list sy-1" "dep tree sy-1" "config get no-hooks" "export --all"; do

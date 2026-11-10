@@ -5,7 +5,8 @@
 // claims it; two ready items, capacity 1 -> the second waits; closing one releases the capacity; an expired claim is
 // requeued through bd's compare-and-set guard (exit 13: left alone; a lead in a turn keeps its claim; the 3rd expiry ->
 // paused, never needs-you); a reassign lands in review's queue; wake killed in the middle of a handoff and started again: the item
-// lands; a failed start is retried with backoff and after 3 tries -> needs-you; the project cap holds a start.
+// lands; a failed start is retried with backoff and after 3 tries -> an error comment (never needs-you); the project cap
+// holds a start.
 // Hermetic: temp folder and MM_HOME, a fake board (bd serve's API, and a stub bin/bd that changes it, with the guards),
 // stub paseo and bin/lead, no obs.
 //   node test/wake-reconcile.mjs            exit 0 = every check passed
@@ -197,10 +198,10 @@ try {
   start()
   ok('wake again: k-1 reaches review (replayed from the journal, and from the board: its queue head)', await until(() => /k-1: title of k-1/.test(to('review')) && /next k-1/.test(to('review'))))
 
-  console.log('== a failed start: retried with backoff; after 3 tries, needs-you')
+  console.log('== a failed start: retried with backoff; after 3 tries, said on the item (never needs-you, sy-mv69.1)')
   ok('sec\'s start failed 3 times, each later than the one before', /start of sec failed \(reasons kept\): paseo refused \(try 1; the next in 1 s\)/.test(log()) && /\(try 2; the next in 1 s\)|\(try 2; the next in 2 s\)/.test(log()) && /\(try 3; the next in 3 s\)/.test(log()))
-  ok('...said once on the item, then needs-you with an error', /comments add s-1 Error: wake could not start the sec lead for this item: paseo refused/.test(bdlog()) && I('s-1').labels.includes('needs-you') && (I('s-1').comments || []).some((c) => /could not start the sec lead 3 times in a row/.test(c.text)) && parseCard(I('s-1').description, I('s-1').labels, 's-1').ok)
-  ok('...and no refused or failed label in wake\'s log', !/label s-1 (refused|failed)/.test(log()))
+  ok('...said once on the item, then an error comment after 3 tries', /comments add s-1 Error: wake could not start the sec lead for this item: paseo refused/.test(bdlog()) && (I('s-1').comments || []).some((c) => /could not start the sec lead 3 times in a row[^\n]*This board has no Lead to tell/.test(c.text)))
+  ok('...no needs-you, no owner card', !I('s-1').labels.includes('needs-you') && !/label add s-1 needs-you|update s-1 --body-file/.test(bdlog()) && !parseCard(I('s-1').description || '', I('s-1').labels, 's-1').found)
 
   console.log('== the project cap')
   config(2) // in progress now: q-2 (qa), r-1 (arch): 2 of 2
@@ -210,7 +211,7 @@ try {
   ok('the cap raised: ux is started with u-1', await until(() => starts('ux').length === 1 && /- u-1 \(P1\)/.test(starts('ux')[0])))
 
   console.log('== the human fixes it: the start works again')
-  config(0); fs.rmSync(path.join(T, 'fail-sec')); bdCli(['label', 'remove', 's-1', 'needs-you', '--actor', 'alex'])
+  config(0); fs.rmSync(path.join(T, 'fail-sec'))
   ok('sec is started (after its backoff) and claims s-1', await until(() => starts('sec').length === 1 && I('s-1').status === 'in_progress', 30000))
 } finally {
   w.kill(); srv.close(); for (const s of streams) s.destroy()

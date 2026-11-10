@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // bin/wake and the end of a unit of work as a plain bd state change (plans/slp, "All of it is plain bd"):
 //   a reassign (bd update -a <role> --if-assignee/--if-status) wakes the new assignee, also when the writer is the old
-//   one; a reassign to a person labels needs-you only on a lead's card; -s blocked wakes the Accountable role, else the board's Lead, else
+//   one; a reassign to a person tells the board's Lead, never needs-you (sy-mv69.1); -s blocked wakes the Accountable role, else the board's Lead, else
 //   nobody (never needs-you, sy-e234); bd dep add wakes the other item's assignee; bd reopen wakes its assignee; bd close wakes nobody. Words in a
-//   comment are not signals. The board's own actors never signal; the hop limit counts reassigns; a working lead gets its
+//   comment are not signals; a NOTE wakes nobody (sy-mv69.1), a person's comment still does. The board's own actors never signal; the hop limit counts reassigns; a working lead gets its
 //   wake only once it is idle. Titles and comments reach a lead only in a fenced block marked as board text; an
-//   upstream:* item blocked with no answer from the system side for a day (here 5 s) gets needs-you, once; a block is read
+//   upstream:* item blocked with no answer from the system side for a day (here 5 s): the Lead is told, once (never
+//   needs-you, sy-mv69.1); a block is read
 //   on the item as it is now (bd writes `--add-label upstream:x -s blocked` as two events, the status first; a restart
 //   replays old ones), so an item labelled upstream:* now asks nobody (sy-w4te).
 // Hermetic: temp folder, stub paseo, bd and bd-serve (a small fake board that emits an event per change), no obs.
@@ -112,8 +113,9 @@ try {
   ok('the assignee (platform) reassigns to review: review is woken, told who handed it over', await until(() => /HANDOFF to you from platform on s-1 \(was platform, now open\)[\s\S]*\ns-1: title of s-1\n/.test(to('review'))))
   ok('...the writer (platform) is not woken by its own change', !/s-1/.test(to('platform')))
   change('s-2', 'platform', { assignee: 'alex' })
-  ok('a reassign to a person (the owner, a human), no card a lead wrote: not labelled, no card written (sy-e234)',
-    await until(() => /s-2: no owner card a lead wrote: the owner is not asked/.test(opsLog())) && !/s-2/.test(bdlog()))
+  ok('a reassign to a person (the owner, a human): the Lead (ops) is told, in one line (sy-mv69.1)',
+    await until(() => /- s-2 is yours: platform handed it to alex \(a person\)\. Only you ask the owner/.test(to('ops'))))
+  ok('...no needs-you, no card, no bd call at all (wake never asks the owner)', !/s-2/.test(bdlog()))
   change('s-3', 'alex', { assignee: 'review', status: 'open' })
   ok('a human reassigns to review: review is woken', await until(() => /HANDOFF to you from alex on s-3/.test(to('review'))))
   const quiet0 = sent()
@@ -174,7 +176,7 @@ try {
   const before = sent()
   change('s-9', 'platform', { status: 'closed', close_reason: 'tests pass' }, 'close')
   await sleep(1500)
-  ok('close: nobody is woken (the writer is the assignee)', sent() === before)
+  ok('close: nobody is woken (the writer is the assignee)', !/s-9/.test(sent().slice(before.length)))
 
   console.log('== words and the board\'s own actors are not signals')
   const quiet = sent()
@@ -186,6 +188,19 @@ try {
   ok('a HANDOFF line in a comment wakes nobody', !/word1/.test(sent().slice(quiet.length)))
   ok('a reassign by watchdog (the Supervisor, the sentinel) is no handoff (its assignee hears of it as any change)', !/HANDOFF to you from watchdog/.test(to('review')))
   ok('wake\'s and bd\'s own changes wake nobody', !/s-12|s-13/.test(sent().slice(quiet.length)) && !/s-13 needs-you/.test(bdlog()))
+  // a NOTE is for the record (sy-mv69.1): it wakes nobody, to whichever role; any other message wakes the assignee
+  const quietN = sent()
+  comment('s-10', 'review', 'NOTE → platform\nlooked at it: note1')
+  comment('s-11', 'platform', 'NOTE → ops\nfor the record: note2')
+  comment('s-12', 'ops', 'NOTE → review\nprogress: note3')
+  await sleep(1800)
+  ok('a NOTE → the assignee (platform), by review: nobody woken', !/note1/.test(sent().slice(quietN.length)))
+  ok('a NOTE → ops (the Lead) on another\'s item: nobody woken, not ops, not the assignee', !/note2|note3/.test(sent().slice(quietN.length)))
+  ok('...logged as for the record', /NOTE on s-10 by review: for the record; nobody woken/.test(opsLog()))
+  comment('s-10', 'review', 'ANSWER → platform · re #1\nAnswer: yes, answer1\nExpect: none\nVerify: bd show s-10 → it\'s there')
+  ok('an ANSWER still wakes the assignee (as today)', await until(() => /review commented[^\n]* on s-10/.test(to('platform')) && /answer1/.test(to('platform'))))
+  comment('s-10', 'alex', 'NOTE → platform\nfrom a person: human1')
+  ok('a person\'s comment, even shaped as a NOTE, still wakes (the board\'s Lead)', await until(() => /human1/.test(to('ops'))))
 
   console.log('== the RACI drives the messages (sy-lusk): C on an ASK, V on a new head, I once at close')
   const ASK = (to) => `ASK → ${to}\nExpect: ${to}: say if port 8080 is free on the machine.\nDone when: an ANSWER names the port's state.\nVerify: ss -ltn → no line with :8080\nBy: next wake · Else: platform picks another port\nWhy: the new service needs a port`
@@ -242,20 +257,21 @@ try {
   ok('...the item is paused visibly (paused, not needs-you; sy-0omb)', await until(() => /label add s-15 paused/.test(bdlog())) && !/s-15 needs-you/.test(bdlog()))
   ok('...and the board\'s Lead (ops) gets it', await until(() => /PAUSED: s-15 had 3 lead-to-lead wakes/.test(to('ops'))))
 
-  console.log('== an upstream:* item blocked with no answer from the system side for a day (5 s here): needs-you (sy-mkva)')
+  console.log('== an upstream:* item blocked with no answer from the system side for a day (5 s here): the Lead is told (sy-mkva, sy-mv69.1)')
   const tick = () => change('i-dep', 'beads', {}) // any event: a reconcile pass soon after
   change('s-19', 'platform', { status: 'blocked' })
   await sleep(3000)
   comment('s-19', 'mm-upstream', 'From the system board: platform commented #1 on sy-2: looking at it')
   await sleep(3000); tick(); await sleep(1500)
-  ok('s-17 (blocked on upstream:machine since the start, never answered): needs-you, with why on the item',
-    /label add s-17 needs-you/.test(bdlog()) && /comments add s-17 Blocked on the system board \(upstream:machine\) with no answer from it/.test(bdlog()))
-  ok('...s-19 was answered 4.5 s ago (the wait starts again at an answer): not yet', !/s-19 needs-you/.test(bdlog()))
-  ok('...s-16 (no longer labelled upstream): never', !/s-16 needs-you/.test(bdlog()))
+  ok('s-17 (blocked on upstream:machine since the start, never answered): the Lead told, why on the item, no needs-you',
+    /comments add s-17 Blocked on the system board \(upstream:machine\) with no answer from it for 0 h: the Lead \(ops\) is told/.test(bdlog()) && !/s-17 needs-you/.test(bdlog())
+    && await until(() => /- s-17 is yours: it waits on the system board \(upstream:machine\)/.test(to('ops'))))
+  ok('...s-19 was answered 4.5 s ago (the wait starts again at an answer): not yet', !/comments add s-19 Blocked/.test(bdlog()))
+  ok('...s-16 (no longer labelled upstream): never', !/comments add s-16 Blocked/.test(bdlog()))
   await sleep(1500); tick()
-  ok('s-19, a day after the answer with none since: needs-you', await until(() => /label add s-19 needs-you/.test(bdlog())))
+  ok('s-19, a day after the answer with none since: the Lead told', await until(() => /comments add s-19 Blocked on the system board/.test(bdlog()) && /- s-19 is yours: it waits on the system board/.test(to('ops'))))
   tick(); await sleep(2000)
-  ok('...once each (another pass adds nothing)', bdlog().match(/label add s-1[79] needs-you/g).length === 2)
+  ok('...once each (another pass adds nothing), and never needs-you', bdlog().match(/comments add s-1[79] Blocked/g).length === 2 && (to('ops').match(/s-1[79] is yours/g) || []).length === 2 && !/label add \S+ needs-you/.test(bdlog()))
 
   console.log('== a restart replays the events since its saved point: the item as it is now decides (sy-w4te)')
   await sleep(2500) // the last seq is saved (2 s throttle)

@@ -11,10 +11,10 @@
 // `signed-head:` label, a new artifact quoted in a comment (artifacts/<id>/<name>), a child (<id>.<n>) or an item it
 // waits on (bd dep add) closed, a status other than at the last hop, or an assignee who is neither of the last two
 // hops' (a third role; the ping-pong between the same two is no progress). A human resets it too.
-// The owner is asked only through an owner card (sy-0omb): where wake asks the owner itself (needs-you, on a machine
-// failure: askOwner()), it writes a minimal card first when the item has none. A lead's act (a block, a reassign to a
-// person) never makes wake write a card (sy-e234): wake labels needs-you only on the card a lead wrote, and a block with
-// no other lead to route it to wakes nobody. An owner card whose You is "Nothing" asks nothing: never needs-you.
+// wake never asks the owner (sy-mv69.1): it adds no needs-you and writes no owner card. Where a person may be needed (a
+// reassign to a person, an upstream wait of 24 h, its own failures, a kept role's agent gone), it tells the board's
+// Lead once, in one line ("<id> is yours: <why>"; toLead()); only the Lead asks the owner. A block with no other lead
+// to route it to wakes nobody. A NOTE wakes nobody (messageRoute()).
 // One answer path (sy-e234): a person's comment on a needs-you item whose card asks Reply: or Check: is the answer:
 // wake removes needs-you (ownerAnswered()) and the comment wakes the board's Lead as any person's comment (sy-uykv).
 // The pull model (plans/slp shape 5): the board is the queue. A role's queue is `bd ready --assignee <role>`; its lead
@@ -39,13 +39,13 @@
 // (WAKE_PERSON_RUNS=1|0 overrides; WAKE_MM: the mm to run, default `mm`). In a box, the host decides and starts them
 // (sy-9618): wake asks on the box's own mm.api socket (WAKE_DISPATCH_SOCK, default /run/mm/api/api.sock).
 import { execFile, fetch, log as olog, span, startMetrics, count } from './lib/obs.mjs'
-import { headRefusal, isGoAsk, KEYS as CARD_KEYS, parseCard, youKind } from './lib/owner-card.mjs'
-import os from 'node:os'
+import { parseCard, youKind } from './lib/owner-card.mjs'
 import * as P_ from './lib/paseo.mjs'
 import { SETUP, SETUP_BRIEF, messageRoles, parseMessage } from './lib/message.mjs'
 import { actOf, lettersOf, mayAsk, rowOf, withLetter } from './lib/raci.mjs'
 import { pickOf } from './lib/to.mjs'
 import { places, total as placesTotal, workersOf } from './lib/places.mjs'
+import { spec } from './lib/workers.mjs'
 import { createHash } from 'node:crypto'
 import http from 'node:http'
 import path from 'node:path'
@@ -150,21 +150,29 @@ const personSaid = (to, assignee) => (to.why === 'picked' ? ', to you: they pick
 // it, and wakes the board's Lead (roles.json `lead`) with it; while `paused` is on, no lead is woken for the item.
 // The Lead removing `paused`, or a human (a comment, a change, or the label), resets the count and resumes it
 // (pauseSeen()); another lead's removal is undone, and the Lead is told. The Lead
-// resumes it, or writes an owner card and needs-you when a person must decide. A board with no Lead: the owner (askOwner).
+// resumes it, or writes an owner card and needs-you when a person must decide. A board with no Lead: paused, and a
+// human resumes it (wake never asks the owner, sy-mv69.1).
 function stopLoop(id, title) {
   for (const r of ROLES) pending[r].delete(id) // what waited for it waits for the Lead's word now
-  if (!BOARD_LEAD) {
-    log(`hop limit: ${id} had ${MAX_HOPS} lead-to-lead wakes and the board has no Lead; asking the owner`)
-    askOwner(id, { What: `The leads handed ${id} back and forth ${MAX_HOPS} times without a human`, Why: 'This board has no Lead (roles.json lead) to settle it, so wake wakes no lead for it now',
-      You: 'Check: the item\'s thread; a comment or change from you resumes it' },
-    `Paused: ${MAX_HOPS} lead-to-lead wakes on this item without a human in between, and this board has no Lead: labelled needs-you, with an owner card. A human comment or change resumes it.`)
-    return
-  }
-  log(`hop limit: ${id} had ${MAX_HOPS} lead-to-lead wakes; labelling paused, handing it to the Lead (${BOARD_LEAD})`)
+  log(`hop limit: ${id} had ${MAX_HOPS} lead-to-lead wakes; labelling paused${BOARD_LEAD ? `, handing it to the Lead (${BOARD_LEAD})` : ' (the board has no Lead: a human resumes it)'}`)
   labelQ(['label', 'add', id, PAUSED], `label ${id}`)
-  bdRun(['comments', 'add', id, `Paused: ${MAX_HOPS} lead-to-lead wakes on this item without a human in between, so wake wakes no lead for it now. The Lead (${BOARD_LEAD}) resumes it (bd label remove ${id} ${PAUSED}), or writes an owner card and adds needs-you when a person must decide. A human comment or change resumes it too.`], `comment ${id}`)
-  note(BOARD_LEAD, id, `PAUSED: ${id} had ${MAX_HOPS} lead-to-lead wakes without a human in between, so wake labelled it \`${PAUSED}\` and wakes no lead for it. You are the board's Lead: read its thread, then resume it with a clear next owner (bd label remove ${id} ${PAUSED}), or, when a person must decide, write its owner card and add needs-you.`,
+  bdRun(['comments', 'add', id, `Paused: ${MAX_HOPS} lead-to-lead wakes on this item without a human in between, so wake wakes no lead for it now. ${BOARD_LEAD ? `The Lead (${BOARD_LEAD}) resumes it (bd label remove ${id} ${PAUSED}), or writes an owner card and adds needs-you when a person must decide. ` : ''}A human comment or change resumes it too.`], `comment ${id}`)
+  if (BOARD_LEAD) note(BOARD_LEAD, id, `PAUSED: ${id} had ${MAX_HOPS} lead-to-lead wakes without a human in between, so wake labelled it \`${PAUSED}\` and wakes no lead for it. You are the board's Lead: read its thread, then resume it with a clear next owner (bd label remove ${id} ${PAUSED}), or, when a person must decide, write its owner card and add needs-you.`,
     false, 'talk', [boardLine(id, title)], true)
+}
+// wake never asks the owner (sy-mv69.1): it adds no needs-you and writes no owner card. Where it once did (a reassign to
+// a person, an upstream wait of 24 h, its own failures, a kept role's agent gone), it tells the board's Lead instead,
+// once, in one line ("<id> is yours: <why>"); only the Lead asks the owner (its owner card, then needs-you). A board
+// with no Lead: logged only. Returns whether the Lead was told.
+const toldLead = new Set() // `<id> <kind>`: said to the Lead (once each)
+function toLead(id, kind, why, title = '') {
+  const k = `${id} ${kind}`
+  if (toldLead.has(k)) return false
+  toldLead.add(k)
+  count('mm_wake_to_lead_total', { kind })
+  if (!BOARD_LEAD) { log(`${id}: ${why}; the board has no Lead: nobody told, the owner not asked`); return false }
+  log(`${id}: ${why}; told the Lead (${BOARD_LEAD}), not the owner`)
+  return note(BOARD_LEAD, id, `${id} is yours: ${why}. Only you ask the owner (its owner card, then needs-you), when a person must decide.`, false, 'talk', title ? [boardLine(id, title)] : [])
 }
 /** The pause as the board shows it (every event, before onEvent1): the label `paused` on (wake's, someone's, or one from
  *  before a restart) pauses the item; the label gone, or a human comment or change, resumes it (the count from 0; a
@@ -212,7 +220,9 @@ function raciRoute(e, byLead = false) {
 //                     letter wakes nobody (the Supervisor flags it). An item with no activity: the role is woken.
 //   HANDOFF → <role>  the role is V in the row, and the Head is new: not one V signed (signed-head:<head>), not one
 //                     wake already gave it on this item (a HANDOFF with no Head always wakes)
-// Any other message, and words that are no message, wake only the assignee (as any comment does). Returns the roles woken.
+//   NOTE → <role>     wakes nobody, to any role (sy-mv69.1: for the record; the set it returns says `quiet`)
+// VERDICT, ANSWER, DONE, and words that are no message, wake only the assignee (as any comment does). Returns the roles
+// woken.
 // setup (sy-0ggd): a message may go to it when the board has its setup agent (messageRoles); it has no RACI column, so
 // an ASK or a HANDOFF to it always wakes it (a HANDOFF's head is still woken once).
 const handedHeads = new Map() // item id -> the heads a HANDOFF → V already woke V for
@@ -220,6 +230,8 @@ function messageRoute(e, byLead = false) {
   const woke = new Set(), c = e.comment
   if (e.op !== 'comment' || !c || SYSTEM.includes(c.author)) return woke
   const m = parseMessage(c.text, { roles: messageRoles(ROLES, fs.existsSync(path.join(P, SETUP_BRIEF))), author: String(c.author ?? '') })
+  // a NOTE is for the record (sy-mv69.1): it wakes nobody, to whichever role; a person's comment still wakes as any does
+  if (m.ok && m.intent === 'NOTE' && !isHuman(c.author)) { woke.quiet = true; log(`NOTE on ${e.issue_id} by ${actorName(c.author)}: for the record; nobody woken`); return woke }
   if (!m.ok || !['ASK', 'HANDOFF'].includes(m.intent)) return woke
   const role = m.expect?.role || m.to.split('/')[0], self = leadOf(c.author), id = e.issue_id, labels = e.issue?.labels || []
   if (!ROLES.includes(role) || role === self) return woke
@@ -246,12 +258,12 @@ function messageRoute(e, byLead = false) {
 
 // The end of a unit of work is a plain bd state change (plans/slp, "All of it is plain bd"), never a word in a comment:
 //   handoff     bd update <id> -a <role> --if-assignee <me> --if-status <s>   wakes <role> (also when the writer is the
-//               old assignee); a reassign to a person (the owner, a human) labels the item needs-you when a lead wrote
-//               its owner card (wake never writes one for it, sy-e234)
+//               old assignee); a reassign to a person (the owner, a human) tells the board's Lead (toLead(); never
+//               needs-you, sy-mv69.1), unless the Lead made it or the item has needs-you already
 //   blocked     bd update <id> -s blocked     wakes the item's Accountable role (its act: activity), else the board's Lead
 //                                             (roles.json `lead`), else nobody (sy-e234: never needs-you); an item labelled upstream:*
 //                                             wakes nobody (it waits on the system board's answer, bin/upstream there);
-//                                             no answer for 24 h: needs-you (upstreamWaits()); read on the item as it
+//                                             no answer for 24 h: the Lead is told (upstreamWaits()); read on the item as it
 //                                             is WAKE_SETTLE_MS later (bd writes the label after the status, sy-w4te)
 //   dependency  bd dep add <id> <other>       wakes <other>'s assignee
 //   reopen      bd reopen <id>                wakes <id>'s assignee (the board's Lead when that is the writer itself)
@@ -290,11 +302,12 @@ function transition(e, byLead) {
     count('mm_wake_signals_total', { kind: KINDS[kind] })
     note(role, id, reason, byLead, 'talk', [...text, ...more]); woke.add(role); log(`${KINDS[kind]} on ${id} by ${writer}: waking ${role}`); return true
   }
-  // the owner is asked only on the card a lead wrote (sy-e234): wake labels needs-you on it, never writes one
-  const needsYou = (kind, why) => {
-    count('mm_wake_signals_total', { kind: KINDS[kind] })
-    log(`${KINDS[kind]} on ${id} by ${writer}: ${why}; asking the owner only on a card a lead wrote`)
-    if (!labels.includes('needs-you')) askOwner(id, null)
+  // a reassign to a person (sy-mv69.1): wake never asks the owner; the board's Lead is told (it asks, when one must),
+  // unless the Lead made the reassign itself, or the owner is asked already
+  const toPerson = (why) => {
+    count('mm_wake_signals_total', { kind: KINDS.handoff })
+    if (labels.includes('needs-you') || (BOARD_LEAD && self === BOARD_LEAD)) { log(`HANDOFF on ${id} by ${writer}: ${why}; ${labels.includes('needs-you') ? 'the owner is asked already' : 'by the Lead itself'}: nobody told`); return }
+    toLead(id, `person:${i.assignee}@${Date.parse(i.updated_at || '') || Date.now()}`, `${by} ${why}`, i.title)
   }
   if (e.op === 'dep_add') { // `bd dep add <id> <target>`: <id> now waits on <target>
     const ref = e.dep?.target
@@ -310,7 +323,7 @@ function transition(e, byLead) {
   if (outdated(e)) { log(`${e.op} on ${id} by ${writer}: older than the item's state now; nothing done`); return woke }
   if (i.assignee && i.assignee !== was.assignee && i.status !== 'closed') {
     if (ROLES.includes(i.assignee)) to('handoff', i.assignee, `HANDOFF to you from ${by} on ${id} (was ${was.assignee ? actorName(was.assignee) : 'unassigned'}, now ${actorName(i.status)}). Read its latest comments, then take it up and answer on the item.`)
-    else if (i.assignee !== writer && !SYSTEM.includes(i.assignee)) needsYou('handoff', `handed to ${i.assignee} (a person)`)
+    else if (i.assignee !== writer && !SYSTEM.includes(i.assignee)) toPerson(`handed it to ${actorName(i.assignee)} (a person)`)
   }
   const upstream = (ls) => ls.filter((l) => l.startsWith('upstream:'))
   const waitsUp = (ls) => log(`BLOCKED on ${id} by ${writer}: ${upstream(ls).join(', ')}: waits on the system board; nobody woken`)
@@ -350,8 +363,8 @@ function transition(e, byLead) {
 
 // An upstream:* item set blocked waits on the system board, not on the human (68290a5). Not forever (sy-mkva): with no
 // answer from the system side (a comment by mm-upstream) for WAKE_UPSTREAM_WAIT_MS (24 h) since it was set blocked or
-// since the last answer, whichever is later, wake labels it needs-you (and says why on it), once per such wait
-// (wake's state `_upWait`): a needs-you the owner removes stays off until the next answer or the next block.
+// since the last answer, whichever is later, wake tells the board's Lead (and says so on it), once per such wait
+// (wake's state `_upWait`); never needs-you (sy-mv69.1): the Lead asks the owner when one must decide.
 const UP_WAIT = Number(process.env.WAKE_UPSTREAM_WAIT_MS || 86400000)
 const blockedAt = new Map(), answeredAt = new Map() // item id -> when (ms), from the journal
 function upSeen(e) {
@@ -370,11 +383,9 @@ function upstreamWaits(b) {
     if (Date.now() - from < UP_WAIT || (i.labels || []).includes('needs-you')) continue
     now[i.id] = key
     const h = Math.round(UP_WAIT / 3600000)
-    log(`${i.id}: blocked on the system board (${ups.join(', ')}) with no answer from it for ${h} h; asking the owner (needs-you)`)
     count('mm_wake_signals_total', { kind: 'UPSTREAM_WAIT' })
-    askOwner(i.id, { What: `${i.id} waits on the system board with no answer for ${h} h`, Why: `It is blocked and labelled ${ups.join(', ')}: nobody on this board can unblock it`,
-      You: 'Check: its item on the system board; remove needs-you once it moves' },
-    `Blocked on the system board (${ups.join(', ')}) with no answer from it for ${h} h: labelled needs-you, so the owner sees it. Remove the label once it moves.`)
+    toLead(i.id, `upstream@${from}`, `it waits on the system board (${ups.join(', ')}) with no answer from it for ${h} h, and nobody on this board can unblock it`, i.title)
+    bdRun(['comments', 'add', i.id, `Blocked on the system board (${ups.join(', ')}) with no answer from it for ${h} h: ${BOARD_LEAD ? `the Lead (${BOARD_LEAD}) is told; it asks the owner when one must decide` : 'this board has no Lead to tell'}.`], `comment ${i.id}`)
   }
   if (JSON.stringify(now) !== JSON.stringify(raised)) editState((s) => { s._upWait = now })
 }
@@ -467,7 +478,7 @@ function onEvent1(e, old = false) {
   const signalled = transition(e, byLead)
   const person = e.op === 'comment' && e.comment && isHuman(e.comment.author) ? personTo(e.comment.text, e.issue?.assignee) : null
   const role = person ? person.role : e.issue?.assignee
-  if (!ROLES.includes(role) || leadOf(e.actor) === role || signalled.has(role) || asked.has(role)) return
+  if (asked.quiet || !ROLES.includes(role) || leadOf(e.actor) === role || signalled.has(role) || asked.has(role)) return
   const who = actorName(e.actor || 'beads')
   const title = boardLine(e.issue_id, e.issue?.title)
   if (e.op === 'comment' && e.comment) {
@@ -686,10 +697,12 @@ async function tick1() {
 // once the new lead is idle.
 // A lead idle for WAKE_IDLE_CLOSE_MS (default 30 min; 0 = never) with nothing of its own open is closed (archived, as
 // bin/lead stop does, but never mid-turn), and the next request starts it again here. A kept role (roles.json `keep`)
-// is neither closed nor started: when its agent is closed or gone and work waits, the owner is told (keptWaits(): one note
-// item, needs-you on the P0/P1 items only), and when its agent is back wake undoes that (keptBack()).
+// is neither closed nor started: when its agent is closed or gone and work waits, wake says so once (keptWaits(): one
+// line to the Lead and an error line; never needs-you), and when its agent is back wake undoes what a wake before
+// sy-mv69.1 added (keptBack()).
 // Retries: a failed start is tried again after WAKE_RESUME_CHECK_MS, then twice that, and so on (at most 16 times);
-// after WAKE_TRIES (3) failures in a row the waiting items get needs-you. The same for a lead wake cannot reach, and for
+// after WAKE_TRIES (3) failures in a row the board's Lead is told on the waiting items (askHuman(); never needs-you,
+// sy-mv69.1). The same for a lead wake cannot reach, and for
 // a board change wake makes (bdStep()).
 const RESUME_CHECK = Number(process.env.WAKE_RESUME_CHECK_MS || 60000), RESUME_GAP = Number(process.env.WAKE_RESUME_MS || 600000)
 const IDLE_CLOSE = Number(process.env.WAKE_IDLE_CLOSE_MS ?? 1800000)
@@ -699,7 +712,7 @@ const startFailed = {} // role -> { n, next }: failed starts in a row, and when 
 const sendFails = {} // role -> failed sends in a row
 const idleFrom = {} // role -> { id, at }: since when wake has seen that agent idle
 let heldSaid = false
-const askedHuman = new Set() // items wake labelled needs-you after failed tries (once each, until it works again)
+const askedHuman = new Set() // items the Lead was told of after failed tries (once each, until it works again)
 
 // The project's restore hold (mm restore, until `mm restore --release`): no lead starts. mm doesn't run wake while it
 // holds, so this is the second guard, for a hold set while wake runs.
@@ -771,80 +784,31 @@ function labelQ(args, what, skip = () => false) {
     return r
   })
 }
-// The owner is asked only through an owner card (sy-0omb; bin/lib/owner-card.mjs, bin/owner-card gate): bd refuses
-// needs-you on an item with no valid card. askOwner(id, card, comment) asks the owner on an item, in wake's label queue:
-//   - its description starts with a valid card: only the label (and the comment);
-//   - it has none: wake writes a minimal one first (`card`: What, Why, You; never a go ask), the old description below
-//     it unchanged, then the label; `card` null (a lead's act, sy-e234): no card, no label (only a lead writes one);
-//   - a card whose You is "Nothing" (it asks the owner nothing, sy-e234): no label;
-//   - a card someone wrote that the gate would refuse (invalid, or a t2 go ask without review's sign-off of its head):
-//     never written over; the item goes to the board's Lead (a reason for it, and the comment), no label.
-//   - a closed item: nothing (it waits on nobody, sy-e234).
-// Resolves to { ok, how: 'label' | 'card' | 'already' | 'lead' } or bdStep's failure; `skip()` as in labelQ.
-const fit = (s, n) => { const a = Array.from(oneLine(s, 4 * n).trim()); return a.length > n ? `${a.slice(0, n - 1).join('')}…` : a.join('') }
-const cardText = (c) => ['## Owner', ...['What', 'Why', 'You'].map((k) => `- **${k}:** ${fit(c[k], CARD_KEYS[k])}`)].join('\n')
-function askOwner(id, card, comment = '', skip = () => false) {
-  return inLabelQ(async () => {
-    if (skip()) return { ok: false, skipped: true }
-    let i = null; try { i = await bd(`/v0/beads/issues/${encodeURIComponent(id)}`) } catch {}
-    if (!i?.id) { log(`${id}: could not read it to ask the owner (left as it is)`); return { ok: false } }
-    const labels = Array.isArray(i.labels) ? i.labels : [], desc = typeof i.description === 'string' ? i.description : ''
-    if (labels.includes('needs-you')) return { ok: true, how: 'already' }
-    // a closed item waits on nobody (sy-e234; bin/bd removes needs-you when an item closes, and refuses adding it)
-    if (i.status === 'closed') { log(`${id}: closed: the owner is not asked`); return { ok: false, how: 'closed' } }
-    const r = parseCard(desc, labels, id)
-    const goBlocked = r.ok && labels.includes('t2') && isGoAsk(r.card) && (!labels.includes('signed-off') || !!headRefusal(desc, labels))
-    if (r.found && (!r.ok || goBlocked)) {
-      const why = r.ok ? 'its owner card asks for the t2 go before review signed off its head' : 'its owner card is invalid'
-      log(`${id}: the owner must act on it, but ${why}: not written over; handing it to the Lead (${BOARD_LEAD || 'none'})`)
-      if (BOARD_LEAD) note(BOARD_LEAD, id, `OWNER CARD: wake must ask the owner on ${id} (${fit(card?.What || i.title || id, 120)}), but ${why}, and wake never writes over a card. You are the board's Lead: fix the card (bin/owner-card check ${id}) and add needs-you, or settle it yourself.`, false, 'talk', [boardLine(id, i.title)])
-      if (comment) bdRun(['comments', 'add', id, `${comment} (Not labelled needs-you: ${why}; wake leaves the card as it is and asks the Lead${BOARD_LEAD ? ` (${BOARD_LEAD})` : ''} to fix it.)`], `comment ${id}`)
-      return { ok: false, how: 'lead' }
-    }
-    if (r.ok && youKind(r.card.You) === 'nothing') { log(`${id}: its owner card asks the owner nothing (You: Nothing): not labelled needs-you`); return { ok: false, how: 'nothing' } }
-    if (!r.found && !card) { log(`${id}: no owner card a lead wrote: the owner is not asked (needs-you only on a lead's card)`); return { ok: false, how: 'none' } }
-    let how = 'label'
-    if (!r.found) {
-      const f = path.join(os.tmpdir(), `wake-card-${process.pid}-${String(id).replace(/[^A-Za-z0-9.-]/g, '_')}.md`)
-      try {
-        fs.writeFileSync(f, `${cardText(card)}\n${desc.trim() ? `\n${desc}` : ''}`)
-        const w = await bdStep(['update', id, '--body-file', f], `owner card ${id}`)
-        if (!w.ok) return w
-      } finally { fs.rmSync(f, { force: true }) }
-      how = 'card'
-    }
-    const l = await bdStep(['label', 'add', id, 'needs-you'], `label ${id}`)
-    await labelGap()
-    if (l.ok) log(`${id}: asked the owner (needs-you${how === 'card' ? ', with an owner card wake wrote' : ''})`)
-    if (l.ok && comment) bdRun(['comments', 'add', id, comment], `comment ${id}`)
-    return { ...l, how }
-  })
-}
-/** After failed tries: the human is asked on each item (an owner card, needs-you and one comment), once until it works again. */
+/** After failed tries (sy-mv69.1): the board's Lead is told on each item, once until it works again (one comment on the
+ *  item says so); never the owner. */
 function askHuman(items, why) {
   for (const id of [...new Set(items)].filter((x) => !askedHuman.has(x)).slice(0, 5)) {
     askedHuman.add(id)
-    log(`${id}: ${why}; asking the owner (needs-you)`)
-    askOwner(id, { What: `wake keeps failing on ${id}`, Why: why, You: 'Check: the error in its comments; remove needs-you once it is fixed' },
-      `Error: ${why}. Labelled needs-you; remove the label once it is fixed.`)
+    toldLead.delete(`${id} failing`)
+    toLead(id, 'failing', why)
+    bdRun(['comments', 'add', id, `Error: ${why}. ${BOARD_LEAD ? `The Lead (${BOARD_LEAD}) is told.` : 'This board has no Lead to tell.'}`], `comment ${id}`)
   }
 }
 
-// A kept role whose agent can't be found (sy-809m, sy-ujtp). wake never starts one (a new start is a new id, and the
-// owner's chat points at the old one): it tells the owner once, with one note item for the whole board ("the ops lead's
-// agent can't be found: N item(s) wait for it"; assigned to the owner, mm's `owner_name`, labelled needs-you and
-// kept:<role>; its title follows N), and labels needs-you only the P0/P1 items that wait. It remembers each label it
-// added, in wake's state `_kept.<role>.labelled` (item id -> when). When the role's agent is found again, it
-// closes the note and removes those labels, and only those: a needs-you a person or a lead set is never touched. A label
-// of wake's that someone removes (an event, or a later read of the board, without it) is forgotten, so if they set it
-// again, it is theirs. A note the owner closes stays closed until the agent is back (and gone again).
-const kept = (() => { try { return readState()._kept || {} } catch { return {} } })() // role -> { note, n, labelled }
+// A kept role whose agent can't be found (sy-809m, sy-ujtp, sy-mv69.1). wake never starts one (a new start is a new id,
+// and the owner's chat points at the old one). It never asks the owner either: it says so once per gone spell, as an
+// error line (mm obs, the sentinel) and, when the board's Lead is another role, one reason to the Lead ("... is yours"),
+// with the items that wait. No note item, no needs-you. A wake before sy-mv69.1 made a note for the owner and labelled
+// the P0/P1 items needs-you, and kept what it added in wake's state `_kept.<role>.labelled` (item id -> when): when the
+// role's agent is found again, keptBack() closes that note and removes those labels, and only those (a needs-you a
+// person or a lead set is never touched; one of wake's that someone removed is forgotten, keptSeen()).
+const kept = (() => { try { return readState()._kept || {} } catch { return {} } })() // role -> { note, n, labelled } (from before sy-mv69.1)
 const keptRefused = (() => { try { return readState()._keptRefused || {} } catch { return {} } })() // item id -> when closing wake's own note was refused (sy-71up)
 const keptGone = new Set() // kept roles whose agent this wake sees gone (a queued label checks it before it writes)
-const inFlight = new Set() // `add|remove <id>` queued, not written yet
+const keptSaid = new Set() // kept roles whose gone spell was said (once each, until the agent is back)
+const inFlight = new Set() // `remove <id>` queued, not written yet
 let keptSaved = JSON.stringify(kept)
 const saveKept = () => { const j = JSON.stringify(kept); if (j !== keptSaved) { keptSaved = j; editState((s) => { s._kept = kept }) } }
-const ownerName = () => (/^owner_name:[ \t]*["']?([A-Za-z0-9._-]+)/m.exec(machineConfig())?.[1]) || 'owner'
 function keptSeen(e) {
   const labels = e.issue?.labels, t = Date.parse(e.ts || '')
   if (!Array.isArray(labels) || labels.includes('needs-you') || !t) return
@@ -855,66 +819,28 @@ function keptSeen(e) {
   }
   if (changed) saveKept()
 }
-const keptCard = (role) => ({ What: `The ${role} lead's agent can't be found, and this item waits for it`,
-  Why: `${role} is the owner's contact (a kept role), so wake starts no new agent for it`, You: `Check: the note labelled kept:${role}; give the agent its labels, or start the lead again` })
-const noteText = (role, was, waits, b) => {
-  const byId = new Map(b.all.map((i) => [i.id, i])), st = kept[role]
-  const lines = waits.slice(0, 40).map((id) => { const i = byId.get(id); return `- ${id} (P${i.priority ?? '?'}, ${i.status}${st.labelled[id] || inFlight.has(`add ${id}`) ? ', labelled needs-you by wake' : ''}): ${clip(i.title, 100)}` })
-  return [cardText({ ...keptCard(role), What: `The ${role} lead's agent can't be found: ${waits.length} item(s) wait for it`, You: 'Check: below; give the agent its labels in Paseo, or start the lead again' }), '',
-    `wake can't find the agent of the **${role}** lead (${was ? `its agent ${was.shortId || was.id} is closed` : 'no agent has its labels'}), and ${waits.length} item(s) wait for it.`,
-    '', `${role} is a kept role (roles.json \`keep\`: the owner's contact), so wake does not start a new agent: a new one has a new id, and your chat points at the old one.`,
-    '', '**What to do:** give the agent the role\'s labels in Paseo (`project=' + PROJECT + ' role=' + role + '`), or start the lead again (`bin/lead start ' + role + '`) and point your chat at the new agent.',
-    '', 'wake labelled `needs-you` only the P0 and P1 items below, not all of them. When the agent is found again, wake removes the labels it added (and only those) and closes this item.',
-    '', ...lines, ...(waits.length > 40 ? [`- ... and ${waits.length - 40} more`] : [])].join('\n')
-}
 async function keptWaits(role, was, items, b) {
   keptGone.add(role)
-  // labelled: the labels wake added and still owns; done: every item it labelled while this agent is gone (never twice:
-  // a label someone removed stays removed)
-  const st = (kept[role] ||= { note: null, n: 0, labelled: {}, done: {} }); st.labelled ||= {}; st.done ||= {}
+  if (keptSaid.has(role)) return
   const byId = new Map(b.all.map((i) => [i.id, i])), open = (id) => byId.has(id) && byId.get(id).status !== 'closed'
-  // what waits: the items it was started for, its ready items (also those labelled needs-you), and its own in progress
-  // or blocked ones
+  // what waits: the items it was started for, its ready items, and its own in progress or blocked ones
   const waits = [...new Set([...items, ...b.ready.filter((i) => i.assignee === role && i.status === 'open').map((i) => i.id),
     ...inProgress(b, role).map((i) => i.id), ...b.all.filter((i) => i.status === 'blocked' && mineOf(role, i)).map((i) => i.id)])].filter(open)
-  // a label of wake's gone from the board, as read after wake wrote it: someone removed it
-  for (const [id, at] of Object.entries(st.labelled)) if (open(id) && !(byId.get(id).labels || []).includes('needs-you') && Date.parse(at) < b.from) delete st.labelled[id]
-  const fresh = waits.filter((id) => { const i = byId.get(id); return i.priority <= 1 && !(i.labels || []).includes('needs-you') && !st.done[id] && !inFlight.has(`add ${id}`) })
-  if (fresh.length) {
-    log(`${role} is kept (the owner's contact): its agent is ${was ? `closed (${was.shortId || was.id})` : 'gone'} and ${waits.length} item(s) wait; not starting a new one, labelling needs-you the P0/P1 ones: ${fresh.join(' ')}`)
-    count('mm_wake_kept_waits_total', { role })
-  }
-  for (const id of fresh) {
-    inFlight.add(`add ${id}`)
-    askOwner(id, keptCard(role), '', () => !keptGone.has(role)).then((r) => {
-      inFlight.delete(`add ${id}`)
-      // recorded even when the agent came back during the write: the next keptBack() removes it then
-      if (r.ok && r.how !== 'already') { const at = new Date().toISOString(), s = (kept[role] ||= { note: null, n: 0, labelled: {}, done: {} }); s.labelled[id] = at; (s.done ||= {})[id] = at; saveKept() }
-    })
-  }
-  // the one note
-  const title = `The ${role} lead's agent can't be found: ${waits.length} item(s) wait for it`
-  if (!st.note || st.note === '?') {
-    const found = b.all.find((i) => i.status !== 'closed' && (i.labels || []).includes(`kept:${role}`))
-    if (found) st.note = found.id
-    else if (!st.note) {
-      const r = await bdStep(['create', title, '-d', noteText(role, was, waits, b), '-t', 'task', '-p', '1', '-a', ownerName(), '-l', `needs-you,kept:${role}`, '--json'], `note for ${role}`)
-      if (r.ok) {
-        let id = null; try { const j = JSON.parse(r.out); id = (Array.isArray(j) ? j[0] : j)?.id || null } catch {}
-        st.note = id || '?' // '?': made, its id unread; the next read of the board finds it by its label
-        st.n = waits.length
-        log(`${role} is kept and its agent can't be found: opened ${id || 'a note'} for the owner (${waits.length} item(s) wait)`)
-      }
-    }
-  } else if (st.n !== waits.length && open(st.note)) {
-    const r = await bdStep(['update', st.note, '--title', title, '-d', noteText(role, was, waits, b)], `note ${st.note}`)
-    if (r.ok) { log(`${st.note}: now ${waits.length} item(s) wait for ${role}`); st.n = waits.length }
-  }
-  saveKept()
+  if (!waits.length) return
+  keptSaid.add(role)
+  count('mm_wake_kept_waits_total', { role })
+  const gone = was ? `its agent ${was.shortId || was.id} is closed` : 'no agent has its labels'
+  olog('error', `${role} is kept (the owner's contact) and its agent can't be found (${gone}): ${waits.length} item(s) wait (${waits.slice(0, 10).join(' ')}); wake starts no new one and asks no owner${BOARD_LEAD && BOARD_LEAD !== role ? `: the Lead (${BOARD_LEAD}) is told` : ''}`)
+  if (!BOARD_LEAD || BOARD_LEAD === role) return
+  count('mm_wake_to_lead_total', { kind: 'kept' })
+  note(BOARD_LEAD, `kept:${role}`, `The ${role} lead's agent can't be found (${gone}), and ${waits.length} item(s) wait for it: ${waits.slice(0, 10).join(' ')}${waits.length > 10 ? ' ...' : ''}. This is yours: ${role} is a kept role (the owner's contact), so wake starts no new agent; give the agent the role's labels in Paseo (project=${PROJECT} role=${role}), or start the lead again (bin/lead start ${role}). Only you ask the owner (an owner card, then needs-you), when a person must decide.`,
+    false, 'talk', waits.slice(0, 10).map((id) => boardLine(id, byId.get(id).title)))
 }
-/** The kept role's agent is found again: close the note, and remove the needs-you wake added (only those). */
+/** The kept role's agent is found again: close the note, and remove the needs-you wake added (only those; both from a
+ *  wake before sy-mv69.1). */
 async function keptBack(role, a, b) {
   keptGone.delete(role)
+  if (keptSaid.delete(role)) { log(`${role}'s agent is back (${a.shortId || a.id})`); if (BOARD_LEAD) pending[BOARD_LEAD]?.delete(`kept:${role}`) }
   const st = kept[role]
   if (!st) return
   st.labelled ||= {}; st.done = {}
@@ -1126,11 +1052,11 @@ function pickPerson(role, now, mine, hand) {
  *  `next` (the queue items it may pull now, for its first prompt); `was` = the closed agent it replaces, if any. Checks
  *  the restore hold, the rate limit (once per WAKE_RESUME_MS per role) and the backoff after failures; counts and logs;
  *  a failed start is kept for the board's Leads page and said once on the waiting items, and after TRIES failures in a
- *  row they get needs-you. A kept role (roles.json `keep`) is never started: keptWaits() tells the owner (`board`: the reconcile's read).
+ *  row the Lead is told. A kept role (roles.json `keep`) is never started: keptWaits() tells the Lead (`board`: the reconcile's read).
  *  Resolves to { started: true } or { started: false, why: 'kept' | 'held' | 'rate' | 'backoff' | 'failed', error? }. */
 async function startLead(role, { was = null, items = [], why = '', next = [], board: b = null, person = null, own = [] } = {}) {
   if (KEEP.has(role)) {
-    if (b) await keptWaits(role, was, items, b) // one note for the owner, needs-you on the P0/P1 items only
+    if (b) await keptWaits(role, was, items, b) // one line to the Lead, once; never needs-you
     return { started: false, why: 'kept' }
   }
   if (held()) {
@@ -1197,10 +1123,12 @@ async function closeIdle(role, a, own) {
 // make it faster), wake rebuilds what should happen from the board alone, so a restart or a missed event loses nothing:
 //   - an expired claim (in progress, no update for WAKE_LEASE_MS, 30 min; any comment or change renews it) goes back to
 //     its role's queue: status open, assignee the role, through bd's compare-and-set guard. Not while the role's lead is
-//     in a turn (it may be working on it), nor an item waiting for the human (needs-you). Work alive for the item renews
-//     its lease, once per pass (sy-brny): a worker running on it (any role's, Paseo label item=<id>), or a gate run for
-//     it (test/gates --item <id> writes .run/gates/<id>.<pid>.pid while it runs; alive = that pid is alive and, where
-//     /proc is, started when the file says). When that work ends, the lease counts again from the last pass that saw it.
+//     in a turn (it may be working on it), nor an item waiting for the human (needs-you). A claim that waits is alive
+//     (sy-brny, sy-mv69.1): a live worker on the item (any role's, Paseo label item=<id>; running or idle, as `lead
+//     worker ls` lists it) or a gate run for it (test/gates --item <id> writes .run/gates/<id>.<pid>.pid from its start,
+//     also while it waits for the run lock; alive = that pid is alive and, where /proc is, started when the file says)
+//     renews its lease once per pass; when that work ends, the lease counts again from the last pass that saw it. A new
+//     commit on the item's branch (commitsAt()) renews it as of the commit. None of them writes a comment.
 //     The requeue's comment on the item is the only report (the Supervisor raises no finding for it).
 //     The 3rd expiry of one item pauses it (`paused`, and the board's Lead is woken with it; counted in wake's state
 //     `_expiries`): never needs-you (sy-e234).
@@ -1239,17 +1167,51 @@ function gateRuns() {
   }
   return out
 }
-const aliveAt = {} // item id -> when a pass last saw work alive for it (a worker running on it, a gate run)
+const aliveAt = {} // item id -> when a pass last saw work alive for it (a live worker on it, a gate run)
+// New commits on an item's branch renew its claim as a comment would (sy-mv69.1): the newest commit time (by its
+// committer date, never later than now) of a branch named by the item (<id> or w-<id>) or by a worker seen live on it
+// while it was in progress (its name: the lead's rebase of a stopped worker's branch counts), in the board's repos: code/ (a project's), and the repo of each role's workers (roles.json `worker.repo`).
+// One `git for-each-ref` per repo per pass; a repo that can't be read counts as no commit.
+const gitRefs = (repo) => new Promise((ok) => execFile('git', ['-C', repo, 'for-each-ref', '--format=%(refname:short) %(committerdate:unix)', 'refs/heads/'], { timeout: 10000 },
+  (e, out) => ok(e ? [] : String(out || '').split('\n').map((l) => l.trim().split(' ')).filter(([n, t]) => n && /^\d+$/.test(t || '')).map(([n, t]) => [n, Number(t) * 1000]))))
+function boardRepos() {
+  const rs = new Set()
+  if (fs.existsSync(path.join(P, 'code', '.git'))) rs.add(path.join(P, 'code'))
+  for (const role of WORKER_ROLES) { try { const s = spec(P, role); if (s?.repo && fs.existsSync(s.repo)) rs.add(s.repo) } catch {} }
+  return [...rs]
+}
+const workerNames = new Map() // item id -> the names of the workers seen live on it (kept while the item is in progress)
+async function commitsAt(b, ids) {
+  const out = new Map()
+  for (const w of b.workers || []) if (w.item && w.name) workerNames.set(w.item, (workerNames.get(w.item) || new Set()).add(w.name))
+  const held = new Set(b.all.filter((i) => i.status === 'in_progress').map((i) => i.id))
+  for (const id of workerNames.keys()) if (!held.has(id)) workerNames.delete(id)
+  if (!ids.length) return out
+  const names = new Map() // branch name -> item id
+  for (const id of ids) { names.set(id, id); names.set(`w-${id}`, id); for (const n of workerNames.get(id) || []) names.set(n, id) }
+  const now = Date.now()
+  for (const repo of boardRepos()) for (const [n, t] of await gitRefs(repo)) {
+    const id = names.get(n)
+    if (id && t > (out.get(id) || 0)) out.set(id, Math.min(t, now))
+  }
+  return out
+}
 async function expire(b, running) {
   const st = readState(), counts = st._expiries || {}
   let changed = false
-  // a worker running on the item (any role's; Paseo labels item=<id>), or a gate run for it, holds its claim: its lease
-  // is renewed, once per pass (sy-brny); when that work ends, the lease counts from the last pass that saw it
+  // a claim that waits is alive (sy-brny, sy-mv69.1): a live worker on the item (any role's; Paseo labels item=<id>,
+  // the read `lead worker ls` makes: running or idle, until its lead stops it), or a gate run for it (running, or
+  // waiting for the run lock: its mark is there from the start), renews its lease once per pass; when that work ends,
+  // the lease counts from the last pass that saw it. A new commit on its branch renews it as of the commit.
   const now = Date.now(), gates = gateRuns()
-  const worked = new Set((b.workers || []).filter((w) => w.status === 'running' && w.item).map((w) => w.item))
+  const worked = new Set((b.workers || []).filter((w) => w.item).map((w) => w.item))
   for (const id of new Set([...worked, ...gates.keys()])) aliveAt[id] = now
   const held = new Set(b.all.filter((i) => i.status === 'in_progress').map((i) => i.id))
   for (const id of Object.keys(aliveAt)) if (!held.has(id)) delete aliveAt[id]
+  // the commits are read only for the claims that would expire now
+  const due = (i) => i.status === 'in_progress' && now - Math.max(Date.parse(i.updated_at || '') || 0, aliveAt[i.id] || 0) >= LEASE
+  const commits = await commitsAt(b, b.all.filter(due).map((i) => i.id))
+  for (const [id, t] of commits) if (t > (aliveAt[id] || 0) && t > (Date.parse(b.all.find((i) => i.id === id)?.updated_at || '') || 0)) { aliveAt[id] = t; if (now - t < LEASE) log(`${id}: a new commit on its branch (${new Date(t).toISOString()}): its claim renewed`) }
   for (const i of b.all) {
     const role = leadOf(i.assignee), holder = i.assignee, t = Math.max(Date.parse(i.updated_at || '') || 0, aliveAt[i.id] || 0)
     if (i.status !== 'in_progress' || !role || role === 'setup' || !t || now - t < LEASE || running.has(role) || (i.labels || []).includes('needs-you')) continue
