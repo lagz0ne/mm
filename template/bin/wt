@@ -45,7 +45,10 @@ case "${1:-}" in
        # makes it, so on the host no lead can fake it (an environment variable could be).
        case "$1" in w-*)
          mkdir -p "$W/.claude"
-         if [ -f /etc/mm-box ] && [ "$(stat -c %u /etc/mm-box 2>/dev/null)" = 0 ]; then SANDBOX=; else SANDBOX=$(cat <<JSON
+         # In a box, Bash is allowed outright (sy-kpj4): with no sandbox, nothing else lets a worker run a test without a
+         # person's yes (autoAllowBashIfSandboxed did it before); the deny list below still wins over it.
+         ALLOW=
+         if [ -f /etc/mm-box ] && [ "$(stat -c %u /etc/mm-box 2>/dev/null)" = 0 ]; then SANDBOX=; ALLOW='"allow": ["Bash"],'; else SANDBOX=$(cat <<JSON
   "sandbox": {
     "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false, "autoAllowBashIfSandboxed": true,
     "filesystem": {
@@ -63,6 +66,7 @@ JSON
 {
 $SANDBOX
   "permissions": {
+    $ALLOW
     "deny": ["Edit($W/.claude/**)", "Write($W/.claude/**)", "Bash(git push*)", "Bash(*SANDBOX*)", "mcp__paseo"]
   }
 }

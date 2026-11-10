@@ -29,7 +29,8 @@ read_s() { node -e '
   const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")), d = s.permissions?.deny || [], w = process.argv[2]
   const want = [`Edit(/${w}/.claude/**)`, `Write(/${w}/.claude/**)`, "Bash(git push*)", "Bash(*SANDBOX*)", "mcp__paseo"]
   console.log([s.sandbox ? `sandbox ${s.sandbox.enabled} ${s.sandbox.failIfUnavailable} ${s.sandbox.allowUnsandboxedCommands}` : "no-sandbox",
-    want.every((x) => d.includes(x)) ? "denies" : "denies-missing:" + JSON.stringify(d)].join(" "))' "$1/.claude/settings.local.json" "$1" 2>&1; }
+    want.every((x) => d.includes(x)) ? "denies" : "denies-missing:" + JSON.stringify(d),
+    ...(s.permissions?.allow ? ["allow:" + s.permissions.allow.join(",")] : [])].join(" "))' "$1/.claude/settings.local.json" "$1" 2>&1; }
 is() { local d=$1 want=$2 got=$3; [ "$got" = "$want" ] && ok "$d" || bad "$d: want '$want', got '$got'"; }
 
 echo "== outside a box (the host)"
@@ -56,7 +57,7 @@ else
 fi
 
 echo "== in a box (a root-owned marker)"
-W=$(wt wt-root w-a3); is "no sandbox block, the permissions stay" "no-sandbox denies" "$(read_s "$W")"
+W=$(wt wt-root w-a3); is "no sandbox block, the permissions stay, Bash allowed (the deny list still wins)" "no-sandbox denies allow:Bash" "$(read_s "$W")"
 W=$(wt wt-root lead-dev); [ -e "$W/.claude/settings.local.json" ] && bad "a lead's worktree got worker settings" || ok "a lead's own worktree: no worker settings"
 
 echo "== an environment can't fake it"
