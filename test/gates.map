@@ -48,6 +48,7 @@ suite test/boxreg.sh              hermetic
 suite test/box-slot.sh            hermetic
 suite test/box-cron.sh            hermetic
 suite test/health-incident.sh     hermetic
+suite test/land-check.sh          hermetic
 suite test/box-stamp.sh           hermetic
 suite test/box-trust.sh           hermetic
 suite test/brain-deny.sh          hermetic
@@ -353,7 +354,7 @@ rule template/bin/smoke-beads     test/bd-autostart.sh
 rule template/bin/purge           test/engine-drift.sh test/template-base.sh
 rule template/bin/deploy          test/trace-refused.sh test/deploy.sh
 rule template/bin/app-run         test/deploy.sh
-rule template/ops/land-check      test/trace-refused.sh
+rule template/ops/land-check      test/trace-refused.sh test/land-check.sh
 rule template/ops/githooks/**     test/artifact.sh test/sync.sh test/template-base.sh
 
 # --- rules: the template's site -------------------------------------------------------------------------------------

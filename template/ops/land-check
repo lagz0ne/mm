@@ -1,12 +1,22 @@
 #!/bin/sh
 # Land gate (machine-level, ops/): run by `land` inside the worktree being landed, after the rebase onto main.
 # Non-zero = the branch is not landed. Docs-only changes skip the tests.
+# A Bun project (package.json and bun.lock or bun.lockb): bun install --frozen-lockfile, then its package.json `test`
+# script (bun run test; none: no tests). Else npm and node --test. The install runs here, in the worktree.
 set -eu
 cd "$1"
 changed=$(git diff --name-only main...HEAD)
 [ -n "$changed" ] || exit 0
 if ! printf '%s\n' "$changed" | grep -qvE '^docs/'; then echo "land-check: docs only, tests skipped"; exit 0; fi
-if [ -f package.json ]; then
+if [ -f package.json ] && { [ -f bun.lock ] || [ -f bun.lockb ]; }; then
+  command -v bun >/dev/null 2>&1 || { echo "land-check: bun.lock but no bun on PATH"; exit 1; }
+  out=$(bun install --frozen-lockfile 2>&1) || { printf '%s\n' "$out" | tail -20; echo "land-check: bun install --frozen-lockfile failed"; exit 1; }
+  if ! bun -e 'process.exit(require("./package.json").scripts?.test ? 0 : 1)' >/dev/null 2>&1; then
+    echo "land-check: no test script in package.json, tests skipped"; exit 0
+  fi
+  out=$(bun run test 2>&1) || { printf '%s\n' "$out" | tail -20; echo "land-check: tests failed"; exit 1; }
+  printf '%s\n' "$out" | grep -E '^ *(Test Files|Tests) ' | tr -s ' \n' ' '; echo
+elif [ -f package.json ]; then
   [ -d node_modules ] || { [ -f package-lock.json ] && npm ci --silent --no-audit --no-fund || npm install --silent --no-audit --no-fund; }
   out=$(node --test 2>&1) || { printf '%s\n' "$out" | grep -E '✖|# (fail|pass)' | head -20; echo "land-check: tests failed"; exit 1; }
   printf '%s\n' "$out" | grep -E '^(ℹ|#) (tests|pass|fail) ' | tr '\n' ' '; echo
