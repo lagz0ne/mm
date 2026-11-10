@@ -17,7 +17,13 @@ export HOME="$T/home" MM_HOME="$T/home/.mm" MM_OBS_TRACES=""
 # this test plays the owner on a throwaway store, so it lifts the agent brake (CLAUDECODE); one check sets it again
 unset PASEO_AGENT_ID PASEO_AGENT_CWD CLAUDECODE
 mkdir -p "$MM_HOME/pc/projects" "$T/proj/.run" "$T/proj2/.run"
-PORT=$(( 39100 + RANDOM % 800 )); BOARD=board-shop-acme.example.org; AUTH=auth.example.org; BOARD2=board-other-acme.example.org
+# the test listens on PORT..PORT+21 (the gateway, boards, stubs): a base where each of them binds now, so a long-lived
+# server or another suite in this range is not met halfway through (a fake board's EADDRINUSE failed the cards)
+PORT=$(node -e '
+const net = require("node:net"), bindable = (p) => new Promise((ok) => { const s = net.createServer(); s.once("error", () => ok(false)); s.listen(p, "127.0.0.1", () => s.close(() => ok(true))) })
+;(async () => { for (let n = 0; n < 50; n++) { const b = 39100 + Math.floor(Math.random() * 800); let all = true
+  for (let k = 0; k < 22 && all; k++) all = await bindable(b + k); if (all) return console.log(b) } console.log(39100 + Math.floor(Math.random() * 800)) })()')
+BOARD=board-shop-acme.example.org; AUTH=auth.example.org; BOARD2=board-other-acme.example.org
 printf 'domain: example.org\naccess: domain\nauth_port: %s\nbind_host: 127.0.0.1\nowner_name: boss\ntelegram:\n  owner_id: "4242"\n' "$PORT" >"$MM_HOME/config.yaml"
 # a fake Telegram: records what the gateway tells the owner (the bot token is a test value, at the input's path)
 TGP=$(( PORT + 7 )); mkdir -p "$HOME/brain/.keys"; printf 'test-bot-token-9911' >"$HOME/brain/.keys/.telebot"; chmod 600 "$HOME/brain/.keys/.telebot"
@@ -612,7 +618,7 @@ check "a bad id drops the item (capitals; a quote and markup)" bash -c "! grep -
 check "an over-long title (201) or one with a control or bidi character drops the item; one of exactly 200 stays" bash -c "! grep -qE 'L{201}' '$T/hp' && ! grep -q -e DROPCTL -e DROPBIDI '$T/hp' && grep -qE '>T{200}</span>' '$T/hp'"
 check "...an unknown field (a url), a fraction or a negative age, an unknown label, a repeated id, an empty or non-text title: dropped" bash -c "! grep -q -e DROPLINK -e DROPFRAC -e DROPAGE -e DROPAPPROVED -e DROPDUP '$T/hp' && ! wids | grep -q -e ao-13 -e ao-15"
 check "...an item with no ask for the owner (no label): not on the owner's list" bash -c "! wsec | grep -q 'plain work'"
-check "each board asked for its list with that person's own fresh assertion (boss, owner, that board's host), the owner's with the cards (?card=1&head=1, sy-92sg, sy-hzmu)" bash -c "jq -e '.p == \"/api/waiting?card=1&head=1\" and .h == \"$BOARD2\"' <(tail -1 '$T/fb2.w.jsonl') && node '$T/verify.mjs' \"\$(tail -1 '$T/fb2.w.jsonl' | jq -r .a)\" '$MM_HOME/auth/signing.key' '$BOARD2' boss owner"
+check "each board asked for its list with that person's own fresh assertion (boss, owner, that board's host), the owner's with the cards and the mm.api requests' way to decide (?card=1&head=1&decide=1, sy-92sg, sy-hzmu, sy-w5bt)" bash -c "jq -e '.p == \"/api/waiting?card=1&head=1&decide=1\" and .h == \"$BOARD2\"' <(tail -1 '$T/fb2.w.jsonl') && node '$T/verify.mjs' \"\$(tail -1 '$T/fb2.w.jsonl' | jq -r .a)\" '$MM_HOME/auth/signing.key' '$BOARD2' boss owner"
 check "an older board (system: no such answer) adds nothing and is no error (no note, not logged)" bash -c "! wsec | grep -q -e system -e unavailable && ! grep 'board waiting list unavailable' '$T/gw.log' | grep -q '\"project\":\"system\"'"
 CBI=$(gw -D - -o /dev/null -H "cookie: $SB" "$G/s?b=$BOARD&r=%2F%3Fitem%3Dit-1" | sed -n 's/^location: https:\/\/[^/]*\(.*\)\r$/\1/ip')
 check "the link opens the item: the board's one-time callback, then /?item=it-1 on the board (its item view)" bash -c "echo '$CBI' | grep -q '^/_mm/auth/callback?c=' && curl -s -H 'x-forwarded-host: $BOARD' '$G$CBI' | grep -qF 'content=\"0;url=/?item=it-1\"'"
