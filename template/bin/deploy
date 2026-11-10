@@ -18,6 +18,10 @@
 # The first deploy: mm registers the app slot only once release/ exists, so a project whose services.yaml declares
 # `app` but whose services.json has none yet is deployed too: release/ is made, installed and built (no restart, no
 # health check; .releases says `staged`), and deploy says the slot starts at the next `mm up` (it never runs mm).
+# In a box with the project API on (its socket: MM_PROJECT_API, default /run/mm/api/api.sock; docs/project-api.md),
+# the app slot runs only the build the owner approved, release/<build>/. There deploy makes release/<build>/ (<build>:
+# the short commit hash; a detached worktree of code/ at it, in the real folder release/), installs and builds it
+# there, then asks the host: POST /release {"build":"<build>"}. Nothing restarts; the owner's approval starts it.
 [ "${MM_TRACE_SELF:-}" = "$0" ] || MM_TRACE_SELF=$0 exec "$(dirname "$(readlink -f "$0")")/trace" deploy -- "$0" "$@"
 set -eu
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
@@ -25,8 +29,12 @@ P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 declared() { awk '/^services:[ \t]*$/{s=1; next} s && /^[^ \t#]/{s=0} s && /^[ \t]+[^ \t#]/{ match($0, /^[ \t]+/); if (!i) i=RLENGTH; if (RLENGTH==i && $0 ~ /^[ \t]+app:/) {f=1; exit} } END{exit !f}' "$P/services.yaml" 2>/dev/null; }
 pname() { [ -z "${MM_PROJECT:-}" ] || { echo "$MM_PROJECT"; return; }
   n=$(sed -n "s/^project:[ \t]*[\"']*\([A-Za-z0-9_.-]*\).*/\1/p" "$P/.mm-answers.yaml" 2>/dev/null | head -1); echo "${n:-$(basename "$P")}"; }
+API=${MM_PROJECT_API:-/run/mm/api/api.sock}; [ -S "$API" ] || API=
 STARTED=1
-if ! { grep -q '"app"' "$P/.run/services.json" 2>/dev/null || grep -q '"app"' "$P/services.json" 2>/dev/null; }; then
+if [ -n "$API" ]; then
+  { grep -q '"app"' "$P/.run/services.json" 2>/dev/null || declared; } || { echo "deploy: this project has no app slot (services.yaml: app)" >&2; exit 2; }
+  STARTED=0
+elif ! { grep -q '"app"' "$P/.run/services.json" 2>/dev/null || grep -q '"app"' "$P/services.json" 2>/dev/null; }; then
   declared || { echo "deploy: this project has no app slot (services.json: app)" >&2; exit 2; }
   STARTED=0; NEXT="the app slot starts at the next mm up of $(pname)"
 fi
@@ -57,6 +65,38 @@ switch() { git -C "$REL" checkout -q --detach "$1" || return 1
 
 [ $# -gt 0 ] || set -- main
 exec 9>"$P/.deploy.lock"; flock -w 120 9 || { echo "deploy: another deploy is running" >&2; exit 1; }
+# a box with the project API: build release/<build>/, ask the owner for it (the host decides; nothing restarts here)
+if [ -n "$API" ]; then
+  logl() { echo "$(date -u +%FT%TZ) $1 $2 ${BEADS_ACTOR:-${USER:-?}}" >> "$LOG"; }
+  case "$1" in
+    status) echo "app: a box with the project API: its app slot runs the build the owner approved (release/<build>/)"
+            echo "builds in release/: $(ls -1 "$REL" 2>/dev/null | tr '\n' ' ')"; tail -5 "$LOG" 2>/dev/null; exit 0 ;;
+    rollback) prev=$(awk '$3=="asked"||$3=="approved"{print $2}' "$LOG" 2>/dev/null | tail -2 | head -1)
+              [ -n "$prev" ] || { echo "deploy: no previous build to ask for again" >&2; exit 1; }
+              set -- "$prev" ;;
+  esac
+  want=$($G rev-parse --verify --quiet "${1}^{commit}") || { echo "deploy: unknown revision $1" >&2; exit 2; }
+  $G merge-base --is-ancestor "$want" main || { echo "deploy: $1 is not on main; land it first" >&2; exit 1; }
+  build=$($G rev-parse --short "$want")
+  # release/ and release/<build> real folders (the API checks it with lstat); release/<build> a worktree of code/
+  if [ -L "$REL" ] || { [ -e "$REL" ] && [ ! -d "$REL" ]; }; then echo "deploy: release/ is not a real folder" >&2; exit 1; fi
+  mkdir -p "$REL"; REL=$REL/$build
+  if [ -e "$REL" ] || [ -L "$REL" ]; then
+    { [ ! -L "$REL" ] && [ -e "$REL/.git" ] && [ "$(git -C "$REL" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$REL" && pwd -P)" ]; } ||
+      { echo "deploy: release/$build is there and is not a worktree of code/: move it away, then deploy again" >&2; exit 1; }
+  else $G worktree prune; $G worktree add -q --detach "$REL" "$want" || { echo "deploy: could not make release/$build a worktree of code/" >&2; exit 1; }; fi
+  if ! switch "$want"; then logl "$build" build-failed; echo "deploy: $build: its install or build in release/$build failed; nothing asked" >&2; exit 1; fi
+  ans=$(curl -s --max-time 30 --unix-socket "$API" -X POST -H 'content-type: application/json' -d "{\"build\":\"$build\"}" http://api/release) ||
+    { echo "deploy: the project API did not answer; release/$build is built, nothing asked (deploy $build again)" >&2; exit 1; }
+  st=$(printf '%s' "$ans" | sed -n 's/.*"status" *: *"\([a-z]*\)".*/\1/p')
+  case "$st" in
+    pending) logl "$build" asked; echo "asked the owner for release $build: it starts when approved" ;;
+    done) logl "$build" approved; echo "release $build: the owner approved it already (the app slot runs it)" ;;
+    *) why=$(printf '%s' "$ans" | sed -n 's/.*"why" *: *"\([a-z-]*\)".*/\1/p'); logl "$build" refused
+       echo "deploy: the project API refused release $build: ${why:-no answer it knows}" >&2; exit 1 ;;
+  esac
+  exit 0
+fi
 # release/ is the release worktree only when it is a worktree of its own (release/.git, its top level release/ itself):
 # git -C on a plain folder falls through to the repo above it (the project root's). An empty folder is replaced by a
 # worktree; anything else is refused, untouched.

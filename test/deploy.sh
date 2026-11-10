@@ -28,11 +28,17 @@ case "\$1" in
 esac
 EOF
 printf '#!/bin/sh\necho "$(basename "$PWD") $*" >>"%s/npm.log"\n' "$T" >"$S/npm"
-# curl: the last argument is the URL; 200 only at the path in $T/ok-path
-printf '#!/bin/sh\nfor u; do :; done; echo "$u" >>"%s/curl.log"; [ "${u#http://app.test}" = "$(cat %s/ok-path)" ] && printf 200 || printf 404\n' "$T" "$T" >"$S/curl"
+# curl: the last argument is the URL; 200 only at the path in $T/ok-path. A call on a unix socket (the project API):
+# recorded in api.log as "<socket> <url> <body>", answered with $T/api-answer
+cat >"$S/curl" <<EOF
+#!/bin/sh
+sock= body= prev=; for u; do case "\$prev" in --unix-socket) sock=\$u ;; -d) body=\$u ;; esac; prev=\$u; done
+if [ -n "\$sock" ]; then echo "\$sock \$u \$body" >>"$T/api.log"; cat "$T/api-answer"; exit 0; fi
+echo "\$u" >>"$T/curl.log"; [ "\${u#http://app.test}" = "\$(cat "$T/ok-path")" ] && printf 200 || printf 404
+EOF
 chmod +x "$P/bin/"* "$S/"*
 export PATH="$S:$PATH" MM_TRACE_SELF="$P/bin/deploy"
-unset DEPLOY_HEALTH_PATH
+unset DEPLOY_HEALTH_PATH; export MM_PROJECT_API="$T/no-api.sock"   # a host project: no API socket
 
 # the product repo: c-npm, c-bun, c-break (build fails), c-nobuild (bun.lock, no build script)
 C="$P/code"; git -C "$C" init -q -b main
@@ -116,7 +122,31 @@ check "...the project's id: MM_PROJECT wins" sh -c "echo '$OUT' | grep -q 'next 
 printf 'version: 1\nservices:\n  board:\n    command: x\n    env:\n      app: nested\n' >"$P/services.yaml"
 dep status
 check "no app in services.yaml (an app: key deeper down is not one): no app slot, exit 2" sh -c "[ $RC = 2 ] && grep -q 'has no app slot' '$T/err'"
-rm "$P/services.yaml" "$P/.mm-answers.yaml"
+rm "$P/.mm-answers.yaml"
+
+echo "== a box with the project API (its socket): deploy builds release/<build>/ and asks the owner for it"
+printf 'version: 1\nservices:\n  app:\n    optional: true\n' >"$P/services.yaml"
+rm -rf "$P/release"; git -C "$C" worktree prune; mkdir "$P/release"   # the host makes release/ (a real folder)
+node -e 'require("net").createServer().listen(process.argv[1], () => process.exit(0))' "$T/api.sock"   # a socket file, nobody answers: curl's stand-in does
+export MM_PROJECT_API="$T/api.sock"; b=$(rev c-bun)
+echo '{"status":"pending","id":"r-1","item":"x-1"}' >"$T/api-answer"; : >"$T/api.log"; dep "$b"
+check "exit 0, one line: asked the owner for release <build>, it starts when approved" sh -c "[ $RC = 0 ] && [ '$OUT' = 'asked the owner for release $b: it starts when approved' ]"
+check "...no 'next mm up' line in a box" sh -c "! grep -q 'mm up' '$T/err' && ! echo '$OUT' | grep -q 'mm up'"
+check "the API call: POST /release on the box's socket, the build's name (the short hash)" grep -qxF "$T/api.sock http://api/release {\"build\":\"$b\"}" "$T/api.log"
+check "release/<build>: a real folder, a detached worktree of code/ at c-bun, built there" sh -c "[ ! -L '$P/release/$b' ] && [ \"\$(git -C '$P/release/$b' rev-parse --show-toplevel)\" = '$P/release/$b' ] && [ \"\$(git -C '$P/release/$b' log -1 --format=%s)\" = c-bun ] && grep -qx 'built from bun' '$P/release/$b/.output/server/index.mjs' && grep -qx '$b install --frozen-lockfile' '$T/bun.log'"
+check "...release/ itself stays a plain folder (no .git), nothing restarted, no health check" sh -c "[ ! -e '$P/release/.git' ] && [ ! -s '$T/svc.log' ] && [ ! -s '$T/curl.log' ]"
+check "...the release log says asked" sh -c "tail -1 '$P/.releases' | grep -q ' $b asked '"
+echo '{"status":"done","id":"r-1"}' >"$T/api-answer"; dep "$b"
+check "the same build again, approved already: exit 0, says so" sh -c "[ $RC = 0 ] && echo '$OUT' | grep -q 'approved it already'"
+echo '{"status":"refused","why":"no-build"}' >"$T/api-answer"; dep "$b"
+check "the API refuses: exit 1, its word" sh -c "[ $RC = 1 ] && grep -q 'refused release $b: no-build' '$T/err'"
+n=$(rev c-npm); mkdir "$P/release/$n"; echo x >"$P/release/$n/f"; : >"$T/api.log"; dep "$n"
+check "a release/<build> there that is no worktree: refused, nothing asked, its file stays" sh -c "[ $RC = 1 ] && grep -q 'is not a worktree of code/' '$T/err' && [ ! -s '$T/api.log' ] && [ -f '$P/release/$n/f' ]"
+: >"$T/api.log"; dep "$(rev c-break)"
+check "a build that fails: exit 1, nothing asked" sh -c "[ $RC = 1 ] && grep -q 'nothing asked' '$T/err' && [ ! -s '$T/api.log' ]"
+dep status
+check "deploy status in a box: the owner approves each build; the builds there" sh -c "[ $RC = 0 ] && echo '$OUT' | grep -q 'project API' && echo '$OUT' | grep -q 'builds in release/:.*$b'"
+export MM_PROJECT_API="$T/no-api.sock"; rm "$P/services.yaml"
 
 echo "== the template's app slot"
 check "services.yaml: the app runs bin/app-run, DATA_DIR is data/app" sh -c "grep -q 'command: \"HOST=\$\${MM_BIND:-\$\$HOST} exec {root}/bin/app-run\"' '$SRC/template/services.yaml' && grep -q 'DATA_DIR: \"{root}/data/app\"' '$SRC/template/services.yaml'"
