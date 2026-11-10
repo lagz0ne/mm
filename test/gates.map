@@ -41,6 +41,7 @@ suite test/backup-data.sh         hermetic
 suite test/bd-actor.sh            hermetic
 suite test/bd-proxy-stop.sh       hermetic
 suite test/box-boot.sh            hermetic
+suite test/box-topdirs.sh         hermetic
 suite test/wt-box.sh              hermetic
 suite test/box-doop.sh            hermetic
 suite test/box-pc.sh              hermetic

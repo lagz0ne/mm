@@ -42,6 +42,19 @@ const BASE_EGRESS = ['github.com', 'api.github.com', 'codeload.github.com', 'obj
 const names = (project: string) => ({ box: `mm-box-${project}`, net: `mm-net-${project}`, proxy: `mm-egress-${project}` })
 const BOX_PATH = '/usr/local/bin:/usr/bin:/bin'
 const PASEO_PORT = 6767
+/** The project's top-level folders the box's leads write; mm up makes them, since the box can't make one in the root
+ *  (2755, review sy-b15.6 2): artifacts/ (bin/artifact), worktrees/ (wt), inbox/ (the board's uploads). */
+export const BOX_TOP_DIRS = ['artifacts', 'worktrees', 'inbox']
+/** Makes the missing ones (2775: group-writable, setgid); one that is there keeps its mode; a symlink is left alone. */
+export function makeTopDirs(root: string): string[] {
+  const made: string[] = []
+  for (const s of BOX_TOP_DIRS) {
+    const p = join(root, s)
+    let there = false; try { lstatSync(p); there = true } catch {}
+    if (!there) { mkdirSync(p, { mode: 0o2775 }); chmodSync(p, 0o2775); made.push(s) }
+  }
+  return made
+}
 /** A fixed subnet for the project's network (10.231.<n>.0/24) and a fixed address for its box (.10), so the system
  *  Paseo's entry for the box stays right when the box is made again. A taken subnet moves to the next n. */
 function netOf(project: string, net: string): { subnet: string; ip: string } | null {
@@ -544,6 +557,9 @@ function upUnder022(root: string): Step[] {
   // is never a live box daemon's (that one writes it as the box user); left there, the box's Paseo can't take it over
   // (EPERM on utime: only a file's owner may set its times). Removed; a link there is removed, never followed.
   try { const pf = join(paseoHome, 'paseo.pid'); if (lstatSync(pf).uid === process.getuid?.()) rmSync(pf, { force: true }) } catch {}
+  // the top-level folders the box's leads write (sy-u91q): made here, before the root goes 2755 below, since the box
+  // can't make a folder in the root itself (bin/artifact's artifacts/ was missing in a new box project)
+  makeTopDirs(root)
   // what the box writes: group-writable (setgid folders keep the group), so the box's uid and the host's owner share it
   for (const d of [root, paseoHome, claude]) {
     mkdirSync(d, { recursive: true, mode: 0o2770 })
